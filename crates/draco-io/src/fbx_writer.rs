@@ -3541,6 +3541,38 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "fbx-reader")]
+    fn pre_rotation_enters_the_stack_as_authored() {
+        // A Z-up scene exported as Y-up carries `PreRotation = (-90, 0, 0)` on
+        // every object, which is the rotation that takes the authored up axis
+        // (+Z) onto +Y. Composing its inverse instead turns that into +90 and
+        // stands the whole export on its head.
+        let stack = FbxTransformStack {
+            translation: Some([0.0; 3]),
+            rotation: Some([0.0; 3]),
+            scaling: Some([1.0; 3]),
+            pre_rotation: Some([-90.0, 0.0, 0.0]),
+            ..FbxTransformStack::default()
+        };
+        let mut node = FbxSceneNode::new(Some("PreRotated".to_string()));
+        node.transform = Some(crate::fbx_transform::identity_transform());
+        node.transform_stack = Some(stack);
+        let scene = FbxScene {
+            root_nodes: vec![node],
+            ..FbxScene::default()
+        };
+
+        let output = FbxScene::from_bytes(&scene.to_bytes().unwrap()).unwrap();
+        let matrix = output.root_nodes[0].transform.unwrap().matrix;
+        // The matrix is packed by column, so column 2 is where +Z lands.
+        let up = matrix[2];
+        assert!(
+            (up[0]).abs() < 1e-5 && (up[1] - 1.0).abs() < 1e-5 && (up[2]).abs() < 1e-5,
+            "+Z must land on +Y, got {up:?}"
+        );
+    }
+
+    #[test]
     fn a_default_geometric_transform_is_not_carried_as_an_offset() {
         assert!(crate::fbx_scene::FbxGeometricTransform::default().is_identity());
         assert!(crate::fbx_scene::FbxGeometricTransform {

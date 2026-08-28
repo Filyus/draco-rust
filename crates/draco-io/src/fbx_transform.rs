@@ -198,13 +198,6 @@ pub(crate) fn parse_transform(
         }
         inverse
     };
-    // Blender's FBX bind matrices encode the pre-rotation with the
-    // opposite handedness from the local Euler property.  Applying
-    // its inverse here keeps Mixamo-style armatures aligned while
-    // leaving ordinary TRS-only files unchanged.
-    let inverse_pre_rotation = pre_rotation
-        .map(|values| [-values[0], -values[1], -values[2]])
-        .unwrap_or([0.0; 3]);
     // The scene matrix uses the same packed layout as the writer:
     // translation occupies the final packed column.  Do not multiply
     // the local translation through the rotation stack here; doing so
@@ -215,7 +208,11 @@ pub(crate) fn parse_transform(
     for term in [
         translation_matrix(rotation_offset.unwrap_or([0.0; 3])),
         translation_matrix(rotation_pivot.unwrap_or([0.0; 3])),
-        rotation_matrix(inverse_pre_rotation),
+        // `PreRotation` enters the stack as authored, and only `PostRotation`
+        // is inverted (`... * Rpre * R * Rpost^-1 * ...`). Negating this one
+        // turns the -90 degrees about X that a Z-up scene carries on every
+        // object into +90, which lands the whole export upside down.
+        rotation_matrix(pre_rotation.unwrap_or([0.0; 3])),
         rotation_matrix(r_deg),
         inverse_rotation(post_rotation.unwrap_or([0.0; 3])),
         inverse_translation(rotation_pivot.unwrap_or([0.0; 3])),
