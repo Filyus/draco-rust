@@ -22,7 +22,11 @@ pub enum Value {
 impl Value {
     /// Parses one complete JSON value.
     pub fn parse(input: &[u8]) -> Result<Self, String> {
-        let mut parser = Parser { input, pos: 0 };
+        let mut parser = Parser {
+            input,
+            pos: 0,
+            depth: 0,
+        };
         let value = parser.value()?;
         parser.space();
         if parser.pos != input.len() {
@@ -227,9 +231,18 @@ fn write_string(out: &mut Vec<u8>, value: &str) {
     }
     out.push(b'"');
 }
+/// Nesting the parser accepts before it reports an error.
+///
+/// `value` recurses through arrays and objects, so the input alone decides how
+/// deep the call stack goes. glTF documents nest a handful of levels; the limit
+/// is set far above anything an authoring tool emits and far below the point
+/// where the recursion exhausts a thread stack.
+const MAX_DEPTH: usize = 128;
+
 struct Parser<'a> {
     input: &'a [u8],
     pos: usize,
+    depth: usize,
 }
 impl<'a> Parser<'a> {
     fn space(&mut self) {
@@ -253,8 +266,8 @@ impl<'a> Parser<'a> {
     fn value(&mut self) -> Result<Value, String> {
         self.space();
         match self.input.get(self.pos).copied() {
-            Some(b'{') => self.object(),
-            Some(b'[') => self.array(),
+            Some(b'{') => self.nested(Self::object),
+            Some(b'[') => self.nested(Self::array),
             Some(b'"') => Ok(Value::String(self.string()?)),
             Some(b't') => self.literal(b"true", Value::Bool(true)),
             Some(b'f') => self.literal(b"false", Value::Bool(false)),
@@ -262,6 +275,17 @@ impl<'a> Parser<'a> {
             Some(b'-' | b'0'..=b'9') => self.number(),
             _ => Err("expected JSON value".into()),
         }
+    }
+    /// Runs one container parser one level deeper, refusing to exceed
+    /// [`MAX_DEPTH`].
+    fn nested(&mut self, parse: fn(&mut Self) -> Result<Value, String>) -> Result<Value, String> {
+        if self.depth == MAX_DEPTH {
+            return Err(format!("JSON nesting exceeds {MAX_DEPTH} levels"));
+        }
+        self.depth += 1;
+        let value = parse(self);
+        self.depth -= 1;
+        value
     }
     fn literal(&mut self, s: &[u8], v: Value) -> Result<Value, String> {
         if self.input.get(self.pos..self.pos + s.len()) == Some(s) {
@@ -513,5 +537,19 @@ mod tests {
                 "{invalid:?} should be invalid"
             );
         }
+    }
+
+    #[test]
+    fn rejects_nesting_deeper_than_the_parser_limit() {
+        let accepted = "[".repeat(super::MAX_DEPTH) + &"]".repeat(super::MAX_DEPTH);
+        assert!(Value::parse(accepted.as_bytes()).is_ok());
+
+        // Unbalanced on purpose: the depth limit must reject the input before
+        // the parser ever reaches the missing brackets.
+        let too_deep = "[".repeat(100_000);
+        assert!(Value::parse(too_deep.as_bytes()).is_err());
+
+        let objects = r#"{"a":"#.repeat(100_000);
+        assert!(Value::parse(objects.as_bytes()).is_err());
     }
 }
