@@ -176,7 +176,7 @@ async function previewWorld(globalSettings: Record<string, number>, translation:
     parsed,
     Object.create(null),
     {},
-    async () => ({ meshes: [{ primitives: [{ attributes: {} }] }], materials: [], textures: [], nodes: [], renderables: [], skins: [], animations: [], rootIndices: [], ...flat }),
+    async () => ({ ...flat, meshes: [{ primitives: [{ attributes: {} }] }], nodes: [], renderables: [], skins: [], animations: [], rootIndices: [] }),
   );
   const { updateNode } = await import(
     pathToFileURL(resolve(here, '..', 'src', 'viewer', 'scene-graph.ts')).href
