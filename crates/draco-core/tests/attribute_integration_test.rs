@@ -290,3 +290,146 @@ fn test_grid_encoding_sequential() {
 
     verify_mesh_attributes(&mesh, &decoded_mesh, 0.002);
 }
+
+/// A `uint32` attribute keeps every bit through the round trip, including the
+/// values above `i32::MAX` that upstream refuses to encode at all.
+///
+/// This is a deliberate widening, not an accident: upstream converts each value
+/// with `ConvertValue<int32_t>` and fails the encode when one does not fit
+/// (`ConvertComponentValue`, `geometry_attribute.h`), while this encoder carries
+/// the bits through its `int32` portable attribute and the decoder writes them
+/// back under the attribute's declared type. Upstream's own decoder reads such a
+/// stream correctly -- its `StoreTypedValues` is a plain `static_cast` with no
+/// range check -- so the wider domain stays readable by C++ Draco.
+///
+/// See `dev/docs/wide-uint32-attributes.md` for what to change if this should
+/// ever become a refusal instead.
+#[test]
+fn a_uint32_attribute_keeps_values_above_i32_max_through_a_round_trip() {
+    const WIDTH: u32 = 5;
+    const HEIGHT: u32 = 5;
+    const NUM_POINTS: usize = (WIDTH * HEIGHT) as usize;
+    // Above `i32::MAX`, so the portable `int32` holds these bits as negatives.
+    const BASE: u32 = 0xFFFF_0000;
+
+    let mut mesh = Mesh::new();
+    mesh.set_num_points(NUM_POINTS);
+
+    let mut positions = PointAttribute::new();
+    positions.init(
+        GeometryAttributeType::Position,
+        3,
+        DataType::Uint32,
+        false,
+        NUM_POINTS,
+    );
+    let mut authored = Vec::with_capacity(NUM_POINTS * 3);
+    for y in 0..HEIGHT {
+        for x in 0..WIDTH {
+            let index = (y * WIDTH + x) as usize;
+            // Straddling `i32::MAX` is what makes the two readings disagree:
+            // a difference between a value below the boundary and one above it
+            // is 2^32 apart signed versus unsigned, which is what the portable
+            // texture-coordinate predictor works on.
+            let value = if (x + y) % 2 == 0 {
+                [BASE + x * 16, BASE + y * 16, BASE + (x + y) * 4]
+            } else {
+                [x * 16, y * 16, (x + y) * 4]
+            };
+            for (component, scalar) in value.iter().enumerate() {
+                positions
+                    .buffer_mut()
+                    .write((index * 3 + component) * 4, &scalar.to_le_bytes());
+            }
+            authored.extend_from_slice(&value);
+        }
+    }
+    mesh.add_attribute(positions);
+
+    // A texture coordinate predicted by the portable scheme reads the position
+    // as a number rather than as storage, which is the path that used to
+    // disagree between the two halves.
+    let mut tex_coords = PointAttribute::new();
+    tex_coords.init(
+        GeometryAttributeType::TexCoord,
+        2,
+        DataType::Uint16,
+        false,
+        NUM_POINTS,
+    );
+    for point in 0..NUM_POINTS {
+        let u = (point as u16).wrapping_mul(701);
+        let v = (point as u16).wrapping_mul(263);
+        tex_coords.buffer_mut().write(point * 4, &u.to_le_bytes());
+        tex_coords
+            .buffer_mut()
+            .write(point * 4 + 2, &v.to_le_bytes());
+    }
+    mesh.add_attribute(tex_coords);
+
+    let mut faces = Vec::new();
+    for y in 0..HEIGHT - 1 {
+        for x in 0..WIDTH - 1 {
+            let i = y * WIDTH + x;
+            faces.push([i, i + 1, i + WIDTH]);
+            faces.push([i + 1, i + WIDTH + 1, i + WIDTH]);
+        }
+    }
+    mesh.try_set_num_faces(faces.len()).expect("face count");
+    for (index, face) in faces.iter().enumerate() {
+        mesh.set_face_from_indices(index, *face);
+    }
+
+    let mut options = EncoderOptions::new();
+    options.set_attribute_int(1, "prediction_scheme", 5);
+
+    let mut encoder = MeshEncoder::new();
+    encoder.set_mesh(mesh);
+    let mut buffer = EncoderBuffer::new();
+    encoder
+        .encode(&options, &mut buffer)
+        .expect("a uint32 attribute above i32::MAX encodes");
+
+    let mut decoded = Mesh::new();
+    MeshDecoder::new()
+        .decode(&mut DecoderBuffer::new(buffer.data()), &mut decoded)
+        .expect("and decodes again");
+
+    let attribute = decoded
+        .named_attribute(GeometryAttributeType::Position)
+        .expect("decoded position attribute");
+    assert_eq!(attribute.data_type(), DataType::Uint32);
+    // Draco reorders points, so the values are compared as a set: what is
+    // pinned here is that every authored bit pattern survives, not where it
+    // lands.
+    let mut decoded_values = Vec::with_capacity(NUM_POINTS);
+    for point in 0..NUM_POINTS {
+        let value_index = attribute.mapped_index(PointIndex(point as u32));
+        let mut triple = [0u32; 3];
+        for (component, scalar) in triple.iter_mut().enumerate() {
+            let mut bytes = [0u8; 4];
+            attribute.buffer().read(
+                value_index.0 as usize * attribute.byte_stride() as usize + component * 4,
+                &mut bytes,
+            );
+            *scalar = u32::from_le_bytes(bytes);
+        }
+        decoded_values.push(triple);
+    }
+    decoded_values.sort_unstable();
+
+    let mut authored_values: Vec<[u32; 3]> = authored.as_chunks::<3>().0.to_vec();
+    authored_values.sort_unstable();
+
+    assert_eq!(
+        decoded_values, authored_values,
+        "a uint32 value above i32::MAX did not survive the round trip"
+    );
+    assert!(
+        authored_values
+            .iter()
+            .flatten()
+            .any(|&v| v > i32::MAX as u32),
+        "the fixture has to carry values upstream would refuse, or it pins nothing"
+    );
+}
