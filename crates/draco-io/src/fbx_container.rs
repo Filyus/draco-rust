@@ -650,7 +650,10 @@ impl<R: Read + Seek> FbxReader<R> {
                 })?;
         if uncompressed_size > limits.max_array_raw_bytes {
             return Err(Self::limit_exceeded(
-                "array size",
+                // Named for the quantity, not the array: the value is the
+                // decoded byte extent, which sits next to the element count
+                // checked just above and is easy to mistake for it.
+                "decoded bytes for one array",
                 uncompressed_size,
                 limits.max_array_raw_bytes,
             ));
