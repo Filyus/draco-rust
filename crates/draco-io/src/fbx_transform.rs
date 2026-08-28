@@ -15,15 +15,21 @@
 //! decoded, and the reader is easier to follow without 350 lines of matrix
 //! math in the middle of it.
 
+#[cfg(feature = "fbx-reader")]
 use std::collections::HashMap;
 
+#[cfg(feature = "fbx-reader")]
 use crate::fbx_container::{FbxNode, FbxProperty};
-use crate::fbx_scene::{push_warning, FbxTransform, FbxWarning, FbxWarningCode};
+use crate::fbx_scene::FbxTransform;
+#[cfg(feature = "fbx-reader")]
+use crate::fbx_scene::{push_warning, FbxWarning, FbxWarningCode};
+#[cfg(feature = "fbx-reader")]
 use crate::fbx_templates::{ObjectProperties, PropertyTemplates};
 
+#[cfg(feature = "fbx-reader")]
 fn property_vec3(property: &FbxNode) -> Option<[f32; 3]> {
     for value in &property.properties {
-        if let crate::fbx_reader::FbxProperty::F64Array(values) = value {
+        if let FbxProperty::F64Array(values) = value {
             if values.len() >= 3 {
                 return Some([values[0] as f32, values[1] as f32, values[2] as f32]);
             }
@@ -34,8 +40,8 @@ fn property_vec3(property: &FbxNode) -> Option<[f32; 3]> {
         .properties
         .iter()
         .filter_map(|value| match value {
-            crate::fbx_reader::FbxProperty::F64(value) => Some(*value as f32),
-            crate::fbx_reader::FbxProperty::F32(value) => Some(*value),
+            FbxProperty::F64(value) => Some(*value as f32),
+            FbxProperty::F32(value) => Some(*value),
             _ => None,
         })
         .take(3)
@@ -43,24 +49,26 @@ fn property_vec3(property: &FbxNode) -> Option<[f32; 3]> {
     (values.len() == 3).then(|| [values[0], values[1], values[2]])
 }
 
+#[cfg(feature = "fbx-reader")]
 fn property_i32(property: &FbxNode) -> Option<i32> {
     property.properties.iter().find_map(|value| match value {
-        crate::fbx_reader::FbxProperty::I32(value) => Some(*value),
-        crate::fbx_reader::FbxProperty::I16(value) => Some(*value as i32),
-        crate::fbx_reader::FbxProperty::I64(value) => i32::try_from(*value).ok(),
+        FbxProperty::I32(value) => Some(*value),
+        FbxProperty::I16(value) => Some(*value as i32),
+        FbxProperty::I64(value) => i32::try_from(*value).ok(),
         _ => None,
     })
 }
 
+#[cfg(feature = "fbx-reader")]
 fn property_bool(property: &FbxNode) -> Option<bool> {
     property.properties.iter().find_map(|value| match value {
-        crate::fbx_reader::FbxProperty::Bool(value) => Some(*value),
+        FbxProperty::Bool(value) => Some(*value),
         // A `C`-typed byte reads as `U8`; some exporters spell a boolean
         // that way rather than with `B`.
-        crate::fbx_reader::FbxProperty::U8(value) => Some(*value != 0),
-        crate::fbx_reader::FbxProperty::I32(value) => Some(*value != 0),
-        crate::fbx_reader::FbxProperty::I16(value) => Some(*value != 0),
-        crate::fbx_reader::FbxProperty::I64(value) => Some(*value != 0),
+        FbxProperty::U8(value) => Some(*value != 0),
+        FbxProperty::I32(value) => Some(*value != 0),
+        FbxProperty::I16(value) => Some(*value != 0),
+        FbxProperty::I64(value) => Some(*value != 0),
         _ => None,
     })
 }
@@ -124,6 +132,7 @@ fn rotation_matrix(values: [f32; 3]) -> [[f32; 4]; 4] {
 }
 
 // Helper to parse transform from Model node's Properties70
+#[cfg(feature = "fbx-reader")]
 pub(crate) fn parse_transform(
     properties: ObjectProperties<'_>,
 ) -> Option<(FbxTransform, crate::fbx_scene::FbxTransformStack, bool)> {
@@ -270,6 +279,7 @@ pub(crate) fn parse_transform(
     ))
 }
 
+#[cfg(feature = "fbx-reader")]
 pub(crate) fn identity_transform() -> FbxTransform {
     FbxTransform {
         matrix: [
@@ -281,6 +291,7 @@ pub(crate) fn identity_transform() -> FbxTransform {
     }
 }
 
+#[cfg(feature = "fbx-reader")]
 pub(crate) fn transform_array(node: &FbxNode, child_name: &str) -> Option<FbxTransform> {
     let values = node
         .children
@@ -313,6 +324,7 @@ pub(crate) fn transform_array(node: &FbxNode, child_name: &str) -> Option<FbxTra
 /// Only the first such Model is reported: the notice describes a property of
 /// the file, and repeating it per Model would bury everything else. Models are
 /// visited in authored order so the scan does not depend on hash iteration.
+#[cfg(feature = "fbx-reader")]
 pub(crate) fn collect_transform_warnings<'a>(
     model_map: &HashMap<i64, &'a FbxNode>,
     model_order: &[i64],
@@ -373,6 +385,7 @@ pub(crate) fn collect_transform_warnings<'a>(
 /// separately from [`parse_transform`] and land on the mesh instance. They
 /// appear whenever an object's pivot differs from its mesh origin, so a reader
 /// that skips them leaves those meshes offset by the pivot distance.
+#[cfg(feature = "fbx-reader")]
 pub(crate) fn parse_geometric_transform(
     properties: ObjectProperties<'_>,
 ) -> Option<crate::fbx_scene::FbxGeometricTransform> {
@@ -391,7 +404,7 @@ pub(crate) fn parse_geometric_transform(
     );
     for block in blocks {
         for prop in &block.children {
-            let Some(crate::fbx_reader::FbxProperty::String(name)) = prop.properties.first() else {
+            let Some(FbxProperty::String(name)) = prop.properties.first() else {
                 continue;
             };
             match name.as_str() {
