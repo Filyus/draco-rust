@@ -1061,12 +1061,6 @@ fn read_component_as_i64(att: &PointAttribute, index: usize, component: usize) -
             .try_read(offset, &mut b)
             .then(|| i32::from_le_bytes(b))
     };
-    let read_u32 = |offset| -> Option<u32> {
-        let mut b = [0u8; 4];
-        buffer
-            .try_read(offset, &mut b)
-            .then(|| u32::from_le_bytes(b))
-    };
     let read_i64 = |offset| -> Option<i64> {
         let mut b = [0u8; 8];
         buffer
@@ -1098,7 +1092,13 @@ fn read_component_as_i64(att: &PointAttribute, index: usize, component: usize) -
         DataType::Int16 => read_i16(byte_offset).map(|v| v as i64),
         DataType::Uint16 => read_u16(byte_offset).map(|v| v as i64),
         DataType::Int32 => read_i32(byte_offset).map(|v| v as i64),
-        DataType::Uint32 => read_u32(byte_offset).map(|v| v as i64),
+        // Read in the portable representation the encoder predicted from,
+        // which is `int32` whatever the attribute declares. The encoder always
+        // reads its parent from the portable attribute; a decoder handed the
+        // attribute itself instead sees those same bits under a `uint32` label,
+        // and reading them unsigned puts every value above `i32::MAX` a whole
+        // `2^32` from the number the correction was computed against.
+        DataType::Uint32 => read_i32(byte_offset).map(|v| v as i64),
         DataType::Int64 => read_i64(byte_offset),
         DataType::Uint64 => read_u64(byte_offset).map(|v| v as i64),
         DataType::Float32 => read_f32(byte_offset).map(|v| v as i64),

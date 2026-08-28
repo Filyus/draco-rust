@@ -472,7 +472,18 @@ fn read_component_as_i64(att: &PointAttribute, index: usize, component: usize) -
         DataType::Int16 => Some(i16::from_le_bytes(read_bytes::<2>(buffer, byte_offset)?) as i64),
         DataType::Uint16 => Some(u16::from_le_bytes(read_bytes::<2>(buffer, byte_offset)?) as i64),
         DataType::Int32 => Some(i32::from_le_bytes(read_bytes::<4>(buffer, byte_offset)?) as i64),
-        DataType::Uint32 => Some(u32::from_le_bytes(read_bytes::<4>(buffer, byte_offset)?) as i64),
+        // Read in the portable representation the encoder predicted from,
+        // which is `int32` whatever the attribute declares. The encoder always
+        // reads its parent from the portable attribute; a decoder handed the
+        // attribute itself instead sees those same bits under a `uint32` label,
+        // and reading them unsigned puts every value above `i32::MAX` a whole
+        // `2^32` from the number the correction was computed against.
+        //
+        // Scope: this closes the 32-bit case only. A narrower integer position
+        // is narrowed again on the way into the destination attribute, so a
+        // hostile stream can still put the two halves on different numbers
+        // there.
+        DataType::Uint32 => Some(i32::from_le_bytes(read_bytes::<4>(buffer, byte_offset)?) as i64),
         DataType::Int64 => Some(i64::from_le_bytes(read_bytes::<8>(buffer, byte_offset)?)),
         DataType::Uint64 => {
             i64::try_from(u64::from_le_bytes(read_bytes::<8>(buffer, byte_offset)?)).ok()
@@ -1154,6 +1165,27 @@ mod tests {
         let mut out = [0i64; 3];
         assert!(read_vector3(&att, 0, &mut out));
         assert_eq!(out, [123, -7, 99]);
+    }
+
+    #[test]
+    fn test_read_component_as_i64_reads_a_uint32_position_as_the_portable_int32() {
+        let mut att = PointAttribute::new();
+        att.init(
+            GeometryAttributeType::Position,
+            3,
+            DataType::Uint32,
+            false,
+            1,
+        );
+        att.buffer_mut().write(0, &0u32.to_le_bytes());
+        att.buffer_mut().write(4, &7u32.to_le_bytes());
+        att.buffer_mut().write(8, &0xFFFF_FF00u32.to_le_bytes());
+
+        let mut out = [0i64; 3];
+        assert!(read_vector3(&att, 0, &mut out));
+        // The encoder predicted from the portable `int32`, where these bits
+        // read -256, not 4_294_967_040.
+        assert_eq!(out, [0, 7, -256]);
     }
 
     #[test]
