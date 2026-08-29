@@ -30,6 +30,8 @@ pub mod fbx_reader;
 #[cfg(any(feature = "fbx-reader", feature = "fbx-writer"))]
 /// Polygon-corner-domain expansion of FBX geometry.
 pub mod fbx_render_mesh;
+
+// Shared by the two readers that intern corners into points; see the module.
 #[cfg(any(feature = "fbx-reader", feature = "fbx-writer"))]
 mod fbx_scene;
 #[cfg(feature = "fbx-reader")]
@@ -50,6 +52,8 @@ mod gltf_error;
 #[cfg(feature = "gltf-geometry")]
 /// Reader-agnostic accessor and Draco geometry contracts.
 pub mod gltf_geometry;
+#[cfg(any(feature = "fbx-reader", feature = "fbx-writer", feature = "obj-reader"))]
+mod mesh_weld;
 #[cfg(feature = "gltf-container")]
 /// `EXT_meshopt_compression` bitstream decoders.
 pub mod meshopt;

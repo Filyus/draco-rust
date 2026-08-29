@@ -9,7 +9,7 @@
 //! module resolves them onto corners instead, which is what Blender's importer
 //! and every renderer do.
 
-use std::collections::HashMap;
+use crate::mesh_weld::CornerWeld;
 
 use draco_core::draco_types::DataType;
 use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
@@ -322,20 +322,11 @@ pub fn build_draco_mesh(render: &FbxRenderMesh) -> Mesh {
         Option<[u32; 2]>,
         Option<[u32; 4]>,
     );
-    // Every corner hashes a key, and `DefaultHasher` (SipHash) showed up as
-    // roughly a quarter of this function's cost on large architectural meshes.
-    // What replaces it cannot simply be the cheapest hasher available, though:
-    // the key is attribute bits copied out of the file, so its distribution is
-    // an attacker's to choose. A multiply-based hash with a fixed constant --
-    // `FxHash` and its kin -- yields collisions to closed-form algebra rather
-    // than to search, and a mesh built from them turns this loop quadratic:
-    // measured on two-word keys, 20k of them cost 140 ms against 0 ms for the
-    // same count drawn at random, and 80k cost 2.9 s.
-    //
-    // `foldhash` is the middle ground the map wants, and is `hashbrown`'s own
-    // default: no cryptographic mixing, but a per-instance seed, so the
-    // attacker cannot compute the collisions ahead of time.
-    let mut unique: HashMap<WeldKey, u32, foldhash::fast::RandomState> = HashMap::default();
+    // The key is the values themselves because FBX gives layer elements no
+    // identity to share: two corners are the same vertex only when everything
+    // on them agrees. `CornerWeld` owns the interning and the hasher choice it
+    // needs -- see that module.
+    let mut weld: CornerWeld<WeldKey> = CornerWeld::with_capacity(render.corner_count());
     let mut order: Vec<u32> = Vec::new();
     let mut remapped: Vec<u32> = Vec::with_capacity(render.corner_count());
 
@@ -344,12 +335,10 @@ pub fn build_draco_mesh(render: &FbxRenderMesh) -> Mesh {
         let normal = normals.map(|layer| layer.values[corner].map(f32::to_bits));
         let uv = uvs.map(|layer| layer.values[corner].map(f32::to_bits));
         let color = colors.map(|layer| layer.values[corner].map(f32::to_bits));
-        let key: WeldKey = (position, normal, uv, color);
-        let next = unique.len() as u32;
-        let index = *unique.entry(key).or_insert_with(|| {
+        let (index, is_new) = weld.intern((position, normal, uv, color));
+        if is_new {
             order.push(corner as u32);
-            next
-        });
+        }
         remapped.push(index);
     }
 

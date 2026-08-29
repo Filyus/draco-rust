@@ -51,8 +51,8 @@ zmij = { version = "1.0", optional = true }
 # Hasher for the FBX corner-weld map, whose keys are attribute bits taken
 # straight from an untrusted file. `hashbrown`'s own default, so it is the
 # best-exercised fast hasher there is, and it seeds itself per instance --
-# which is what a map keyed on hostile input needs. See `fbx_render_mesh`,
-# which both FBX features compile, so both have to carry this.
+# which is what a map keyed on hostile input needs. See `mesh_weld`, which the
+# two FBX features and the OBJ reader all compile, so all three carry this.
 foldhash = { version = "0.2", optional = true }
 
 [features]
@@ -77,7 +77,7 @@ draco-decode = ["gltf-geometry", "draco-core/decoder"]
 # Optional compatibility mode for reading older Draco bitstreams embedded in
 # KHR_draco_mesh_compression payloads. Writers still emit the current bitstream.
 legacy-bitstream-decode = ["draco-core/legacy_bitstream_decode"]
-obj-reader = []
+obj-reader = ["dep:foldhash"]
 obj-writer = []
 ply-reader = ["dep:byteorder"]
 ply-writer = []

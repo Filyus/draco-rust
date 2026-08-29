@@ -6,10 +6,10 @@ use std::fs;
 use std::io::{self, BufRead, BufReader, Cursor};
 use std::path::Path;
 
+use crate::mesh_weld::CornerWeld;
 use draco_core::draco_types::DataType;
 use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use draco_core::mesh::Mesh;
-use std::collections::HashMap;
 
 use crate::traits::{PointCloudReader, ReadFromBytes, Reader};
 
@@ -304,18 +304,22 @@ fn parse_face_vertex(
     })
 }
 
+/// The point id for a face corner, creating one when the `v/vt/vn` triple is
+/// new.
+///
+/// The triple is the key because the file supplies identity through it: two
+/// corners naming the same indices are the same vertex, whatever the values
+/// behind them turn out to be. `vertices` keeps them in the order the ids were
+/// handed out, which is what the attributes are emitted from later.
 fn push_obj_vertex(
     vertex_ref: ObjVertexRef,
-    vertex_map: &mut HashMap<ObjVertexRef, u32>,
+    weld: &mut CornerWeld<ObjVertexRef>,
     vertices: &mut Vec<ObjVertexRef>,
 ) -> u32 {
-    if let Some(&point_id) = vertex_map.get(&vertex_ref) {
-        return point_id;
+    let (point_id, is_new) = weld.intern(vertex_ref);
+    if is_new {
+        vertices.push(vertex_ref);
     }
-
-    let point_id = vertices.len() as u32;
-    vertices.push(vertex_ref);
-    vertex_map.insert(vertex_ref, point_id);
     point_id
 }
 
@@ -329,7 +333,9 @@ fn read_obj_mesh_from_reader<R: BufRead>(reader: R) -> io::Result<ParsedObjMesh>
     let mut source_normals = Vec::new();
     let mut faces = Vec::new();
     let mut vertices = Vec::new();
-    let mut vertex_map = HashMap::new();
+    // Sized on nothing better than a guess: the corner count is not known
+    // until the faces are parsed, which is the same pass that interns them.
+    let mut weld: CornerWeld<ObjVertexRef> = CornerWeld::with_capacity(0);
 
     for line in reader.lines() {
         let line = line?;
@@ -395,9 +401,9 @@ fn read_obj_mesh_from_reader<R: BufRead>(reader: R) -> io::Result<ParsedObjMesh>
             for i in 1..face_vertices.len() - 1 {
                 let triangle = [face_vertices[0], face_vertices[i], face_vertices[i + 1]];
                 faces.push([
-                    push_obj_vertex(triangle[0], &mut vertex_map, &mut vertices),
-                    push_obj_vertex(triangle[1], &mut vertex_map, &mut vertices),
-                    push_obj_vertex(triangle[2], &mut vertex_map, &mut vertices),
+                    push_obj_vertex(triangle[0], &mut weld, &mut vertices),
+                    push_obj_vertex(triangle[1], &mut weld, &mut vertices),
+                    push_obj_vertex(triangle[2], &mut weld, &mut vertices),
                 ]);
             }
         }
