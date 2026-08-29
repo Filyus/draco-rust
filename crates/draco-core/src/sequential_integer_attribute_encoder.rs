@@ -138,8 +138,7 @@ fn bind_position_parent<'p>(
     raw_position: Option<&'p PointAttribute>,
     label: &str,
 ) -> Result<PredictionParent<'p>, DracoError> {
-    let pre_2_0 = version_major != 0
-        && crate::version::bitstream_version(version_major, version_minor) < 0x0200;
+    let pre_2_0 = !crate::version::binds_portable_parent_only(version_major, version_minor);
     let needs_position =
         || DracoError::invalid_parameter(format!("{label} prediction needs a position attribute"));
     let Some(att) = portable_position else {

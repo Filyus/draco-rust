@@ -98,8 +98,9 @@ pub(crate) fn downgrade_without_position_parent(
     // Below 2.0 the decoder hands over the attribute itself and no portable
     // check applies.
     let (major, minor) = options.get_version();
-    let portable_only = major == 0 || crate::version::bitstream_version(major, minor) >= 0x0200;
-    if portable_only && portable_position_parent(encoder).is_none() {
+    if crate::version::binds_portable_parent_only(major, minor)
+        && portable_position_parent(encoder).is_none()
+    {
         return PredictionSchemeMethod::Difference;
     }
     if single_connectivity(options) {

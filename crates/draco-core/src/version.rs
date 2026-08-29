@@ -211,6 +211,28 @@ pub fn bitstream_version(major: u8, minor: u8) -> u16 {
     ((major as u16) << 8) | (minor as u16)
 }
 
+/// Whether an encode targeting this version hands prediction schemes only the
+/// portable attribute copy.
+///
+/// Upstream's `SequentialAttributeDecoder::InitPredictionScheme` passes the
+/// attribute itself below bitstream 2.0 and `GetPortableAttribute` from 2.0 on,
+/// so this is the question both the scheme selection and the encoder's parent
+/// binding have to ask before either can match what the decoder will do.
+///
+/// `major == 0` is the answer [`EncoderOptions::get_version`] gives when the
+/// caller named no version, meaning "whichever default applies". It is treated
+/// as 2.0-or-later rather than resolved, because both defaults it stands for --
+/// [`DEFAULT_MESH_VERSION`] at 2.2 and [`DEFAULT_POINT_CLOUD_VERSION`] at 2.3 --
+/// are later than 2.0, so which one it would resolve to cannot change the
+/// answer.
+///
+/// [`EncoderOptions::get_version`]: crate::encoder_options::EncoderOptions::get_version
+#[cfg(feature = "encoder")]
+#[inline]
+pub(crate) fn binds_portable_parent_only(major: u8, minor: u8) -> bool {
+    major == 0 || bitstream_version(major, minor) >= 0x0200
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
