@@ -51,7 +51,8 @@ zmij = { version = "1.0", optional = true }
 # Hasher for the FBX corner-weld map, whose keys are attribute bits taken
 # straight from an untrusted file. `hashbrown`'s own default, so it is the
 # best-exercised fast hasher there is, and it seeds itself per instance --
-# which is what a map keyed on hostile input needs. See `fbx_render_mesh`.
+# which is what a map keyed on hostile input needs. See `fbx_render_mesh`,
+# which both FBX features compile, so both have to carry this.
 foldhash = { version = "0.2", optional = true }
 
 [features]
@@ -67,7 +68,7 @@ all-writers = ["fbx-writer", "obj-writer", "ply-writer", "stl-writer"]
 # draco-core, never the Draco codec, so they do not enable encoder/decoder.
 # Only glTF uses KHR_draco_mesh_compression and thus pulls the codec.
 fbx-reader = ["dep:foldhash"]
-fbx-writer = ["dep:zmij"]
+fbx-writer = ["dep:zmij", "dep:foldhash"]
 gltf-container = []
 gltf-geometry = ["gltf-container"]
 # Decoder support is separate from the container/accessor contracts, so a
