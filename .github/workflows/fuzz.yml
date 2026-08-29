@@ -123,8 +123,11 @@ jobs:
             # Random index triples do not form a connected mesh that large, so
             # the traversal is reached from the seed corpus rather than found:
             # `valence_traversal_grid_mesh.bin` is a 24x24 grid, 1,058 faces,
-            # and it alone covers 93% of the valence encoder. The flags are
-            # what keep that seed from being truncated to 4,096 bytes.
+            # and it alone covers 93% of the valence encoder. The flags then
+            # decide what can be built on top of it: with no `-max_len`
+            # libFuzzer takes the limit from the largest seed, which pins the
+            # run at the grid's own 6,641 bytes and no larger mesh than the one
+            # it was handed.
             extra_libfuzzer_args: "-max_len=16384 -len_control=0"
             inherit_key: fuzz-corpus-v3-draco-
           - group: mesh_text
@@ -222,7 +225,8 @@ jobs:
             if cargo +nightly fuzz run -O "$target" --fuzz-dir fuzz \
               --target x86_64-unknown-linux-gnu -- \
               -max_total_time=${{ steps.dur.outputs.seconds }} \
-              -rss_limit_mb=4096 -timeout=25 -print_final_stats=1; then
+              -rss_limit_mb=4096 -timeout=25 -print_final_stats=1 \
+              ${{ matrix.extra_libfuzzer_args }}; then
               echo "$target: ok"
             else
               echo "$target: crashed"
