@@ -490,14 +490,14 @@ impl MeshEdgebreakerDecoder {
                     })?;
                 }
             } else {
-                // Delta + varint.
-                let mut last_symbol_id: i32 = 0;
+                // Delta + varint. The deltas accumulate into symbol ids, but
+                // nothing here reads them, so only the buffer position matters
+                // -- and summing attacker-chosen deltas into an `i32` that no
+                // one looks at is an overflow with no upside.
                 for _ in 0..num_hole_events {
-                    let delta = in_buffer.decode_varint().map_err(|_| {
+                    in_buffer.decode_varint().map_err(|_| {
                         DracoError::general("Failed to read hole event delta".to_string())
-                    })? as i32;
-                    let _sym_id = last_symbol_id + delta;
-                    last_symbol_id = _sym_id;
+                    })?;
                 }
             }
         }

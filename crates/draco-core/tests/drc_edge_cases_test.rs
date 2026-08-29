@@ -1355,3 +1355,26 @@ fn an_octahedral_transform_on_a_single_component_is_refused_by_any_scheme() {
     ];
     assert_both_decoders_do_not_panic(&delta_scheme_over_an_octahedral_transform);
 }
+
+/// A malformed stream must not panic a build that has debug assertions on.
+///
+/// Both reproducers below come from the `decode_drc` corpus, and neither was
+/// reachable by the fuzzing that produced them: `cargo fuzz run -O` builds
+/// without debug assertions or overflow checks, so the soak runs the one build
+/// where these two sites cannot fire. They surfaced only when the same corpus
+/// was replayed under a coverage build, which keeps both checks on.
+///
+/// The first sums attacker-chosen varint deltas into an `i32` nothing reads;
+/// the second walks an octahedral correction outside the diamond that
+/// `invert_diamond` asserted it was inside -- an invariant the decode path
+/// cannot honour, because `mod_max` folds the sum back by a single period and
+/// the correction comes off the wire.
+#[test]
+fn malformed_streams_do_not_trip_debug_only_checks() {
+    assert_both_decoders_do_not_panic(include_bytes!(
+        "../../../fuzz/seeds/decode_drc/hole_event_deltas_sum_past_i32.bin"
+    ));
+    assert_both_decoders_do_not_panic(include_bytes!(
+        "../../../fuzz/seeds/decode_drc/octahedral_correction_leaves_the_diamond.bin"
+    ));
+}

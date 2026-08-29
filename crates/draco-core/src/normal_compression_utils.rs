@@ -51,21 +51,25 @@ impl OctahedronToolBox {
         self.center_value
     }
 
+    /// Whether `(s, t)`, with the centre already at the origin, is inside the
+    /// diamond.
+    ///
+    /// Upstream asserts `|s|, |t| <= center_value` here; this does not, and the
+    /// reason is that the decode path cannot honour it. A correction value is
+    /// read from the stream and added to the prediction, and `mod_max` folds
+    /// the sum back by one period -- enough for a correction the encoder wrote,
+    /// not for one an attacker chose. The arithmetic below is written to wrap
+    /// rather than to trust the range, so the assertion would only turn a
+    /// malformed file into a panic in any build with debug assertions on.
     pub fn is_in_diamond(&self, s: i32, t: i32) -> bool {
-        debug_assert!(s <= self.center_value);
-        debug_assert!(t <= self.center_value);
-        debug_assert!(s >= -self.center_value);
-        debug_assert!(t >= -self.center_value);
-        let st = s.unsigned_abs() + t.unsigned_abs();
+        let st = s.unsigned_abs().wrapping_add(t.unsigned_abs());
         st <= self.center_value as u32
     }
 
+    /// Reflects `(s, t)` across the diamond's edge.
+    ///
+    /// Carries no range assertion, for the reason given on [`Self::is_in_diamond`].
     pub fn invert_diamond(&self, s: &mut i32, t: &mut i32) {
-        debug_assert!(*s <= self.center_value);
-        debug_assert!(*t <= self.center_value);
-        debug_assert!(*s >= -self.center_value);
-        debug_assert!(*t >= -self.center_value);
-
         // C++ code determines signs without modifying the values
         let sign_s: i32;
         let sign_t: i32;
