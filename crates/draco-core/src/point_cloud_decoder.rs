@@ -69,9 +69,10 @@ pub struct PointCloudDecoder {
     method: u8,
     #[cfg(feature = "point_cloud_decode")]
     flags: u16,
-    #[cfg(feature = "point_cloud_decode")]
+    /// Ungated, unlike the fields above: `bitstream_version` is read by the
+    /// attribute decoders on both the mesh and the point-cloud path, and the
+    /// mesh path exists without `point_cloud_decode`.
     version_major: u8,
-    #[cfg(feature = "point_cloud_decode")]
     version_minor: u8,
 }
 
@@ -119,9 +120,7 @@ impl PointCloudDecoder {
             method: 0,
             #[cfg(feature = "point_cloud_decode")]
             flags: 0,
-            #[cfg(feature = "point_cloud_decode")]
             version_major: 0,
-            #[cfg(feature = "point_cloud_decode")]
             version_minor: 0,
         }
     }
@@ -133,6 +132,17 @@ impl PointCloudDecoder {
     /// `InitPredictionScheme`.
     pub(crate) fn bitstream_version(&self) -> u16 {
         crate::version::bitstream_version(self.version_major, self.version_minor)
+    }
+
+    /// Carries the version to a decoder that did not read the header itself.
+    ///
+    /// The mesh path parses its own header and then hands attributes to these
+    /// decoders through a `PointCloudDecoder` it constructs on the spot, so
+    /// without this that decoder reports version zero -- and every parent
+    /// binding on the fallback path would read as pre-2.0.
+    pub(crate) fn set_bitstream_version(&mut self, major: u8, minor: u8) {
+        self.version_major = major;
+        self.version_minor = minor;
     }
 
     #[cfg(feature = "point_cloud_decode")]

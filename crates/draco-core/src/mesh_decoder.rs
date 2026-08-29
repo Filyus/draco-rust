@@ -812,7 +812,11 @@ impl MeshDecoder {
         };
         let data_to_corner_map: Option<Vec<u32>> = None;
 
-        let pc_decoder = PointCloudDecoder::new();
+        // This decoder never read a header of its own -- the mesh path parsed
+        // one -- so it is told the version, which the attribute decoders read
+        // when they bind a prediction parent.
+        let mut pc_decoder = PointCloudDecoder::new();
+        pc_decoder.set_bitstream_version(self.version_major, self.version_minor);
         let bitstream_version: u16 =
             crate::version::bitstream_version(self.version_major, self.version_minor);
 
