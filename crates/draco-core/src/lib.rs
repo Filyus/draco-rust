@@ -134,6 +134,9 @@ pub mod mesh_prediction_scheme_data;
 pub mod normal_compression_utils;
 /// Point cloud geometry data.
 pub mod point_cloud;
+/// The prediction-parent binding: how a scheme obtains portable parent values.
+#[doc(hidden)]
+pub mod portable_attribute;
 #[doc(hidden)]
 pub mod prediction_scheme;
 #[doc(hidden)]

@@ -6,14 +6,18 @@
 //! Draco's `prediction_scheme_geometric_normal_*`.
 
 use crate::corner_table::CornerTable;
+#[cfg(test)]
 use crate::draco_types::DataType;
-use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
+use crate::geometry_attribute::GeometryAttributeType;
+#[cfg(test)]
+use crate::geometry_attribute::PointAttribute;
 use crate::geometry_indices::{CornerIndex, PointIndex, INVALID_CORNER_INDEX};
 
 #[cfg(feature = "decoder")]
 use crate::geometry_indices::{VertexIndex, INVALID_ATTRIBUTE_VALUE_INDEX};
 use crate::mesh_prediction_scheme_data::MeshPredictionSchemeData;
 use crate::normal_compression_utils::OctahedronToolBox;
+use crate::portable_attribute::PredictionParent;
 use crate::prediction_scheme::{
     PredictionScheme, PredictionSchemeMethod, PredictionSchemeTransformType,
 };
@@ -49,7 +53,7 @@ pub enum NormalPredictionMode {
 pub struct MeshPredictionSchemeGeometricNormalDecoder<'a> {
     transform: PredictionSchemeNormalOctahedronCanonicalizedDecodingTransform,
     mesh_data: Option<MeshPredictionSchemeData<'a>>,
-    pos_attribute: Option<&'a PointAttribute>,
+    pos_parent: Option<PredictionParent<'a>>,
     entry_to_point_id_map: Option<crate::prediction_scheme::EntryToPointIdMap<'a>>,
     prediction_mode: NormalPredictionMode,
     octahedron_tool_box: OctahedronToolBox,
@@ -63,7 +67,7 @@ impl<'a> MeshPredictionSchemeGeometricNormalDecoder<'a> {
         Self {
             transform,
             mesh_data: None,
-            pos_attribute: None,
+            pos_parent: None,
             entry_to_point_id_map: None,
             prediction_mode: NormalPredictionMode::TriangleArea,
             octahedron_tool_box: OctahedronToolBox::new(),
@@ -93,7 +97,7 @@ impl<'a> MeshPredictionSchemeGeometricNormalDecoder<'a> {
                 .as_ref()
                 .and_then(|m| m.data_to_corner_map())
                 .is_some()
-            && self.pos_attribute.is_some()
+            && self.pos_parent.is_some()
             && self.entry_to_point_id_map.is_some()
     }
 
@@ -107,7 +111,7 @@ impl<'a> MeshPredictionSchemeGeometricNormalDecoder<'a> {
             mesh_data.corner_table()?,
             mesh_data.vertex_to_data_map()?,
             self.entry_to_point_id_map?,
-            self.pos_attribute?,
+            self.pos_parent?,
         ))
     }
 }
@@ -123,7 +127,7 @@ impl<'a> MeshPredictionSchemeGeometricNormalDecoder<'a> {
 fn position_for_vertex(
     vertex_to_data_map: &[i32],
     entry_to_point_id_map: crate::prediction_scheme::EntryToPointIdMap<'_>,
-    pos_attribute: &PointAttribute,
+    pos_parent: &PredictionParent<'_>,
     v: crate::geometry_indices::VertexIndex,
 ) -> [i32; 3] {
     let data_id = *vertex_to_data_map.get(v.0 as usize).unwrap_or(&-1);
@@ -133,13 +137,13 @@ fn position_for_vertex(
     let Some(point_id) = entry_to_point_id_map.get(data_id as usize) else {
         return [0, 0, 0];
     };
-    let pos_val_id = pos_attribute.mapped_index(PointIndex(point_id));
+    let pos_val_id = pos_parent.mapped_index(PointIndex(point_id));
     if pos_val_id == INVALID_ATTRIBUTE_VALUE_INDEX {
         return [0, 0, 0];
     }
 
     let mut pos = [0i64; 3];
-    if !read_vector3_as_i64(pos_attribute, pos_val_id.0 as usize, &mut pos) {
+    if !pos_parent.read_vector3_as_i64(pos_val_id.0 as usize, &mut pos) {
         return [0, 0, 0];
     }
 
@@ -168,7 +172,7 @@ struct CornerPositions<'b> {
     corner_table: &'b CornerTable,
     vertex_to_data_map: &'b [i32],
     entry_to_point_id_map: crate::prediction_scheme::EntryToPointIdMap<'b>,
-    pos_attribute: &'b PointAttribute,
+    pos_parent: PredictionParent<'b>,
     /// Indexed by vertex id; `cached[v]` says whether `cache[v]` was filled.
     cache: Vec<[i32; 3]>,
     cached: Vec<bool>,
@@ -180,7 +184,7 @@ impl<'b> CornerPositions<'b> {
         corner_table: &'b CornerTable,
         vertex_to_data_map: &'b [i32],
         entry_to_point_id_map: crate::prediction_scheme::EntryToPointIdMap<'b>,
-        pos_attribute: &'b PointAttribute,
+        pos_parent: PredictionParent<'b>,
     ) -> Self {
         // A vertex outside the map has no position anyway, so sizing the cache
         // by the map covers every vertex that can produce one.
@@ -189,7 +193,7 @@ impl<'b> CornerPositions<'b> {
             corner_table,
             vertex_to_data_map,
             entry_to_point_id_map,
-            pos_attribute,
+            pos_parent,
             cache: vec![[0i32; 3]; num_vertices],
             cached: vec![false; num_vertices],
         }
@@ -217,7 +221,7 @@ impl<'b> CornerPositions<'b> {
             return position_for_vertex(
                 self.vertex_to_data_map,
                 self.entry_to_point_id_map,
-                self.pos_attribute,
+                &self.pos_parent,
                 v,
             );
         }
@@ -227,7 +231,7 @@ impl<'b> CornerPositions<'b> {
         let pos = position_for_vertex(
             self.vertex_to_data_map,
             self.entry_to_point_id_map,
-            self.pos_attribute,
+            &self.pos_parent,
             v,
         );
         self.cache[vi] = pos;
@@ -348,21 +352,20 @@ impl<'a> PredictionScheme<'a> for MeshPredictionSchemeGeometricNormalDecoder<'a>
         GeometryAttributeType::Position
     }
 
-    fn set_parent_attribute(&mut self, att: &'a PointAttribute) -> Status {
-        if att.attribute_type() != GeometryAttributeType::Position {
+    fn set_parent_attribute(&mut self, parent: PredictionParent<'a>) -> Status {
+        if parent.attribute_type() != GeometryAttributeType::Position {
             return Err(DracoError::invalid_parameter(format!(
                 "Geometric normal prediction needs a position parent, got {:?}",
-                att.attribute_type()
+                parent.attribute_type()
             )));
         }
-        if att.num_components() != 3 {
+        if parent.num_components() != 3 {
             return Err(DracoError::invalid_parameter(format!(
                 "Geometric normal prediction needs a 3-component parent, got {}",
-                att.num_components()
+                parent.num_components()
             )));
         }
-        // Safe: lifetime 'a is now tracked by the compiler
-        self.pos_attribute = Some(att);
+        self.pos_parent = Some(parent);
         Ok(())
     }
 
@@ -422,20 +425,17 @@ impl<'a> PredictionSchemeDecoder<'a, i32> for MeshPredictionSchemeGeometricNorma
         let mut positions = match (
             mesh_data.corner_table(),
             mesh_data.vertex_to_data_map(),
-            self.pos_attribute,
+            self.pos_parent,
             self.entry_to_point_id_map,
         ) {
-            (
-                Some(corner_table),
-                Some(vertex_to_data_map),
-                Some(pos_attribute),
-                Some(entry_map),
-            ) => Some(CornerPositions::new(
-                corner_table,
-                vertex_to_data_map,
-                entry_map,
-                pos_attribute,
-            )),
+            (Some(corner_table), Some(vertex_to_data_map), Some(pos_parent), Some(entry_map)) => {
+                Some(CornerPositions::new(
+                    corner_table,
+                    vertex_to_data_map,
+                    entry_map,
+                    pos_parent,
+                ))
+            }
             _ => None,
         };
 
@@ -645,7 +645,7 @@ pub struct MeshPredictionSchemeGeometricNormalEncoder<'a> {
     /// toolbox turns predicted integer vectors into octahedral coordinates.
     octahedron_tool_box: OctahedronToolBox,
     mesh_data: Option<MeshPredictionSchemeData<'a>>,
-    pos_attribute: Option<&'a PointAttribute>,
+    pos_parent: Option<PredictionParent<'a>>,
     prediction_mode: NormalPredictionMode,
     flip_normal_bit_encoder: RAnsBitEncoder,
     /// Target bitstream, packed as `0xMMmm`; 0 means the newest. Only whether
@@ -660,7 +660,7 @@ impl<'a> MeshPredictionSchemeGeometricNormalEncoder<'a> {
             transform,
             octahedron_tool_box: OctahedronToolBox::new(),
             mesh_data: None,
-            pos_attribute: None,
+            pos_parent: None,
             prediction_mode: NormalPredictionMode::TriangleArea,
             flip_normal_bit_encoder: RAnsBitEncoder::new(),
             bitstream_version: 0,
@@ -690,7 +690,7 @@ struct EncoderCornerPositions<'b> {
     corner_table: &'b CornerTable,
     vertex_to_data_map: &'b [i32],
     map: crate::prediction_scheme::EntryToPointIdMap<'b>,
-    pos_attribute: &'b PointAttribute,
+    pos_parent: PredictionParent<'b>,
     cache: Vec<[i64; 3]>,
     cached: Vec<bool>,
 }
@@ -701,14 +701,14 @@ impl<'b> EncoderCornerPositions<'b> {
         corner_table: &'b CornerTable,
         vertex_to_data_map: &'b [i32],
         map: crate::prediction_scheme::EntryToPointIdMap<'b>,
-        pos_attribute: &'b PointAttribute,
+        pos_parent: PredictionParent<'b>,
     ) -> Self {
         let num_vertices = vertex_to_data_map.len();
         Self {
             corner_table,
             vertex_to_data_map,
             map,
-            pos_attribute,
+            pos_parent,
             cache: vec![[0i64; 3]; num_vertices],
             cached: vec![false; num_vertices],
         }
@@ -734,10 +734,13 @@ impl<'b> EncoderCornerPositions<'b> {
         let Some(point_id) = self.map.get(data_id as usize) else {
             return [0, 0, 0];
         };
-        let pos_val_id = self.pos_attribute.mapped_index(PointIndex(point_id));
+        let pos_val_id = self.pos_parent.mapped_index(PointIndex(point_id));
 
         let mut pos = [0i64; 3];
-        if !read_vector3_as_i64(self.pos_attribute, pos_val_id.0 as usize, &mut pos) {
+        if !self
+            .pos_parent
+            .read_vector3_as_i64(pos_val_id.0 as usize, &mut pos)
+        {
             return [0, 0, 0];
         }
         pos
@@ -777,12 +780,10 @@ fn compute_encoder_predicted_value(
         let pos_next = positions.get(c_next);
         let pos_prev = positions.get(c_prev);
 
-        // Every step here wraps on purpose. The positions are read from the
-        // attribute at its own type, so both ends of the `i64` range are
-        // reachable: a 64-bit position carries them directly, and a float one
-        // gets there through a saturating cast, where any value past `i64::MAX`
-        // -- an infinity included -- lands exactly on the bound. The difference
-        // alone then leaves the range, and the encoder has to answer with a
+        // Every step here wraps on purpose. The positions arrive widened from
+        // the portable `int32` copy, so they stay inside `i64`, but the
+        // difference of two of them reaches past 32 bits and the cross product
+        // leaves `i64` outright, and the encoder has to answer with a
         // prediction rather than refuse the mesh. Upstream reaches the same
         // behaviour by other means: the deltas
         // and the cross product overflow as signed C++, and the accumulation
@@ -841,7 +842,7 @@ impl<'a> PredictionScheme<'a> for MeshPredictionSchemeGeometricNormalEncoder<'a>
     }
 
     fn is_initialized(&self) -> bool {
-        self.mesh_data.is_some() && self.pos_attribute.is_some()
+        self.mesh_data.is_some() && self.pos_parent.is_some()
     }
 
     fn get_num_parent_attributes(&self) -> i32 {
@@ -856,15 +857,14 @@ impl<'a> PredictionScheme<'a> for MeshPredictionSchemeGeometricNormalEncoder<'a>
         }
     }
 
-    fn set_parent_attribute(&mut self, att: &'a PointAttribute) -> Status {
-        if att.attribute_type() != GeometryAttributeType::Position {
+    fn set_parent_attribute(&mut self, parent: PredictionParent<'a>) -> Status {
+        if parent.attribute_type() != GeometryAttributeType::Position {
             return Err(DracoError::invalid_parameter(format!(
                 "Geometric normal prediction needs a position parent, got {:?}",
-                att.attribute_type()
+                parent.attribute_type()
             )));
         }
-        // Safe: lifetime 'a is now tracked by the compiler
-        self.pos_attribute = Some(att);
+        self.pos_parent = Some(parent);
         Ok(())
     }
 
@@ -937,7 +937,7 @@ impl<'a> PredictionSchemeEncoder<'a, i32, i32> for MeshPredictionSchemeGeometric
             mesh_data.corner_table().unwrap(),
             mesh_data.vertex_to_data_map().unwrap(),
             map,
-            self.pos_attribute.unwrap(),
+            self.pos_parent.unwrap(),
         );
 
         let corner_map_size = data_to_corner_map.len();
@@ -1038,100 +1038,6 @@ fn cross_product(a: &[i64; 3], b: &[i64; 3]) -> [i64; 3] {
     ]
 }
 
-fn read_vector3_as_i64(att: &PointAttribute, index: usize, out: &mut [i64; 3]) -> bool {
-    for c in 0..3 {
-        let Some(value) = read_component_as_i64(att, index, c) else {
-            return false;
-        };
-        out[c] = value;
-    }
-    true
-}
-
-fn read_component_as_i64(att: &PointAttribute, index: usize, component: usize) -> Option<i64> {
-    let buffer = att.buffer();
-    let byte_stride = usize::try_from(att.byte_stride()).ok()?;
-    let byte_offset = index
-        .checked_mul(byte_stride)?
-        .checked_add(component.checked_mul(att.data_type().byte_length())?)?;
-
-    let read_i8 = |offset| -> Option<i8> {
-        let mut b = [0u8; 1];
-        buffer
-            .try_read(offset, &mut b)
-            .then(|| i8::from_le_bytes(b))
-    };
-    let read_u8 = |offset| -> Option<u8> {
-        let mut b = [0u8; 1];
-        buffer
-            .try_read(offset, &mut b)
-            .then(|| u8::from_le_bytes(b))
-    };
-    let read_i16 = |offset| -> Option<i16> {
-        let mut b = [0u8; 2];
-        buffer
-            .try_read(offset, &mut b)
-            .then(|| i16::from_le_bytes(b))
-    };
-    let read_u16 = |offset| -> Option<u16> {
-        let mut b = [0u8; 2];
-        buffer
-            .try_read(offset, &mut b)
-            .then(|| u16::from_le_bytes(b))
-    };
-    let read_i32 = |offset| -> Option<i32> {
-        let mut b = [0u8; 4];
-        buffer
-            .try_read(offset, &mut b)
-            .then(|| i32::from_le_bytes(b))
-    };
-    let read_i64 = |offset| -> Option<i64> {
-        let mut b = [0u8; 8];
-        buffer
-            .try_read(offset, &mut b)
-            .then(|| i64::from_le_bytes(b))
-    };
-    let read_u64 = |offset| -> Option<u64> {
-        let mut b = [0u8; 8];
-        buffer
-            .try_read(offset, &mut b)
-            .then(|| u64::from_le_bytes(b))
-    };
-    let read_f32 = |offset| -> Option<f32> {
-        let mut b = [0u8; 4];
-        buffer
-            .try_read(offset, &mut b)
-            .then(|| f32::from_le_bytes(b))
-    };
-    let read_f64 = |offset| -> Option<f64> {
-        let mut b = [0u8; 8];
-        buffer
-            .try_read(offset, &mut b)
-            .then(|| f64::from_le_bytes(b))
-    };
-
-    match att.data_type() {
-        DataType::Int8 => read_i8(byte_offset).map(|v| v as i64),
-        DataType::Uint8 => read_u8(byte_offset).map(|v| v as i64),
-        DataType::Int16 => read_i16(byte_offset).map(|v| v as i64),
-        DataType::Uint16 => read_u16(byte_offset).map(|v| v as i64),
-        DataType::Int32 => read_i32(byte_offset).map(|v| v as i64),
-        // Read in the portable representation the encoder predicted from,
-        // which is `int32` whatever the attribute declares. The encoder always
-        // reads its parent from the portable attribute; a decoder handed the
-        // attribute itself instead sees those same bits under a `uint32` label,
-        // and reading them unsigned puts every value above `i32::MAX` a whole
-        // `2^32` from the number the correction was computed against.
-        DataType::Uint32 => read_i32(byte_offset).map(|v| v as i64),
-        DataType::Int64 => read_i64(byte_offset),
-        DataType::Uint64 => read_u64(byte_offset).map(|v| v as i64),
-        DataType::Float32 => read_f32(byte_offset).map(|v| v as i64),
-        DataType::Float64 => read_f64(byte_offset).map(|v| v as i64),
-        DataType::Bool => read_u8(byte_offset).map(|v| v as i64),
-        _ => Some(0),
-    }
-}
-
 #[cfg(all(test, feature = "decoder"))]
 mod tests {
     use super::*;
@@ -1163,7 +1069,11 @@ mod tests {
             PredictionSchemeNormalOctahedronCanonicalizedDecodingTransform::new(),
         );
         decoder.init(&mesh_data);
-        assert!(decoder.set_parent_attribute(&position_attribute).is_ok());
+        assert!(decoder
+            .set_parent_attribute(
+                PredictionParent::portable(&position_attribute).expect("portable")
+            )
+            .is_ok());
 
         let entry_to_point_id_map = [0u32];
         decoder
@@ -1197,7 +1107,11 @@ mod tests {
             PredictionSchemeNormalOctahedronCanonicalizedDecodingTransform::new(),
         );
         decoder.init(&mesh_data);
-        assert!(decoder.set_parent_attribute(&position_attribute).is_ok());
+        assert!(decoder
+            .set_parent_attribute(
+                PredictionParent::portable(&position_attribute).expect("portable")
+            )
+            .is_ok());
 
         let entry_to_point_id_map = [0u32];
         decoder
@@ -1247,7 +1161,11 @@ mod tests {
             PredictionSchemeNormalOctahedronCanonicalizedDecodingTransform::new(),
         );
         decoder.init(&mesh_data);
-        assert!(decoder.set_parent_attribute(&position_attribute).is_ok());
+        assert!(decoder
+            .set_parent_attribute(
+                PredictionParent::portable(&position_attribute).expect("portable")
+            )
+            .is_ok());
 
         let entry_to_point_id_map = [0u32, 1, 2, 3];
         decoder
@@ -1259,7 +1177,7 @@ mod tests {
             let expected = position_for_vertex(
                 &vertex_to_data_map,
                 EntryToPointIdMap::from_u32_slice(&entry_to_point_id_map),
-                &position_attribute,
+                &PredictionParent::portable(&position_attribute).expect("portable"),
                 corner_table.vertex(corner),
             );
             assert_eq!(positions.get(corner), expected, "first visit, {corner:?}");

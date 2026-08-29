@@ -1114,11 +1114,6 @@ impl MeshEncoder {
         // (from edgebreaker traversal) to determine the order in which to process points, and
         // mapped_index with identity mapping just returns the point index directly.
 
-        let mesh = self
-            .mesh
-            .as_ref()
-            .expect("mesh must be set before encoding");
-
         let method_int = self.options.get_global_int("encoding_method", -1);
         // Match C++ behavior: if encoding_method is not set (-1),
         // use Edgebreaker for all options except speed == 10
@@ -1136,7 +1131,10 @@ impl MeshEncoder {
         // For both sequential and edgebreaker with single-connectivity mode:
         // there's only ONE attribute encoder containing ALL attributes.
         // This matches C++ behavior when use_single_connectivity_ = true (speed >= 6).
-        let num_attributes = mesh.num_attributes();
+        let num_attributes = self
+            .point_cloud()
+            .expect("point_cloud set")
+            .num_attributes();
         let num_encoders = if num_attributes > 0 { 1 } else { 0 };
         // Use the buffer's version (set in encode_header) for version checks.
         let major = out_buffer.version_major();
@@ -1158,17 +1156,25 @@ impl MeshEncoder {
                 // This group carries att_data_id -1, so it is the position
                 // group, and the byte is whatever the position walk turns out
                 // to be.
-                let traversal_method: u8 = if self.position_traversal_is_prediction_degree(mesh) {
-                    1
-                } else {
-                    0
+                // Scoped so the `mesh` borrow cannot reach the portable
+                // registrations in the value loop below.
+                let traversal_method: u8 = {
+                    let mesh = self
+                        .mesh
+                        .as_ref()
+                        .expect("mesh must be set before encoding");
+                    if self.position_traversal_is_prediction_degree(mesh) {
+                        1
+                    } else {
+                        0
+                    }
                 };
                 out_buffer.encode_u8(traversal_method);
             }
         }
         // For sequential, nothing is written in phase 1 (EncodeAttributesEncoderIdentifier does nothing)
 
-        let mut decoder_types: Vec<u8> = Vec::with_capacity(mesh.num_attributes() as usize);
+        let mut decoder_types: Vec<u8> = Vec::with_capacity(num_attributes as usize);
 
         // Phase 2: Encode attribute encoder data
         // Both sequential and edgebreaker now use single-encoder mode:
@@ -1180,14 +1186,14 @@ impl MeshEncoder {
             // Single encoder with all attributes (single-connectivity mode for edgebreaker)
             // Write num_attrs = total number of attributes
             if !uses_varint_encoding(major, minor) {
-                out_buffer.encode_u32(mesh.num_attributes() as u32);
+                out_buffer.encode_u32(num_attributes as u32);
             } else {
-                out_buffer.encode_varint(mesh.num_attributes() as u64);
+                out_buffer.encode_varint(num_attributes as u64);
             }
 
             // Write all attribute metadata first
-            for i in 0..mesh.num_attributes() {
-                let att = mesh.attribute(i);
+            for i in 0..num_attributes {
+                let att = self.point_cloud().expect("point_cloud set").attribute(i);
 
                 #[cfg(feature = "debug_logs")]
                 {
@@ -1206,8 +1212,8 @@ impl MeshEncoder {
             }
 
             // Write all decoder types after all metadata (SequentialAttributeEncodersController pattern)
-            for i in 0..mesh.num_attributes() {
-                let att = mesh.attribute(i);
+            for i in 0..num_attributes {
+                let att = self.point_cloud().expect("point_cloud set").attribute(i);
                 let quantization_bits = self.options.get_attribute_int(i, "quantization_bits", -1);
                 let decoder_type = select_sequential_encoder(att, quantization_bits) as u8;
                 out_buffer.encode_u8(decoder_type);
@@ -1228,8 +1234,8 @@ impl MeshEncoder {
         let mut predictions = Vec::new();
 
         // First pass: encode all attribute VALUES
-        for i in 0..mesh.num_attributes() {
-            let att = mesh.attribute(i);
+        for i in 0..num_attributes {
+            let att = self.point_cloud().expect("point_cloud set").attribute(i);
             let decoder_type = decoder_types[i as usize];
             let quantization_bits = self.options.get_attribute_int(i, "quantization_bits", -1);
 
@@ -1281,10 +1287,32 @@ impl MeshEncoder {
                             DracoError::general(format!("Failed to quantize attribute: {e}"))
                         })?;
 
+                    // A quantized position is the parent the portable schemes
+                    // read, and what they read must be the quantized values
+                    // with the map rebuilt into encoding order -- what the
+                    // decoder reconstructs. Registered here, or
+                    // `get_portable_attribute` falls back to the raw attribute
+                    // and a float position reaches the predictor at its own
+                    // type: the route the portable-attribute invariant closes.
+                    if att.attribute_type() == GeometryAttributeType::Position
+                        && position_is_a_prediction_parent(
+                            self.point_cloud().expect("point_cloud set"),
+                            &self.options,
+                        )
+                    {
+                        rebuild_parent_point_map(
+                            att,
+                            &mut portable,
+                            &self.point_ids,
+                            self.point_cloud().expect("point_cloud set").num_points(),
+                        )?;
+                        self.portable_attributes.push((i, portable.clone()));
+                    }
+
                     let mut att_encoder = SequentialIntegerAttributeEncoder::new();
                     att_encoder.init(i);
                     att_encoder.encode_values(
-                        mesh as &PointCloud,
+                        self.point_cloud().expect("point_cloud set"),
                         &self.point_ids,
                         out_buffer,
                         &self.options,
@@ -1303,10 +1331,30 @@ impl MeshEncoder {
                 }
                 1 => {
                     // Integer attribute
+                    // An integral position still needs a portable form for the
+                    // portable schemes' parent reads, for the reason
+                    // `integral_portable_attribute` gives: the predictor must
+                    // read what the decoder reconstructs.
+                    if att.attribute_type() == GeometryAttributeType::Position
+                        && position_is_a_prediction_parent(
+                            self.point_cloud().expect("point_cloud set"),
+                            &self.options,
+                        )
+                    {
+                        let mut portable = integral_portable_attribute(att, &self.point_ids)?;
+                        rebuild_parent_point_map(
+                            att,
+                            &mut portable,
+                            &self.point_ids,
+                            self.point_cloud().expect("point_cloud set").num_points(),
+                        )?;
+                        self.portable_attributes.push((i, portable));
+                    }
+
                     let mut att_encoder = SequentialIntegerAttributeEncoder::new();
                     att_encoder.init(i);
                     att_encoder.encode_values(
-                        mesh as &PointCloud,
+                        self.point_cloud().expect("point_cloud set"),
                         &self.point_ids,
                         out_buffer,
                         &self.options,
@@ -1325,7 +1373,11 @@ impl MeshEncoder {
                     // Generic/float attribute
                     let mut att_encoder = SequentialAttributeEncoder::new();
                     att_encoder.init(i);
-                    att_encoder.encode_values(mesh as &PointCloud, &self.point_ids, out_buffer)?;
+                    att_encoder.encode_values(
+                        self.point_cloud().expect("point_cloud set"),
+                        &self.point_ids,
+                        out_buffer,
+                    )?;
                     quantization_transforms.push(None);
                     portable_attributes.push(None);
                     normal_encoders.push(None);
@@ -1340,7 +1392,7 @@ impl MeshEncoder {
         }
 
         // Second pass: encode all TRANSFORM DATA
-        for i in 0..mesh.num_attributes() {
+        for i in 0..num_attributes {
             let decoder_type = decoder_types[i as usize];
 
             match decoder_type {

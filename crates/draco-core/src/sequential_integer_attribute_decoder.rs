@@ -14,6 +14,7 @@ use crate::geometry_indices::{CornerIndex, INVALID_CORNER_INDEX};
 use crate::mesh_prediction_scheme_data::MeshPredictionSchemeData;
 use crate::point_cloud::PointCloud;
 use crate::point_cloud_decoder::PointCloudDecoder;
+use crate::portable_attribute::PredictionParent;
 use crate::prediction_scheme::{
     EntryToPointIdMap, PredictionScheme, PredictionSchemeDecoder, PredictionSchemeMethod,
     PredictionSchemeTransformType,
@@ -87,6 +88,10 @@ impl PortableExtent {
 pub struct SequentialIntegerAttributeDecoder {
     attribute: i32,
     prediction_scheme: Option<Box<dyn PredictionSchemeDecoder<'static, i32>>>,
+    /// The bitstream version, captured at `init` the way upstream reads
+    /// `decoder_->bitstream_version()` inside `InitPredictionScheme`. It
+    /// decides which parent binding the fallback sites may make.
+    bitstream_version: u16,
 }
 
 fn build_vertex_to_data_map_from_data_to_corner_map(
@@ -220,11 +225,13 @@ impl SequentialIntegerAttributeDecoder {
         Self {
             attribute: -1,
             prediction_scheme: None,
+            bitstream_version: 0,
         }
     }
 
-    pub fn init(&mut self, _decoder: &PointCloudDecoder, attribute_id: i32) {
+    pub fn init(&mut self, decoder: &PointCloudDecoder, attribute_id: i32) {
         self.attribute = attribute_id;
+        self.bitstream_version = decoder.bitstream_version();
     }
 
     pub fn attribute_id(&self) -> i32 {
@@ -236,6 +243,36 @@ impl SequentialIntegerAttributeDecoder {
         scheme: Box<dyn PredictionSchemeDecoder<'static, i32>>,
     ) {
         self.prediction_scheme = Some(scheme);
+    }
+
+    /// Binds the position parent the way the bitstream version demands.
+    ///
+    /// A registered portable copy wins, and it validates as one: upstream
+    /// reaches the parent only through `GetPortableAttribute`, so the copy is
+    /// what the portable pass wrote. Without one, the two eras part ways, as
+    /// they do in upstream's `InitPredictionScheme`: below 2.0 it passes the
+    /// attribute itself, which by then holds dequantized values at whatever
+    /// type it declares -- the `legacy` binding. At 2.0 and above a missing
+    /// portable copy leaves only the attribute this decoder's integer pass
+    /// wrote, whose values are the portable `int32` bits verbatim for every
+    /// declared type the pass can produce; `portable` validates exactly that,
+    /// and a float or 64-bit position -- which no portable pass ever wrote --
+    /// fails the decode the way upstream fails when `GetPortableAttribute`
+    /// returns null.
+    fn resolve_parent<'p>(
+        &self,
+        point_cloud: &'p PointCloud,
+        portable_parent_attribute: Option<&'p PointAttribute>,
+        pos_att_id: i32,
+    ) -> Result<PredictionParent<'p>, DracoError> {
+        if let Some(att) = portable_parent_attribute {
+            return PredictionParent::portable(att);
+        }
+        let att = point_cloud.try_attribute(pos_att_id)?;
+        if self.bitstream_version < 0x0200 {
+            return Ok(PredictionParent::legacy(att));
+        }
+        PredictionParent::portable(att)
     }
 
     // Complex mesh decoding requires all 8 parameters: mesh data, traversal maps,
@@ -518,13 +555,12 @@ impl SequentialIntegerAttributeDecoder {
                         crate::geometry_attribute::GeometryAttributeType::Position,
                     );
                     if pos_att_id >= 0 {
-                        let pos_att = if let Some(attribute) = portable_parent_attribute {
-                            attribute
-                        } else {
-                            let attribute = point_cloud.try_attribute(pos_att_id)?;
-                            attribute
-                        };
-                        if predictor.set_parent_attribute(pos_att).is_err() {
+                        let parent = self.resolve_parent(
+                            point_cloud,
+                            portable_parent_attribute,
+                            pos_att_id,
+                        )?;
+                        if predictor.set_parent_attribute(parent).is_err() {
                             return Err(DracoError::general(
                                 "Failed to set parent attribute for TexCoordsDeprecated"
                                     .to_string(),
@@ -573,13 +609,12 @@ impl SequentialIntegerAttributeDecoder {
                         crate::geometry_attribute::GeometryAttributeType::Position,
                     );
                     if pos_att_id >= 0 {
-                        let pos_att = if let Some(attribute) = portable_parent_attribute {
-                            attribute
-                        } else {
-                            let attribute = point_cloud.try_attribute(pos_att_id)?;
-                            attribute
-                        };
-                        if predictor.set_parent_attribute(pos_att).is_err() {
+                        let parent = self.resolve_parent(
+                            point_cloud,
+                            portable_parent_attribute,
+                            pos_att_id,
+                        )?;
+                        if predictor.set_parent_attribute(parent).is_err() {
                             return Err(DracoError::general(
                                 "Failed to set parent attribute for TexCoordsPortable".to_string(),
                             ));
@@ -632,21 +667,12 @@ impl SequentialIntegerAttributeDecoder {
                         crate::geometry_attribute::GeometryAttributeType::Position,
                     );
                     if pos_att_id >= 0 {
-                        // Upstream InitPredictionScheme has two branches, and so
-                        // does this. Bitstreams below 2.0 predict from the
-                        // attribute itself, which by then already holds
-                        // dequantized values; 2.0 and above predict from the
-                        // portable one. The caller signals the first case by
-                        // passing no portable attribute, so the fallback here is
-                        // that branch and not a safety net.
-                        let pos_att = match portable_parent_attribute {
-                            Some(attribute) => attribute,
-                            None => {
-                                let attribute = point_cloud.try_attribute(pos_att_id)?;
-                                attribute
-                            }
-                        };
-                        if predictor.set_parent_attribute(pos_att).is_err() {
+                        let parent = self.resolve_parent(
+                            point_cloud,
+                            portable_parent_attribute,
+                            pos_att_id,
+                        )?;
+                        if predictor.set_parent_attribute(parent).is_err() {
                             return Err(DracoError::general(
                                 "Failed to set parent attribute for GeometricNormal".to_string(),
                             ));

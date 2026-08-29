@@ -5,10 +5,12 @@
 //! bitstreams; new content uses the portable tex-coord predictor. Port of
 //! Draco's `prediction_scheme_tex_coords_*` (deprecated variant).
 
+#[cfg(test)]
 use crate::draco_types::DataType;
-use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
+use crate::geometry_attribute::GeometryAttributeType;
 use crate::geometry_indices::{CornerIndex, PointIndex, INVALID_ATTRIBUTE_VALUE_INDEX};
 use crate::mesh_prediction_scheme_data::MeshPredictionSchemeData;
+use crate::portable_attribute::PredictionParent;
 use crate::prediction_scheme::{
     PredictionScheme, PredictionSchemeMethod, PredictionSchemeTransformType,
 };
@@ -32,7 +34,7 @@ pub struct MeshPredictionSchemeTexCoordsDeprecatedEncoder<'a, Transform> {
     transform: Transform,
     mesh_data: Option<MeshPredictionSchemeData<'a>>,
     orientations: Vec<bool>,
-    pos_attribute: Option<&'a PointAttribute>,
+    pos_parent: Option<PredictionParent<'a>>,
     /// Target bitstream, packed as `0xMMmm`; 0 means the newest. Only the
     /// orientation count's width depends on it.
     bitstream_version: u16,
@@ -53,7 +55,7 @@ impl<'a, Transform> MeshPredictionSchemeTexCoordsDeprecatedEncoder<'a, Transform
             transform,
             mesh_data: None,
             orientations: Vec::new(),
-            pos_attribute: None,
+            pos_parent: None,
             bitstream_version: 0,
         }
     }
@@ -74,15 +76,15 @@ impl<'a, Transform> MeshPredictionSchemeTexCoordsDeprecatedEncoder<'a, Transform
         entry_to_point_id_map: crate::prediction_scheme::EntryToPointIdMap<'_>,
     ) -> Option<[f32; 3]> {
         let point_id = entry_to_point_id_map.get(usize::try_from(entry_id).ok()?)?;
-        let att = self.pos_attribute?;
-        let val_index = att.mapped_index(PointIndex(point_id));
+        let parent = self.pos_parent?;
+        let val_index = parent.mapped_index(PointIndex(point_id));
         if val_index == INVALID_ATTRIBUTE_VALUE_INDEX {
             return None;
         }
 
         let mut pos = [0.0f32; 3];
         for (component, out) in pos.iter_mut().enumerate() {
-            *out = read_component_as_f32(att, val_index.0 as usize, component)?;
+            *out = parent.read_component_as_f32(val_index.0 as usize, component)?;
         }
         Some(pos)
     }
@@ -252,7 +254,7 @@ where
     }
 
     fn is_initialized(&self) -> bool {
-        self.pos_attribute.is_some() && self.mesh_data.is_some()
+        self.pos_parent.is_some() && self.mesh_data.is_some()
     }
 
     fn get_num_parent_attributes(&self) -> i32 {
@@ -263,15 +265,17 @@ where
         GeometryAttributeType::Position
     }
 
-    fn set_parent_attribute(&mut self, att: &'a PointAttribute) -> Status {
-        if att.attribute_type() != GeometryAttributeType::Position || att.num_components() != 3 {
+    fn set_parent_attribute(&mut self, parent: PredictionParent<'a>) -> Status {
+        if parent.attribute_type() != GeometryAttributeType::Position
+            || parent.num_components() != 3
+        {
             return Err(DracoError::invalid_parameter(format!(
                 "Deprecated texture-coordinate prediction needs a 3-component position parent, got {:?} with {} components",
-                att.attribute_type(),
-                att.num_components()
+                parent.attribute_type(),
+                parent.num_components()
             )));
         }
-        self.pos_attribute = Some(att);
+        self.pos_parent = Some(parent);
         Ok(())
     }
 
@@ -346,7 +350,7 @@ where
         let missing = |what: &str| {
             DracoError::general(format!("Texture-coordinate prediction has no {what}"))
         };
-        if self.pos_attribute.is_none() {
+        if self.pos_parent.is_none() {
             return Err(missing("position parent"));
         }
         let Some(entry_map) = entry_to_point_id_map else {
@@ -404,7 +408,7 @@ pub struct MeshPredictionSchemeTexCoordsDeprecatedDecoder<'a, Transform> {
     transform: Transform,
     mesh_data: Option<MeshPredictionSchemeData<'a>>,
     orientations: Vec<bool>,
-    pos_attribute: Option<&'a PointAttribute>,
+    pos_parent: Option<PredictionParent<'a>>,
 }
 
 #[cfg(feature = "decoder")]
@@ -414,7 +418,7 @@ impl<'a, Transform> MeshPredictionSchemeTexCoordsDeprecatedDecoder<'a, Transform
             transform,
             mesh_data: None,
             orientations: Vec::new(),
-            pos_attribute: None,
+            pos_parent: None,
         }
     }
 
@@ -428,15 +432,15 @@ impl<'a, Transform> MeshPredictionSchemeTexCoordsDeprecatedDecoder<'a, Transform
         entry_to_point_id_map: crate::prediction_scheme::EntryToPointIdMap<'_>,
     ) -> Option<[f32; 3]> {
         let point_id = entry_to_point_id_map.get(usize::try_from(entry_id).ok()?)?;
-        let att = self.pos_attribute?;
-        let val_index = att.mapped_index(PointIndex(point_id));
+        let parent = self.pos_parent?;
+        let val_index = parent.mapped_index(PointIndex(point_id));
         if val_index == INVALID_ATTRIBUTE_VALUE_INDEX {
             return None;
         }
 
         let mut pos = [0.0f32; 3];
         for (component, out) in pos.iter_mut().enumerate() {
-            *out = read_component_as_f32(att, val_index.0 as usize, component)?;
+            *out = parent.read_component_as_f32(val_index.0 as usize, component)?;
         }
         Some(pos)
     }
@@ -590,7 +594,7 @@ where
     }
 
     fn is_initialized(&self) -> bool {
-        self.pos_attribute.is_some() && self.mesh_data.is_some()
+        self.pos_parent.is_some() && self.mesh_data.is_some()
     }
 
     fn get_num_parent_attributes(&self) -> i32 {
@@ -601,15 +605,17 @@ where
         GeometryAttributeType::Position
     }
 
-    fn set_parent_attribute(&mut self, att: &'a PointAttribute) -> Status {
-        if att.attribute_type() != GeometryAttributeType::Position || att.num_components() != 3 {
+    fn set_parent_attribute(&mut self, parent: PredictionParent<'a>) -> Status {
+        if parent.attribute_type() != GeometryAttributeType::Position
+            || parent.num_components() != 3
+        {
             return Err(DracoError::invalid_parameter(format!(
                 "Deprecated texture-coordinate prediction needs a 3-component position parent, got {:?} with {} components",
-                att.attribute_type(),
-                att.num_components()
+                parent.attribute_type(),
+                parent.num_components()
             )));
         }
-        self.pos_attribute = Some(att);
+        self.pos_parent = Some(parent);
         Ok(())
     }
 
@@ -694,7 +700,7 @@ where
         let missing = |what: &str| {
             DracoError::general(format!("Texture-coordinate prediction has no {what}"))
         };
-        if self.pos_attribute.is_none() {
+        if self.pos_parent.is_none() {
             return Err(missing("position parent"));
         }
         let Some(entry_map) = entry_to_point_id_map else {
@@ -750,37 +756,6 @@ where
     }
 }
 
-fn read_component_as_f32(att: &PointAttribute, index: usize, component: usize) -> Option<f32> {
-    let buffer = att.buffer();
-    let byte_stride = usize::try_from(att.byte_stride()).ok()?;
-    let byte_offset = index
-        .checked_mul(byte_stride)?
-        .checked_add(component.checked_mul(att.data_type().byte_length())?)?;
-
-    match att.data_type() {
-        DataType::Int8 => Some(i8::from_le_bytes(read_bytes::<1>(buffer, byte_offset)?) as f32),
-        DataType::Uint8 => Some(u8::from_le_bytes(read_bytes::<1>(buffer, byte_offset)?) as f32),
-        DataType::Int16 => Some(i16::from_le_bytes(read_bytes::<2>(buffer, byte_offset)?) as f32),
-        DataType::Uint16 => Some(u16::from_le_bytes(read_bytes::<2>(buffer, byte_offset)?) as f32),
-        DataType::Int32 => Some(i32::from_le_bytes(read_bytes::<4>(buffer, byte_offset)?) as f32),
-        DataType::Uint32 => Some(u32::from_le_bytes(read_bytes::<4>(buffer, byte_offset)?) as f32),
-        DataType::Float32 => Some(f32::from_le_bytes(read_bytes::<4>(buffer, byte_offset)?)),
-        DataType::Float64 => Some(f64::from_le_bytes(read_bytes::<8>(buffer, byte_offset)?) as f32),
-        _ => None,
-    }
-}
-
-fn read_bytes<const N: usize>(
-    buffer: &crate::data_buffer::DataBuffer,
-    byte_offset: usize,
-) -> Option<[u8; N]> {
-    let mut bytes = [0u8; N];
-    if !buffer.try_read(byte_offset, &mut bytes) {
-        return None;
-    }
-    Some(bytes)
-}
-
 fn f32_to_i32_deprecated(value: f32, round: bool) -> i32 {
     let value = if round { (value + 0.5).floor() } else { value };
     if value.is_nan() || (value as f64) > i32::MAX as f64 || (value as f64) < i32::MIN as f64 {
@@ -817,6 +792,7 @@ mod tests {
     use crate::encoder_buffer::EncoderBuffer;
     use crate::geometry_attribute::PointAttribute;
     use crate::geometry_indices::VertexIndex;
+    use crate::portable_attribute::PredictionParent;
     use crate::prediction_scheme::PredictionSchemeDecoder;
     use crate::prediction_scheme_wrap::PredictionSchemeWrapDecodingTransform;
     use crate::rans_bit_encoder::RAnsBitEncoder;
@@ -835,7 +811,8 @@ mod tests {
         pos.buffer_mut().write(4, &2.0f32.to_le_bytes());
         pos.buffer_mut().resize(8);
 
-        assert_eq!(read_component_as_f32(&pos, 0, 2), None);
+        let parent = PredictionParent::legacy(&pos);
+        assert_eq!(parent.read_component_as_f32(0, 2), None);
     }
 
     #[test]
@@ -882,7 +859,9 @@ mod tests {
             PredictionSchemeWrapDecodingTransform::<i32>::new(),
         );
         decoder.init(&mesh_data);
-        assert!(decoder.set_parent_attribute(&pos).is_ok());
+        assert!(decoder
+            .set_parent_attribute(PredictionParent::legacy(&pos))
+            .is_ok());
         assert!(decoder.decode_prediction_data(&mut buffer).is_ok());
 
         let mut out = [0, 0, 10, 0, 0, 0];
@@ -963,7 +942,9 @@ mod tests {
             PredictionSchemeWrapEncodingTransform::<i32>::new(),
         );
         encoder.init(&mesh_data);
-        assert!(encoder.set_parent_attribute(&pos).is_ok());
+        assert!(encoder
+            .set_parent_attribute(PredictionParent::legacy(&pos))
+            .is_ok());
         let mut corrections = [0; 6];
         assert!(encoder
             .compute_correction_values(&values, &mut corrections, values.len(), 2, Some(entry_map),)
@@ -975,7 +956,9 @@ mod tests {
             PredictionSchemeWrapDecodingTransform::<i32>::new(),
         );
         decoder.init(&mesh_data);
-        assert!(decoder.set_parent_attribute(&pos).is_ok());
+        assert!(decoder
+            .set_parent_attribute(PredictionParent::legacy(&pos))
+            .is_ok());
         let mut buffer = DecoderBuffer::new(&prediction_data);
         buffer.set_version(2, 2);
         assert!(decoder.decode_prediction_data(&mut buffer).is_ok());

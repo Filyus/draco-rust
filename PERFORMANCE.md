@@ -3545,6 +3545,53 @@ reads `1.35x`, data writes `1.22x`, D1 read misses `1.36x`, last-level misses
 reference whose `IndexTypeVector` does the same thing through
 `stl_vector.h`. That is the shape of what is left.
 
+### The Portable Parent, Made Structural -- And Measured Flat
+
+The portable-attribute invariant -- a prediction scheme reads its parent only
+through the portable `int32` copy, never the source attribute -- was honoured
+by convention and had broken twice from the outside (a `uint32` position read
+unsigned, a float position reaching the geometric-normal predictor at its own
+type). The fix landed as structure: a `PredictionParent` view in
+`portable_attribute.rs` that a predictor holds instead of a `&PointAttribute`.
+It exposes no buffer and no data type, only the point-to-entry lookup and the
+one canonical widening read; the two per-predictor copies of
+`read_component_as_i64` (which disagreed on floats, `uint64` and NaN) and the
+deprecated scheme's `read_component_as_f32` all collapsed into it. The
+`portable` constructor validates the declared type against the set the
+portable pass writes and refuses a float or 64-bit attribute outright, which
+is the binding C++ makes and the one both bugs travelled through; `legacy` is
+the pre-2.0 contract, version-gated at the decoder's three binding sites. The
+encoder's selection downgrades to `Difference` when the position has no
+portable parent a scheme may read (the form upstream's outright refusal takes
+here), and the non-group encode path now registers the parent's portable copy
+it previously fell back around.
+
+Decode cost, by construction: the parent binding is a view and happens once
+per decode; the hot read is the same byte read and widen as the functions it
+replaces, through a struct with no discriminant. No new allocation. Measured
+that way and it held:
+
+- Four `drc_bench` binaries -- two builds per condition, perturbed inside
+  `sequential_integer_attribute_decoder.rs` so their layout differs -- on a
+  Bunny payload encoded at speed 1 (the geometric-normal predictor on the hot
+  path), interleaved `30` rounds of `2` s via `abn.sh`, System allocator.
+  Parent medians `10,970.8` / `10,993.3` us/decode; this tree `10,886.4` /
+  `10,931.6` -- `-0.5` to `-0.7%` in the medians. But the control payload
+  (speed 5, no parent-reading scheme anywhere) leaned the same way
+  (`-0.4` to `-0.9%`), so the lean is the machine, not the code.
+- A paired `ABBA` rerun (order alternating per round, `24` rounds) on the
+  speed-1 payload: median paired difference `-0.086%`, signs `14`/`24` --
+  samples of zero. Per-round differences reach `+-4%`; the build-to-build
+  floor is `0.8-1.1%`. Nothing above that floor is claimable, and the two
+  independent sweeps do not agree on a sign beyond the control's own lean.
+- The encoded streams are byte-identical between parent and this tree at
+  both speeds (`67,352` bytes at speed 1, `100,588` at speed 5), so the
+  decode payload -- and the encoder's output on a real asset -- did not move
+  either.
+
+Recorded as flat. The structural claim rests on the type system, not on a
+speed number.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of

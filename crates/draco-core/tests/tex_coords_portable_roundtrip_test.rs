@@ -5,6 +5,7 @@ use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use draco_core::geometry_indices::{CornerIndex, PointIndex, VertexIndex};
 use draco_core::mesh::Mesh;
 use draco_core::mesh_prediction_scheme_data::MeshPredictionSchemeData;
+use draco_core::portable_attribute::PredictionParent;
 use draco_core::prediction_scheme::{
     PredictionScheme, PredictionSchemeDecoder, PredictionSchemeEncoder,
 };
@@ -90,7 +91,9 @@ fn test_tex_coords_portable_roundtrip() {
     let mut encoder = MeshPredictionSchemeTexCoordsPortableEncoder::new(transform);
 
     let pos_att_ref = mesh.attribute(pos_att_id);
-    assert!(encoder.set_parent_attribute(pos_att_ref).is_ok());
+    assert!(encoder
+        .set_parent_attribute(PredictionParent::portable(pos_att_ref).expect("portable"))
+        .is_ok());
     encoder.init(&mesh_data);
 
     let mut out_corr = vec![0i32; 8];
@@ -122,7 +125,9 @@ fn test_tex_coords_portable_roundtrip() {
     let transform_dec = PredictionSchemeWrapDecodingTransform::<i32>::new();
     let mut decoder = MeshPredictionSchemeTexCoordsPortableDecoder::new(transform_dec);
 
-    assert!(decoder.set_parent_attribute(pos_att_ref).is_ok());
+    assert!(decoder
+        .set_parent_attribute(PredictionParent::portable(pos_att_ref).expect("portable"))
+        .is_ok());
     decoder.init(&mesh_data);
 
     assert!(decoder.decode_prediction_data(&mut decoder_buffer).is_ok());

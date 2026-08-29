@@ -5,10 +5,11 @@
 //! current tex-coord prediction scheme. Port of Draco's
 //! `prediction_scheme_tex_coords_portable_*`.
 
-use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
+use crate::geometry_attribute::GeometryAttributeType;
 use crate::geometry_indices::{CornerIndex, PointIndex, INVALID_ATTRIBUTE_VALUE_INDEX};
 use crate::math_utils::int_sqrt;
 use crate::mesh_prediction_scheme_data::MeshPredictionSchemeData;
+use crate::portable_attribute::PredictionParent;
 use crate::prediction_scheme::{
     PredictionScheme, PredictionSchemeMethod, PredictionSchemeTransformType,
 };
@@ -37,7 +38,7 @@ pub struct MeshPredictionSchemeTexCoordsPortableDecoder<'a> {
     transform: PredictionSchemeWrapDecodingTransform<i32>,
     mesh_data: Option<MeshPredictionSchemeData<'a>>,
     orientations: Vec<bool>,
-    pos_attribute: Option<&'a PointAttribute>,
+    pos_parent: Option<PredictionParent<'a>>,
 }
 
 #[cfg(feature = "decoder")]
@@ -47,7 +48,7 @@ impl<'a> MeshPredictionSchemeTexCoordsPortableDecoder<'a> {
             transform,
             mesh_data: None,
             orientations: Vec::new(),
-            pos_attribute: None,
+            pos_parent: None,
         }
     }
 
@@ -62,13 +63,13 @@ impl<'a> MeshPredictionSchemeTexCoordsPortableDecoder<'a> {
     ) -> Option<[i64; 3]> {
         let entry_id = usize::try_from(entry_id).ok()?;
         let point_id = entry_to_point_id_map.get(entry_id)?;
-        let att = self.pos_attribute?;
+        let parent = self.pos_parent?;
         let mut pos = [0i64; 3];
-        let val_index = att.mapped_index(PointIndex(point_id));
+        let val_index = parent.mapped_index(PointIndex(point_id));
         if val_index == INVALID_ATTRIBUTE_VALUE_INDEX {
             return None;
         }
-        if !read_vector3(att, val_index.0 as usize, &mut pos) {
+        if !parent.read_vector3_as_i64(val_index.0 as usize, &mut pos) {
             return None;
         }
         Some(pos)
@@ -265,7 +266,7 @@ impl<'a> PredictionScheme<'a> for MeshPredictionSchemeTexCoordsPortableDecoder<'
     }
 
     fn is_initialized(&self) -> bool {
-        self.pos_attribute.is_some() && self.mesh_data.is_some()
+        self.pos_parent.is_some() && self.mesh_data.is_some()
     }
 
     fn get_num_parent_attributes(&self) -> i32 {
@@ -276,21 +277,20 @@ impl<'a> PredictionScheme<'a> for MeshPredictionSchemeTexCoordsPortableDecoder<'
         GeometryAttributeType::Position
     }
 
-    fn set_parent_attribute(&mut self, att: &'a PointAttribute) -> Status {
-        if att.attribute_type() != GeometryAttributeType::Position {
+    fn set_parent_attribute(&mut self, parent: PredictionParent<'a>) -> Status {
+        if parent.attribute_type() != GeometryAttributeType::Position {
             return Err(DracoError::invalid_parameter(format!(
                 "Portable texture-coordinate prediction needs a position parent, got {:?}",
-                att.attribute_type()
+                parent.attribute_type()
             )));
         }
-        if att.num_components() != 3 {
+        if parent.num_components() != 3 {
             return Err(DracoError::invalid_parameter(format!(
                 "Portable texture-coordinate prediction needs a 3-component parent, got {}",
-                att.num_components()
+                parent.num_components()
             )));
         }
-        // Safe: lifetime 'a is now tracked by the compiler
-        self.pos_attribute = Some(att);
+        self.pos_parent = Some(parent);
         Ok(())
     }
 
@@ -386,7 +386,7 @@ impl<'a> PredictionSchemeDecoder<'a, i32> for MeshPredictionSchemeTexCoordsPorta
                 "Portable texture-coordinate prediction has no {what}"
             ))
         };
-        if self.pos_attribute.is_none() {
+        if self.pos_parent.is_none() {
             return Err(missing("position parent"));
         }
 
@@ -445,79 +445,6 @@ impl<'a> PredictionSchemeDecoder<'a, i32> for MeshPredictionSchemeTexCoordsPorta
         }
         Ok(())
     }
-}
-
-// Helper functions for vector math
-fn read_vector3(att: &PointAttribute, index: usize, out: &mut [i64; 3]) -> bool {
-    for c in 0..3 {
-        let Some(value) = read_component_as_i64(att, index, c) else {
-            return false;
-        };
-        out[c] = value;
-    }
-    true
-}
-
-fn read_component_as_i64(att: &PointAttribute, index: usize, component: usize) -> Option<i64> {
-    use crate::draco_types::DataType;
-    let buffer = att.buffer();
-    let byte_stride = usize::try_from(att.byte_stride()).ok()?;
-    let byte_offset = index
-        .checked_mul(byte_stride)?
-        .checked_add(component.checked_mul(att.data_type().byte_length())?)?;
-
-    match att.data_type() {
-        DataType::Int8 => Some(i8::from_le_bytes(read_bytes::<1>(buffer, byte_offset)?) as i64),
-        DataType::Uint8 => Some(u8::from_le_bytes(read_bytes::<1>(buffer, byte_offset)?) as i64),
-        DataType::Int16 => Some(i16::from_le_bytes(read_bytes::<2>(buffer, byte_offset)?) as i64),
-        DataType::Uint16 => Some(u16::from_le_bytes(read_bytes::<2>(buffer, byte_offset)?) as i64),
-        DataType::Int32 => Some(i32::from_le_bytes(read_bytes::<4>(buffer, byte_offset)?) as i64),
-        // Read in the portable representation the encoder predicted from,
-        // which is `int32` whatever the attribute declares. The encoder always
-        // reads its parent from the portable attribute; a decoder handed the
-        // attribute itself instead sees those same bits under a `uint32` label,
-        // and reading them unsigned puts every value above `i32::MAX` a whole
-        // `2^32` from the number the correction was computed against.
-        //
-        // Scope: this closes the 32-bit case only. A narrower integer position
-        // is narrowed again on the way into the destination attribute, so a
-        // hostile stream can still put the two halves on different numbers
-        // there.
-        DataType::Uint32 => Some(i32::from_le_bytes(read_bytes::<4>(buffer, byte_offset)?) as i64),
-        DataType::Int64 => Some(i64::from_le_bytes(read_bytes::<8>(buffer, byte_offset)?)),
-        DataType::Uint64 => {
-            i64::try_from(u64::from_le_bytes(read_bytes::<8>(buffer, byte_offset)?)).ok()
-        }
-        DataType::Float32 => {
-            float_to_i64(f32::from_le_bytes(read_bytes::<4>(buffer, byte_offset)?) as f64)
-        }
-        DataType::Float64 => {
-            float_to_i64(f64::from_le_bytes(read_bytes::<8>(buffer, byte_offset)?))
-        }
-        DataType::Bool => Some(u8::from_le_bytes(read_bytes::<1>(buffer, byte_offset)?) as i64),
-        _ => None,
-    }
-}
-
-fn read_bytes<const N: usize>(
-    buffer: &crate::data_buffer::DataBuffer,
-    byte_offset: usize,
-) -> Option<[u8; N]> {
-    let mut bytes = [0u8; N];
-    if !buffer.try_read(byte_offset, &mut bytes) {
-        return None;
-    }
-    Some(bytes)
-}
-
-fn float_to_i64(value: f64) -> Option<i64> {
-    if !value.is_finite() {
-        return None;
-    }
-    if value < i64::MIN as f64 || value >= i64::MAX as f64 {
-        return None;
-    }
-    Some(value as i64)
 }
 
 // These integer vector helpers use wrapping arithmetic to match C++ Draco's
@@ -742,7 +669,7 @@ pub struct MeshPredictionSchemeTexCoordsPortableEncoder<'a> {
     transform: PredictionSchemeTexCoordsPortableEncodingTransform,
     mesh_data: Option<MeshPredictionSchemeData<'a>>,
     orientations: Vec<bool>,
-    pos_attribute: Option<&'a PointAttribute>,
+    pos_parent: Option<PredictionParent<'a>>,
     /// Target bitstream, packed as `0xMMmm`; 0 means the newest. The count is
     /// a fixed `i32` at every version, so only the orientation rANS stream's
     /// size prefix depends on this.
@@ -756,7 +683,7 @@ impl<'a> MeshPredictionSchemeTexCoordsPortableEncoder<'a> {
             transform,
             mesh_data: None,
             orientations: Vec::new(),
-            pos_attribute: None,
+            pos_parent: None,
             bitstream_version: 0,
         }
     }
@@ -783,13 +710,13 @@ impl<'a> MeshPredictionSchemeTexCoordsPortableEncoder<'a> {
     ) -> Option<[i64; 3]> {
         let entry_id = usize::try_from(entry_id).ok()?;
         let point_id = entry_to_point_id_map.get(entry_id)?;
-        let att = self.pos_attribute?;
+        let parent = self.pos_parent?;
         let mut pos = [0i64; 3];
-        let val_index = att.mapped_index(PointIndex(point_id));
+        let val_index = parent.mapped_index(PointIndex(point_id));
         if val_index == INVALID_ATTRIBUTE_VALUE_INDEX {
             return None;
         }
-        if !read_vector3(att, val_index.0 as usize, &mut pos) {
+        if !parent.read_vector3_as_i64(val_index.0 as usize, &mut pos) {
             return None;
         }
         Some(pos)
@@ -974,7 +901,7 @@ impl<'a> PredictionScheme<'a> for MeshPredictionSchemeTexCoordsPortableEncoder<'
     }
 
     fn is_initialized(&self) -> bool {
-        self.pos_attribute.is_some() && self.mesh_data.is_some()
+        self.pos_parent.is_some() && self.mesh_data.is_some()
     }
 
     fn get_num_parent_attributes(&self) -> i32 {
@@ -985,21 +912,20 @@ impl<'a> PredictionScheme<'a> for MeshPredictionSchemeTexCoordsPortableEncoder<'
         GeometryAttributeType::Position
     }
 
-    fn set_parent_attribute(&mut self, att: &'a PointAttribute) -> Status {
-        if att.attribute_type() != GeometryAttributeType::Position {
+    fn set_parent_attribute(&mut self, parent: PredictionParent<'a>) -> Status {
+        if parent.attribute_type() != GeometryAttributeType::Position {
             return Err(DracoError::invalid_parameter(format!(
                 "Portable texture-coordinate prediction needs a position parent, got {:?}",
-                att.attribute_type()
+                parent.attribute_type()
             )));
         }
-        if att.num_components() != 3 {
+        if parent.num_components() != 3 {
             return Err(DracoError::invalid_parameter(format!(
                 "Portable texture-coordinate prediction needs a 3-component parent, got {}",
-                att.num_components()
+                parent.num_components()
             )));
         }
-        // Safe: lifetime 'a is now tracked by the compiler
-        self.pos_attribute = Some(att);
+        self.pos_parent = Some(parent);
         Ok(())
     }
 
@@ -1058,7 +984,7 @@ impl<'a> PredictionSchemeEncoder<'a, i32, i32>
                 "Portable texture-coordinate prediction has no {what}"
             ))
         };
-        if self.pos_attribute.is_none() {
+        if self.pos_parent.is_none() {
             return Err(missing("position parent"));
         }
 
@@ -1126,86 +1052,12 @@ mod tests {
     #[cfg(feature = "decoder")]
     use crate::corner_table::CornerTable;
     use crate::draco_types::DataType;
+    use crate::geometry_attribute::PointAttribute;
     #[cfg(feature = "decoder")]
     use crate::geometry_indices::VertexIndex;
+    use crate::portable_attribute::PredictionParent;
     #[cfg(feature = "decoder")]
     use crate::prediction_scheme_wrap::PredictionSchemeWrapDecodingTransform;
-
-    #[test]
-    fn test_read_component_as_i64_rejects_nan() {
-        let mut att = PointAttribute::new();
-        att.init(
-            GeometryAttributeType::Position,
-            3,
-            DataType::Float32,
-            false,
-            1,
-        );
-        att.buffer_mut().write(0, &f32::NAN.to_le_bytes());
-        att.buffer_mut().write(4, &0.0f32.to_le_bytes());
-        att.buffer_mut().write(8, &0.0f32.to_le_bytes());
-
-        assert_eq!(read_component_as_i64(&att, 0, 0), None);
-    }
-
-    #[test]
-    fn test_read_component_as_i64_accepts_integer_positions() {
-        let mut att = PointAttribute::new();
-        att.init(
-            GeometryAttributeType::Position,
-            3,
-            DataType::Int32,
-            false,
-            1,
-        );
-        att.buffer_mut().write(0, &123i32.to_le_bytes());
-        att.buffer_mut().write(4, &(-7i32).to_le_bytes());
-        att.buffer_mut().write(8, &99i32.to_le_bytes());
-
-        let mut out = [0i64; 3];
-        assert!(read_vector3(&att, 0, &mut out));
-        assert_eq!(out, [123, -7, 99]);
-    }
-
-    #[test]
-    fn test_read_component_as_i64_reads_a_uint32_position_as_the_portable_int32() {
-        let mut att = PointAttribute::new();
-        att.init(
-            GeometryAttributeType::Position,
-            3,
-            DataType::Uint32,
-            false,
-            1,
-        );
-        att.buffer_mut().write(0, &0u32.to_le_bytes());
-        att.buffer_mut().write(4, &7u32.to_le_bytes());
-        att.buffer_mut().write(8, &0xFFFF_FF00u32.to_le_bytes());
-
-        let mut out = [0i64; 3];
-        assert!(read_vector3(&att, 0, &mut out));
-        // The encoder predicted from the portable `int32`, where these bits
-        // read -256, not 4_294_967_040.
-        assert_eq!(out, [0, 7, -256]);
-    }
-
-    #[test]
-    fn test_read_component_as_i64_rejects_truncated_buffer() {
-        let mut att = PointAttribute::new();
-        att.init(
-            GeometryAttributeType::Position,
-            3,
-            DataType::Int32,
-            false,
-            1,
-        );
-        att.buffer_mut().write(0, &123i32.to_le_bytes());
-        att.buffer_mut().write(4, &(-7i32).to_le_bytes());
-        att.buffer_mut().resize(8);
-
-        let mut out = [0i64; 3];
-        assert_eq!(read_component_as_i64(&att, 0, 2), None);
-        assert!(!read_vector3(&att, 0, &mut out));
-    }
 
     #[cfg(feature = "decoder")]
     fn make_triangle_corner_table() -> CornerTable {
@@ -1304,7 +1156,9 @@ mod tests {
         let pos_att = make_position_attribute(&[[0, 1, 0], [0, 0, 0], [100_000, 0, 0]]);
         let transform = PredictionSchemeWrapDecodingTransform::<i32>::new();
         let mut decoder = MeshPredictionSchemeTexCoordsPortableDecoder::new(transform);
-        assert!(decoder.set_parent_attribute(&pos_att).is_ok());
+        assert!(decoder
+            .set_parent_attribute(PredictionParent::portable(&pos_att).expect("portable"))
+            .is_ok());
         decoder.init(&mesh_data);
 
         let data = [i32::MAX, i32::MAX, 0, 0, 1, 1];

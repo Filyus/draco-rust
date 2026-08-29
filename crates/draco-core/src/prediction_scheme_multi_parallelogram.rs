@@ -4,9 +4,10 @@
 //! improving accuracy over the single-parallelogram scheme at higher cost. Port
 //! of Draco's `prediction_scheme_multi_parallelogram_*`.
 
-use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
+use crate::geometry_attribute::GeometryAttributeType;
 use crate::geometry_indices::{CornerIndex, INVALID_CORNER_INDEX};
 use crate::mesh_prediction_scheme_data::MeshPredictionSchemeData;
+use crate::portable_attribute::PredictionParent;
 use crate::prediction_scheme::{
     PredictionScheme, PredictionSchemeMethod, PredictionSchemeTransformType,
 };
@@ -66,7 +67,7 @@ where
         GeometryAttributeType::Invalid
     }
 
-    fn set_parent_attribute(&mut self, _att: &'a PointAttribute) -> Status {
+    fn set_parent_attribute(&mut self, _parent: PredictionParent<'a>) -> Status {
         Err(DracoError::invalid_parameter(
             "The multi-parallelogram prediction scheme takes no parent attribute".to_string(),
         ))
@@ -241,7 +242,7 @@ where
         GeometryAttributeType::Invalid
     }
 
-    fn set_parent_attribute(&mut self, _att: &'a PointAttribute) -> Status {
+    fn set_parent_attribute(&mut self, _parent: PredictionParent<'a>) -> Status {
         Err(DracoError::invalid_parameter(
             "The multi-parallelogram prediction scheme takes no parent attribute".to_string(),
         ))

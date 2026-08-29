@@ -126,6 +126,15 @@ impl PointCloudDecoder {
         }
     }
 
+    /// The packed bitstream version (`0xMMmm`), `0` before a header was read.
+    ///
+    /// The attribute decoders read it when they bind prediction parents, which
+    /// is upstream's `decoder_->bitstream_version()` inside
+    /// `InitPredictionScheme`.
+    pub(crate) fn bitstream_version(&self) -> u16 {
+        crate::version::bitstream_version(self.version_major, self.version_minor)
+    }
+
     #[cfg(feature = "point_cloud_decode")]
     /// Decodes a Draco point cloud from `in_buffer` into `out_pc`.
     ///

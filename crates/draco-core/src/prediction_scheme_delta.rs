@@ -5,7 +5,8 @@
 //! it is the default scheme when no mesh connectivity is available. Port of
 //! Draco's `prediction_scheme_delta_*_transform`.
 
-use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
+use crate::geometry_attribute::GeometryAttributeType;
+use crate::portable_attribute::PredictionParent;
 use crate::prediction_scheme::{
     PredictionScheme, PredictionSchemeMethod, PredictionSchemeTransformType,
 };
@@ -175,7 +176,7 @@ where
         GeometryAttributeType::Invalid
     }
 
-    fn set_parent_attribute(&mut self, _att: &'static PointAttribute) -> Status {
+    fn set_parent_attribute(&mut self, _parent: PredictionParent<'static>) -> Status {
         Err(DracoError::invalid_parameter(
             "The delta prediction scheme takes no parent attribute".to_string(),
         ))
@@ -291,7 +292,7 @@ where
         GeometryAttributeType::Invalid
     }
 
-    fn set_parent_attribute(&mut self, _att: &'static PointAttribute) -> Status {
+    fn set_parent_attribute(&mut self, _parent: PredictionParent<'static>) -> Status {
         Err(DracoError::invalid_parameter(
             "The delta prediction scheme takes no parent attribute".to_string(),
         ))

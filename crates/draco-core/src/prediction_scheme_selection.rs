@@ -86,10 +86,46 @@ pub(crate) fn downgrade_without_position_parent(
     if encoder.point_cloud().and_then(position_parent).is_none() {
         return PredictionSchemeMethod::Difference;
     }
+    // The two portable schemes bind their parent through the portable `int32`
+    // copy, and the binding validates: a position with no portable form the
+    // parent can read -- a float one nobody quantized, say -- cannot serve
+    // them. The deprecated scheme predicts from real positions and stands or
+    // falls on the raw attribute, so only these two are downgraded here.
+    if matches!(
+        method,
+        PredictionSchemeMethod::MeshPredictionGeometricNormal
+            | PredictionSchemeMethod::MeshPredictionTexCoordsPortable
+    ) && portable_position_parent(encoder).is_none()
+    {
+        return PredictionSchemeMethod::Difference;
+    }
     if single_connectivity(options) {
         return PredictionSchemeMethod::Difference;
     }
     method
+}
+
+/// The position's portable parent, when one a scheme may read exists.
+///
+/// The parent a portable scheme binds is whatever `GetPortableAttribute`
+/// offers, and binding it validates the attribute against the types the
+/// portable pass writes. A position that fails that validation -- a float one
+/// with no quantization behind it, say -- leaves the scheme nothing to
+/// predict from: upstream's encoder fails outright, and this downgrade is the
+/// form that refusal takes here, matching the one above.
+#[cfg(feature = "encoder")]
+fn portable_position_parent(
+    encoder: &dyn crate::point_cloud_encoder::GeometryEncoder,
+) -> Option<crate::portable_attribute::PredictionParent<'_>> {
+    let pc = encoder.point_cloud()?;
+    let att_id = pc.named_attribute_id(GeometryAttributeType::Position);
+    if att_id < 0 {
+        return None;
+    }
+    let att = encoder.get_portable_attribute(att_id)?;
+    let parent = crate::portable_attribute::PredictionParent::portable(att).ok()?;
+    (parent.attribute_type() == GeometryAttributeType::Position && parent.num_components() == 3)
+        .then_some(parent)
 }
 
 /// Whether the encode will build one corner table over the point indices

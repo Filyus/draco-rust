@@ -10,6 +10,7 @@ use crate::corner_table::CornerTable;
 use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use crate::geometry_indices::{CornerIndex, INVALID_CORNER_INDEX};
 use crate::mesh_prediction_scheme_data::MeshPredictionSchemeData;
+use crate::portable_attribute::PredictionParent;
 use crate::prediction_scheme::{
     PredictionScheme, PredictionSchemeMethod, PredictionSchemeTransformType,
 };
@@ -299,7 +300,7 @@ where
         GeometryAttributeType::Invalid
     }
 
-    fn set_parent_attribute(&mut self, _att: &'a PointAttribute) -> Status {
+    fn set_parent_attribute(&mut self, _parent: PredictionParent<'a>) -> Status {
         Err(DracoError::invalid_parameter(
             "The parallelogram prediction scheme takes no parent attribute".to_string(),
         ))
@@ -443,7 +444,7 @@ where
         GeometryAttributeType::Invalid
     }
 
-    fn set_parent_attribute(&mut self, _att: &'a PointAttribute) -> Status {
+    fn set_parent_attribute(&mut self, _parent: PredictionParent<'a>) -> Status {
         Err(DracoError::invalid_parameter(
             "The parallelogram prediction scheme takes no parent attribute".to_string(),
         ))

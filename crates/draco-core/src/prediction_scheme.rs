@@ -8,8 +8,9 @@
 //! and transforms in the sibling `prediction_scheme_*` modules. Port of Draco's
 //! `prediction_scheme.h` family.
 
-use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
+use crate::geometry_attribute::GeometryAttributeType;
 use crate::geometry_indices::PointIndex;
+use crate::portable_attribute::PredictionParent;
 use crate::status::Status;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,7 +148,12 @@ pub trait PredictionScheme<'a> {
     fn is_initialized(&self) -> bool;
     fn get_num_parent_attributes(&self) -> i32;
     fn get_parent_attribute_type(&self, i: i32) -> GeometryAttributeType;
-    fn set_parent_attribute(&mut self, att: &'a PointAttribute) -> Status;
+    /// Binds the parent a scheme predicts from.
+    ///
+    /// A [`PredictionParent`], not a `&PointAttribute`: a scheme may not read
+    /// attribute storage, only the portable values the parent hands out. See
+    /// `portable_attribute`.
+    fn set_parent_attribute(&mut self, parent: PredictionParent<'a>) -> Status;
     fn get_transform_type(&self) -> PredictionSchemeTransformType;
 
     /// Returns true if the correction values are always positive (non-negative).

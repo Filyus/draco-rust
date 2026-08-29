@@ -17,6 +17,7 @@ use crate::geometry_indices::PointIndex;
 use crate::mesh_prediction_scheme_data::MeshPredictionSchemeData;
 use crate::point_cloud::PointCloud;
 use crate::point_cloud_encoder::GeometryEncoder;
+use crate::portable_attribute::PredictionParent;
 use crate::prediction_scheme::PredictionScheme;
 use crate::prediction_scheme::{
     EntryToPointIdMap, PredictionSchemeEncoder, PredictionSchemeMethod,
@@ -771,7 +772,10 @@ impl SequentialIntegerAttributeEncoder {
                                     .to_string(),
                             ));
                         };
-                        predictor.set_parent_attribute(pos_att)?;
+                        // The deprecated scheme predicts from real positions,
+                        // not portable ones: the pre-2.0 contract binds the
+                        // attribute itself.
+                        predictor.set_parent_attribute(PredictionParent::legacy(pos_att))?;
                         predictor.init(&mesh_data);
 
                         let entry_to_point_id_map: Vec<u32> =
@@ -911,7 +915,7 @@ impl SequentialIntegerAttributeEncoder {
                                 "No portable position attribute for TexCoordsPortable".to_string(),
                             ));
                         };
-                        predictor.set_parent_attribute(pos_att)?;
+                        predictor.set_parent_attribute(PredictionParent::portable(pos_att)?)?;
 
                         predictor.init(&mesh_data);
 
@@ -1038,7 +1042,7 @@ impl SequentialIntegerAttributeEncoder {
                                         .to_string(),
                                 ));
                             };
-                            predictor.set_parent_attribute(pos_att)?;
+                            predictor.set_parent_attribute(PredictionParent::portable(pos_att)?)?;
 
                             let entry_to_point_id_map: Vec<u32> =
                                 point_ids.iter().map(|p| p.0).collect();
