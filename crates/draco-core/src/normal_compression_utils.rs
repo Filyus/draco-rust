@@ -163,8 +163,24 @@ impl OctahedronToolBox {
         (s, t)
     }
 
+    /// Scales an integer vector onto the octahedron's `|x| + |y| + |z| =
+    /// center_value` diamond.
+    ///
+    /// Every absolute value is taken with `wrapping_abs`, because `i32::abs`
+    /// has no answer at `i32::MIN` and panics for it wherever overflow checks
+    /// are on. That is a reachable input rather than a hypothetical one: the
+    /// geometric-normal predictor computes this vector from positions and
+    /// clamps the result into `i32`, so a prediction past the range arrives
+    /// here as exactly `i32::MIN`.
+    ///
+    /// Wrapping and not `unsigned_abs`, which would be the more sensible
+    /// magnitude: at `i32::MIN` the two differ in sign, and release builds --
+    /// upstream's included, where `std::abs` is undefined on that value -- have
+    /// always carried the wrapped one into the sum below. Keeping it leaves
+    /// every encode byte-identical and removes only the panic.
     pub fn canonicalize_integer_vector(&self, vec: &mut [i32; 3]) {
-        let abs_sum = (vec[0].abs() as i64) + (vec[1].abs() as i64) + (vec[2].abs() as i64);
+        let magnitude = |v: i32| i64::from(v.wrapping_abs());
+        let abs_sum = magnitude(vec[0]) + magnitude(vec[1]) + magnitude(vec[2]);
 
         if abs_sum == 0 {
             vec[0] = self.center_value;
@@ -173,11 +189,14 @@ impl OctahedronToolBox {
         } else {
             vec[0] = ((vec[0] as i64 * self.center_value as i64) / abs_sum) as i32;
             vec[1] = ((vec[1] as i64 * self.center_value as i64) / abs_sum) as i32;
-            if vec[2] >= 0 {
-                vec[2] = self.center_value - vec[0].abs() - vec[1].abs();
+            // `vec[0]` and `vec[1]` are now the scaled values, whose magnitudes
+            // sum to at most `center_value`, so these stay in range.
+            let remainder = self.center_value - vec[0].wrapping_abs() - vec[1].wrapping_abs();
+            vec[2] = if vec[2] >= 0 {
+                remainder
             } else {
-                vec[2] = -(self.center_value - vec[0].abs() - vec[1].abs());
-            }
+                remainder.wrapping_neg()
+            };
         }
     }
 
@@ -331,6 +350,35 @@ impl OctahedronToolBox {
         } else {
             let d = 1.0 / norm_squared.sqrt();
             [x * d, y * d, z * d]
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `i32::MIN` reaches this from the geometric-normal predictor, which
+    /// clamps its prediction into `i32`, and `i32::abs` has no answer for it.
+    ///
+    /// Found by the `encode_drc` corpus replayed under overflow checks: a mesh
+    /// with a `uint64` position and a normal predicted from it panicked here
+    /// with "attempt to negate with overflow". The read that produced the
+    /// extreme value is gone -- predictors now see the portable `int32` copy --
+    /// but nothing stops the next caller, so the arithmetic is what is pinned.
+    #[test]
+    fn canonicalizing_a_vector_at_the_integer_minimum_does_not_panic() {
+        let mut tool_box = OctahedronToolBox::new();
+        assert!(tool_box.set_quantization_bits(8));
+
+        for vec in [
+            [i32::MIN, 0, 0],
+            [0, i32::MIN, 0],
+            [0, 0, i32::MIN],
+            [i32::MIN, i32::MIN, i32::MIN],
+        ] {
+            let mut vec = vec;
+            tool_box.canonicalize_integer_vector(&mut vec);
         }
     }
 }
