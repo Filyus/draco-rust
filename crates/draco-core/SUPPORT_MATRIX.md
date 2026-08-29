@@ -103,6 +103,15 @@ unquantized float position, say — cannot serve them, and asking for one of the
 gives `PREDICTION_DIFFERENCE` instead. Below 2.0 the position itself is the
 parent and the request stands.
 
+Two of these schemes are younger than the oldest stream this crate writes: ids 5
+and 6 arrive with bitstream 2.0, id 4 with 1.2. Left to choose for itself, the
+encoder picks what an encoder of the target's era would have — a request for an
+older version substitutes the scheme, it does not fail. An **explicit**
+`prediction_scheme` skips that substitution and is written as asked, so id 5 can
+end up in a 1.2 stream. Every decoder reads it, upstream's included, because the
+scheme id is not version-gated on the way in; it is simply not a stream any
+encoder of that era produced.
+
 ## Prediction transforms
 
 | Transform | C++ | `draco-core` | Notes |
