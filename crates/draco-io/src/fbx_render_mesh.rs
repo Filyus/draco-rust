@@ -10,6 +10,7 @@
 //! and every renderer do.
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 
 use draco_core::draco_types::DataType;
 use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
@@ -300,6 +301,64 @@ pub fn expand_to_render_mesh(source: FbxGeometryLayers<'_>) -> FbxRenderMesh {
     render
 }
 
+/// The multiply-rotate hasher from `rustc-hash` (the `FxHash` algorithm),
+/// vendored as a dozen lines rather than added as a dependency for one use.
+///
+/// It reads the key as machine words with no seed and no finalizer, which is
+/// the point: the weld key is built from `u32::to_bits` of the corner's
+/// attributes, so key quality is already decided and `DefaultHasher`'s
+/// cryptographic mixing only costs time. An adversarial collision in this map
+/// costs a slower read, not anything worse.
+#[derive(Default, Clone)]
+struct WeldHasher {
+    hash: u64,
+}
+
+/// The 64-bit multiplier of `rustc-hash` (`FxHash`): a prime, so every bit
+/// of the word it multiplies reaches the product's high bits, which is what
+/// the rotate-then-multiply step spreads across the running hash.
+const WELD_SEED: u64 = 0x51_7c_c1_b7_27_22_0a_95;
+/// The 64-bit rotate of `rustc-hash`: 23 is coprime with 64, so successive
+/// rotations keep walking all bit positions of the accumulator instead of
+/// cycling through a subset.
+const WELD_ROTATE: u32 = 23;
+
+impl WeldHasher {
+    fn add_word(&mut self, word: u64) {
+        self.hash = (self.hash.rotate_left(WELD_ROTATE) ^ word).wrapping_mul(WELD_SEED);
+    }
+}
+
+impl Hasher for WeldHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.as_chunks::<8>().0 {
+            self.add_word(u64::from_le_bytes(*chunk));
+        }
+        let rest = bytes.as_chunks::<8>().1;
+        if !rest.is_empty() {
+            let mut word = [0u8; 8];
+            word[..rest.len()].copy_from_slice(rest);
+            self.add_word(u64::from_le_bytes(word));
+        }
+    }
+
+    fn write_u32(&mut self, value: u32) {
+        self.add_word(value as u64);
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.add_word(value);
+    }
+
+    fn write_usize(&mut self, value: usize) {
+        self.add_word(value as u64);
+    }
+
+    fn finish(&self) -> u64 {
+        self.hash
+    }
+}
+
 /// Builds a Draco mesh from corner-domain data, welding corners that agree on
 /// every attribute.
 ///
@@ -322,7 +381,12 @@ pub fn build_draco_mesh(render: &FbxRenderMesh) -> Mesh {
         Option<[u32; 2]>,
         Option<[u32; 4]>,
     );
-    let mut unique: HashMap<WeldKey, u32> = HashMap::new();
+    // The weld map is read-dominated: every corner hashes a key, and the keys
+    // are already exact bit patterns, so the key's own quality is what matters
+    // and the hasher can be the cheapest one available. `DefaultHasher`
+    // (SipHash) showed up as roughly a quarter of this function's cost on
+    // large architectural meshes.
+    let mut unique: HashMap<WeldKey, u32, BuildHasherDefault<WeldHasher>> = HashMap::default();
     let mut order: Vec<usize> = Vec::new();
     let mut remapped: Vec<u32> = Vec::with_capacity(render.corner_count());
 
