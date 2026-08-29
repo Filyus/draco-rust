@@ -100,6 +100,10 @@ sequential meshes and both EdgeBreaker traversals encode and decode; the
 per-algorithm matrix lives in
 [`crates/draco-core/SUPPORT_MATRIX.md`](crates/draco-core/SUPPORT_MATRIX.md).
 
+Where this port deliberately behaves differently from C++ Draco — what the
+difference is and what it means for a file — is recorded in
+[`COMPATIBILITY.md`](COMPATIBILITY.md).
+
 `draco-io` and `draco-gltf` are pre-1.0 and still move: a breaking change bumps
 the minor, which is the breaking field for a `0.x` crate. Each crate keeps its
 own changelog and its own release tags — see [`CHANGELOG.md`](CHANGELOG.md).
