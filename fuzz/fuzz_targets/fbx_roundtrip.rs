@@ -19,29 +19,37 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
 
-    let Ok(written) = scene.to_bytes() else {
-        // The writer is allowed to refuse a scene it cannot represent, as long
-        // as it says so instead of emitting corrupt bytes.
-        return;
-    };
-
     // Our own output is canonical, so it must satisfy strict validation. Use
     // permissive limits here: the scene came from tightly-limited input, but
     // re-encoding can legitimately exceed the fuzzing ceilings.
     let strict = FbxReadOptions::strict().with_limits(FbxDecodeLimits::permissive());
-    let reread = FbxScene::from_bytes_with_options(&written, strict.clone())
-        .expect("writer output must satisfy the reader's strict mode");
 
-    assert_eq!(
-        count_nodes(&scene),
-        count_nodes(&reread),
-        "node count changed across a write/read round-trip"
-    );
-    assert_eq!(
-        scene.materials.len(),
-        reread.materials.len(),
-        "material count changed across a write/read round-trip"
-    );
+    // Binary and ASCII are two spellings of the same document, and only the
+    // binary one used to be written here. The ASCII writer carries arithmetic
+    // of its own -- the line-wrap budget, the float spelling, the base64
+    // blocks -- and the 6100 pass below is a *different* writer, so it does not
+    // stand in for this one.
+    for spelling in [scene.to_bytes(), scene.to_ascii_bytes()] {
+        let Ok(written) = spelling else {
+            // The writer is allowed to refuse a scene it cannot represent, as
+            // long as it says so instead of emitting corrupt bytes.
+            continue;
+        };
+
+        let reread = FbxScene::from_bytes_with_options(&written, strict.clone())
+            .expect("writer output must satisfy the reader's strict mode");
+
+        assert_eq!(
+            count_nodes(&scene),
+            count_nodes(&reread),
+            "node count changed across a write/read round-trip"
+        );
+        assert_eq!(
+            scene.materials.len(),
+            reread.materials.len(),
+            "material count changed across a write/read round-trip"
+        );
+    }
 
     // The 6100 object model is a second writer over the same scene, reached by
     // no other fuzz target: name-keyed identity, the root-key collision guard,
