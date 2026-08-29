@@ -148,7 +148,15 @@ jobs:
           - group: gltf_compress
             name: glTF compression
             targets: compress_gltf
-            soak_seconds: 1800
+            # The only target still climbing: +159 edges on 2026-08-28 and +143
+            # on 2026-08-29, where every other parser here moved by single
+            # digits or not at all. It is also the slowest per second -- 117,011
+            # executions against the FBX reader's 5.5 million in the same half
+            # hour -- so thirty minutes buys it far fewer attempts than the
+            # number suggests. Two hours prices its tail the way four priced
+            # `encode_drc`'s; groups run concurrently and `encode_drc` already
+            # holds the soak at two hours, so this costs no wall clock.
+            soak_seconds: 7200
             inherit_key: fuzz-corpus-v3-gltf-
           - group: gltf_import
             name: glTF import
