@@ -777,22 +777,33 @@ fn compute_encoder_predicted_value(
         let pos_next = positions.get(c_next);
         let pos_prev = positions.get(c_prev);
 
+        // Every step here wraps on purpose. The positions are read from the
+        // attribute at its own type, so both ends of the `i64` range are
+        // reachable: a 64-bit position carries them directly, and a float one
+        // gets there through a saturating cast, where any value past `i64::MAX`
+        // -- an infinity included -- lands exactly on the bound. The difference
+        // alone then leaves the range, and the encoder has to answer with a
+        // prediction rather than refuse the mesh. Upstream reaches the same
+        // behaviour by other means: the deltas
+        // and the cross product overflow as signed C++, and the accumulation
+        // is deliberately reinterpreted through `uint64_t` under the comment
+        // "Prevent signed integer overflows by doing math as unsigned".
         let delta_next = [
-            pos_next[0] - pos_cent[0],
-            pos_next[1] - pos_cent[1],
-            pos_next[2] - pos_cent[2],
+            pos_next[0].wrapping_sub(pos_cent[0]),
+            pos_next[1].wrapping_sub(pos_cent[1]),
+            pos_next[2].wrapping_sub(pos_cent[2]),
         ];
         let delta_prev = [
-            pos_prev[0] - pos_cent[0],
-            pos_prev[1] - pos_cent[1],
-            pos_prev[2] - pos_cent[2],
+            pos_prev[0].wrapping_sub(pos_cent[0]),
+            pos_prev[1].wrapping_sub(pos_cent[1]),
+            pos_prev[2].wrapping_sub(pos_cent[2]),
         ];
 
         let cross = cross_product(&delta_next, &delta_prev);
 
-        normal[0] += cross[0];
-        normal[1] += cross[1];
-        normal[2] += cross[2];
+        normal[0] = normal[0].wrapping_add(cross[0]);
+        normal[1] = normal[1].wrapping_add(cross[1]);
+        normal[2] = normal[2].wrapping_add(cross[2]);
 
         cit.next(corner_table);
 
@@ -802,7 +813,12 @@ fn compute_encoder_predicted_value(
     }
 
     let upper_bound = 1 << 29;
-    let abs_sum = normal[0].abs() + normal[1].abs() + normal[2].abs();
+    // Wrapping for the same reason the accumulation above is: a wrapped normal
+    // can sit at `i64::MIN`, where `abs` has no representable answer.
+    let abs_sum = normal[0]
+        .wrapping_abs()
+        .wrapping_add(normal[1].wrapping_abs())
+        .wrapping_add(normal[2].wrapping_abs());
 
     if abs_sum > upper_bound {
         let quotient = abs_sum / upper_bound;
@@ -1006,11 +1022,19 @@ impl<'a> PredictionSchemeEncoder<'a, i32, i32> for MeshPredictionSchemeGeometric
 }
 
 #[cfg(feature = "encoder")]
+/// Cross product of two 64-bit integer vectors, wrapping on overflow.
+///
+/// Its inputs are position deltas that can span the whole `i64` range, so the
+/// products routinely leave it. C++ overflows here too; wrapping is that
+/// behaviour written down.
 fn cross_product(a: &[i64; 3], b: &[i64; 3]) -> [i64; 3] {
     [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
+        a[1].wrapping_mul(b[2])
+            .wrapping_sub(a[2].wrapping_mul(b[1])),
+        a[2].wrapping_mul(b[0])
+            .wrapping_sub(a[0].wrapping_mul(b[2])),
+        a[0].wrapping_mul(b[1])
+            .wrapping_sub(a[1].wrapping_mul(b[0])),
     ]
 }
 
