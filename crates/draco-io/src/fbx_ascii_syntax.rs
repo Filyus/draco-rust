@@ -44,9 +44,6 @@
 #[cfg(feature = "fbx-reader")]
 use crate::fbx_node::FbxProperty;
 
-#[cfg(feature = "fbx-writer")]
-use std::fmt::Write as _;
-
 /// Separator the binary container puts between an object's name and its class.
 ///
 /// Binary stores `"Name\0\x01Class"`; ASCII writes `"Class::Name"` -- reversed
@@ -206,10 +203,10 @@ pub(crate) fn ascii_object_name(raw: &str) -> String {
 
 /// Prints an `F64` so that [`number_property`] reads it back unchanged.
 ///
-/// `{}` gives the shortest decimal that round-trips, so the only thing to add
-/// is the mark that keeps it a float: without a `.`, `e` or `E` the reader
-/// types it as an integer. That same mark preserves `-0.0`, which Rust prints
-/// as `-0` and an integer parse would strip the sign from.
+/// zmij gives the shortest decimal that round-trips, and it always carries the
+/// mark that keeps it a float -- a whole value comes out `1` as `1.0`, never
+/// bare -- so the reader cannot type it as an integer. That same mark
+/// preserves `-0.0`, whose sign an integer parse would strip.
 ///
 /// Returns `None` for a non-finite value. ASCII FBX has no spelling for one --
 /// every candidate (`nan`, `inf`, Autodesk's `1.#INF`) reads back as something
@@ -221,14 +218,13 @@ pub(crate) fn format_f64(value: f64) -> Option<String> {
     format_f64_into(&mut text, value).then_some(text)
 }
 
-/// Spells one `f64` onto the end of `text`: the shortest decimal that reads
-/// back as the same value, with a decimal point forced on so the reader types
-/// it as a real number rather than as an `I32` -- see [`number_property`] and
-/// its inverse above.
+/// Spells one `f64` onto the end of `text` through [`format_f64`]'s contract.
 ///
 /// Appends rather than returns a `String`: mesh arrays hold millions of
 /// values, and a fresh allocation each measured slower than the formatting
-/// itself.
+/// itself. zmij formats into a fixed stack buffer, so appending costs one
+/// copy and no allocation; the earlier `write!`-based spelling measured
+/// roughly half this speed, and `std`'s own float `Display` a third.
 ///
 /// Returns `false` for a non-finite value, which ASCII FBX cannot spell.
 #[cfg(feature = "fbx-writer")]
@@ -236,11 +232,8 @@ pub(crate) fn format_f64_into(text: &mut String, value: f64) -> bool {
     if !value.is_finite() {
         return false;
     }
-    let before = text.len();
-    let _ = write!(text, "{value}");
-    if !text[before..].contains(['.', 'e', 'E']) {
-        text.push_str(".0");
-    }
+    let mut buffer = zmij::Buffer::new();
+    text.push_str(buffer.format_finite(value));
     true
 }
 

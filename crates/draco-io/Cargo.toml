@@ -44,6 +44,10 @@ draco-core = { version = "1.0.4", path = "../draco-core", default-features = fal
 thiserror = "2.0.17"
 byteorder = { version = "1.5.0", optional = true }
 miniz_oxide = { version = "0.9.1", optional = true }
+# Shortest-round-trip float spelling for the writers that print values as-is
+# (ASCII FBX, ASCII STL). OBJ and PLY spell `{:.6}` instead, which zmij has no
+# knob for, so those keep the core formatter.
+zmij = { version = "1.0", optional = true }
 
 [features]
 default = [
@@ -58,7 +62,7 @@ all-writers = ["fbx-writer", "obj-writer", "ply-writer", "stl-writer"]
 # draco-core, never the Draco codec, so they do not enable encoder/decoder.
 # Only glTF uses KHR_draco_mesh_compression and thus pulls the codec.
 fbx-reader = []
-fbx-writer = []
+fbx-writer = ["dep:zmij"]
 gltf-container = []
 gltf-geometry = ["gltf-container"]
 # Decoder support is separate from the container/accessor contracts, so a
@@ -72,7 +76,7 @@ obj-writer = []
 ply-reader = ["dep:byteorder"]
 ply-writer = []
 stl-reader = []
-stl-writer = []
+stl-writer = ["dep:zmij"]
 point_cloud_decode = ["draco-core/point_cloud_decode"]
 compression = ["miniz_oxide"]
 # Repository-only fixtures and local external-tool tests.

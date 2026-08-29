@@ -170,23 +170,45 @@ impl StlWriter {
         } else {
             &self.name
         };
-        // Formatted into the buffer rather than through `format!`, which builds
-        // and drops a String per line — four of them per facet. Writing into a
-        // String cannot fail, so the results are discarded rather than
-        // propagated. Roughly 180 bytes a facet, taken in one allocation.
-        use std::fmt::Write as _;
+        // Spelled element by element into one String -- four `format!`s and
+        // drops per facet was most of this writer's cost -- with zmij for the
+        // floats: shortest round-trip like `Display`, into a stack buffer, no
+        // `fmt` machinery per value. One thing to know: `Display` spells only
+        // positional decimals, zmij switches to exponent notation for very
+        // large and very small magnitudes, which every `strtod`-family STL
+        // reader parses but the most naive ones may not.
+        let mut buffer = zmij::Buffer::new();
+        let mut float = |text: &mut String, value: f32| {
+            text.push_str(buffer.format_finite(value));
+        };
 
         let mut text = String::with_capacity(self.triangles.len() * 180 + name.len() * 2 + 32);
-        let _ = writeln!(text, "solid {name}");
+        text.push_str("solid ");
+        text.push_str(name);
+        text.push('\n');
         for triangle in &self.triangles {
             let [nx, ny, nz] = facet_normal(triangle);
-            let _ = writeln!(text, "  facet normal {nx} {ny} {nz}\n    outer loop");
+            text.push_str("  facet normal ");
+            float(&mut text, nx);
+            text.push(' ');
+            float(&mut text, ny);
+            text.push(' ');
+            float(&mut text, nz);
+            text.push_str("\n    outer loop\n");
             for [x, y, z] in triangle {
-                let _ = writeln!(text, "      vertex {x} {y} {z}");
+                text.push_str("      vertex ");
+                float(&mut text, *x);
+                text.push(' ');
+                float(&mut text, *y);
+                text.push(' ');
+                float(&mut text, *z);
+                text.push('\n');
             }
             text.push_str("    endloop\n  endfacet\n");
         }
-        let _ = writeln!(text, "endsolid {name}");
+        text.push_str("endsolid ");
+        text.push_str(name);
+        text.push('\n');
         text
     }
 }
@@ -287,7 +309,9 @@ mod tests {
         let text = String::from_utf8(writer.write_to_vec().unwrap()).unwrap();
 
         assert!(text.starts_with("solid Tri\n"));
-        assert!(text.contains("facet normal 0 0 1"));
+        // zmij keeps a decimal point on whole values, so the +Z normal is
+        // spelled `0.0 0.0 1.0` rather than `Display`'s bare `0 0 1`.
+        assert!(text.contains("facet normal 0.0 0.0 1.0"));
         assert_eq!(text.matches("vertex ").count(), 3);
         assert!(text.trim_end().ends_with("endsolid Tri"));
     }
