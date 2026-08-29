@@ -40,7 +40,11 @@ contract. Ordinary and Draco primitives both read into `PackedGeometry`.
   component definitions.
 - Draco encode currently accepts triangles and the component layouts supported
   by the KHR contract. `f16`, `f64`, `i64` and `u64` are rejected with a typed
-  error; they are never cast or normalized silently.
+  error; they are never cast or normalized silently. Draco has no compressed
+  representation for the 64-bit ones: its compressed path is `int32` throughout,
+  so they would be stored raw. See
+  [Attribute encoders & semantics](../draco-core/SUPPORT_MATRIX.md#attribute-encoders--semantics)
+  for what `draco-core` does with them and what to do instead.
 - Compression and decompression are atomic and preserve unrelated scene data.
   A transform fails when an unknown extension may own binary references that
   cannot be remapped safely.

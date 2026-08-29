@@ -51,6 +51,35 @@ Semantics `POSITION`, `NORMAL`, `TEX_COORD`, `COLOR`, `GENERIC` are all
 supported. Draco attributes are typed point attributes plus a semantic tag;
 format-specific meaning (glTF accessors, FBX layers) belongs above `draco-core`.
 
+Which encoder an attribute gets follows from its declared type, exactly as in
+C++ Draco (`SequentialAttributeEncodersController::CreateSequentialEncoder`):
+
+| declared type | encoder | what happens to the values |
+|---|---|---|
+| `Int8`/`Uint8`/`Int16`/`Uint16`/`Int32`/`Uint32` | `INTEGER` | predicted, then entropy coded |
+| `Float32`, `quantization_bits > 0` | `QUANTIZATION`, or `NORMALS` for a normal | quantized to `int32`, then as above |
+| `Float32`, no quantization | `GENERIC` | stored raw |
+| `Float64`, `Int64`, `Uint64` | `GENERIC` | stored raw |
+
+### 64-bit types are carried, not compressed
+
+They round-trip losslessly, but through `GENERIC`, which copies bytes. Nothing
+predicts or entropy-codes them, and there is no option that makes it happen:
+
+- The compressed path is `int32` from end to end — the portable copy, the
+  correction values, and the symbol coder underneath them. Widening it to 64
+  bits is a different bitstream, which C++ Draco could not read.
+- Quantizing a `Float64` would need no bitstream change here, since quantized
+  values are `int32` whatever the source was. It would still be unreadable
+  upstream: `SequentialQuantizationAttributeDecoder::Init` refuses any attribute
+  whose type is not `DT_FLOAT32`.
+
+What does work is splitting a 64-bit attribute into two 32-bit ones before
+handing it over. Draco compresses them as ordinary integers, and the high word
+costs almost nothing whenever it barely varies — large coordinates in one frame,
+for instance. It buys nothing when the high word moves freely, since differences
+across the split are meaningless.
+
 ## Prediction schemes
 
 | Scheme | Id | C++ | `draco-core` | Default |
