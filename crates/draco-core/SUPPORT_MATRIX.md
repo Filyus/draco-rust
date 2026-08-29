@@ -68,13 +68,11 @@ format-specific meaning (glTF accessors, FBX layers) belongs above `draco-core`.
 `draco-core` keeps their encode behind `legacy_bitstream_encode` + manual
 selection, never auto-chosen.
 
-Ids 3, 5 and 6 predict from the position, and from bitstream 2.0 a decoder is
-handed only the position's portable `int32` copy — upstream's
-`InitPredictionScheme` fails the scheme outright when that copy is missing. So a
-request for one of them against a position with no such copy (an unquantized
-float one, say) is answered with `PREDICTION_DIFFERENCE` rather than with a
-stream no decoder could read. Below 2.0 the attribute itself is the parent and
-the request stands.
+Ids 3, 5 and 6 predict from the position. From bitstream 2.0 the decoder only
+ever sees the position's portable `int32` copy, so a position without one — an
+unquantized float position, say — cannot serve them, and asking for one of them
+gives `PREDICTION_DIFFERENCE` instead. Below 2.0 the position itself is the
+parent and the request stands.
 
 ## Prediction transforms
 
@@ -126,11 +124,9 @@ level (see [Crate boundary](#crate-boundary)).
 `draco-core` matches observable C++ behavior for existing streams, including
 awkward but compatibility-sensitive details.
 
-It does not match it everywhere, and the exceptions are deliberate: this table
-answers whether a path exists and encodes identically, not whether the two
-implementations accept the same *inputs*. Where they do not — an attribute value
-C++ Draco refuses and this encoder carries, most of all — the difference, what it
-means for a file, and what removing it would cost are recorded in
+This table is about what exists and what it encodes to. It says nothing about
+which *inputs* each side accepts, and there the two differ on purpose: this
+encoder takes some attribute values C++ Draco rejects. See
 [`COMPATIBILITY.md`](../../COMPATIBILITY.md).
 
 Two numbering schemes meet here and are easy to confuse. `0.9.1`, `0.10.0` and

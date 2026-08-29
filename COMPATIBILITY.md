@@ -1,30 +1,29 @@
 # Compatibility with upstream Draco
 
-This port aims at byte-exact parity with C++ Draco 1.5.7, and mostly reaches it:
-the same mesh and options produce the same bytes, and either implementation
-reads what the other writes. This file records the places where that is
-deliberately not true — what the difference is, what it means for the files you
-end up with, and what removing it would take.
+This port targets byte-exact parity with C++ Draco 1.5.7, and mostly reaches it.
+The same mesh and options give the same bytes, and each implementation reads
+what the other writes.
 
-Coverage per algorithm is a different question, answered by
+A few differences are deliberate. This file lists them: what differs, what it
+means for your files, and what it would take to remove.
+
+For which algorithms exist at all, see
 [`crates/draco-core/SUPPORT_MATRIX.md`](crates/draco-core/SUPPORT_MATRIX.md).
 
 ## `uint32` attribute values above `i32::MAX`
 
 ### What this means for a file
 
-This encoder accepts integer attribute values that C++ Draco refuses, and both
-decoders read the result back byte for byte. Concretely:
+This encoder accepts integer attribute values that C++ Draco refuses:
 
 - A mesh with a `uint32` attribute holding values above `i32::MAX` encodes here.
-  C++ Draco fails the same mesh with `Failed to encode point attributes.` and
+  C++ Draco refuses the same mesh with `Failed to encode point attributes.` and
   writes no bytes.
-- A `.drc` this encoder produced from such a mesh decodes correctly in C++
-  Draco. The asymmetry is one-sided: only this encoder produces those files, but
-  either decoder consumes them.
+- The `.drc` this encoder writes for it decodes correctly in C++ Draco.
 
-So the widening costs you no interoperability. What it costs is that a producer
-relying on it is relying on something the reference implementation will not do.
+Only this encoder writes such files; both decoders read them. So you lose no
+interoperability. What you gain is a capability the reference implementation
+does not have — which is worth knowing if you come to depend on it.
 
 ### What each side does
 
@@ -52,27 +51,27 @@ bytes losslessly.
 
 ### The prediction half
 
-A value is only carried faithfully if both halves of the codec agree on what it
-*is*. A prediction scheme reads its parent position as a number, and the two
-halves once disagreed: the encoder read the portable `int32` (`-256`), the
-decoder read the mesh attribute labelled `uint32` (`4294967040`). At `2^32`
-apart the scaled products left the range the portable texture-coordinate
-scheme's overflow guard allows, and the decode refused a stream this encoder had
-just written. The `encode_drc` round-trip fuzz oracle found it.
+A prediction scheme reads its parent position as a number, so both halves of the
+codec have to read it the same way. Twice they did not.
 
-There turned out to be a second door into the same room. The parent was read at
-the attribute's own declared type, so a `Uint64` position — one the paragraph
-above says never reaches the *encoder* path — reached a *predictor* at both ends
-of the `i64` range and overflowed the arithmetic downstream of it.
+The encoder read the portable `int32` and got `-256`; the decoder read the same
+bytes as the `uint32` the attribute declares and got `4294967040`. Predictions
+`2^32` apart overflowed the texture-coordinate scheme's guard, and the decoder
+refused a stream this encoder had just written. The `encode_drc` fuzz oracle
+found it.
 
-Both are closed structurally rather than case by case. A prediction scheme no
-longer holds a `PointAttribute`: it holds a `PredictionParent`
+The second case came through the same door. The parent was read in whatever type
+the attribute declared, so a `Uint64` position — which never reaches the
+*encoder* path above, but does reach a *predictor* — arrived at the ends of the
+`i64` range and overflowed the arithmetic after it.
+
+Both are closed at the source rather than case by case. A prediction scheme no
+longer holds a `PointAttribute`. It holds a `PredictionParent`
 ([`portable_attribute.rs`](crates/draco-core/src/portable_attribute.rs)), which
-exposes no buffer, no byte stride and no data type — only the point-to-entry
-lookup and one canonical widening read, whose `Uint32` arm reads the portable
-`int32`. Constructing one validates the attribute against the types the portable
-pass writes, so a float or 64-bit parent is refused where upstream's decoder
-refuses it. That is the single place this behaviour now lives.
+offers no buffer, no byte stride and no data type — only the point-to-entry
+lookup and one read. That read widens a `Uint32` as the portable `int32`, and
+building the parent refuses a float or 64-bit attribute, exactly where upstream's
+decoder refuses it. There is nowhere else this decision is made.
 
 ### What it costs in compressed size
 
@@ -110,9 +109,9 @@ again and update that date — a skipped test reports success.
 
 ### If this should become a refusal instead
 
-The upstream-faithful alternative is to refuse the value at encode time. It was
-implemented and measured once already; this is what it takes, so the decision can
-be made on facts rather than re-derived.
+The alternative is to refuse the value at encode time, as upstream does. That was
+built and measured once already. Here is what it takes, so nobody has to work it
+out twice.
 
 1. In
    [`sequential_integer_attribute_encoder.rs`](crates/draco-core/src/sequential_integer_attribute_encoder.rs),
@@ -132,43 +131,40 @@ The cost, measured rather than assumed:
 
 - `a_color_attribute_without_a_position_attribute_round_trips_at_speed_zero`
   ([`encoder_hardening_test.rs`](crates/draco-core/tests/encoder_hardening_test.rs))
-  **fails**. Its fixture is a fuzz artifact that pins a per-attribute
-  connectivity bug, and it carries a `uint32` value above `i32::MAX`; the test
-  would stop covering what it was written for, because the encode it exercises
-  would no longer happen. A replacement fixture with the same connectivity shape
-  and in-range values has to be produced first.
+  **fails**. Its fixture pins a per-attribute connectivity bug, and it happens to
+  carry a `uint32` value above `i32::MAX`. The encode it tests would stop
+  happening, so the test would stop testing the bug. You need a replacement
+  fixture with the same connectivity and in-range values first.
 - Corpus coverage narrows. `encode_drc`'s `build_attribute` fills attribute bytes
   straight from the fuzz payload, so roughly half of all `Uint32` entries carry a
   component at or above `2^31`. Those inputs would bail at the encode call
   instead of exercising the integer encode path.
-- Files this port has already written stop round-tripping through it. They stay
-  readable — the decoder is unaffected — but they could not be re-encoded.
+- Files this port has already written stop round-tripping through it. The
+  decoder is unaffected, so they stay readable, but they cannot be re-encoded.
 
-What the refusal would *not* buy is interoperability: files produced today are
-already read correctly by C++ Draco, as the bridge test above demonstrates. The
-gain is a narrower, upstream-identical accepted domain; the loss is the
-capability itself.
+The refusal buys no interoperability: C++ Draco already reads what this encoder
+writes, which is what the bridge test shows. It buys a narrower accepted domain,
+identical to upstream's, at the price of the capability.
 
 ## Smaller divergences in the same family
 
 - **A pre-2.0 `uint32` parent is read signed.** Below bitstream 2.0 upstream
-  binds the mesh attribute itself as a prediction parent and reads it in its
-  declared type, so a `DT_UINT32` parent is read unsigned there. This port reads
-  it as the portable `int32` at every version, because one canonical widening
-  serves both bindings.
+  binds the attribute itself and reads it in its declared type, so it reads a
+  `DT_UINT32` parent unsigned. This port reads it as the portable `int32` at
+  every version, because one read serves both bindings.
 - **The decode-side portable attribute is declared `Uint32`.** Upstream declares
   `DT_INT32` for quantized and normal attributes
   ([`sequential_quantization_attribute_decoder.rs`](crates/draco-core/src/sequential_quantization_attribute_decoder.rs)).
   Harmless today: quantization is capped at 30 bits, so the signed and unsigned
   readings coincide.
 - **Narrower integer positions are narrowed again on the way out.** `Uint8`,
-  `Int16` and friends pass through `write_value_from_i32` into the destination
-  attribute. Unreachable through this encoder, whose portable values come from
-  that same attribute and therefore fit; reachable only with a hand-built or
-  corrupted stream.
+  `Int16` and the rest pass through `write_value_from_i32` into the destination
+  attribute. Streams this encoder writes cannot hit it, since their portable
+  values came from that same attribute and therefore fit; a hand-built or
+  corrupted stream can.
 
-These share a root with the divergence above: upstream gives every
-integer-decoded attribute an `int32` portable copy and lets predictors read
-nothing else, while this port grew the portable concept along the dequantization
-path only. That invariant is now ported — the `PredictionParent` type above is
-what enforces it — which is why the list is this short.
+All of these come from the same place. Upstream gives every integer-decoded
+attribute an `int32` portable copy and lets predictors read nothing else, failing
+outright when the copy is missing; this port grew the portable copy along the
+dequantization path only. `PredictionParent` now enforces that rule here too,
+which is why this list is three items and not a work plan.
