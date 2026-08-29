@@ -587,7 +587,14 @@ impl Writer for PlyWriter {
         let color_att_id = mesh.named_attribute_id(GeometryAttributeType::Color);
         if color_att_id >= 0 {
             let color_att = mesh.attribute(color_att_id);
-            let components = color_att.num_components().clamp(1, 4);
+            // Floored at three, not at one: the header always declares
+            // `red`/`green`/`blue`, and the binary payload writes exactly
+            // `color_components` bytes per vertex. A one- or two-component
+            // colour attribute therefore used to promise three values and
+            // write one, which is a payload the reader runs off the end of --
+            // `read_color` already pads the missing channels with 255, so
+            // three is what the file has to carry.
+            let components = color_att.num_components().clamp(3, 4);
             self.color_components = self.color_components.max(components);
             // Pad colors if we've added vertices without colors before
             while self.colors.len() < vertex_offset as usize {
@@ -819,6 +826,45 @@ mod tests {
         assert!(content.contains("element face 2"));
         // Second mesh should have offset indices
         assert!(content.contains("3 3 4 5"));
+    }
+
+    /// The header names three colour channels, so three is what every vertex
+    /// has to carry -- including when the mesh's colour attribute has fewer.
+    ///
+    /// The binary payload wrote `color_components` bytes per vertex while the
+    /// header always declared `red`/`green`/`blue`, so a single-component
+    /// colour promised three values and delivered one. Found by
+    /// `mesh_text_roundtrip`: the reader ran off the end of a file this writer
+    /// had just produced.
+    #[test]
+    fn a_colour_attribute_with_one_component_still_writes_three_channels() {
+        let mut mesh = create_triangle_mesh();
+        let mut color_att = PointAttribute::new();
+        color_att.init(GeometryAttributeType::Color, 1, DataType::Uint8, false, 3);
+        color_att.buffer_mut().write(0, &[10, 20, 30]);
+        mesh.add_attribute(color_att);
+
+        let mut writer = PlyWriter::new().with_format(PlyFormat::BinaryLittleEndian);
+        Writer::add_mesh(&mut writer, &mesh, None).unwrap();
+        let bytes = writer.write_to_vec().unwrap();
+
+        let header_end = bytes
+            .windows(11)
+            .position(|window| {
+                window
+                    == b"end_header
+"
+            })
+            .unwrap()
+            + 11;
+        let header = String::from_utf8_lossy(&bytes[..header_end]);
+        assert!(header.contains("property uchar blue"), "{header}");
+        // Three vertices of three position floats plus three colour bytes,
+        // then the one face: a `uchar` count and three `int` indices.
+        assert_eq!(bytes.len() - header_end, 3 * (12 + 3) + (1 + 12));
+
+        crate::ply_reader::PlyReader::read_from_bytes(&bytes)
+            .expect("the reader must accept what this writer wrote");
     }
 
     #[test]
