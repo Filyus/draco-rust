@@ -314,9 +314,11 @@ struct WeldHasher {
     hash: u64,
 }
 
-/// The 64-bit multiplier of `rustc-hash` (`FxHash`): a prime, so every bit
-/// of the word it multiplies reaches the product's high bits, which is what
-/// the rotate-then-multiply step spreads across the running hash.
+/// The 64-bit multiplier of `rustc-hash` (`FxHash`). Odd, which is the
+/// property that matters: multiplication modulo 2^64 is then invertible, so
+/// the step loses no information, and its bits are spread enough that each
+/// input bit reaches many of the product's high bits -- which is what the
+/// rotate-then-multiply step carries across the running hash.
 const WELD_SEED: u64 = 0x51_7c_c1_b7_27_22_0a_95;
 /// The 64-bit rotate of `rustc-hash`: 23 is coprime with 64, so successive
 /// rotations keep walking all bit positions of the accumulator instead of

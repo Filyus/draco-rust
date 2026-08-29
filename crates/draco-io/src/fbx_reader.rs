@@ -2511,8 +2511,10 @@ fn flatten_curve(
     let interpolation = FbxAnimInterpolation::from_key_attr_flags(flags);
     for i in 0..n {
         input.push((time_axis.key_times[i] as f64 / ktime_f) as f32);
-        for component in 0..component_count as usize {
-            let curve = by_component[component].as_ref();
+        // `component_count` is 1 or 3 and `by_component` holds three slots, so
+        // the take never shortens a path that has more components than curves.
+        for slot in by_component.iter().take(component_count) {
+            let curve = slot.as_ref();
             let value = curve.and_then(|curve| curve.key_values.get(i)).copied();
             output.push(value.unwrap_or(0.0));
             in_tangents.push(

@@ -32,6 +32,13 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - The ASCII container accepts version 6100 (the name-keyed object model);
   pre-6100 text is refused as before.
+- ASCII FBX and ASCII STL spell floats through a Schubfach formatter instead of
+  the core `Display`. Every value still reads back identically, but the bytes
+  differ in two ways: a whole value keeps a decimal point (an STL facet normal
+  now reads `0.0 0.0 1.0` where it read `0 0 1`), and very large or very small
+  magnitudes come out in exponent notation (`1e+16`) where `Display` spelled
+  them positionally. Any `strtod`-family reader takes both; a hand-rolled STL
+  parser that only scans positional decimals may not.
 
 ### Fixed
 

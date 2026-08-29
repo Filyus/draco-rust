@@ -177,9 +177,20 @@ impl StlWriter {
         // positional decimals, zmij switches to exponent notation for very
         // large and very small magnitudes, which every `strtod`-family STL
         // reader parses but the most naive ones may not.
+        //
+        // `format`, not `format_finite`: a vertex coordinate is whatever the
+        // position attribute holds, and nothing upstream of here promises it
+        // is finite. `format_finite` documents its answer for a non-finite
+        // input as "correctly formatted but unspecified", and it is -- a NaN
+        // comes out `2.696539702293474e+308`, a number a reader accepts
+        // without complaint. `format` spells the three non-finite cases the
+        // way `Display` did, so the file keeps saying `NaN` where the mesh
+        // said `NaN`. The branch costs nothing measurable against the
+        // formatting it guards. (`facet_normal` already answers `[0, 0, 0]`
+        // for a degenerate triangle, so only the vertices need this.)
         let mut buffer = zmij::Buffer::new();
         let mut float = |text: &mut String, value: f32| {
-            text.push_str(buffer.format_finite(value));
+            text.push_str(buffer.format(value));
         };
 
         let mut text = String::with_capacity(self.triangles.len() * 180 + name.len() * 2 + 32);
@@ -256,6 +267,10 @@ mod tests {
     use draco_core::geometry_indices::PointIndex;
 
     fn triangle_mesh() -> Mesh {
+        mesh_from(&[[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    }
+
+    fn mesh_from(vertices: &[[f32; 3]; 3]) -> Mesh {
         let mut mesh = Mesh::new();
         mesh.set_num_points(3);
         mesh.set_num_faces(1);
@@ -267,10 +282,7 @@ mod tests {
             false,
             3,
         );
-        for (index, vertex) in [[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
-            .iter()
-            .enumerate()
-        {
+        for (index, vertex) in vertices.iter().enumerate() {
             let bytes: Vec<u8> = vertex
                 .iter()
                 .flat_map(|value| value.to_le_bytes())
@@ -314,6 +326,31 @@ mod tests {
         assert!(text.contains("facet normal 0.0 0.0 1.0"));
         assert_eq!(text.matches("vertex ").count(), 3);
         assert!(text.trim_end().ends_with("endsolid Tri"));
+    }
+
+    /// A coordinate the mesh cannot express as a number must not be written as
+    /// one.
+    ///
+    /// Nothing upstream promises a position attribute holds finite floats, and
+    /// zmij's `format_finite` answers a non-finite input with an unspecified
+    /// but well-formed number -- a NaN spells `2.696539702293474e+308`, which
+    /// every reader takes for a real coordinate. The file has to keep saying
+    /// what the mesh said.
+    #[test]
+    fn ascii_stl_spells_a_non_finite_coordinate_as_itself() {
+        let mesh = mesh_from(&[
+            [f32::NAN, 0.0, 0.0],
+            [1.0, f32::INFINITY, 0.0],
+            [0.0, 1.0, f32::NEG_INFINITY],
+        ]);
+        let mut writer = StlWriter::new().with_format(StlFormat::Ascii);
+        writer.add_mesh(&mesh, Some("Tri")).unwrap();
+        let text = String::from_utf8(writer.write_to_vec().unwrap()).unwrap();
+
+        assert!(text.contains("vertex NaN 0.0 0.0"), "{text}");
+        assert!(text.contains("vertex 1.0 inf 0.0"), "{text}");
+        assert!(text.contains("vertex 0.0 1.0 -inf"), "{text}");
+        assert!(!text.contains("e+308"), "{text}");
     }
 
     /// Both containers have to come back as the same geometry, and the binary
