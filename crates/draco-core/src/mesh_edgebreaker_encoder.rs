@@ -1809,8 +1809,10 @@ impl MeshEdgebreakerEncoder {
                     out_buffer.encode_varint(split_delta as u64);
                     last_source_symbol_id = event.source_symbol_id as i32;
                 }
-                // Encode source_edge bits using direct bit encoding (no size prefix).
-                out_buffer.start_bit_encoding(num_events, false);
+                // Encode source_edge bits using direct bit encoding (no size
+                // prefix). The region is reserved at the width actually written,
+                // which is two bits per event below 2.2 and one above it.
+                out_buffer.start_bit_encoding(num_events * edge_bits as usize, false);
                 for event in &self.topology_split_event_data {
                     out_buffer.encode_least_significant_bits32(edge_bits, event.source_edge as u32);
                 }
