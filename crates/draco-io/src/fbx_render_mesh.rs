@@ -387,7 +387,7 @@ pub fn build_draco_mesh(render: &FbxRenderMesh) -> Mesh {
     // (SipHash) showed up as roughly a quarter of this function's cost on
     // large architectural meshes.
     let mut unique: HashMap<WeldKey, u32, BuildHasherDefault<WeldHasher>> = HashMap::default();
-    let mut order: Vec<usize> = Vec::new();
+    let mut order: Vec<u32> = Vec::new();
     let mut remapped: Vec<u32> = Vec::with_capacity(render.corner_count());
 
     for corner in 0..render.corner_count() {
@@ -398,7 +398,7 @@ pub fn build_draco_mesh(render: &FbxRenderMesh) -> Mesh {
         let key: WeldKey = (position, normal, uv, color);
         let next = unique.len() as u32;
         let index = *unique.entry(key).or_insert_with(|| {
-            order.push(corner);
+            order.push(corner as u32);
             next
         });
         remapped.push(index);
@@ -416,8 +416,8 @@ pub fn build_draco_mesh(render: &FbxRenderMesh) -> Mesh {
         false,
         point_count,
     );
-    for (index, &corner) in order.iter().enumerate() {
-        let bytes: Vec<u8> = render.positions[corner]
+    for (index, corner) in order.iter().copied().enumerate() {
+        let bytes: Vec<u8> = render.positions[corner as usize]
             .iter()
             .flat_map(|value| value.to_le_bytes())
             .collect();
@@ -434,8 +434,8 @@ pub fn build_draco_mesh(render: &FbxRenderMesh) -> Mesh {
             false,
             point_count,
         );
-        for (index, &corner) in order.iter().enumerate() {
-            let bytes: Vec<u8> = layer.values[corner]
+        for (index, corner) in order.iter().copied().enumerate() {
+            let bytes: Vec<u8> = layer.values[corner as usize]
                 .iter()
                 .flat_map(|value| value.to_le_bytes())
                 .collect();
@@ -453,8 +453,8 @@ pub fn build_draco_mesh(render: &FbxRenderMesh) -> Mesh {
             false,
             point_count,
         );
-        for (index, &corner) in order.iter().enumerate() {
-            let bytes: Vec<u8> = layer.values[corner]
+        for (index, corner) in order.iter().copied().enumerate() {
+            let bytes: Vec<u8> = layer.values[corner as usize]
                 .iter()
                 .flat_map(|value| value.to_le_bytes())
                 .collect();
@@ -472,8 +472,8 @@ pub fn build_draco_mesh(render: &FbxRenderMesh) -> Mesh {
             false,
             point_count,
         );
-        for (index, &corner) in order.iter().enumerate() {
-            let bytes: Vec<u8> = layer.values[corner]
+        for (index, corner) in order.iter().copied().enumerate() {
+            let bytes: Vec<u8> = layer.values[corner as usize]
                 .iter()
                 .flat_map(|value| value.to_le_bytes())
                 .collect();

@@ -1943,11 +1943,9 @@ impl<R: Read + Seek> FbxReader<R> {
             }
         }
 
-        // acnode_id -> { component -> (times, values, flags) }
-        let mut acnode_curves: std::collections::HashMap<
-            i64,
-            std::collections::BTreeMap<u32, FbxAnimCurveData>,
-        > = std::collections::HashMap::new();
+        // acnode_id -> component -> curve.
+        let mut acnode_curves: std::collections::HashMap<i64, ComponentCurves> =
+            std::collections::HashMap::new();
         for conn in connections {
             if conn.kind != ConnectionKind::Op {
                 continue;
@@ -1965,10 +1963,9 @@ impl<R: Read + Seek> FbxReader<R> {
                 _ => continue,
             };
             if let Some(curve) = parse_curve(acurve_map[&conn.child]) {
-                acnode_curves
-                    .entry(conn.parent)
-                    .or_default()
-                    .insert(component, curve);
+                // A later curve for the same component overwrites, which is
+                // what the map's `insert` did.
+                acnode_curves.entry(conn.parent).or_default()[component] = Some(curve);
             }
         }
 
@@ -2044,14 +2041,15 @@ impl<R: Read + Seek> FbxReader<R> {
                     // Combine the X/Y/Z curves across all matching curve nodes
                     // (Blender notes that each curve node has a unique set of
                     // channels, so in practice there is exactly one entry).
-                    let mut by_component: std::collections::BTreeMap<u32, FbxAnimCurveData> =
-                        std::collections::BTreeMap::new();
+                    // First curve wins per component, which the map's
+                    // `or_insert_with` guaranteed.
+                    let mut by_component: ComponentCurves = Default::default();
                     for acnode_id in acnode_ids {
                         if let Some(curves) = acnode_curves.get(acnode_id) {
-                            for (component, curve) in curves {
-                                by_component
-                                    .entry(*component)
-                                    .or_insert_with(|| curve.clone());
+                            for (component, curve) in curves.iter().enumerate() {
+                                if by_component[component].is_none() {
+                                    by_component[component] = curve.clone();
+                                }
                             }
                         }
                     }
@@ -2116,6 +2114,14 @@ struct FbxAnimCurveData {
     in_tangents: Vec<f32>,
     out_tangents: Vec<f32>,
 }
+
+/// Per-axis TRS curves, indexed by component (`X` 0, `Y` 1, `Z` 2).
+///
+/// A curve node carries at most these three, so a fixed three-slot array
+/// replaces the ordered map the profiler showed paying for tree walks on
+/// every insertion; slot order is component order, which is what the map's
+/// iteration guaranteed.
+type ComponentCurves = [Option<FbxAnimCurveData>; 3];
 
 fn parse_curve(node: &FbxNode) -> Option<FbxAnimCurveData> {
     let mut key_times = None;
@@ -2243,8 +2249,7 @@ fn parse_takes_animations(
                             },
                             _ => continue,
                         };
-                        let mut by_component =
-                            std::collections::BTreeMap::<u32, FbxAnimCurveData>::new();
+                        let mut by_component: ComponentCurves = Default::default();
                         for component in group
                             .children
                             .iter()
@@ -2260,7 +2265,7 @@ fn parse_takes_animations(
                                 _ => continue,
                             };
                             if let Some(curve) = parse_legacy_curve(component, ktime_f) {
-                                by_component.insert(axis, curve);
+                                by_component[axis] = Some(curve);
                             }
                         }
                         let Some(channel) = flatten_curve(&by_component, path, ktime_f) else {
@@ -2488,14 +2493,14 @@ fn parse_legacy_curve(channel: &FbxNode, ktime_f: f64) -> Option<FbxAnimCurveDat
 /// Z. Missing components default to 0. Interpolation is read from the first
 /// `KeyAttrFlags` entry of the chosen time axis.
 fn flatten_curve(
-    by_component: &std::collections::BTreeMap<u32, FbxAnimCurveData>,
+    by_component: &ComponentCurves,
     path: FbxAnimChannelPath,
     ktime_f: f64,
 ) -> Option<FbxAnimChannel> {
-    let time_axis = by_component
-        .get(&0)
-        .or_else(|| by_component.get(&1))
-        .or_else(|| by_component.get(&2))?;
+    let time_axis = by_component[0]
+        .as_ref()
+        .or_else(|| by_component[1].as_ref())
+        .or_else(|| by_component[2].as_ref())?;
     let n = time_axis.key_times.len();
     let mut input = Vec::with_capacity(n);
     let component_count = path.component_count();
@@ -2506,25 +2511,18 @@ fn flatten_curve(
     let interpolation = FbxAnimInterpolation::from_key_attr_flags(flags);
     for i in 0..n {
         input.push((time_axis.key_times[i] as f64 / ktime_f) as f32);
-        for component in 0..component_count as u32 {
-            let value = by_component.get(&component).and_then(|curve| {
-                if i < curve.key_values.len() {
-                    Some(curve.key_values[i])
-                } else {
-                    None
-                }
-            });
+        for component in 0..component_count as usize {
+            let curve = by_component[component].as_ref();
+            let value = curve.and_then(|curve| curve.key_values.get(i)).copied();
             output.push(value.unwrap_or(0.0));
             in_tangents.push(
-                by_component
-                    .get(&component)
+                curve
                     .and_then(|curve| curve.in_tangents.get(i))
                     .copied()
                     .unwrap_or(0.0),
             );
             out_tangents.push(
-                by_component
-                    .get(&component)
+                curve
                     .and_then(|curve| curve.out_tangents.get(i))
                     .copied()
                     .unwrap_or(0.0),
