@@ -12,7 +12,7 @@ use crate::data_buffer::DataBuffer;
 use crate::draco_types::DataType;
 use crate::encoder_buffer::EncoderBuffer;
 use crate::encoder_options::EncoderOptions;
-use crate::geometry_attribute::GeometryAttributeType;
+use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use crate::geometry_indices::PointIndex;
 use crate::mesh_prediction_scheme_data::MeshPredictionSchemeData;
 use crate::point_cloud::PointCloud;
@@ -113,6 +113,55 @@ pub(crate) fn uses_inline_quantization_parameters(
     // looks for them, and this crate's own decoder had the matching split, so
     // the round trip agreed with itself.
     bitstream_version != 0 && bitstream_version < 0x0200
+}
+
+/// Binds the position parent by the rule the decoder runs, not by the scheme.
+///
+/// The decoder offers a parent-reading scheme one of two things: the portable
+/// copy, when the position has one it may read, or -- only below bitstream
+/// 2.0, where upstream's `InitPredictionScheme` passes the attribute itself --
+/// the attribute as it stands. Which of the two applies is the version's to
+/// decide, not the scheme's: the deprecated tex-coord predictor reads real
+/// positions, but from 2.0 there are no real positions on offer to anyone,
+/// and an encode that predicted from them wrote a stream its own decoder
+/// refuses. The two arguments are the two things the decoder can reach: what
+/// `GetPortableAttribute` offers, registered copy or the attribute itself,
+/// and the attribute behind the named position id.
+///
+/// At 2.0 and above a parent the portable pass cannot have written fails the
+/// way upstream's decoder fails the scheme; the selection downgrade has
+/// already declined every state that reaches that arm.
+fn bind_position_parent<'p>(
+    version_major: u8,
+    version_minor: u8,
+    portable_position: Option<&'p PointAttribute>,
+    raw_position: Option<&'p PointAttribute>,
+    label: &str,
+) -> Result<PredictionParent<'p>, DracoError> {
+    let pre_2_0 = version_major != 0
+        && crate::version::bitstream_version(version_major, version_minor) < 0x0200;
+    let needs_position =
+        || DracoError::invalid_parameter(format!("{label} prediction needs a position attribute"));
+    let Some(att) = portable_position else {
+        if pre_2_0 {
+            return Ok(PredictionParent::legacy(
+                raw_position.ok_or_else(needs_position)?,
+            ));
+        }
+        return Err(DracoError::general(format!(
+            "No portable position attribute for {label}"
+        )));
+    };
+    match PredictionParent::portable(att) {
+        Ok(parent) => Ok(parent),
+        // A position the portable pass cannot have written -- a float one
+        // nobody quantized. Below 2.0 that is still what the decoder offers
+        // the scheme, so bind it as the decoder would.
+        Err(_) if pre_2_0 => Ok(PredictionParent::legacy(
+            raw_position.ok_or_else(needs_position)?,
+        )),
+        Err(e) => Err(e),
+    }
 }
 
 pub struct SequentialIntegerAttributeEncoder {
@@ -762,20 +811,21 @@ impl SequentialIntegerAttributeEncoder {
                         predictor.set_bitstream_version(version_major, version_minor);
                         selected_transform_type = predictor.get_transform_type();
 
-                        let pos_att = encoder
+                        let pos_att_id = encoder
                             .point_cloud()
                             .unwrap()
-                            .named_attribute(GeometryAttributeType::Position);
-                        let Some(pos_att) = pos_att else {
-                            return Err(DracoError::invalid_parameter(
-                                "Texture-coordinate prediction needs a position attribute"
-                                    .to_string(),
-                            ));
-                        };
-                        // The deprecated scheme predicts from real positions,
-                        // not portable ones: the pre-2.0 contract binds the
-                        // attribute itself.
-                        predictor.set_parent_attribute(PredictionParent::legacy(pos_att))?;
+                            .named_attribute_id(GeometryAttributeType::Position);
+                        let parent = bind_position_parent(
+                            version_major,
+                            version_minor,
+                            encoder.get_portable_attribute(pos_att_id),
+                            encoder
+                                .point_cloud()
+                                .unwrap()
+                                .named_attribute(GeometryAttributeType::Position),
+                            "Texture-coordinate",
+                        )?;
+                        predictor.set_parent_attribute(parent)?;
                         predictor.init(&mesh_data);
 
                         let entry_to_point_id_map: Vec<u32> =
@@ -915,7 +965,17 @@ impl SequentialIntegerAttributeEncoder {
                                 "No portable position attribute for TexCoordsPortable".to_string(),
                             ));
                         };
-                        predictor.set_parent_attribute(PredictionParent::portable(pos_att)?)?;
+                        let parent = bind_position_parent(
+                            version_major,
+                            version_minor,
+                            Some(pos_att),
+                            encoder
+                                .point_cloud()
+                                .unwrap()
+                                .named_attribute(GeometryAttributeType::Position),
+                            "Texture-coordinate",
+                        )?;
+                        predictor.set_parent_attribute(parent)?;
 
                         predictor.init(&mesh_data);
 
@@ -1042,7 +1102,14 @@ impl SequentialIntegerAttributeEncoder {
                                         .to_string(),
                                 ));
                             };
-                            predictor.set_parent_attribute(PredictionParent::portable(pos_att)?)?;
+                            let parent = bind_position_parent(
+                                version_major,
+                                version_minor,
+                                Some(pos_att),
+                                point_cloud.named_attribute(GeometryAttributeType::Position),
+                                "Geometric normal",
+                            )?;
+                            predictor.set_parent_attribute(parent)?;
 
                             let entry_to_point_id_map: Vec<u32> =
                                 point_ids.iter().map(|p| p.0).collect();

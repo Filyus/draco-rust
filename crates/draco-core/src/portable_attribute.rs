@@ -75,6 +75,10 @@ impl<'a> PredictionParent<'a> {
     /// place by then, at whatever type it declares. The canonical reads below
     /// keep that contract; `portable` is the one that validates, so a caller
     /// that means the portable copy has no route to this binding.
+    // Only the sequential decoders and encoders reach this binding, and both
+    // are feature-gated; with neither feature the constructor would sit
+    // unused.
+    #[cfg(any(feature = "decoder", feature = "encoder"))]
     pub(crate) fn legacy(att: &'a PointAttribute) -> Self {
         Self { att }
     }
@@ -228,6 +232,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(feature = "decoder", feature = "encoder"))]
     fn test_read_component_as_i64_rejects_nan() {
         let mut att = attribute_of_type(DataType::Float32);
         att.buffer_mut().write(0, &f32::NAN.to_le_bytes());

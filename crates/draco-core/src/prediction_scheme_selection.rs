@@ -86,17 +86,20 @@ pub(crate) fn downgrade_without_position_parent(
     if encoder.point_cloud().and_then(position_parent).is_none() {
         return PredictionSchemeMethod::Difference;
     }
-    // The two portable schemes bind their parent through the portable `int32`
-    // copy, and the binding validates: a position with no portable form the
-    // parent can read -- a float one nobody quantized, say -- cannot serve
-    // them. The deprecated scheme predicts from real positions and stands or
-    // falls on the raw attribute, so only these two are downgraded here.
-    if matches!(
-        method,
-        PredictionSchemeMethod::MeshPredictionGeometricNormal
-            | PredictionSchemeMethod::MeshPredictionTexCoordsPortable
-    ) && portable_position_parent(encoder).is_none()
-    {
+    // From 2.0 the decoder offers every parent-reading scheme only the
+    // portable `int32` copy, and the binding validates: a position with no
+    // portable form the parent can read -- a float one nobody quantized, say
+    // -- cannot serve any of them, the deprecated scheme included. Which copy
+    // exists is the decoder's to decide by version, not the scheme's: the
+    // deprecated predictor reads real positions, true, but from 2.0 there are
+    // no real positions on offer to anyone, and the version is what the
+    // decoder binds by. The portable copy also has to be three components of
+    // `Position` for the same reason `position_parent` checks the raw one.
+    // Below 2.0 the decoder hands over the attribute itself and no portable
+    // check applies.
+    let (major, minor) = options.get_version();
+    let portable_only = major == 0 || crate::version::bitstream_version(major, minor) >= 0x0200;
+    if portable_only && portable_position_parent(encoder).is_none() {
         return PredictionSchemeMethod::Difference;
     }
     if single_connectivity(options) {
@@ -107,11 +110,11 @@ pub(crate) fn downgrade_without_position_parent(
 
 /// The position's portable parent, when one a scheme may read exists.
 ///
-/// The parent a portable scheme binds is whatever `GetPortableAttribute`
-/// offers, and binding it validates the attribute against the types the
+/// The parent a 2.0+ decoder offers is whatever `GetPortableAttribute`
+/// returns, and binding it validates the attribute against the types the
 /// portable pass writes. A position that fails that validation -- a float one
 /// with no quantization behind it, say -- leaves the scheme nothing to
-/// predict from: upstream's encoder fails outright, and this downgrade is the
+/// predict from: upstream's decoder fails outright, and this downgrade is the
 /// form that refusal takes here, matching the one above.
 #[cfg(feature = "encoder")]
 fn portable_position_parent(

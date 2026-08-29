@@ -3545,6 +3545,38 @@ reads `1.35x`, data writes `1.22x`, D1 read misses `1.36x`, last-level misses
 reference whose `IndexTypeVector` does the same thing through
 `stl_vector.h`. That is the shape of what is left.
 
+### The Encoder Binds By Version Too -- And Still Flat
+
+The structural parent binding started on the decode side only, and the decode
+side was not even reading the version it bound by: the mesh path hands
+attributes to their decoders through a `PointCloudDecoder` it constructs on
+the spot, so `bitstream_version` read `0` for `48` of `54` bindings over
+`decode_all_testdata` and every fallback took the pre-2.0 branch. That is
+fixed (`set_bitstream_version` from the mesh path; the version fields
+ungated, which also repairs `--no-default-features --features decoder`), and
+with the real version in place the encoder-side disagreement became visible
+and got the same treatment: the encoder now binds by the rule the decoder
+runs -- the registered portable copy when the position has one it may read,
+the attribute itself only below 2.0 when it does not, and at 2.0+ nothing at
+all, failing where upstream's decoder fails. The scheme no longer decides
+what its parent is: the deprecated tex-coord predictor reads real positions,
+but from 2.0 there are no real positions on offer to anyone, and
+`downgrade_without_position_parent` now asks the version instead of the
+method.
+
+Decode cost, again by construction: the plumbing is a version read once per
+decode, and the binding decisions it changes happen once per binding. Four
+`drc_bench` binaries (two layout-perturbed builds per condition) against the
+previous commit, `30` interleaved rounds of `2` s on the Bunny speed-1
+payload (geometric-normal predictor on the hot path): medians lean `+0.7` to
+`+0.8%` toward the previous tree -- and the speed-5 control payload, whose
+decode path the change does not touch, leans `+0.6` to `+0.8%` the same way.
+Paired `ABBA` reruns agree: subject `+0.58%` median with signs `17`/`24`,
+control `+0.72%` with signs `16`/`24` -- the same lean, same magnitude, both
+directions, which is the machine and not the code. Flat. The encoded streams
+are byte-identical to the previous commit at both speeds, so the encoder's
+output on automatic selection did not move either.
+
 ### The Portable Parent, Made Structural -- And Measured Flat
 
 The portable-attribute invariant -- a prediction scheme reads its parent only
