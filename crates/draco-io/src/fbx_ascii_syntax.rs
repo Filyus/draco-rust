@@ -44,6 +44,9 @@
 #[cfg(feature = "fbx-reader")]
 use crate::fbx_node::FbxProperty;
 
+#[cfg(feature = "fbx-writer")]
+use std::fmt::Write as _;
+
 /// Separator the binary container puts between an object's name and its class.
 ///
 /// Binary stores `"Name\0\x01Class"`; ASCII writes `"Class::Name"` -- reversed
@@ -214,14 +217,31 @@ pub(crate) fn ascii_object_name(raw: &str) -> String {
 /// written rather than emitting a number that lies.
 #[cfg(feature = "fbx-writer")]
 pub(crate) fn format_f64(value: f64) -> Option<String> {
+    let mut text = String::new();
+    format_f64_into(&mut text, value).then_some(text)
+}
+
+/// Spells one `f64` onto the end of `text`: the shortest decimal that reads
+/// back as the same value, with a decimal point forced on so the reader types
+/// it as a real number rather than as an `I32` -- see [`number_property`] and
+/// its inverse above.
+///
+/// Appends rather than returns a `String`: mesh arrays hold millions of
+/// values, and a fresh allocation each measured slower than the formatting
+/// itself.
+///
+/// Returns `false` for a non-finite value, which ASCII FBX cannot spell.
+#[cfg(feature = "fbx-writer")]
+pub(crate) fn format_f64_into(text: &mut String, value: f64) -> bool {
     if !value.is_finite() {
-        return None;
+        return false;
     }
-    let mut text = format!("{value}");
-    if !text.contains(['.', 'e', 'E']) {
+    let before = text.len();
+    let _ = write!(text, "{value}");
+    if !text[before..].contains(['.', 'e', 'E']) {
         text.push_str(".0");
     }
-    Some(text)
+    true
 }
 
 /// Types a bare number by how it is written, which is all ASCII FBX offers.

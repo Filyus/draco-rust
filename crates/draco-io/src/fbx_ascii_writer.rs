@@ -31,7 +31,8 @@ use std::io;
 #[cfg(test)]
 use crate::fbx_ascii_syntax::FBX_VERSION;
 use crate::fbx_ascii_syntax::{
-    array_element_type, ascii_object_name, encode_base64, format_f64, is_base64_node, ArrayElement,
+    array_element_type, ascii_object_name, encode_base64, format_f64, format_f64_into,
+    is_base64_node, ArrayElement,
 };
 use crate::fbx_node::{FbxNode, FbxProperty};
 
@@ -47,9 +48,13 @@ const ARRAY_LINE_BUDGET: usize = 2000;
 enum Spelling {
     /// Text that goes in the property list, after the node's colon.
     Scalar(String),
-    /// One element text per value. A node has one block, so it has at most one
-    /// of these.
-    Array(Vec<String>),
+    /// The block a node carries: the count declared in the property list, and
+    /// the rendered `a:` block. A node has one block, so it has at most one of
+    /// these. The elements are spelled straight into the block text rather
+    /// than collected as one `String` per value -- a large mesh's arrays hold
+    /// millions of elements, and a `String` each showed up as most of the
+    /// ASCII writer's cost.
+    Array { count: usize, block: String },
 }
 
 /// Prints a whole document, header comment included.
@@ -82,11 +87,11 @@ fn push_indent(out: &mut String, depth: usize) {
 
 fn print_node(out: &mut String, node: &FbxNode, depth: usize) -> io::Result<()> {
     let mut scalars = Vec::new();
-    let mut array: Option<Vec<String>> = None;
+    let mut array: Option<(usize, String)> = None;
     for property in &node.properties {
-        match spell(&node.name, property)? {
+        match spell(&node.name, property, depth)? {
             Spelling::Scalar(text) => scalars.push(text),
-            Spelling::Array(texts) => {
+            Spelling::Array { count, block } => {
                 if array.is_some() {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
@@ -99,9 +104,9 @@ fn print_node(out: &mut String, node: &FbxNode, depth: usize) -> io::Result<()> 
                 }
                 // The count is declared before the block and the reader checks
                 // it against what the block lists, so it is written from the
-                // same vector rather than from the property.
-                scalars.push(format!("*{}", texts.len()));
-                array = Some(texts);
+                // same spelling rather than from the property.
+                scalars.push(format!("*{count}"));
+                array = Some((count, block));
             }
         }
     }
@@ -122,8 +127,9 @@ fn print_node(out: &mut String, node: &FbxNode, depth: usize) -> io::Result<()> 
         let _ = writeln!(out, " {properties}");
     }
 
-    if let Some(texts) = array {
-        print_array(out, &texts, depth + 1);
+    if let Some((_, block)) = array {
+        push_indent(out, depth + 1);
+        out.push_str(&block);
     }
     for child in &node.children {
         print_node(out, child, depth + 1)?;
@@ -135,37 +141,53 @@ fn print_node(out: &mut String, node: &FbxNode, depth: usize) -> io::Result<()> 
     Ok(())
 }
 
-/// Writes an array's values as the `a:` child the reader folds back onto its
-/// parent.
-fn print_array(out: &mut String, texts: &[String], depth: usize) {
-    push_indent(out, depth);
-    out.push_str("a:");
-    let mut column = depth + 2;
-    for (index, text) in texts.iter().enumerate() {
-        if index == 0 {
-            out.push(' ');
-            column += 1;
+/// Spells an array's values into the `a:` block the reader folds back onto its
+/// parent: `"a: v,v,v\n"`, wrapping at the line budget. `depth` is the node's
+/// own depth, so wrapped lines indent one block deeper than the array's name.
+fn array_block<T>(
+    depth: usize,
+    values: &[T],
+    mut spell_element: impl FnMut(&mut String, &T) -> io::Result<()>,
+) -> io::Result<String> {
+    let mut block = String::from("a:");
+    let mut column = depth + 3;
+    let mut first = true;
+    let mut text = String::new();
+    for value in values {
+        text.clear();
+        spell_element(&mut text, value)?;
+        if first {
+            block.push(' ');
+            first = false;
         } else {
-            out.push(',');
-            column += 1;
-            if column + text.len() > ARRAY_LINE_BUDGET {
-                out.push('\n');
-                push_indent(out, depth + 1);
-                column = depth + 1;
-            }
+            block.push(',');
         }
-        out.push_str(text);
+        column += 1;
+        if column + text.len() > ARRAY_LINE_BUDGET {
+            block.push('\n');
+            push_indent(&mut block, depth + 2);
+            column = depth + 2;
+        }
+        block.push_str(&text);
         column += text.len();
     }
-    out.push('\n');
+    block.push('\n');
+    Ok(block)
 }
 
-fn spell(node_name: &str, property: &FbxProperty) -> io::Result<Spelling> {
-    let floats = |values: &[f64]| -> io::Result<Vec<String>> {
-        values
-            .iter()
-            .map(|value| float(node_name, *value))
-            .collect()
+fn spell(node_name: &str, property: &FbxProperty, depth: usize) -> io::Result<Spelling> {
+    // One scratch per property: each element is spelled into it and appended
+    // to the block, so an array costs no allocation per element.
+    let spell_floats = |values: &[f64]| -> io::Result<String> {
+        array_block(depth, values, |text, value| {
+            if !format_f64_into(text, *value) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("FBX: node '{node_name}' holds {value}, which ASCII FBX cannot spell"),
+                ));
+            }
+            Ok(())
+        })
     };
     Ok(match property {
         FbxProperty::Bool(value) => Spelling::Scalar(bool_text(*value).to_string()),
@@ -191,42 +213,67 @@ fn spell(node_name: &str, property: &FbxProperty) -> io::Result<Spelling> {
         }
         // ASCII has no boolean array: the reader types an array by its node
         // name, and no name in the format denotes one.
-        FbxProperty::BoolArray(values) => Spelling::Array(
-            values
-                .iter()
-                .map(|value| u8::from(*value).to_string())
-                .collect(),
-        ),
-        FbxProperty::I32Array(values) => {
-            Spelling::Array(values.iter().map(i32::to_string).collect())
-        }
-        FbxProperty::I64Array(values) => {
-            Spelling::Array(values.iter().map(i64::to_string).collect())
-        }
+        FbxProperty::BoolArray(values) => Spelling::Array {
+            count: values.len(),
+            block: array_block(depth, values, |text, value| {
+                let _ = write!(text, "{}", u8::from(*value));
+                Ok(())
+            })?,
+        },
+        FbxProperty::I32Array(values) => Spelling::Array {
+            count: values.len(),
+            block: array_block(depth, values, |text, value| {
+                let _ = write!(text, "{value}");
+                Ok(())
+            })?,
+        },
+        FbxProperty::I64Array(values) => Spelling::Array {
+            count: values.len(),
+            block: array_block(depth, values, |text, value| {
+                let _ = write!(text, "{value}");
+                Ok(())
+            })?,
+        },
         FbxProperty::F32Array(values) => {
-            Spelling::Array(if array_element_type(node_name) == ArrayElement::F32Bits {
+            if array_element_type(node_name) == ArrayElement::F32Bits {
                 // FBX packs a cubic key's two weights into the bits of one
                 // float and ASCII prints that float's integer bit pattern.
                 // Printing the value instead yields a file this crate's own
                 // reader misreads by orders of magnitude.
-                values
-                    .iter()
-                    .map(|value| value.to_bits().to_string())
-                    .collect()
+                Spelling::Array {
+                    count: values.len(),
+                    block: array_block(depth, values, |text, value| {
+                        let _ = write!(text, "{}", value.to_bits());
+                        Ok(())
+                    })?,
+                }
             } else {
                 // Widened before printing, not after: the shortest decimal
                 // that round-trips an `f32` is not the one that round-trips
                 // the `f64` the reader builds from it, so printing the `f32`
                 // spelling would shift every value by a few last bits.
-                floats(
-                    &values
-                        .iter()
-                        .map(|value| f64::from(*value))
-                        .collect::<Vec<_>>(),
-                )?
-            })
+                Spelling::Array {
+                    count: values.len(),
+                    block: array_block(depth, values, |text, value| {
+                        let wide = f64::from(*value);
+                        if !format_f64_into(text, wide) {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                format!(
+                                    "FBX: node '{node_name}' holds {wide}, which ASCII FBX \
+                                     cannot spell"
+                                ),
+                            ));
+                        }
+                        Ok(())
+                    })?,
+                }
+            }
         }
-        FbxProperty::F64Array(values) => Spelling::Array(floats(values)?),
+        FbxProperty::F64Array(values) => Spelling::Array {
+            count: values.len(),
+            block: spell_floats(values)?,
+        },
     })
 }
 
