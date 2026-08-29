@@ -301,33 +301,43 @@ pub fn expand_to_render_mesh(source: FbxGeometryLayers<'_>) -> FbxRenderMesh {
     render
 }
 
-/// The multiply-rotate hasher from `rustc-hash` (the `FxHash` algorithm),
-/// vendored as a dozen lines rather than added as a dependency for one use.
+/// The `rustc-hash` (`FxHash`) hasher, vendored as a dozen lines rather than
+/// added as a dependency for one use.
 ///
-/// It reads the key as machine words with no seed and no finalizer, which is
-/// the point: the weld key is built from `u32::to_bits` of the corner's
-/// attributes, so key quality is already decided and `DefaultHasher`'s
-/// cryptographic mixing only costs time. An adversarial collision in this map
-/// costs a slower read, not anything worse.
+/// It reads the key as machine words with no seed, which is the point: the
+/// weld key is built from `u32::to_bits` of the corner's attributes, so key
+/// quality is already decided and `DefaultHasher`'s cryptographic mixing only
+/// costs time.
+///
+/// What it is not is a defence against a chosen-key collision. This map keys on
+/// bits that come straight out of the file, and `FxHash` is invertible by
+/// construction, so a crafted mesh can put every corner in one bucket and turn
+/// the weld quadratic. Nothing worse than slow -- there is no allocation or
+/// index driven by the hash -- but "slow" on a mesh with a million corners is
+/// its own kind of answer, and the fuzz targets read the same untrusted files.
 #[derive(Default, Clone)]
 struct WeldHasher {
     hash: u64,
 }
 
-/// The 64-bit multiplier of `rustc-hash` (`FxHash`). Odd, which is the
-/// property that matters: multiplication modulo 2^64 is then invertible, so
-/// the step loses no information, and its bits are spread enough that each
-/// input bit reaches many of the product's high bits -- which is what the
-/// rotate-then-multiply step carries across the running hash.
-const WELD_SEED: u64 = 0x51_7c_c1_b7_27_22_0a_95;
-/// The 64-bit rotate of `rustc-hash`: 23 is coprime with 64, so successive
-/// rotations keep walking all bit positions of the accumulator instead of
-/// cycling through a subset.
-const WELD_ROTATE: u32 = 23;
+/// The 64-bit multiplier of `rustc-hash` 2.x: a multiplier chosen for its
+/// spectral properties as an MCG, by Steele and Vigna. Odd, which is what makes
+/// the step lossless -- multiplication modulo 2^64 is then invertible.
+///
+/// `rustc-hash` 1.x used `0x517cc1b727220a95` with a rotate-xor step instead.
+/// Both are in the wild; this is the one the crate ships now.
+const WELD_MULTIPLIER: u64 = 0xf1_35_7a_ea_2e_62_a9_c5;
+/// Moves entropy from the top of the accumulator to the bottom, and exists
+/// because of where the result is used: a multiplicative hash leaves its best
+/// bits at the top, and `hashbrown` -- which is `std`'s `HashMap` -- takes the
+/// bucket index from the bottom. Without this the high bits of a weld key
+/// barely reach the bucket choice. `rustc-hash` picks 26, giving decent entropy
+/// up to a table of 2^26, and this map is smaller than that.
+const WELD_FINAL_ROTATE: u32 = 26;
 
 impl WeldHasher {
     fn add_word(&mut self, word: u64) {
-        self.hash = (self.hash.rotate_left(WELD_ROTATE) ^ word).wrapping_mul(WELD_SEED);
+        self.hash = self.hash.wrapping_add(word).wrapping_mul(WELD_MULTIPLIER);
     }
 }
 
@@ -357,7 +367,7 @@ impl Hasher for WeldHasher {
     }
 
     fn finish(&self) -> u64 {
-        self.hash
+        self.hash.rotate_left(WELD_FINAL_ROTATE)
     }
 }
 
