@@ -247,6 +247,46 @@ jobs:
             exit 1
           fi
 
+      # The campaign above runs the shipped build, and that leaves a whole class
+      # of check unfuzzed: `-O` compiles out every `debug_assert!` and every
+      # overflow check, so no soak can ever fail on one. Replaying the corpus
+      # under `-a`, which turns both back on, found two decoder sites the
+      # campaign had run past for as long as it has existed -- an `i32` sum of
+      # attacker-chosen varint deltas, and an octahedral invariant the decode
+      # path cannot honour (37 and 3 corpus inputs respectively).
+      #
+      # A replay rather than a second campaign, and this is the point: fuzzing
+      # *with* the checks on would let dev-time invariants steer the mutation
+      # engine, which is what the comment above rejects. `-runs=0` executes each
+      # corpus entry once and mutates nothing, so the campaign keeps targeting
+      # shipped behaviour while the corpus it accumulates gets audited under the
+      # checks. Measured at roughly a minute per target against corpora of
+      # several thousand entries.
+      #
+      # `if: always()` because a crash in the campaign says nothing about
+      # whether the corpus trips a check, and that answer is worth having on
+      # exactly the run that crashed.
+      - name: Replay corpus with debug assertions
+        if: always()
+        run: |
+          failed=""
+          for target in ${{ matrix.targets }}; do
+            echo "::group::$target"
+            if cargo +nightly fuzz run -O -a "$target" --fuzz-dir fuzz \
+              --target x86_64-unknown-linux-gnu "fuzz/corpus/$target" -- \
+              -runs=0 -rss_limit_mb=4096 -timeout=25; then
+              echo "$target: no debug-only check tripped"
+            else
+              echo "$target: tripped a debug-only check"
+              failed="$failed $target"
+            fi
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then
+            echo "::error::corpus trips debug-only checks:$failed"
+            exit 1
+          fi
+
       - name: Minimize corpora
         if: always()
         run: |
