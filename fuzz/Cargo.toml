@@ -38,6 +38,12 @@ draco-io = { path = "../crates/draco-io", default-features = false, features = [
     "obj-reader",
     "ply-reader",
     "stl-reader",
+    # And the writers, for `mesh_text_roundtrip`. They were off, so the fuzz
+    # build did not carry them at all: a NaN coordinate spelled as a finite
+    # number by the ASCII STL writer was found by hand, not by a campaign.
+    "obj-writer",
+    "ply-writer",
+    "stl-writer",
 ] }
 # KTX2 is the other untrusted binary container the workspace reads: a header
 # of file-controlled offsets and lengths, a Zstd payload that expands, and
@@ -112,3 +118,10 @@ bench = false
 [profile.release]
 debug-assertions = false
 overflow-checks = false
+
+[[bin]]
+name = "mesh_text_roundtrip"
+path = "fuzz_targets/mesh_text_roundtrip.rs"
+test = false
+doc = false
+bench = false

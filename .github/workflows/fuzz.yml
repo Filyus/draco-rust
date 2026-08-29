@@ -135,6 +135,16 @@ jobs:
             targets: mesh_text_readers
             soak_seconds: 1800
             inherit_key: fuzz-corpus-v3-readers-
+          - group: mesh_text_round
+            name: OBJ/PLY/STL round trip
+            targets: mesh_text_roundtrip
+            # The writers, which nothing fuzzed: their features were not even
+            # enabled in the fuzz build. It found a corrupt PLY on its first
+            # replay of the readers' own corpus -- a colour attribute with one
+            # component declared three channels in the header and wrote one
+            # byte -- so it starts at the parser budget rather than below it.
+            soak_seconds: 1800
+            inherit_key: fuzz-corpus-v3-readers-
           - group: fbx_read
             name: FBX reader
             targets: fbx_read_scene

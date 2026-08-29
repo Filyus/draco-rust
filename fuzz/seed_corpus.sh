@@ -30,8 +30,10 @@ case "$target" in
   ktx2_transcode)
     find_args=( -name '*.ktx2' )
     ;;
-  mesh_text_readers)
-    # Every committed mesh fixture the three readers understand.
+  mesh_text_readers|mesh_text_roundtrip)
+    # Every committed mesh fixture the three readers understand. The round-trip
+    # target takes the same ones: it reaches the writers through those readers,
+    # so a file they recognise is what starts it.
     find_args=( \( -name '*.obj' -o -name '*.ply' -o -name '*.stl' \) )
     ;;
   encode_drc)
