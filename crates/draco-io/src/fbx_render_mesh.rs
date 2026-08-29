@@ -10,7 +10,6 @@
 //! and every renderer do.
 
 use std::collections::HashMap;
-use std::hash::{BuildHasherDefault, Hasher};
 
 use draco_core::draco_types::DataType;
 use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
@@ -301,76 +300,6 @@ pub fn expand_to_render_mesh(source: FbxGeometryLayers<'_>) -> FbxRenderMesh {
     render
 }
 
-/// The `rustc-hash` (`FxHash`) hasher, vendored as a dozen lines rather than
-/// added as a dependency for one use.
-///
-/// It reads the key as machine words with no seed, which is the point: the
-/// weld key is built from `u32::to_bits` of the corner's attributes, so key
-/// quality is already decided and `DefaultHasher`'s cryptographic mixing only
-/// costs time.
-///
-/// What it is not is a defence against a chosen-key collision. This map keys on
-/// bits that come straight out of the file, and `FxHash` is invertible by
-/// construction, so a crafted mesh can put every corner in one bucket and turn
-/// the weld quadratic. Nothing worse than slow -- there is no allocation or
-/// index driven by the hash -- but "slow" on a mesh with a million corners is
-/// its own kind of answer, and the fuzz targets read the same untrusted files.
-#[derive(Default, Clone)]
-struct WeldHasher {
-    hash: u64,
-}
-
-/// The 64-bit multiplier of `rustc-hash` 2.x: a multiplier chosen for its
-/// spectral properties as an MCG, by Steele and Vigna. Odd, which is what makes
-/// the step lossless -- multiplication modulo 2^64 is then invertible.
-///
-/// `rustc-hash` 1.x used `0x517cc1b727220a95` with a rotate-xor step instead.
-/// Both are in the wild; this is the one the crate ships now.
-const WELD_MULTIPLIER: u64 = 0xf1_35_7a_ea_2e_62_a9_c5;
-/// Moves entropy from the top of the accumulator to the bottom, and exists
-/// because of where the result is used: a multiplicative hash leaves its best
-/// bits at the top, and `hashbrown` -- which is `std`'s `HashMap` -- takes the
-/// bucket index from the bottom. Without this the high bits of a weld key
-/// barely reach the bucket choice. `rustc-hash` picks 26, giving decent entropy
-/// up to a table of 2^26, and this map is smaller than that.
-const WELD_FINAL_ROTATE: u32 = 26;
-
-impl WeldHasher {
-    fn add_word(&mut self, word: u64) {
-        self.hash = self.hash.wrapping_add(word).wrapping_mul(WELD_MULTIPLIER);
-    }
-}
-
-impl Hasher for WeldHasher {
-    fn write(&mut self, bytes: &[u8]) {
-        for chunk in bytes.as_chunks::<8>().0 {
-            self.add_word(u64::from_le_bytes(*chunk));
-        }
-        let rest = bytes.as_chunks::<8>().1;
-        if !rest.is_empty() {
-            let mut word = [0u8; 8];
-            word[..rest.len()].copy_from_slice(rest);
-            self.add_word(u64::from_le_bytes(word));
-        }
-    }
-
-    fn write_u32(&mut self, value: u32) {
-        self.add_word(value as u64);
-    }
-
-    fn write_u64(&mut self, value: u64) {
-        self.add_word(value);
-    }
-
-    fn write_usize(&mut self, value: usize) {
-        self.add_word(value as u64);
-    }
-
-    fn finish(&self) -> u64 {
-        self.hash.rotate_left(WELD_FINAL_ROTATE)
-    }
-}
-
 /// Builds a Draco mesh from corner-domain data, welding corners that agree on
 /// every attribute.
 ///
@@ -393,12 +322,20 @@ pub fn build_draco_mesh(render: &FbxRenderMesh) -> Mesh {
         Option<[u32; 2]>,
         Option<[u32; 4]>,
     );
-    // The weld map is read-dominated: every corner hashes a key, and the keys
-    // are already exact bit patterns, so the key's own quality is what matters
-    // and the hasher can be the cheapest one available. `DefaultHasher`
-    // (SipHash) showed up as roughly a quarter of this function's cost on
-    // large architectural meshes.
-    let mut unique: HashMap<WeldKey, u32, BuildHasherDefault<WeldHasher>> = HashMap::default();
+    // Every corner hashes a key, and `DefaultHasher` (SipHash) showed up as
+    // roughly a quarter of this function's cost on large architectural meshes.
+    // What replaces it cannot simply be the cheapest hasher available, though:
+    // the key is attribute bits copied out of the file, so its distribution is
+    // an attacker's to choose. A multiply-based hash with a fixed constant --
+    // `FxHash` and its kin -- yields collisions to closed-form algebra rather
+    // than to search, and a mesh built from them turns this loop quadratic:
+    // measured on two-word keys, 20k of them cost 140 ms against 0 ms for the
+    // same count drawn at random, and 80k cost 2.9 s.
+    //
+    // `foldhash` is the middle ground the map wants, and is `hashbrown`'s own
+    // default: no cryptographic mixing, but a per-instance seed, so the
+    // attacker cannot compute the collisions ahead of time.
+    let mut unique: HashMap<WeldKey, u32, foldhash::fast::RandomState> = HashMap::default();
     let mut order: Vec<u32> = Vec::new();
     let mut remapped: Vec<u32> = Vec::with_capacity(render.corner_count());
 
@@ -586,6 +523,26 @@ mod tests {
         // quad's four distinct corners survive.
         assert_eq!(mesh.num_points(), 4);
         assert_eq!(mesh.num_faces(), 2);
+    }
+
+    /// The weld map's hasher seeds itself per instance, so two builds of the
+    /// same geometry hash their keys differently. Nothing about the result may
+    /// follow from that: the ids are handed out in corner order and the map is
+    /// only ever asked whether it has seen a key, never iterated.
+    #[test]
+    fn welding_gives_the_same_mesh_whatever_the_hasher_seed_is() {
+        let first = seamed_quad().to_draco_mesh();
+        let second = seamed_quad().to_draco_mesh();
+
+        assert_eq!(first.num_points(), second.num_points());
+        assert_eq!(first.num_faces(), second.num_faces());
+        for face in 0..first.num_faces() {
+            assert_eq!(
+                first.face(FaceIndex(face as u32)),
+                second.face(FaceIndex(face as u32)),
+                "face {face} came out differently"
+            );
+        }
     }
 
     /// Corner 5 of polygon 2, sitting on control point 1.
