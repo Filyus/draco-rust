@@ -109,6 +109,23 @@ jobs:
             name: draco encode
             targets: encode_drc
             soak_seconds: 7200
+            # Coverage over the corpus showed the valence traversal at 0%.
+            # `select_edgebreaker_traversal` leaves the standard walk only at
+            # 1,000 faces, a face costs three `u16` in this target's grammar,
+            # and libFuzzer's default `-max_len` of 4,096 leaves room for 680:
+            # the threshold was unreachable by construction. 16,384 covers the
+            # grammar's own 2,048-face ceiling, and `-len_control=0` stops
+            # libFuzzer from spending the run growing into it a few bytes at a
+            # time.
+            #
+            # Length alone does not get there -- measured, the valence files
+            # stayed at 0% after a run with these flags and a fresh corpus.
+            # Random index triples do not form a connected mesh that large, so
+            # the traversal is reached from the seed corpus rather than found:
+            # `valence_traversal_grid_mesh.bin` is a 24x24 grid, 1,058 faces,
+            # and it alone covers 93% of the valence encoder. The flags are
+            # what keep that seed from being truncated to 4,096 bytes.
+            extra_libfuzzer_args: "-max_len=16384 -len_control=0"
             inherit_key: fuzz-corpus-v3-draco-
           - group: mesh_text
             name: OBJ/PLY/STL readers
