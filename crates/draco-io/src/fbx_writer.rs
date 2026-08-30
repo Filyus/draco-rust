@@ -2786,7 +2786,9 @@ fn extract_vertices(mesh: &Mesh) -> Vec<f64> {
 
     for i in 0..mesh.num_points() {
         let mut bytes = [0u8; 12];
-        buffer.read(crate::traits::value_offset(att, i), &mut bytes);
+        if !buffer.try_read(crate::traits::value_offset(att, i), &mut bytes) {
+            bytes = [0u8; 12];
+        }
         let x = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64;
         let y = f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as f64;
         let z = f32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as f64;
@@ -2816,12 +2818,13 @@ fn extract_vec3_attribute(mesh: &Mesh, attribute_type: GeometryAttributeType) ->
         return None;
     }
     let att = mesh.attribute(id);
-    let stride = att.byte_stride() as usize;
     let buffer = att.buffer();
     let mut values = Vec::with_capacity(mesh.num_points() * 3);
     for i in 0..mesh.num_points() {
         let mut bytes = [0u8; 12];
-        buffer.read(i * stride, &mut bytes);
+        if !buffer.try_read(crate::traits::value_offset(att, i), &mut bytes) {
+            bytes = Default::default();
+        }
         for c in 0..3 {
             values.push(f32::from_le_bytes([
                 bytes[c * 4],
@@ -2844,12 +2847,13 @@ fn extract_uvs(mesh: &Mesh) -> Option<Vec<f64>> {
         return None;
     }
     let att = mesh.attribute(id);
-    let stride = att.byte_stride() as usize;
     let buffer = att.buffer();
     let mut values = Vec::with_capacity(mesh.num_points() * 2);
     for i in 0..mesh.num_points() {
         let mut bytes = [0u8; 8];
-        buffer.read(i * stride, &mut bytes);
+        if !buffer.try_read(crate::traits::value_offset(att, i), &mut bytes) {
+            bytes = Default::default();
+        }
         let u = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64;
         let v = f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as f64;
         values.push(u);

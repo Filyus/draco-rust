@@ -249,9 +249,12 @@ pub(crate) fn ensure_attributes_cover_points(mesh: &Mesh, format: &str) -> io::R
 /// values that repeat and a Draco stream carries the map it was written with,
 /// so several points share one value and the point index stops being an
 /// address. Upstream's writers resolve the map for the same reason.
-// The STL writer is not here: it writes triangles from positions it reads
-// through the OBJ helper's shape, and never indexes an attribute itself.
-#[cfg(any(feature = "obj-writer", feature = "ply-writer", feature = "fbx-writer"))]
+#[cfg(any(
+    feature = "obj-writer",
+    feature = "ply-writer",
+    feature = "stl-writer",
+    feature = "fbx-writer"
+))]
 pub(crate) fn value_offset(attribute: &draco_core::PointAttribute, point: usize) -> usize {
     let value = if attribute.is_mapping_identity() {
         point

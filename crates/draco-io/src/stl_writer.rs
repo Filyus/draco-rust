@@ -249,9 +249,15 @@ fn facet_normal(triangle: &[[f32; 3]; 3]) -> [f32; 3] {
 
 fn read_position(mesh: &Mesh, attribute_id: i32, point: usize) -> [f32; 3] {
     let attribute = mesh.attribute(attribute_id);
-    let stride = attribute.byte_stride() as usize;
     let mut bytes = [0u8; 12];
-    attribute.buffer().read(point * stride, &mut bytes);
+    // Through the point map, and tolerant of a value narrower than the read:
+    // the attribute may carry fewer components than three.
+    if !attribute
+        .buffer()
+        .try_read(crate::traits::value_offset(attribute, point), &mut bytes)
+    {
+        bytes = [0u8; 12];
+    }
     [
         f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
         f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),

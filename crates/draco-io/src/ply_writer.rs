@@ -1029,8 +1029,7 @@ fn read_components_as_f32<const N: usize>(att: &PointAttribute, point_idx: usize
     if component_size == 0 {
         return out;
     }
-    let stride = att.byte_stride().max(0) as usize;
-    let base = point_idx.saturating_mul(stride);
+    let base = crate::traits::value_offset(att, point_idx);
     let available = att.num_components() as usize;
     let buffer = att.buffer();
     let mut raw = [0u8; 8];
@@ -1064,7 +1063,11 @@ fn read_components_as_f32<const N: usize>(att: &PointAttribute, point_idx: usize
 fn read_f64x3(att: &PointAttribute, point_idx: usize) -> [f64; 3] {
     let buffer = att.buffer();
     let mut bytes = [0u8; 24];
-    buffer.read(crate::traits::value_offset(att, point_idx), &mut bytes);
+    // Zero where the value is narrower than three components: the attribute
+    // has fewer, and reading past it would be reading the next value.
+    if !buffer.try_read(crate::traits::value_offset(att, point_idx), &mut bytes) {
+        bytes = [0u8; 24];
+    }
     [
         f64::from_le_bytes(bytes[0..8].try_into().unwrap()),
         f64::from_le_bytes(bytes[8..16].try_into().unwrap()),
@@ -1075,7 +1078,11 @@ fn read_f64x3(att: &PointAttribute, point_idx: usize) -> [f64; 3] {
 fn read_i32x3(att: &PointAttribute, point_idx: usize) -> [i32; 3] {
     let buffer = att.buffer();
     let mut bytes = [0u8; 12];
-    buffer.read(crate::traits::value_offset(att, point_idx), &mut bytes);
+    // Zero where the value is narrower than three components: the attribute
+    // has fewer, and reading past it would be reading the next value.
+    if !buffer.try_read(crate::traits::value_offset(att, point_idx), &mut bytes) {
+        bytes = [0u8; 12];
+    }
     [
         i32::from_le_bytes(bytes[0..4].try_into().unwrap()),
         i32::from_le_bytes(bytes[4..8].try_into().unwrap()),
@@ -1086,7 +1093,11 @@ fn read_i32x3(att: &PointAttribute, point_idx: usize) -> [i32; 3] {
 fn read_u32x3(att: &PointAttribute, point_idx: usize) -> [u32; 3] {
     let buffer = att.buffer();
     let mut bytes = [0u8; 12];
-    buffer.read(crate::traits::value_offset(att, point_idx), &mut bytes);
+    // Zero where the value is narrower than three components: the attribute
+    // has fewer, and reading past it would be reading the next value.
+    if !buffer.try_read(crate::traits::value_offset(att, point_idx), &mut bytes) {
+        bytes = [0u8; 12];
+    }
     [
         u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
         u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
@@ -1108,8 +1119,12 @@ fn append_positions_from_attribute(
             let values: Vec<[f32; 3]> = (0..num_points)
                 .map(|i| {
                     let mut bytes = [0u8; 12];
-                    att.buffer()
-                        .read(crate::traits::value_offset(att, i), &mut bytes);
+                    if !att
+                        .buffer()
+                        .try_read(crate::traits::value_offset(att, i), &mut bytes)
+                    {
+                        bytes = [0u8; 12];
+                    }
                     [
                         f32::from_le_bytes(bytes[0..4].try_into().unwrap()),
                         f32::from_le_bytes(bytes[4..8].try_into().unwrap()),

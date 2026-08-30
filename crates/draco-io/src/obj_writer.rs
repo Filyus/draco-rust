@@ -221,7 +221,11 @@ fn read_float3(mesh: &Mesh, att_id: i32, point_idx: usize) -> [f32; 3] {
     let offset = crate::traits::value_offset(att, point_idx);
     let buffer = att.buffer();
     let mut bytes = [0u8; 12];
-    buffer.read(offset, &mut bytes);
+    // Zero where the value is narrower than the read: the attribute has fewer
+    // components, and reading on would be reading the next value.
+    if !buffer.try_read(offset, &mut bytes) {
+        bytes = [0u8; 12];
+    }
     [
         f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
         f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
@@ -235,7 +239,11 @@ fn read_float2(mesh: &Mesh, att_id: i32, point_idx: usize) -> [f32; 2] {
     let offset = crate::traits::value_offset(att, point_idx);
     let buffer = att.buffer();
     let mut bytes = [0u8; 8];
-    buffer.read(offset, &mut bytes);
+    // Zero where the value is narrower than the read: the attribute has fewer
+    // components, and reading on would be reading the next value.
+    if !buffer.try_read(offset, &mut bytes) {
+        bytes = [0u8; 8];
+    }
     [
         f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
         f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),

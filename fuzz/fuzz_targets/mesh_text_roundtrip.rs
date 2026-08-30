@@ -36,7 +36,7 @@
 use std::io;
 
 use draco_core::geometry_attribute::GeometryAttributeType;
-use draco_core::geometry_indices::FaceIndex;
+use draco_core::geometry_indices::{FaceIndex, PointIndex};
 use draco_core::mesh::Mesh;
 use draco_io::obj_reader::ObjReader;
 use draco_io::obj_writer::ObjWriter;
@@ -121,11 +121,20 @@ fn non_finite_components(mesh: &Mesh) -> usize {
             if point >= mesh.num_points() {
                 continue;
             }
+            // Through the point map. Several points share one value once a
+            // reader has merged the values that repeat, so the point index is
+            // not the value's address -- and reading as though it were walks
+            // off the end of the buffer, which is this oracle crashing rather
+            // than the code it is watching.
+            let value = attribute.mapped_index(PointIndex(point as u32)).0 as usize;
             for component in 0..components {
                 let mut bytes = [0u8; 4];
-                attribute
+                if !attribute
                     .buffer()
-                    .read(point * stride + component * 4, &mut bytes);
+                    .try_read(value * stride + component * 4, &mut bytes)
+                {
+                    continue;
+                }
                 if !f32::from_le_bytes(bytes).is_finite() {
                     count += 1;
                 }

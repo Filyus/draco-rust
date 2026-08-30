@@ -219,22 +219,19 @@ impl Mesh {
         if num_points == 0 {
             return;
         }
+        // A face naming a point this mesh does not have describes nothing: a
+        // PLY carries face indices straight from the file, so the count and
+        // the indices need not agree. Such a face is dropped rather than
+        // renumbered -- renumbering it would invent a point for it, which is
+        // what the face-order renumbering this replaced used to do, and what
+        // left writers emitting indices their own readers refuse.
+        self.faces
+            .retain(|face| face.iter().all(|corner| (corner.0 as usize) < num_points));
+
         let mut used = vec![false; num_points];
         for face in &self.faces {
             for corner in face.iter() {
-                let point = corner.0 as usize;
-                if point >= used.len() {
-                    // A face naming a point this mesh does not have. Its
-                    // connectivity is already inconsistent -- a PLY carries
-                    // face indices straight from the file -- and compacting
-                    // under it would make the mesh worse, not better: the
-                    // corner cannot be renumbered, so dropping the points it
-                    // should have protected can leave faces over an empty
-                    // point set, which is a mesh no writer will take back.
-                    // Left exactly as it arrived, for the encoder to refuse.
-                    return;
-                }
-                used[point] = true;
+                used[corner.0 as usize] = true;
             }
         }
         let num_used = used.iter().filter(|u| **u).count();
