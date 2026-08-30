@@ -1,6 +1,9 @@
+use std::collections::HashMap;
+
 use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
+use crate::geometry_indices::{AttributeValueIndex, PointIndex};
 use crate::metadata::{AttributeMetadata, GeometryMetadata, Metadata};
-use crate::status::DracoError;
+use crate::status::{DracoError, Status};
 
 /// Point cloud geometry with typed attributes and optional metadata.
 #[derive(Debug, Default, Clone)]
@@ -139,6 +142,97 @@ impl PointCloud {
     }
 
     /// Returns the number of logical points.
+    /// Merges bit-identical values in every attribute.
+    ///
+    /// Port of upstream's `PointCloud::DeduplicateAttributeValues`, which its
+    /// OBJ and PLY readers and its `TriangleSoupMeshBuilder` all run before
+    /// the encoder sees the geometry. Fails on an attribute whose type
+    /// upstream's own switch does not cover, which is what upstream does too.
+    pub fn deduplicate_attribute_values(&mut self) -> Status {
+        if self.num_points() == 0 {
+            return Ok(());
+        }
+        for att_id in 0..self.num_attributes() {
+            self.attribute_mut(att_id).deduplicate_values()?;
+        }
+        Ok(())
+    }
+
+    /// Merges points whose attribute values all coincide, keeping the order in
+    /// which they first appear.
+    ///
+    /// Port of upstream's `PointCloud::DeduplicatePointIds`. Two points are the
+    /// same point when every attribute maps them to the same value, which is
+    /// why [`deduplicate_attribute_values`](Self::deduplicate_attribute_values)
+    /// runs first: without it two vertices carrying equal bytes still hold
+    /// distinct value indices and nothing merges.
+    pub fn deduplicate_point_ids(&mut self) {
+        self.deduplicate_point_ids_returning_map();
+    }
+
+    /// [`deduplicate_point_ids`](Self::deduplicate_point_ids), handing back the
+    /// old-point-to-new-point map when anything merged.
+    ///
+    /// A mesh needs the map: its faces name points, and upstream's `Mesh`
+    /// override remaps them right after the point cloud's own part runs.
+    pub(crate) fn deduplicate_point_ids_returning_map(&mut self) -> Option<Vec<u32>> {
+        let num_points = self.num_points();
+        if num_points == 0 || self.num_attributes() == 0 {
+            return None;
+        }
+
+        let key_of = |pc: &Self, point: usize| -> Vec<u32> {
+            (0..pc.num_attributes())
+                .map(|att_id| {
+                    pc.attribute(att_id)
+                        .mapped_index(PointIndex(point as u32))
+                        .0
+                })
+                .collect()
+        };
+
+        let mut first_seen: HashMap<Vec<u32>, u32> = HashMap::with_capacity(num_points);
+        let mut index_map: Vec<u32> = Vec::with_capacity(num_points);
+        let mut unique_points: Vec<u32> = Vec::new();
+        let mut num_unique = 0u32;
+        for point in 0..num_points {
+            match first_seen.entry(key_of(self, point)) {
+                std::collections::hash_map::Entry::Occupied(entry) => {
+                    index_map.push(*entry.get());
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(num_unique);
+                    index_map.push(num_unique);
+                    unique_points.push(point as u32);
+                    num_unique += 1;
+                }
+            }
+        }
+        if num_unique as usize == num_points {
+            return None;
+        }
+
+        // Each survivor's value indices move down to its new point id. Read
+        // before write is safe because a survivor never moves up.
+        for &old in &unique_points {
+            let new = index_map[old as usize];
+            for att_id in 0..self.num_attributes() {
+                let value = self.attribute(att_id).mapped_index(PointIndex(old));
+                self.attribute_mut(att_id)
+                    .set_point_map_entry(PointIndex(new), value);
+            }
+        }
+        for att_id in 0..self.num_attributes() {
+            let values: Vec<AttributeValueIndex> = (0..num_unique)
+                .map(|p| self.attribute(att_id).mapped_index(PointIndex(p)))
+                .collect();
+            self.attribute_mut(att_id)
+                .set_explicit_mapping_from(&values);
+        }
+        self.set_num_points(num_unique as usize);
+        Some(index_map)
+    }
+
     pub fn num_points(&self) -> usize {
         self.num_points
     }
@@ -209,5 +303,120 @@ mod tests {
         assert!(point_cloud.try_attribute(0).is_err());
         assert!(point_cloud.try_attribute_mut(-1).is_err());
         assert!(point_cloud.try_attribute_mut(0).is_err());
+    }
+
+    /// One position repeated, under identity mapping: the values merge and the
+    /// mapping becomes explicit, because two points now name one value.
+    #[test]
+    fn identical_values_merge_and_the_mapping_turns_explicit() {
+        use crate::draco_types::DataType;
+
+        let positions: [f32; 12] = [
+            0.0, 0.0, 0.0, //
+            1.0, 0.0, 0.0, //
+            1.0, 0.0, 0.0, // the duplicate
+            0.0, 1.0, 0.0,
+        ];
+        let mut attribute = PointAttribute::new();
+        attribute.init(
+            GeometryAttributeType::Position,
+            3,
+            DataType::Float32,
+            false,
+            4,
+        );
+        let bytes: Vec<u8> = positions.iter().flat_map(|v| v.to_le_bytes()).collect();
+        attribute.buffer_mut().data_mut().copy_from_slice(&bytes);
+        attribute.set_identity_mapping();
+
+        let mut point_cloud = PointCloud::new();
+        point_cloud.set_num_points(4);
+        point_cloud.add_attribute(attribute);
+        point_cloud
+            .deduplicate_attribute_values()
+            .expect("supported");
+
+        let attribute = point_cloud.attribute(0);
+        assert_eq!(attribute.size(), 3, "the duplicate value survived");
+        assert!(!attribute.is_mapping_identity());
+        assert_eq!(
+            attribute.mapped_index(PointIndex(1)),
+            AttributeValueIndex(1)
+        );
+        assert_eq!(
+            attribute.mapped_index(PointIndex(2)),
+            AttributeValueIndex(1),
+            "the duplicate does not point at the value that replaced it"
+        );
+        assert_eq!(
+            attribute.mapped_index(PointIndex(3)),
+            AttributeValueIndex(2)
+        );
+    }
+
+    /// Points are the same point when every attribute maps them to the same
+    /// value, and the survivors keep the order they arrived in.
+    #[test]
+    fn points_naming_the_same_values_merge_in_arrival_order() {
+        use crate::draco_types::DataType;
+
+        let mut attribute = PointAttribute::new();
+        attribute.init(
+            GeometryAttributeType::Position,
+            3,
+            DataType::Float32,
+            false,
+            2,
+        );
+        let bytes: Vec<u8> = [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        attribute.buffer_mut().data_mut().copy_from_slice(&bytes);
+        // Four points over two values: 0, 1, 1, 0.
+        attribute.set_explicit_mapping_from(&[
+            AttributeValueIndex(0),
+            AttributeValueIndex(1),
+            AttributeValueIndex(1),
+            AttributeValueIndex(0),
+        ]);
+
+        let mut point_cloud = PointCloud::new();
+        point_cloud.set_num_points(4);
+        point_cloud.add_attribute(attribute);
+        point_cloud.deduplicate_point_ids();
+
+        assert_eq!(point_cloud.num_points(), 2);
+        let attribute = point_cloud.attribute(0);
+        assert_eq!(
+            attribute.mapped_index(PointIndex(0)),
+            AttributeValueIndex(0)
+        );
+        assert_eq!(
+            attribute.mapped_index(PointIndex(1)),
+            AttributeValueIndex(1)
+        );
+    }
+
+    /// Upstream's switch covers nothing 64 bits wide, and returns an error
+    /// rather than leaving the values alone. So does this.
+    #[test]
+    fn a_width_upstream_does_not_deduplicate_is_refused() {
+        use crate::draco_types::DataType;
+
+        let mut attribute = PointAttribute::new();
+        attribute.init(
+            GeometryAttributeType::Position,
+            3,
+            DataType::Float64,
+            false,
+            2,
+        );
+        attribute.set_identity_mapping();
+
+        let mut point_cloud = PointCloud::new();
+        point_cloud.set_num_points(2);
+        point_cloud.add_attribute(attribute);
+        assert!(point_cloud.deduplicate_attribute_values().is_err());
     }
 }

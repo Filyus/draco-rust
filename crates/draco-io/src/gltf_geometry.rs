@@ -328,10 +328,10 @@ pub fn decode_geometry<S: AccessorSource>(
         semantics.push((semantic.clone(), att_id as u32));
     }
 
-    // Match C++ Draco: deduplicate point IDs in face-traversal order for binary
-    // compatibility. Remapping does not change attribute ids, so `semantics`
-    // stays valid. (Draco-compressed meshes don't need this.)
-    mesh.deduplicate_point_ids();
+    // What upstream's `TriangleSoupMeshBuilder::Finalize` does, which is how
+    // its glTF reader ends. Remapping does not change attribute ids, so
+    // `semantics` stays valid. (Draco-compressed meshes don't need this.)
+    crate::mesh_finalize::finalize_mesh(&mut mesh)?;
 
     Ok((mesh, semantics))
 }

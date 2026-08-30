@@ -9,6 +9,26 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Changed
+
+- The OBJ, PLY and glTF readers finish a mesh the way upstream finishes one:
+  merge bit-identical attribute values, then merge the points those values made
+  identical. They shared a face-order renumbering before, which merges nothing,
+  so two vertices carrying the same position stayed two points. That cost
+  connectivity rather than tidiness -- triangles that should share an edge
+  shared only a corner, and the encoder wrote a larger stream that decoded to
+  more points than it was given. Measured against C++ Draco 1.5.7 on a
+  two-triangle case: 77 bytes and six decoded points before, 75 bytes and four
+  after, byte-identical to what upstream writes.
+
+  They then drop the points no face names, which upstream does not. The three
+  readers disagreed with each other about those before -- OBJ and FBX dropped
+  them by interning corners, PLY and glTF kept them -- so the same file
+  re-saved through a different format changed its point count. Keeping them
+  buys nothing: no encoder writes an unreferenced vertex, and all it reaches is
+  the quantization range, where a stray far-away vertex costs every surviving
+  coordinate precision. See `COMPATIBILITY.md`.
+
 ### Added
 
 - FBX 6100 documents are read in either container: the name-keyed object model

@@ -52,6 +52,14 @@ mod gltf_error;
 #[cfg(feature = "gltf-geometry")]
 /// Reader-agnostic accessor and Draco geometry contracts.
 pub mod gltf_geometry;
+// Every reader that builds a mesh from scratch ends through this, so its gate
+// is the union of theirs rather than the weld's.
+#[cfg(any(
+    feature = "obj-reader",
+    feature = "ply-reader",
+    feature = "gltf-geometry"
+))]
+mod mesh_finalize;
 #[cfg(any(feature = "fbx-reader", feature = "fbx-writer", feature = "obj-reader"))]
 mod mesh_weld;
 #[cfg(feature = "gltf-container")]

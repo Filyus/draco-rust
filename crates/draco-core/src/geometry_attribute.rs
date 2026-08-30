@@ -396,6 +396,141 @@ impl PointAttribute {
         Ok(())
     }
 
+    /// Merges values that are bit-identical, and remaps the point map onto
+    /// what survives. Returns how many values are left.
+    ///
+    /// Port of upstream's `PointAttribute::DeduplicateValues`, which every one
+    /// of its readers runs before handing a mesh to the encoder. Two vertices
+    /// carrying the same position arrive as two values here and as one there,
+    /// and the difference is not cosmetic: with the values merged, triangles
+    /// that shared only a vertex come to share an edge, so the encoder sees
+    /// one connected component where it otherwise sees two.
+    ///
+    /// Comparison is over the raw bytes, which is upstream's rule and not an
+    /// approximation of it: it bit-copies each value into an integer of the
+    /// same width before hashing, so `-0.0` and `0.0` are distinct values on
+    /// both sides and two `NaN`s merge exactly when their payloads match.
+    ///
+    /// Refuses the types upstream refuses -- everything 64 bits wide -- and
+    /// component counts outside `1..=4`, rather than silently doing something
+    /// upstream does not.
+    pub(crate) fn deduplicate_values(&mut self) -> Result<usize, DracoError> {
+        let stride = match self.data_type() {
+            DataType::Int8 | DataType::Uint8 | DataType::Bool => 1,
+            DataType::Int16 | DataType::Uint16 => 2,
+            DataType::Int32 | DataType::Uint32 | DataType::Float32 => 4,
+            other => {
+                return Err(DracoError::unsupported_feature(format!(
+                    "deduplicating {other:?} attribute values"
+                )))
+            }
+        } * usize::from(self.num_components());
+        if !(1..=4).contains(&self.num_components()) {
+            return Err(DracoError::unsupported_feature(format!(
+                "deduplicating a {}-component attribute",
+                self.num_components()
+            )));
+        }
+
+        let count = self.num_unique_entries;
+        // Widest supported value is four 32-bit components, so the key is
+        // inline and the map allocates nothing per entry.
+        let mut seen: std::collections::HashMap<[u8; 16], u32> =
+            std::collections::HashMap::with_capacity(count);
+        let mut value_map: Vec<u32> = Vec::with_capacity(count);
+        let mut unique = 0usize;
+        let data = self.buffer.data_mut();
+        for i in 0..count {
+            let at = i * stride;
+            let mut key = [0u8; 16];
+            key[..stride].copy_from_slice(&data[at..at + stride]);
+            match seen.entry(key) {
+                std::collections::hash_map::Entry::Occupied(entry) => {
+                    value_map.push(*entry.get());
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(unique as u32);
+                    // Survivors are packed forward as they are found, so the
+                    // buffer needs no second pass and no second allocation.
+                    data.copy_within(at..at + stride, unique * stride);
+                    value_map.push(unique as u32);
+                    unique += 1;
+                }
+            }
+        }
+        if unique == count {
+            return Ok(unique);
+        }
+
+        if self.identity_mapping {
+            // The map was point == value, so the old value count is the point
+            // count this attribute has to keep answering for.
+            self.set_explicit_mapping(count);
+            for (point, value) in value_map.iter().enumerate() {
+                self.indices_map[point] = AttributeValueIndex(*value);
+            }
+        } else {
+            for entry in self.indices_map.iter_mut() {
+                *entry = AttributeValueIndex(value_map[entry.0 as usize]);
+            }
+        }
+        self.num_unique_entries = unique;
+        Ok(unique)
+    }
+
+    /// Drops values no point maps to, and remaps the point map onto what is
+    /// left. Returns how many values survive.
+    ///
+    /// Port of upstream's `PointAttribute::RemoveUnusedValues`, which upstream
+    /// compiles only into its transcoder and never runs from a reader. Under
+    /// identity mapping every value is used by definition, so there is nothing
+    /// to do.
+    ///
+    /// A value nothing points at still costs: the encoder quantizes over the
+    /// range of the values it is given, so one stray entry spends bits on
+    /// empty space. Measured on a unit triangle carrying an unreferenced
+    /// vertex at `1000, 1000, 1000`: same encoded size, and the surviving
+    /// coordinates came back as `1.007095` instead of `1.0`.
+    pub(crate) fn remove_unused_values(&mut self) -> usize {
+        if self.identity_mapping {
+            return self.num_unique_entries;
+        }
+        let mut used = vec![false; self.num_unique_entries];
+        let mut num_used = 0usize;
+        for value in &self.indices_map {
+            let index = value.0 as usize;
+            if index < used.len() && !used[index] {
+                used[index] = true;
+                num_used += 1;
+            }
+        }
+        if num_used == self.num_unique_entries {
+            return num_used;
+        }
+
+        let stride = usize::from(self.num_components()) * self.data_type().byte_length();
+        let mut old_to_new = vec![INVALID_ATTRIBUTE_VALUE_INDEX; self.num_unique_entries];
+        let mut next = 0usize;
+        {
+            let data = self.buffer.data_mut();
+            for old in 0..used.len() {
+                if !used[old] {
+                    continue;
+                }
+                if old != next && stride > 0 {
+                    data.copy_within(old * stride..old * stride + stride, next * stride);
+                }
+                old_to_new[old] = AttributeValueIndex(next as u32);
+                next += 1;
+            }
+        }
+        for entry in self.indices_map.iter_mut() {
+            *entry = old_to_new[entry.0 as usize];
+        }
+        self.num_unique_entries = num_used;
+        num_used
+    }
+
     /// Returns the raw attribute value buffer.
     pub fn buffer(&self) -> &DataBuffer {
         &self.buffer

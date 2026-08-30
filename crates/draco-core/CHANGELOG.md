@@ -20,6 +20,11 @@ premise holds, and the encoder reports the choices it makes for itself.
 
 ### Changed
 
+- `Mesh::deduplicate_point_ids` is now upstream's operation, and what used to
+  carry that name is `Mesh::renumber_points_in_face_order`. The old name was
+  wrong in a way that hid a divergence: it renumbers points into face order and
+  drops the unreferenced, merging nothing, which reproduces the *numbering*
+  upstream's OBJ reader arrives at and none of its deduplication.
 - `DracoError::context` adds context to an error while keeping its kind, and
   the twelve decode and encode sites that rebuilt an error as
   `DracoError::general` to add a prefix now use it. Those sites flattened every
@@ -48,6 +53,22 @@ premise holds, and the encoder reports the choices it makes for itself.
 
 ### Added
 
+- `Mesh::remove_points_unused_by_faces` drops the points no face names and the
+  attribute values no point names. Neither reaches a decoder in any case --
+  both this encoder and upstream's write the geometry the connectivity reaches
+  -- but they do reach the quantization range, which is computed over the
+  values an attribute holds. A unit triangle carrying a fourth vertex at
+  `1000, 1000, 1000` encodes to the same size and returns `1.007095` where it
+  should return `1.0`. Upstream keeps them; `COMPATIBILITY.md` records the
+  departure.
+- `PointCloud::deduplicate_attribute_values` merges bit-identical values in
+  every attribute, and `PointCloud::deduplicate_point_ids` merges points whose
+  values all coincide -- `Mesh` overrides the second to rewrite the faces that
+  named the merged points. Ports of the pair upstream's OBJ and PLY readers and
+  its `TriangleSoupMeshBuilder` all run before an encode. Without them two
+  vertices carrying the same position stayed two points, so triangles that
+  should share an edge shared only a corner and the encoder saw two connected
+  components where upstream saw one.
 - `DecodeLimits`, installed with `DecoderBuffer::with_limits`, caps what one
   decode may reconstruct: points, faces, and the total size of decoded
   attribute values. Exceeding one fails with the new

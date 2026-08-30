@@ -1751,7 +1751,7 @@ fn a_pre_2_0_texcoord_predicts_from_the_portable_position() {
             .expect("attribute within bounds");
         mesh.add_attribute(attribute);
     }
-    mesh.deduplicate_point_ids();
+    mesh.renumber_points_in_face_order();
 
     let mut options = EncoderOptions::new();
     options.set_prediction_scheme(spec.prediction_scheme);
@@ -1814,7 +1814,7 @@ fn a_texcoord_predicts_from_a_uint32_position_as_the_encoder_read_it() {
             .expect("attribute within bounds");
         mesh.add_attribute(attribute);
     }
-    mesh.deduplicate_point_ids();
+    mesh.renumber_points_in_face_order();
 
     let mut options = EncoderOptions::new();
     options.set_prediction_scheme(spec.prediction_scheme);
@@ -1874,7 +1874,7 @@ fn a_texcoord_prediction_that_wraps_round_trips_through_the_shared_predictor() {
             .expect("attribute within bounds");
         mesh.add_attribute(attribute);
     }
-    mesh.deduplicate_point_ids();
+    mesh.renumber_points_in_face_order();
 
     let mut options = EncoderOptions::new();
     options.set_prediction_scheme(spec.prediction_scheme);
@@ -2007,7 +2007,7 @@ fn a_legacy_stream_reserves_two_bits_per_split_event_edge() {
             .expect("attribute within bounds");
         mesh.add_attribute(attribute);
     }
-    mesh.deduplicate_point_ids();
+    mesh.renumber_points_in_face_order();
 
     let mut options = EncoderOptions::new();
     options.set_encoding_method(spec.encoding_method);

@@ -4,6 +4,7 @@
 //! texture coordinates from ASCII and binary PLY files. Polygon faces are
 //! triangulated with a fan.
 
+use crate::mesh_finalize::finalize_mesh;
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use std::fs;
 use std::io::{self, Cursor, Write};
@@ -231,10 +232,10 @@ impl PlyReader {
             );
         }
 
+        // Upstream's PLY reader guards this on there being faces at all: a
+        // point cloud has nothing whose connectivity could change.
         if mesh.num_faces() > 0 {
-            // Match C++ Draco behavior: deduplicate point IDs in face-traversal order.
-            // This ensures binary compatibility when encoding.
-            mesh.deduplicate_point_ids();
+            finalize_mesh(&mut mesh)?;
         }
 
         Ok(mesh)
@@ -1816,8 +1817,19 @@ end_header
         let mesh =
             PlyReader::read_from_bytes(&ply).expect("CR-only binary PLY header should parse");
 
-        assert_eq!(mesh.num_points(), 24);
-        assert!(mesh.num_faces() > 0);
+        // Three of the twenty-four vertices, because the one face names three
+        // and a vertex no face names is dropped on the way out. What this test
+        // is about is the header, so it checks the payload landed at the right
+        // stride rather than counting what survived: the surviving positions
+        // are vertices 0, 1 and 2, whose x is their own index.
+        assert_eq!(mesh.num_faces(), 1);
+        assert_eq!(mesh.num_points(), 3);
+        let positions = mesh.attribute(0).read_f32s(mesh.num_points(), 3);
+        assert_eq!(
+            positions,
+            vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 2.0, 0.0, 0.0],
+            "the CR-only header left the vertex payload misaligned"
+        );
     }
 
     #[test]

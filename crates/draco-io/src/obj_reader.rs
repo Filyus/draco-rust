@@ -2,6 +2,7 @@
 //!
 //! Provides both a struct-based API (`ObjReader`) and convenience functions.
 
+use crate::mesh_finalize::finalize_mesh;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Cursor};
 use std::path::Path;
@@ -123,10 +124,12 @@ impl ObjReader {
             );
         }
 
-        // Match C++ OBJ loader behavior: deduplicate point IDs in face-traversal order.
-        // C++ creates separate points for each face corner then deduplicates them,
-        // assigning new IDs in the order points are first encountered in faces.
-        mesh.deduplicate_point_ids();
+        // What upstream's OBJ reader finishes with, in the same order: merge
+        // values that are bit-identical, then merge the points those values
+        // made identical. Two `v` lines carrying the same coordinates arrive
+        // here as two values, and leaving them apart costs connectivity --
+        // triangles that should share an edge end up sharing only a vertex.
+        finalize_mesh(&mut mesh)?;
 
         Ok(mesh)
     }

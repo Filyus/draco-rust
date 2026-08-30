@@ -212,6 +212,50 @@ mix of C++ signed and unsigned 64-bit math.
 | `a_texcoord_prediction_that_wraps_round_trips_through_the_shared_predictor` | [`draco-core/tests/encoder_hardening_test.rs`](crates/draco-core/tests/encoder_hardening_test.rs) | The round trip of `fuzz/seeds/encode_drc/texcoord_portable_encoder_wraps_where_decoder_refuses.bin` -- the input that needs both halves of this page: a prediction past the guards would refuse at encode, and an aliased reconstruction would refuse at decode. |
 | `encoder_and_decoder_produce_the_same_prediction_when_the_arithmetic_wraps` | [`draco-core/src/prediction_scheme_tex_coords_portable.rs`](crates/draco-core/src/prediction_scheme_tex_coords_portable.rs) | The two sides disagreeing about a prediction whose intermediate arithmetic wraps. |
 
+## A vertex no face uses is dropped, not carried
+
+### What this means for a file
+
+A mesh file whose vertex list includes an entry no face refers to encodes to
+different bytes here than through C++ Draco. Both sides decode the same
+triangles and the same points -- neither writes the unused vertex into the
+stream -- so what differs is precision, and this side has more of it.
+
+The vertex still reaches the encoder upstream, because the quantization range
+is computed over the values an attribute holds rather than over the ones the
+connectivity reaches. One stray entry far from the mesh therefore spends bits
+on empty space. Measured on a unit triangle carrying a fourth vertex at
+`1000, 1000, 1000`, quantized to 16 bits: the encoded size does not move at all,
+and the coordinate that should return as `1.0` returns as `1.007095`.
+
+Nothing is lost by dropping it. Upstream's own encoder writes only the geometry
+the connectivity reaches, so the unused vertex never arrives at any decoder
+either way -- keeping it buys no data and no bytes, only the wider range.
+
+How often it costs anything in practice: across eight real assets -- 1,046
+primitives and 8,753,680 vertices -- not one vertex was unreferenced. The
+divergence is real and reachable by a hand-written or generated file; it was not
+reachable by anything measured.
+
+### What each side does
+
+Upstream's readers size an attribute from the vertex list before they know which
+entries the faces use, and no later step revisits the question: its
+`PointAttribute::RemoveUnusedValues` exists, but is compiled into the transcoder
+alone and no reader calls it.
+
+Every reader here that builds a mesh from scratch ends through
+[`mesh_finalize`](crates/draco-io/src/mesh_finalize.rs), which does what
+upstream's `TriangleSoupMeshBuilder::Finalize` does -- merge bit-identical
+attribute values, then merge the points those values made identical -- and then
+one step further: drop the points no face names, and the values no point names.
+That last step is this divergence, and it is the same in OBJ, PLY and glTF,
+where before it the readers disagreed with each other as well as with upstream.
+
+A file with a *duplicated* vertex, rather than an unused one, encodes byte for
+byte the same on both sides. That case is upstream's rule faithfully ported, and
+the merge is what makes triangles that share a position share an edge.
+
 ## Smaller divergences in the same family
 
 - **A pre-2.0 `uint32` parent is read signed.** Below bitstream 2.0 upstream

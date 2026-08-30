@@ -1,4 +1,4 @@
-use crate::geometry_indices::{FaceIndex, PointIndex, VertexIndex};
+use crate::geometry_indices::{AttributeValueIndex, FaceIndex, PointIndex, VertexIndex};
 use crate::point_cloud::PointCloud;
 use crate::status::{DracoError, Status};
 use std::collections::HashMap;
@@ -171,17 +171,119 @@ impl Mesh {
         Ok(())
     }
 
-    /// Deduplicate point IDs to match C++ Draco behavior.
+    /// Merges points whose attribute values all coincide, and rewrites the
+    /// faces that named them.
     ///
-    /// This function remaps point indices such that:
-    /// 1. Points are assigned new IDs in the order they're first encountered in faces
-    /// 2. Face indices are updated to use the new point IDs
-    /// 3. Attribute point mappings are updated accordingly
-    ///
-    /// This is needed for binary compatibility with C++ Draco, which internally
-    /// creates separate points for each face corner during OBJ loading and then
-    /// deduplicates them in face-traversal order.
+    /// Port of upstream's `Mesh::ApplyPointIdDeduplication` path: the point
+    /// cloud merges the points, then the faces follow the same map. Pair it
+    /// with [`deduplicate_attribute_values`](crate::PointCloud::deduplicate_attribute_values),
+    /// which has to run first -- two vertices carrying equal bytes hold
+    /// distinct value indices until it merges them, so nothing here would see
+    /// them as one point.
     pub fn deduplicate_point_ids(&mut self) {
+        let Some(index_map) = self.point_cloud.deduplicate_point_ids_returning_map() else {
+            return;
+        };
+        for face in &mut self.faces {
+            for corner in face.iter_mut() {
+                *corner = PointIndex(index_map[corner.0 as usize]);
+            }
+        }
+    }
+
+    /// Drops points no face names, and then the attribute values left with no
+    /// point, keeping everything else in the order it was in.
+    ///
+    /// Nothing downstream keeps such a point: both this encoder and upstream's
+    /// write the geometry the connectivity reaches, so an unreferenced vertex
+    /// never reaches a decoder either way. What it does reach is the
+    /// quantization range, which is computed over the values an attribute
+    /// holds -- so a stray vertex far from the mesh spends bits on empty space
+    /// and every coordinate that survives comes back less precisely. Measured
+    /// on a unit triangle with a fourth vertex at `1000, 1000, 1000`: the
+    /// encoded size does not move and `1.0` returns as `1.007095`.
+    ///
+    /// Upstream keeps them, which is why `COMPATIBILITY.md` carries this. Its
+    /// readers size a position attribute from the vertex list before they know
+    /// which entries the faces use, and it has no step that revisits the
+    /// question -- `RemoveUnusedValues` exists there but is compiled into the
+    /// transcoder alone.
+    pub fn remove_points_unused_by_faces(&mut self) {
+        let num_points = self.num_points();
+        if num_points == 0 {
+            return;
+        }
+        let mut used = vec![false; num_points];
+        for face in &self.faces {
+            for corner in face.iter() {
+                let point = corner.0 as usize;
+                if point < used.len() {
+                    used[point] = true;
+                }
+            }
+        }
+        let num_used = used.iter().filter(|u| **u).count();
+        if num_used == num_points {
+            // Still worth the second half: an attribute can carry values no
+            // point names even when every point is named by a face.
+            self.remove_unused_attribute_values();
+            return;
+        }
+
+        let mut old_to_new = vec![u32::MAX; num_points];
+        let mut next = 0u32;
+        for (point, keep) in used.iter().enumerate() {
+            if *keep {
+                old_to_new[point] = next;
+                next += 1;
+            }
+        }
+        for face in &mut self.faces {
+            for corner in face.iter_mut() {
+                *corner = PointIndex(old_to_new[corner.0 as usize]);
+            }
+        }
+        for att_id in 0..self.point_cloud.num_attributes() {
+            let kept: Vec<AttributeValueIndex> = (0..num_points)
+                .filter(|point| used[*point])
+                .map(|point| {
+                    self.point_cloud
+                        .attribute(att_id)
+                        .mapped_index(PointIndex(point as u32))
+                })
+                .collect();
+            self.point_cloud
+                .attribute_mut(att_id)
+                .set_explicit_mapping_from(&kept);
+        }
+        self.point_cloud.set_num_points(num_used);
+        self.remove_unused_attribute_values();
+    }
+
+    /// Drops attribute values no point maps to.
+    fn remove_unused_attribute_values(&mut self) {
+        for att_id in 0..self.point_cloud.num_attributes() {
+            self.point_cloud
+                .attribute_mut(att_id)
+                .remove_unused_values();
+        }
+    }
+
+    /// Renumbers points into the order the faces first name them, dropping any
+    /// point no face names at all.
+    ///
+    /// Not a deduplication, despite what this was once called, and not
+    /// upstream's operation: [`deduplicate_point_ids`](Self::deduplicate_point_ids)
+    /// merges points whose values coincide and keeps the order they arrived
+    /// in, while this one merges nothing and reorders everything.
+    ///
+    /// What it reproduces is the *numbering* upstream's OBJ reader ends up
+    /// with, because that reader emits one point per face corner and its
+    /// point order is therefore corner order already. A reader whose points
+    /// arrive as a vertex list -- PLY, glTF -- gets a different numbering from
+    /// this than upstream gets from its own pair, so it is not a substitute
+    /// for them.
+    pub fn renumber_points_in_face_order(&mut self) {
         if self.faces.is_empty() || self.num_points() == 0 {
             return;
         }
@@ -285,7 +387,7 @@ mod tests {
     /// buffer but leave `size()` at the old count, so the attribute claimed
     /// entries whose bytes were gone and readers walked off the end.
     #[test]
-    fn deduplicate_point_ids_shrinks_attribute_size_with_its_buffer() {
+    fn renumbering_shrinks_attribute_size_with_its_buffer() {
         let mut mesh = Mesh::new();
         let num_points = 5;
         mesh.set_num_points(num_points);
@@ -312,7 +414,7 @@ mod tests {
         // Only three of the five points are reachable through a face.
         mesh.set_face(FaceIndex(0), [PointIndex(4), PointIndex(2), PointIndex(0)]);
 
-        mesh.deduplicate_point_ids();
+        mesh.renumber_points_in_face_order();
 
         assert_eq!(
             mesh.num_points(),
