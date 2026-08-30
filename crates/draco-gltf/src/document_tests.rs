@@ -169,6 +169,7 @@ fn embedded_external_assets_resolve_packaged_file_names() {
         None,
         Some(&resolver),
         &draco_io::ResourceLimits::default(),
+        &draco_core::DecodeLimits::default(),
         ValidationProfile::Gltf21Draft,
         &crate::ExtensionRegistry::default(),
     )
@@ -674,11 +675,32 @@ mod compression_tests {
         let error = import
             .decode_draco_primitive(primitive)
             .expect_err("a decoded face over a ceiling of zero");
+        assert!(
+            error.is_decode_limit_exceeded(),
+            "a caller should be able to ask without matching two levels deep: {error:?}",
+        );
         match error {
             crate::Error::Decode(error) => {
                 assert_eq!(error.kind(), ErrorKind::LimitExceeded);
             }
             other => panic!("the kind collapsed on the way out: {other:?}"),
+        }
+
+        // And the question separates the two refusals rather than answering
+        // yes to any decode failure: a truncated payload is the file being
+        // wrong, which no ceiling of the caller's produced.
+        let mut broken = glb.clone();
+        let tail = broken.len() - 8;
+        broken.truncate(tail);
+        if let Ok(import) = crate::import_slice(&broken, None) {
+            if let Some(primitive) = import.draco_primitives().next() {
+                if let Err(error) = import.decode_draco_primitive(primitive) {
+                    assert!(
+                        !error.is_decode_limit_exceeded(),
+                        "a malformed stream is not the caller's ceiling: {error:?}",
+                    );
+                }
+            }
         }
 
         // The same document under the defaults decodes: the refusal is the
@@ -920,6 +942,7 @@ mod compression_tests {
             None,
             None,
             &draco_io::ResourceLimits::default(),
+            &draco_core::DecodeLimits::default(),
             ValidationProfile::Gltf20,
             &registry,
         )
@@ -1050,6 +1073,7 @@ mod compression_tests {
                     .ok_or_else(|| draco_io::GltfError::ExternalResourceDenied(uri.into()))
             }),
             &draco_io::ResourceLimits::default(),
+            &draco_core::DecodeLimits::default(),
             ValidationProfile::Gltf20,
             &crate::ExtensionRegistry::default(),
         )
@@ -1238,6 +1262,7 @@ fn import_preserves_draft_half_float_accessors() {
         None,
         Some(&resolver),
         &draco_io::ResourceLimits::default(),
+        &draco_core::DecodeLimits::default(),
         ValidationProfile::Gltf21Draft,
         &crate::ExtensionRegistry::default(),
     )
@@ -1271,6 +1296,7 @@ fn import_materializes_sparse_accessors() {
         None,
         Some(&resolver),
         &draco_io::ResourceLimits::default(),
+        &draco_core::DecodeLimits::default(),
         ValidationProfile::Gltf20,
         &crate::ExtensionRegistry::default(),
     )
@@ -1566,6 +1592,7 @@ fn standalone_raw_geometry_roundtrips_json_and_glb() {
         None,
         Some(&resolver),
         &draco_io::ResourceLimits::default(),
+        &draco_core::DecodeLimits::default(),
         ValidationProfile::Gltf20,
         &crate::ExtensionRegistry::default(),
     )

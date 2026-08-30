@@ -19,6 +19,7 @@
 //! by design. That stays true of the format; what changes is that the caller
 //! can now say otherwise, and the default says it for them.
 
+#[cfg(feature = "decoder")]
 use crate::status::{DracoError, ErrorKind, Status};
 
 /// Ceilings on one decode, applied to what the stream reconstructs.
@@ -108,14 +109,17 @@ impl DecodeLimits {
         Self::check("points", points, self.max_points)
     }
 
+    #[cfg(feature = "decoder")]
     pub(crate) fn check_faces(self, faces: u64) -> Status {
         Self::check("faces", faces, self.max_faces)
     }
 
+    #[cfg(feature = "decoder")]
     pub(crate) fn check_decoded_bytes(self, bytes: u64) -> Status {
         Self::check("decoded attribute bytes", bytes, self.max_decoded_bytes)
     }
 
+    #[cfg(feature = "decoder")]
     fn check(what: &str, value: u64, ceiling: u64) -> Status {
         if value > ceiling {
             return Err(DracoError::new(

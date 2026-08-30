@@ -30,6 +30,10 @@ pub struct Import {
     /// Caller's ceilings on what one Draco decode may produce, applied to
     /// every primitive this import decodes -- directly, through
     /// `decompress_in_place`, and in nested assets parsed from this one.
+    ///
+    /// Gated where the *storage* is: without the decoder nothing reads it.
+    /// The parameter that carries it is not gated -- an options struct and a
+    /// function signature should not change shape with a feature.
     #[cfg(feature = "draco-decode")]
     pub(crate) draco_decode_limits: draco_core::DecodeLimits,
     #[cfg(feature = "resources")]
@@ -717,19 +721,27 @@ impl Import {
                 None,
                 Some(&packaged_resolver),
                 limits,
+                #[cfg(feature = "draco-decode")]
+                &self.draco_decode_limits,
+                #[cfg(not(feature = "draco-decode"))]
+                &draco_core::DecodeLimits::default(),
                 profile,
                 extensions,
             )?
         } else {
-            parse_with_options(&bytes, None, Some(resolver), limits, profile, extensions)?
+            parse_with_options(
+                &bytes,
+                None,
+                Some(resolver),
+                limits,
+                #[cfg(feature = "draco-decode")]
+                &self.draco_decode_limits,
+                #[cfg(not(feature = "draco-decode"))]
+                &draco_core::DecodeLimits::default(),
+                profile,
+                extensions,
+            )?
         };
-        // A nested asset decodes its Draco payloads under the same ceilings as
-        // the import that pulled it in: the caller set one policy for the
-        // scene, and an indirection does not widen it.
-        #[cfg(feature = "draco-decode")]
-        {
-            loaded.draco_decode_limits = self.draco_decode_limits;
-        }
         loaded.provenance = self.provenance.clone();
         loaded.provenance.push(source);
         Ok(loaded)
@@ -869,6 +881,7 @@ pub fn parse(bytes: &[u8], profile: ValidationProfile) -> Result<Import> {
         None,
         None,
         &ResourceLimits::default(),
+        &draco_core::DecodeLimits::default(),
         profile,
         &ExtensionRegistry::default(),
     )
@@ -888,17 +901,26 @@ pub fn open(path: impl AsRef<Path>, profile: ValidationProfile) -> Result<Import
         path.parent(),
         Some(&resolver),
         &ResourceLimits::default(),
+        &draco_core::DecodeLimits::default(),
         profile,
         &ExtensionRegistry::default(),
     )
 }
 
 /// Parses a container with explicit resource, quota, profile and extension options.
+///
+/// `draco_limits` travels with the import rather than being set on it
+/// afterwards. The difference matters only if parsing ever decodes something:
+/// it does not today, and an import built with the defaults and corrected a
+/// line later would be right by that fact alone, which is not a thing to rely
+/// on.
+#[cfg_attr(not(feature = "draco-decode"), allow(unused_variables))]
 pub fn parse_with_options(
     bytes: &[u8],
     _base: Option<&Path>,
     resolver: Option<&dyn ResourceResolver>,
     limits: &ResourceLimits,
+    draco_limits: &draco_core::DecodeLimits,
     profile: ValidationProfile,
     extensions: &ExtensionRegistry,
 ) -> Result<Import> {
@@ -944,10 +966,8 @@ pub fn parse_with_options(
         profile,
         #[cfg(any(feature = "draco-decode", feature = "draco-encode"))]
         extensions: extensions.clone(),
-        // Overridden by the options-driven entry points; `parse` and `open`
-        // decode under the defaults.
         #[cfg(feature = "draco-decode")]
-        draco_decode_limits: draco_core::decode_limits::DecodeLimits::default(),
+        draco_decode_limits: *draco_limits,
         #[cfg(feature = "resources")]
         provenance: Vec::new(),
     })

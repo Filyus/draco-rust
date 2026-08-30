@@ -100,6 +100,29 @@ pub enum Error {
     #[error("resource quota exceeded: {0}")]
     ResourceLimit(String),
 }
+
+impl Error {
+    /// Whether this is the caller's own decode ceiling refusing a large file,
+    /// rather than the decoder refusing a malformed one.
+    ///
+    /// The distinction is the whole point of
+    /// [`ErrorKind::LimitExceeded`](draco_core::ErrorKind::LimitExceeded), and
+    /// asking for it directly cost a two-level match plus an import of
+    /// `draco_core::ErrorKind` -- enough friction that a caller would sooner
+    /// treat every decode failure alike, which is what the kind exists to
+    /// prevent.
+    ///
+    /// ```
+    /// # use draco_gltf::Error;
+    /// # fn check(error: &Error) -> bool {
+    /// error.is_decode_limit_exceeded()
+    /// # }
+    /// ```
+    pub fn is_decode_limit_exceeded(&self) -> bool {
+        matches!(self, Error::Decode(error) if error.kind() == draco_core::ErrorKind::LimitExceeded)
+    }
+}
+
 /// Result type returned by this crate.
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -123,7 +146,10 @@ pub struct ImportOptions<'a> {
     /// `files` chains -- while these bound geometry a Draco stream
     /// reconstructs. The defaults match `draco_core::DecodeLimits::default`,
     /// calibrated so legitimate assets pass and an absurd header does not.
-    #[cfg(feature = "draco-decode")]
+    ///
+    /// Not gated on `draco-decode`: an options struct a caller fills in should
+    /// not change shape with a feature, or `ImportOptions { .. }` stops
+    /// compiling downstream the moment the decoder is left out.
     pub draco_decode_limits: draco_core::DecodeLimits,
     /// Profile used for basic checks and strict validation when enabled.
     pub profile: ValidationProfile,
@@ -137,7 +163,6 @@ impl Default for ImportOptions<'_> {
             external_file_policy: ExternalFilePolicy::Deny,
             resolver: None,
             limits: ResourceLimits::default(),
-            #[cfg(feature = "draco-decode")]
             draco_decode_limits: draco_core::DecodeLimits::default(),
             profile: ValidationProfile::Gltf21Draft,
             extensions: ExtensionRegistry::default(),
@@ -183,20 +208,15 @@ pub fn import_slice_with_options(bytes: &[u8], options: &ImportOptions<'_>) -> R
             .as_ref()
             .map(|value| value as &dyn ResourceResolver)
     });
-    #[cfg_attr(not(feature = "draco-decode"), allow(unused_mut))]
-    let mut import = parse_with_options(
+    parse_with_options(
         bytes,
         options.base_path,
         resolver,
         &options.limits,
+        &options.draco_decode_limits,
         options.profile,
         &options.extensions,
-    )?;
-    #[cfg(feature = "draco-decode")]
-    {
-        import.draco_decode_limits = options.draco_decode_limits;
-    }
-    Ok(import)
+    )
 }
 
 /// Applies the available checks for the pinned draft profile.

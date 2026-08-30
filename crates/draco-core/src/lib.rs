@@ -115,7 +115,11 @@ pub mod data_buffer;
 mod decode_budget;
 /// Caller-set ceilings on what one decode may produce. Public: unlike the
 /// budget above, where the ceiling sits is the caller's policy.
-#[cfg(feature = "decoder")]
+///
+/// Not gated on `decoder`, and the difference is not cosmetic: the type is a
+/// policy a caller states, so a crate that threads it through has to be able
+/// to name it whether or not the decoder is compiled in. Only the checks the
+/// decoder runs carry the gate.
 pub mod decode_limits;
 /// Coarse decode phase timing for the performance harness (`DECODE_PHASES=1`).
 #[doc(hidden)]
@@ -388,8 +392,6 @@ pub use status::{DracoError, ErrorKind, Status};
 // Decoder re-exports
 // =============================================================================
 
-#[cfg(feature = "decoder")]
-#[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
 pub use decode_limits::DecodeLimits;
 #[cfg(feature = "decoder")]
 #[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
