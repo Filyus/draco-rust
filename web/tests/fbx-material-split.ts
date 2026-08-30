@@ -95,17 +95,23 @@ const texture = { name: 'diffuse', filename: 'wood.png', content: new Uint8Array
     assert.ok(primitive.attributes.POSITION, 'every primitive keeps the mesh vertex data');
   }
 
-  // ---- a colour layer does not tint a surface the material textures -------
+  // ---- a colour layer never reaches the preview shader --------------------
+  // FBX materials have no vertex-colour term: the layer is mask data engines
+  // export, and the reference glTF written from such a file keeps no COLOR_0
+  // on any primitive. It also fed a driver-side failure that smeared NaN over
+  // the frame, so the preview drops it whatever the material textures.
   const textured = primitives.find((p: any) => p.materialIndex === 2);
   assert.equal(textured.attributes.COLOR_0, undefined, 'no COLOR_0 where a texture states the colour');
   const untextured = primitives.find((p: any) => p.materialIndex === 1);
-  assert.ok(untextured.attributes.COLOR_0, 'kept where the material states no texture');
+  assert.equal(untextured.attributes.COLOR_0, undefined, 'and none where it does not: the layer is a mask, not a colour');
 }
 
 // ---- FBX colours are floats in 0..1, not bytes in 0..255 ------------------
 {
-  // No textures anywhere, so the colour layer is the only surface colour and
-  // survives to be inspected.
+  // No textures anywhere. The colour layer is still mask data, so the preview
+  // drops it; the assertion is that dropping reads the floats as floats -- the
+  // historical bug truncated them to bytes, which the document path below
+  // would have propagated had the value been misread at the boundary.
   const parsed = parsedFbx(
     [{ name: 'plain', diffuse: [1, 1, 1], textures: [] },
       { name: 'plain2', diffuse: [1, 1, 1], textures: [] },
@@ -114,15 +120,9 @@ const texture = { name: 'diffuse', filename: 'wood.png', content: new Uint8Array
   );
   const scene = await buildSceneFromFbx(parsed, Object.create(null), {});
   const colour = scene.meshes[0].primitives[0].attributes.COLOR_0;
-  assert.ok(colour, 'the colour layer reaches the primitive');
-  assert.equal(colour.componentType, 5126, 'read as float, which is the domain FBX writes');
-  assert.equal(colour.normalized, false, 'and therefore not renormalized by 255');
-  assert.ok(colour.bytes instanceof Float32Array);
-  assert.deepEqual(
-    Array.from(colour.bytes.slice(0, 4)),
-    [1, 1, 0, 1],
-    'the authored value, not a truncation of it',
-  );
+  assert.equal(colour, undefined, 'the preview carries no colour layer at all');
+  const geometryKept = scene.meshes[0].primitives.every((p: any) => p.attributes.POSITION);
+  assert.ok(geometryKept, 'the geometry survives the drop');
 }
 
 console.log('fbx-material-split: OK');

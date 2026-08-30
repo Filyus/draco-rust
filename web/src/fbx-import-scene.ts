@@ -58,7 +58,7 @@ export async function buildSceneFromFbx(
   // scene kept the per-mesh defaults instead.
   if (documentMaterials) splitFbxPrimitivesByMaterial(scene, flatMeshes);
   await applyFbxTextures(scene, parsed, resources, hooks);
-  if (documentMaterials) dropColourLayerUnderTextures(scene);
+  if (documentMaterials) dropColourLayer(scene);
 
   const { nodes, renderables, nodeById, nodeByName, rootIndices } = buildFbxNodes(roots);
   scene.nodes = nodes;
@@ -209,22 +209,27 @@ function splitFbxPrimitivesByMaterial(scene: ViewerSceneDraft, flatMeshes: FbxJs
 }
 
 /**
- * Stop an FBX colour layer from tinting a textured surface.
+ * Keep the FBX colour layer out of the preview entirely.
  *
  * glTF's COLOR_0 multiplies the base colour, and an FBX colour layer is not
  * that. FBX materials have no vertex-colour term: the layer is data a shader
  * may sample, and a Phong material never says to. Engines export masks in it --
  * one character carried (1, 1, 0) across its body -- and the reference glTF
- * written from that same file keeps no COLOR_0 on any of its primitives.
+ * written from that same file keeps no COLOR_0 on any of its primitives, so
+ * neither does the preview.
  *
- * Where the material states no texture, the layer is the only surface colour
- * there is, so a vertex-coloured scan keeps its colours.
+ * The layer used to survive where the material states no texture, on the
+ * reasoning that there it was the only surface colour there is. What it
+ * actually carried on such files was still a mask, and feeding it to the
+ * surface shader on a skinned mesh lit up a driver-side failure that smeared
+ * NaN over the frame -- a red wash in the base-colour view, shading that reads
+ * as shadows in the photographic one. The export path is untouched: it reads
+ * the layer from the parsed document, where it is kept for the round trip.
  */
-function dropColourLayerUnderTextures(scene: ViewerSceneDraft) {
+function dropColourLayer(scene: ViewerSceneDraft) {
   for (const mesh of scene.meshes as FbxJson[]) {
     for (const primitive of mesh.primitives as FbxJson[]) {
-      const material = scene.materials[primitive.materialIndex];
-      if (!primitive.attributes?.COLOR_0 || material?.baseColorTexture == null) continue;
+      if (!primitive.attributes?.COLOR_0) continue;
       // Cloned because the split primitives of one mesh share this object.
       const { COLOR_0: _dropped, ...rest } = primitive.attributes;
       primitive.attributes = rest;
