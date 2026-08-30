@@ -936,4 +936,88 @@ mod shared_path_regressions {
             cluster
         )
     }
+
+    /// An axis an `AnimationCurveNode` connects no curve to is not animated
+    /// but not valueless: the exporter writes its constant into the node's
+    /// own `Properties70` as `d|X`/`d|Y`/`d|Z`. Reading curves only left the
+    /// static axes at zero -- a translation snapped to the origin and a scale
+    /// collapsed the object. Blender's exporter writes these entries, so the
+    /// data was there and went unread.
+    #[test]
+    fn a_static_axis_reads_its_curve_node_value() {
+        let decoded = scene(
+            "FBXHeaderExtension:  {\n\tFBXVersion: 7500\n}\n\
+             Objects:  {\n\
+             \tGeometry: 100, \"Geometry::Tri\", \"Mesh\" {\n\
+             \t\tVertices: *9 {\n\t\t\ta: 0,0,0,1,0,0,0,1,0\n\t\t}\n\
+             \t\tPolygonVertexIndex: *3 {\n\t\t\ta: 0,1,-3\n\t\t}\n\t}\n\
+             \tModel: 200, \"Model::Cube\", \"Mesh\" {\n\t}\n\
+             \tAnimationStack: 500, \"AnimStack::Take\", \"\" {\n\t}\n\
+             \tAnimationLayer: 510, \"AnimLayer::BaseLayer\", \"\" {\n\t}\n\
+             \tAnimationCurveNode: 520, \"AnimCurveNode::T\", \"\" {\n\
+             \t\tProperties70:  {\n\
+             \t\t\tP: \"d|Y\", \"Number\", \"\", \"A\",2\n\
+             \t\t\tP: \"d|Z\", \"Number\", \"\", \"A\",3\n\
+             \t\t}\n\t}\n\
+             \tAnimationCurve: 530, \"AnimCurve::X\", \"\" {\n\
+             \t\tKeyTime: *2 {\n\t\t\ta: 0,46186158000\n\t\t}\n\
+             \t\tKeyValueFloat: *2 {\n\t\t\ta: 0,10\n\t\t}\n\t}\n}\n\
+             Connections:  {\n\
+             \tC: \"OO\",100,200\n\
+             \tC: \"OO\",200,0\n\
+             \tC: \"OO\",500,0\n\
+             \tC: \"OO\",510,500\n\
+             \tC: \"OO\",520,510\n\
+             \tC: \"OP\",520,200,\"Lcl Translation\"\n\
+             \tC: \"OP\",530,520,\"d|X\"\n}\n",
+        );
+        let output = &decoded.animations[0].channels[0].sampler.output;
+        assert_eq!(
+            output,
+            &[0.0, 2.0, 3.0, 10.0, 2.0, 3.0],
+            "the static Y and Z must hold their stated values, not zero"
+        );
+    }
+
+    /// The pre-7000 `Takes` section carries no statics of its own: an axis
+    /// without a `Channel` subtree is constant at the Model's transform
+    /// property. Reading only channels left such axes at zero.
+    #[test]
+    fn a_takes_channel_reads_its_model_property_for_missing_axes() {
+        let decoded = scene(
+            "FBXHeaderExtension:  {\n\tFBXVersion: 6100\n}\n\
+             Objects:  {\n\
+             \tGeometry: \"Geometry::Tri\", \"Mesh\" {\n\
+             \t\tVertices: *9 {\n\t\t\ta: 0,0,0,1,0,0,0,1,0\n\t\t}\n\
+             \t\tPolygonVertexIndex: *3 {\n\t\t\ta: 0,1,-3\n\t\t}\n\t}\n\
+             \tModel: \"Model::Cube\", \"Mesh\" {\n\
+             \t\tProperties70:  {\n\
+             \t\t\tP: \"Lcl Translation\", \"Lcl Translation\", \"\", \"A\",0,2,3\n\
+             \t\t}\n\t}\n}\n\
+             Takes:  {\n\
+             \tTake: \"Take 001\" {\n\
+             \t\tModel: \"Model::Cube\" {\n\
+             \t\t\tChannel: \"Transform\" {\n\
+             \t\t\t\tChannel: \"T\" {\n\
+             \t\t\t\t\tChannel: \"X\" {\n\
+             \t\t\t\t\t\tDefault: 0\n\
+             \t\t\t\t\t\tKeyVer: 4005\n\
+             \t\t\t\t\t\tKeyCount: 2\n\
+             \t\t\t\t\t\tKey: 0,0,L,46186158000,10,L\n\
+             \t\t\t\t\t}\n\
+             \t\t\t\t}\n\
+             \t\t\t}\n\
+             \t\t}\n\
+             \t}\n}\n\
+             Connections:  {\n\
+             \tC: \"OO\",\"Geometry::Tri\",\"Model::Cube\"\n\
+             \tC: \"OO\",\"Model::Cube\",0\n}\n",
+        );
+        let output = &decoded.animations[0].channels[0].sampler.output;
+        assert_eq!(
+            output,
+            &[0.0, 2.0, 3.0, 10.0, 2.0, 3.0],
+            "Y and Z have no channels and must hold the model's translation"
+        );
+    }
 }

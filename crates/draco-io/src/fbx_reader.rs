@@ -1484,6 +1484,74 @@ fn property_vec3(prop: &FbxNode) -> Option<[f32; 3]> {
     (values.len() == 3).then(|| [values[0], values[1], values[2]])
 }
 
+/// Static per-axis values an `AnimationCurveNode` states for itself.
+///
+/// The `d|X`/`d|Y`/`d|Z` entries of its `Properties70` are the components the
+/// node connects no curve to -- an exporter writes the axis's constant there
+/// instead of a curve. `None` means the node states nothing for that axis.
+fn curve_node_static_values(node: &FbxNode) -> [Option<f32>; 3] {
+    let mut values = [None; 3];
+    let Some(properties) = node
+        .children
+        .iter()
+        .find(|child| child.name == "Properties70" || child.name == "Properties60")
+    else {
+        return values;
+    };
+    for property in &properties.children {
+        let Some(FbxProperty::String(name)) = property.properties.first() else {
+            continue;
+        };
+        let component = match name.as_str() {
+            "d|X" => 0,
+            "d|Y" => 1,
+            "d|Z" => 2,
+            _ => continue,
+        };
+        if values[component].is_none() {
+            values[component] = property_scalar(property);
+        }
+    }
+    values
+}
+
+/// Static per-axis values for one pre-7000 take channel group.
+///
+/// The `Takes` section carries no per-axis statics: an axis without a
+/// `Channel` subtree is constant at the Model's own transform property. A
+/// missing scaling property means identity -- the format's default -- not
+/// zero, which would collapse the object.
+fn model_static_values(model: &FbxNode, path: FbxAnimChannelPath) -> [Option<f32>; 3] {
+    let property_name = match path {
+        FbxAnimChannelPath::Translation => "Lcl Translation",
+        FbxAnimChannelPath::Rotation => "Lcl Rotation",
+        FbxAnimChannelPath::Scale => "Lcl Scaling",
+        FbxAnimChannelPath::MorphWeight => return [None; 3],
+    };
+    let property = model
+        .children
+        .iter()
+        .find(|child| child.name == "Properties70" || child.name == "Properties60")
+        .and_then(|properties| {
+            properties
+                .children
+                .iter()
+                .find(|child| {
+                    matches!(child.properties.first(), Some(FbxProperty::String(name)) if *name == property_name)
+                })
+        });
+    match property.and_then(property_vec3) {
+        Some(values) => values.map(Some),
+        None => {
+            [if path == FbxAnimChannelPath::Scale {
+                Some(1.0)
+            } else {
+                None
+            }; 3]
+        }
+    }
+}
+
 fn parse_material(properties: ObjectProperties<'_>) -> crate::fbx_scene::FbxMaterial {
     let name = object_name(properties.node());
     let shading_model = read_shading_model(properties);
@@ -2012,6 +2080,12 @@ impl<R: Read + Seek> FbxReader<R> {
         // acnode_id -> component -> curve.
         let mut acnode_curves: std::collections::HashMap<i64, ComponentCurves> =
             std::collections::HashMap::new();
+        // acnode_id -> static value per component, from the node's own
+        // `d|X`/`d|Y`/`d|Z`: an axis the node connects no curve to is not
+        // animated but still holds a value, and zeroing it would flatten a
+        // scale or snap a translation to the origin.
+        let mut acnode_statics: std::collections::HashMap<i64, [Option<f32>; 3]> =
+            std::collections::HashMap::new();
         for conn in connections {
             if conn.kind != ConnectionKind::Op {
                 continue;
@@ -2028,6 +2102,9 @@ impl<R: Read + Seek> FbxReader<R> {
                 Some("d|Z") => 2,
                 _ => continue,
             };
+            acnode_statics
+                .entry(conn.parent)
+                .or_insert_with(|| curve_node_static_values(acnode_map[&conn.parent]));
             if let Some(curve) = parse_curve(acurve_map[&conn.child]) {
                 // A later curve for the same component overwrites, which is
                 // what the map's `insert` did.
@@ -2110,6 +2187,7 @@ impl<R: Read + Seek> FbxReader<R> {
                     // First curve wins per component, which the map's
                     // `or_insert_with` guaranteed.
                     let mut by_component: ComponentCurves = Default::default();
+                    let mut static_values = [None; 3];
                     for acnode_id in acnode_ids {
                         if let Some(curves) = acnode_curves.get(acnode_id) {
                             for (component, curve) in curves.iter().enumerate() {
@@ -2118,8 +2196,16 @@ impl<R: Read + Seek> FbxReader<R> {
                                 }
                             }
                         }
+                        if let Some(statics) = acnode_statics.get(acnode_id) {
+                            for (slot, value) in static_values.iter_mut().zip(statics) {
+                                if slot.is_none() {
+                                    *slot = *value;
+                                }
+                            }
+                        }
                     }
-                    let Some(channel) = flatten_curve(&by_component, path, ktime_f) else {
+                    let Some(channel) = flatten_curve(&by_component, &static_values, path, ktime_f)
+                    else {
                         continue;
                     };
                     if let (Some(node_name), Some(&node_id)) =
@@ -2285,6 +2371,9 @@ fn parse_takes_animations(
                 let Some(model_id) = index.names.lookup(model_key) else {
                     continue;
                 };
+                let Some(model_node) = index.model_map.get(&model_id) else {
+                    continue;
+                };
                 let (Some(node_name), Some(&node_id)) =
                     (model_name_map.get(&model_id), model_node_ids.get(&model_id))
                 else {
@@ -2334,7 +2423,10 @@ fn parse_takes_animations(
                                 by_component[axis] = Some(curve);
                             }
                         }
-                        let Some(channel) = flatten_curve(&by_component, path, ktime_f) else {
+                        let static_values = model_static_values(model_node, path);
+                        let Some(channel) =
+                            flatten_curve(&by_component, &static_values, path, ktime_f)
+                        else {
                             continue;
                         };
                         max_time =
@@ -2587,8 +2679,15 @@ fn sample_curve_at(curve: &FbxAnimCurveData, time: i64) -> f32 {
 ///
 /// Where the components do agree the keys are used as authored, tangents and
 /// all. That is the case a file this decoder wrote always falls into.
+///
+/// `static_values` carries what an axis with no curve holds instead -- the
+/// `AnimationCurveNode`'s own `d|X`/`d|Y`/`d|Z` for 7.x, the model's
+/// transform property for a pre-7000 take. A component slot that has neither
+/// a curve nor a static value keeps zero, which for a scale channel would
+/// collapse the object.
 fn flatten_curve(
     by_component: &ComponentCurves,
+    static_values: &[Option<f32>; 3],
     path: FbxAnimChannelPath,
     ktime_f: f64,
 ) -> Option<FbxAnimChannel> {
@@ -2638,9 +2737,9 @@ fn flatten_curve(
         input.push((time as f64 / ktime_f) as f32);
         // `component_count` is 1 or 3 and `by_component` holds three slots, so
         // the take never shortens a path that has more components than curves.
-        for slot in by_component.iter().take(component_count) {
+        for (component_index, slot) in by_component.iter().take(component_count).enumerate() {
             let Some(curve) = slot.as_ref() else {
-                output.push(0.0);
+                output.push(static_values[component_index].unwrap_or(0.0));
                 in_tangents.push(0.0);
                 out_tangents.push(0.0);
                 continue;
@@ -3018,8 +3117,13 @@ mod tests {
             Some(curve(&[0, ticks(1.0)], &[3.0, 4.0])),
             Some(curve(&[0, ticks(1.0)], &[5.0, 6.0])),
         ];
-        let channel =
-            flatten_curve(&by_component, FbxAnimChannelPath::Translation, KTIME).expect("channel");
+        let channel = flatten_curve(
+            &by_component,
+            &[None; 3],
+            FbxAnimChannelPath::Translation,
+            KTIME,
+        )
+        .expect("channel");
         assert_eq!(channel.sampler.input, vec![0.0, 1.0]);
         assert_eq!(channel.sampler.output, vec![1.0, 3.0, 5.0, 2.0, 4.0, 6.0]);
     }
@@ -3033,8 +3137,13 @@ mod tests {
             Some(curve(&[0], &[7.0])),
             None,
         ];
-        let channel =
-            flatten_curve(&by_component, FbxAnimChannelPath::Translation, KTIME).expect("channel");
+        let channel = flatten_curve(
+            &by_component,
+            &[None; 3],
+            FbxAnimChannelPath::Translation,
+            KTIME,
+        )
+        .expect("channel");
         assert_eq!(channel.sampler.input, vec![0.0, 1.0, 2.0]);
         let y: Vec<f32> = channel.sampler.output.chunks(3).map(|c| c[1]).collect();
         assert_eq!(y, vec![7.0, 7.0, 7.0]);
@@ -3050,8 +3159,13 @@ mod tests {
             Some(curve(&[0, ticks(1.0)], &[0.0, 5.0])),
             None,
         ];
-        let channel =
-            flatten_curve(&by_component, FbxAnimChannelPath::Translation, KTIME).expect("channel");
+        let channel = flatten_curve(
+            &by_component,
+            &[None; 3],
+            FbxAnimChannelPath::Translation,
+            KTIME,
+        )
+        .expect("channel");
         assert_eq!(channel.sampler.input, vec![0.0, 1.0, 2.0]);
         let x: Vec<f32> = channel.sampler.output.chunks(3).map(|c| c[0]).collect();
         let y: Vec<f32> = channel.sampler.output.chunks(3).map(|c| c[1]).collect();
@@ -3068,8 +3182,13 @@ mod tests {
         x.in_tangents = vec![1.0, 2.0];
         x.out_tangents = vec![3.0, 4.0];
         let by_component = [Some(x), Some(curve(&[0, ticks(1.0)], &[0.0, 5.0])), None];
-        let channel =
-            flatten_curve(&by_component, FbxAnimChannelPath::Translation, KTIME).expect("channel");
+        let channel = flatten_curve(
+            &by_component,
+            &[None; 3],
+            FbxAnimChannelPath::Translation,
+            KTIME,
+        )
+        .expect("channel");
         assert_eq!(channel.sampler.interpolation, FbxAnimInterpolation::Linear);
         assert!(channel.sampler.in_tangents.is_none());
         assert!(channel.sampler.out_tangents.is_none());
