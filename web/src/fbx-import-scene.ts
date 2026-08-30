@@ -223,12 +223,22 @@ function splitFbxPrimitivesByMaterial(scene: ViewerSceneDraft, flatMeshes: FbxJs
  * file carries there is still a mask: with the layer applied, that character's
  * face came out in patches of the mask's own purple and red.
  *
- * Binding it also brings on a secondary fault whose cause is not known. The
- * frame fills with flat screen-aligned rectangles in the mask's colours, over
- * the background as well, which no per-vertex multiply can reach. The vertex
- * colours themselves arrive intact -- rendered straight to the frame with an
- * explicit NaN test, they are the authored mask and nothing is NaN -- so the
- * fault is downstream of the attribute and is only hidden here, not fixed.
+ * Binding it also brings on a secondary fault whose cause is not known, but
+ * whose shape has been measured. Drawing the primitive that carries the layer
+ * fills a screen-aligned region with the layer's own colours -- over the
+ * background as well, which no per-vertex multiply can reach. The fill tracks
+ * the data, not just the binding: a layer forced to all ones draws clean --
+ * pixel for pixel the frame that dropping the layer gives, away from the model
+ * itself -- and zeroing one channel of it recolours the wash accordingly, so
+ * the corrupt pixels are painted out of the attribute's values. That is what
+ * rules out the ordinary explanation: geometry misplaced by a bad vertex fetch
+ * would be misplaced whatever colour it carried, and a white one would wash
+ * the background grey rather than leave it untouched. Nor does the wash follow
+ * the primitive's coverage -- squeezed to a full-width slit, its fragments
+ * never reach the affected pixels, though the draw is still what summons them.
+ * The attribute's values read back intact, so the fault sits between the
+ * vertex fetch and the framebuffer, and removing the input hides it rather
+ * than fixes it.
  *
  * The export path is untouched: it reads the layer from the parsed document,
  * where it is kept for the round trip.
