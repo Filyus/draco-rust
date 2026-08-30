@@ -135,4 +135,84 @@ const complete = await readModel(objComplete[0], objComplete);
 assert.deepEqual(complete.missing, []);
 assert.ok('black.png' in complete.resources);
 
+// ---- FBX names its textures from another machine --------------------------
+// An exporter writes the authoring machine's absolute path, which resolves to
+// nothing anywhere else, so the file name is the only part that can be matched.
+// The bytes are built here rather than committed: what is under test is the
+// scan for the string property, and these are the bytes it reads.
+function fbxWithTexturePaths(paths: string[], ascii = false): Uint8Array {
+  const parts: number[] = [];
+  const push = (text: string) => {
+    for (const byte of new TextEncoder().encode(text)) parts.push(byte);
+  };
+  push('Kaydara FBX Binary  \0');
+  for (const path of paths) {
+    if (ascii) {
+      push(`\n\t\t\tRelativeFilename: "${path}"\n`);
+      continue;
+    }
+    // A binary node writes its property list straight after the node name:
+    // the tag `S`, then a little-endian length, then the text.
+    push('RelativeFilename');
+    const encoded = new TextEncoder().encode(path);
+    push('S');
+    const length = new Uint8Array(4);
+    new DataView(length.buffer).setUint32(0, encoded.length, true);
+    for (const byte of length) parts.push(byte);
+    for (const byte of encoded) parts.push(byte);
+  }
+  return new Uint8Array(parts);
+}
+
+function bytesEntry(path: string, bytes: Uint8Array) {
+  return {
+    path,
+    file: {
+      name: path.split('/').pop(),
+      size: bytes.length,
+      async arrayBuffer() {
+        opened.push(path);
+        return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      },
+    },
+  };
+}
+
+const wood = await readFile(resolve(repoRoot, 'testdata', 'test.png'));
+for (const ascii of [false, true]) {
+  const label = ascii ? 'ascii' : 'binary';
+  const fbx = fbxWithTexturePaths(
+    [
+      String.raw`D:\authoring\Exports\Content\wood.png`,
+      String.raw`D:\authoring\gone.png`,
+      // Not a texture: an animation take carries a file name too, and calling
+      // it a missing texture would be a warning about a file that never was.
+      'character|walk_cycle.tak',
+    ],
+    ascii,
+  );
+  const fbxSelection = [
+    bytesEntry('source/character.fbx', fbx),
+    // A sibling folder, which is where an exporter usually puts them.
+    bytesEntry('textures/wood.png', wood),
+    // Named by nothing, so it must stay shut.
+    bytesEntry('textures/unused.png', wood),
+  ];
+  opened.length = 0;
+  const read = await readModel(fbxSelection[0], fbxSelection);
+  assert.deepEqual(
+    opened,
+    ['source/character.fbx', 'textures/wood.png'],
+    `${label}: the model and the one texture it names, and nothing else`,
+  );
+  // Both spellings, because the reader reports whichever property it met first.
+  assert.ok(String.raw`D:\authoring\Exports\Content\wood.png` in read.resources, `${label}: the path as written`);
+  assert.ok('wood.png' in read.resources, `${label}: and the name it reduces to`);
+  assert.deepEqual(
+    read.missing,
+    [String.raw`D:\authoring\gone.png`],
+    `${label}: a texture the selection does not hold is reported, not guessed at`,
+  );
+}
+
 console.log('model-intake: OK');

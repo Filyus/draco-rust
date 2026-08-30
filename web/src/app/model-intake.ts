@@ -51,6 +51,17 @@ function directoryOf(path: string): string {
 }
 
 /**
+ * The file name at the end of a path, under either separator.
+ *
+ * Selection paths are slash-separated, but an FBX quotes the authoring
+ * machine's path verbatim, and that machine was usually Windows.
+ */
+function baseNameOf(path: string): string {
+  const slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+  return slash < 0 ? path : path.slice(slash + 1);
+}
+
+/**
  * Where a URI written inside a document at `directory` actually points.
  *
  * `..` is followed rather than refused: a model in `glTF-instancing/` naming
@@ -112,6 +123,64 @@ function objLibraries(text: string): string[] {
   return libraries;
 }
 
+/** The spellings an FBX uses for the path property of a texture or video. */
+const FBX_FILENAME_MARKERS = ['RelativeFilename', 'FileName', 'Filename'];
+
+/**
+ * What an FBX file reference has to end in to be worth going looking for.
+ *
+ * The scan below reads the property wherever it appears, and a `FileName` also
+ * hangs off things that are not textures — an animation take carries one. The
+ * extension is what separates them, and getting it wrong costs a reported
+ * missing file that was never a file.
+ */
+const FBX_TEXTURE_EXTENSIONS = new Set([
+  'png', 'jpg', 'jpeg', 'webp', 'avif', 'ktx2', 'bmp', 'gif', 'tga', 'tif', 'tiff', 'dds', 'exr',
+]);
+
+/**
+ * Every texture path an FBX names.
+ *
+ * Scanned rather than parsed. Intake runs before the WASM reader, and these are
+ * plain string properties held uncompressed, so they are legible without
+ * touching the geometry: a binary node writes its property list straight after
+ * its name -- the tag `S`, a little-endian length, then the text -- and an
+ * ASCII node writes `FileName: "..."`.
+ *
+ * The paths are usually the authoring machine's own absolute ones and point
+ * nowhere on the machine reading the file, so the caller matches them by file
+ * name. That is what every other FBX importer does with them.
+ */
+function fbxTextureNames(data: Uint8Array): string[] {
+  // Latin-1 keeps one character per byte, so offsets found in the string are
+  // offsets into the bytes and the search itself is the engine's, not ours.
+  const text = new TextDecoder('latin1').decode(data);
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const names: string[] = [];
+  for (const marker of FBX_FILENAME_MARKERS) {
+    for (let at = text.indexOf(marker); at >= 0; at = text.indexOf(marker, at + 1)) {
+      const start = at + marker.length;
+      let name = '';
+      if (text.charCodeAt(start) === 0x53 && start + 5 <= data.length) {
+        const length = view.getUint32(start + 1, true);
+        if (length > 0 && length <= 4096 && start + 5 + length <= data.length) {
+          name = new TextDecoder().decode(data.subarray(start + 5, start + 5 + length));
+        }
+      } else {
+        const open = text.indexOf('"', start);
+        const close = open < 0 ? -1 : text.indexOf('"', open + 1);
+        // Both quotes have to sit on this property's own line, or the match was
+        // a node whose name merely ends in one of the markers.
+        if (open >= 0 && close > open && !text.slice(start, open).includes('\n')) {
+          name = text.slice(open + 1, close);
+        }
+      }
+      if (FBX_TEXTURE_EXTENSIONS.has(extensionOf(name)) && !names.includes(name)) names.push(name);
+    }
+  }
+  return names;
+}
+
 /** Every texture an MTL names, under any map directive. */
 function mtlTextures(text: string): string[] {
   const textures: string[] = [];
@@ -151,6 +220,9 @@ export function findModels(entries: IntakeEntry[]): IntakeEntry[] {
  * the libraries name textures, so nothing about the images is knowable until
  * the `.mtl` files themselves have been read. They are a few kilobytes, and
  * they are the only files opened speculatively.
+ *
+ * FBX names its textures too, but by the authoring machine's absolute path, so
+ * they are matched on the file name alone. Still only what the model named.
  */
 export async function readModel(model: IntakeEntry, entries: IntakeEntry[]): Promise<IntakeResult> {
   const byPath = new Map(entries.map((entry) => [entry.path, entry]));
@@ -188,6 +260,28 @@ export async function readModel(model: IntakeEntry, entries: IntakeEntry[]): Pro
         if (entry) resources[texture] = new Uint8Array(await entry.file.arrayBuffer());
         else if (!missing.includes(texture)) missing.push(texture);
       }
+    }
+  } else if (extensionOf(model.path) === 'fbx') {
+    // An FBX names its textures by a path from the machine that authored it, so
+    // the directory is worthless and the file name is all that survives. Match
+    // on that, against the selection as supplied.
+    const byName = new Map<string, IntakeEntry>();
+    for (const entry of entries) {
+      const key = baseNameOf(entry.path);
+      if (!byName.has(key)) byName.set(key, entry);
+    }
+    for (const named of fbxTextureNames(data)) {
+      if (named in resources) continue;
+      const entry = byName.get(baseNameOf(named));
+      if (!entry) {
+        if (!missing.includes(named)) missing.push(named);
+        continue;
+      }
+      const bytes = new Uint8Array(await entry.file.arrayBuffer());
+      // Under both spellings: the reader reports whichever of the property
+      // names it met first, and the two need not agree inside one file.
+      resources[named] = bytes;
+      resources[baseNameOf(named)] = bytes;
     }
   } else {
     const document = documentJson(data);
