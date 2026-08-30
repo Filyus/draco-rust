@@ -698,16 +698,29 @@ fn parse_skin_for_geometry(
             let Some(&joint_node_id) = model_node_ids.get(&joint_model_id) else {
                 continue;
             };
-            let indices = child_i32_array(cluster, "Indexes")
-                .into_iter()
-                .filter_map(|index| u32::try_from(index).ok())
-                .collect::<Vec<_>>();
-            let mut weights = child_f64_array(cluster, "Weights")
+            // `Indexes` and `Weights` pair by position. Dropping an entry on
+            // one side only shifts every later influence onto another control
+            // point, so the arrays are filtered together: a negative index
+            // loses its weight with it, arrays of unequal length reject the
+            // cluster, and an `Indexes` array that cannot be read as `i32`
+            // -- or is absent -- leaves nothing to pair and rejects it too,
+            // rather than accepting a cluster that moves nothing.
+            let raw_indices = child_i32_array(cluster, "Indexes");
+            let weights = child_f64_array(cluster, "Weights")
                 .into_iter()
                 .map(|weight| weight as f32)
                 .collect::<Vec<_>>();
-            weights.truncate(indices.len());
-            if weights.len() != indices.len() {
+            if raw_indices.len() != weights.len() {
+                continue;
+            }
+            let (indices, weights): (Vec<u32>, Vec<f32>) = raw_indices
+                .into_iter()
+                .zip(weights)
+                .filter_map(|(index, weight)| {
+                    u32::try_from(index).ok().map(|index| (index, weight))
+                })
+                .unzip();
+            if indices.is_empty() {
                 continue;
             }
             clusters.push(crate::fbx_scene::FbxSkinCluster {

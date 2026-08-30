@@ -841,4 +841,99 @@ mod shared_path_regressions {
             "two deformers must number their targets apart, not both at 0"
         );
     }
+
+    /// A skin cluster's `Indexes` and `Weights` pair by position. Filtering
+    /// only the indices dropped a negative entry from the left side while the
+    /// weights kept their positions, and a later length "fix" truncated the
+    /// weights -- so every influence after the bad entry landed on the control
+    /// point one place earlier. A vertex could be driven by a weight meant for
+    /// a different one entirely.
+    #[test]
+    fn a_negative_cluster_index_takes_its_weight_with_it() {
+        let decoded = scene(&skin_document(Some("0,-1,1"), Some("0.25,99,0.75")));
+        let skin = decoded.root_nodes[0].mesh_instances[0]
+            .skin
+            .as_ref()
+            .expect("the skin should be read");
+        assert_eq!(skin.clusters.len(), 1);
+        let cluster = &skin.clusters[0];
+        assert_eq!(cluster.control_point_indices, vec![0, 1]);
+        // 99 belongs to the negative entry and must not land on point 1.
+        assert_eq!(cluster.weights, vec![0.25, 0.75]);
+    }
+
+    /// An `Indexes` array that yields nothing -- empty, or one the binary
+    /// reader could not narrow to `i32` -- paired with weights passed every
+    /// length check before: the cluster was accepted with zero influences and
+    /// its bone moved nothing, in silence. A cluster with nothing readable to
+    /// influence is refused. (The unreadable variant exists only in the binary
+    /// container: ASCII narrows every `Indexes` value as it parses.)
+    #[test]
+    fn an_empty_indexes_array_refuses_the_cluster() {
+        let decoded = scene(&skin_document(None, Some("0.25,0.75")));
+        let skin = decoded.root_nodes[0].mesh_instances[0]
+            .skin
+            .as_ref()
+            .expect("the skin should be read");
+        assert!(
+            skin.clusters.is_empty(),
+            "a cluster with no readable influences must be refused, not accepted inert"
+        );
+    }
+
+    /// A minimal skinned triangle: one joint, one cluster with the given
+    /// `Indexes`/`Weights` arrays.
+    fn skin_document(indexes: Option<&str>, weights: Option<&str>) -> String {
+        let cluster_arrays = |name: &str, values: Option<&str>| match values {
+            Some(values) => format!(
+                "		{name}: *{} {{
+			a: {values}
+		}}
+",
+                values.split(',').count()
+            ),
+            None => String::new(),
+        };
+        let mut cluster = String::from(
+            "	Deformer: 301, \"Deformer::Cluster\", \"Cluster\" {
+",
+        );
+        cluster.push_str(&cluster_arrays("Indexes", indexes));
+        cluster.push_str(&cluster_arrays("Weights", weights));
+        cluster.push_str(
+            "	}
+}
+",
+        );
+        format!(
+            "FBXHeaderExtension:  {{
+	FBXVersion: 7500
+}}
+             Objects:  {{
+             	Geometry: 100, \"Geometry::Tri\", \"Mesh\" {{
+             		Vertices: *9 {{
+			a: 0,0,0,1,0,0,0,1,0
+		}}
+             		PolygonVertexIndex: *3 {{
+			a: 0,1,-3
+		}}
+	}}
+             	Model: 200, \"Model::Cube\", \"Mesh\" {{
+	}}
+             	Model: 201, \"Model::Bone\", \"LimbNode\" {{
+	}}
+             	Deformer: 300, \"Deformer::Skin\", \"Skin\" {{
+	}}
+{}             Connections:  {{
+             	C: \"OO\",100,200
+             	C: \"OO\",200,0
+             	C: \"OO\",201,0
+             	C: \"OO\",300,100
+             	C: \"OO\",301,300
+             	C: \"OO\",201,301
+}}
+",
+            cluster
+        )
+    }
 }
