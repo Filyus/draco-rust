@@ -112,9 +112,9 @@ pub struct MeshEncoder {
     /// when the position group uses a different one (speed 0).
     #[allow(clippy::type_complexity)]
     attribute_traversal: Option<(Vec<PointIndex>, Vec<u32>, Vec<i32>)>,
-    /// Attributes in their portable (quantized) form, for the current group.
-    /// Prediction schemes read their parent attribute from here.
-    portable_attributes: Vec<(i32, PointAttribute)>,
+    /// The parents: attributes other schemes predict from, each with the
+    /// portable copy it is read through. See [`ParentAttributes`].
+    parent_attributes: ParentAttributes,
     /// Kept past `encode_edgebreaker_connectivity` for its corner order, which
     /// an attribute with interior seams needs to walk its own corner table.
     edgebreaker_encoder: Option<MeshEdgebreakerEncoder>,
@@ -203,6 +203,76 @@ pub struct EncodedAttributeInfo {
     pub position_max: Option<Vec<f64>>,
 }
 
+/// The parents, and the copies they are read through, in one place.
+///
+/// Upstream splits this across the controller: `MarkParentAttribute` marks an
+/// attribute another scheme predicts from, `is_parent_encoder()` reads the
+/// mark when the point map is rebuilt, and `GetPortableAttribute` answers for
+/// the copy. Here the mark and the copy are one entry: [`Self::register`]
+/// takes the copy as an argument and presence in the map *is* the mark, so a
+/// parent without a registered copy is unrepresentable rather than a missed
+/// registration that answers as success. Which attributes are parents is
+/// decided by [`Self::is_prediction_parent`] and nowhere else.
+#[derive(Default)]
+struct ParentAttributes {
+    entries: Vec<(i32, PointAttribute)>,
+}
+
+impl ParentAttributes {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    /// Whether other schemes predict from `att`.
+    ///
+    /// Every parent-reading scheme declares a `Position` parent, and the
+    /// schemes are in play below speed 4 or when asked for by number -- the
+    /// conditions `position_is_a_prediction_parent` spells out. This is the
+    /// one derivation; the encode paths register from it and never re-derive.
+    #[cfg(feature = "encoder")]
+    fn is_prediction_parent(
+        att: &PointAttribute,
+        point_cloud: &PointCloud,
+        options: &EncoderOptions,
+    ) -> bool {
+        att.attribute_type() == GeometryAttributeType::Position
+            && position_is_a_prediction_parent(point_cloud, options)
+    }
+
+    /// Marks `att_id` a parent and gives it its portable copy, in one call.
+    ///
+    /// The copy is half of what a parent is: registering without one is not
+    /// expressible, and the copy arrives with the point map already rebuilt
+    /// into encoding order, which is what a predictor reading
+    /// `mapped_index(point_id)` needs.
+    fn register(&mut self, att_id: i32, copy: PointAttribute) {
+        match self.entries.iter_mut().find(|(id, _)| *id == att_id) {
+            Some((_, existing)) => *existing = copy,
+            None => self.entries.push((att_id, copy)),
+        }
+    }
+
+    /// The registered copy of `att_id`, when it is a parent.
+    ///
+    /// Upstream's `GetPortableAttribute` falls back to the attribute itself
+    /// when its encoder made no portable form. That fallback is not answered
+    /// here: a parent is its registered copy, and anything else is not one.
+    /// The binding sites that need the attribute itself hold it separately
+    /// and choose between the two where upstream's
+    /// `portable_attribute_ != nullptr ? portable : attribute()` sits, so the
+    /// choice is written where it is made rather than folded into the lookup.
+    fn get(&self, att_id: i32) -> Option<&PointAttribute> {
+        self.entries
+            .iter()
+            .find(|(id, _)| *id == att_id)
+            .map(|(_, att)| att)
+    }
+}
+
 impl GeometryEncoder for MeshEncoder {
     fn point_cloud(&self) -> Option<&PointCloud> {
         self.mesh.as_ref().map(|m| m as &PointCloud)
@@ -243,20 +313,7 @@ impl GeometryEncoder for MeshEncoder {
     }
 
     fn get_portable_attribute(&self, att_id: i32) -> Option<&PointAttribute> {
-        // Falls back to the attribute itself when it has no portable form, as
-        // SequentialAttributeEncoder::GetPortableAttribute does. An attribute
-        // that needs no transform -- an already-integral one, say -- is its own
-        // portable form upstream, and a predictor asking for it must get it
-        // rather than a null it would treat as a failure.
-        self.portable_attributes
-            .iter()
-            .find(|(id, _)| *id == att_id)
-            .map(|(_, att)| att)
-            .or_else(|| {
-                self.mesh
-                    .as_ref()
-                    .and_then(|mesh| mesh.try_attribute(att_id).ok())
-            })
+        self.parent_attributes.get(att_id)
     }
 }
 
@@ -378,7 +435,7 @@ impl MeshEncoder {
             active_data_to_corner_map: None,
             active_vertex_to_data_map: None,
             attribute_traversal: None,
-            portable_attributes: Vec::new(),
+            parent_attributes: ParentAttributes::new(),
             edgebreaker_encoder: None,
             method: 0,
             use_single_connectivity: false,
@@ -406,7 +463,7 @@ impl MeshEncoder {
     /// rejects. Resetting in one place is the fix that does not depend on
     /// every future path remembering to.
     fn reset_derived_state(&mut self) {
-        self.portable_attributes.clear();
+        self.parent_attributes.clear();
         self.edgebreaker_encoder = None;
         self.num_encoded_faces = 0;
         self.corner_table = None;
@@ -1226,7 +1283,6 @@ impl MeshEncoder {
 
         // Store transforms and encoders for later use in transform data encoding
         let mut quantization_transforms: Vec<Option<AttributeQuantizationTransform>> = Vec::new();
-        let mut portable_attributes: Vec<Option<PointAttribute>> = Vec::new();
         let mut normal_encoders: Vec<Option<SequentialNormalAttributeEncoder>> = Vec::new();
         // Collected here rather than written straight to `self`, which is
         // borrowed as the `GeometryEncoder` the attribute encoders predict
@@ -1264,7 +1320,6 @@ impl MeshEncoder {
                     }
                     normal_encoders.push(Some(encoder));
                     quantization_transforms.push(None);
-                    portable_attributes.push(None);
                 }
                 2 => {
                     // Quantized attribute (mapping already applied at start of encode_attributes)
@@ -1290,23 +1345,22 @@ impl MeshEncoder {
                     // A quantized position is the parent the portable schemes
                     // read, and what they read must be the quantized values
                     // with the map rebuilt into encoding order -- what the
-                    // decoder reconstructs. Registered here, or
-                    // `get_portable_attribute` falls back to the raw attribute
-                    // and a float position reaches the predictor at its own
-                    // type: the route the portable-attribute invariant closes.
-                    if att.attribute_type() == GeometryAttributeType::Position
-                        && position_is_a_prediction_parent(
-                            self.point_cloud().expect("point_cloud set"),
-                            &self.options,
-                        )
-                    {
+                    // decoder reconstructs. Registration is what makes the
+                    // attribute a parent: without it there is no copy for
+                    // `get_portable_attribute` to answer, and the binding is
+                    // left with the attribute itself.
+                    if ParentAttributes::is_prediction_parent(
+                        att,
+                        self.point_cloud().expect("point_cloud set"),
+                        &self.options,
+                    ) {
                         rebuild_parent_point_map(
                             att,
                             &mut portable,
                             &self.point_ids,
                             self.point_cloud().expect("point_cloud set").num_points(),
                         )?;
-                        self.portable_attributes.push((i, portable.clone()));
+                        self.parent_attributes.register(i, portable.clone());
                     }
 
                     let mut att_encoder = SequentialIntegerAttributeEncoder::new();
@@ -1326,7 +1380,6 @@ impl MeshEncoder {
 
                     self.attribute_quantization.push((i, q_transform.clone()));
                     quantization_transforms.push(Some(q_transform));
-                    portable_attributes.push(Some(portable));
                     normal_encoders.push(None);
                 }
                 1 => {
@@ -1335,12 +1388,11 @@ impl MeshEncoder {
                     // portable schemes' parent reads, for the reason
                     // `integral_portable_attribute` gives: the predictor must
                     // read what the decoder reconstructs.
-                    if att.attribute_type() == GeometryAttributeType::Position
-                        && position_is_a_prediction_parent(
-                            self.point_cloud().expect("point_cloud set"),
-                            &self.options,
-                        )
-                    {
+                    if ParentAttributes::is_prediction_parent(
+                        att,
+                        self.point_cloud().expect("point_cloud set"),
+                        &self.options,
+                    ) {
                         let mut portable = integral_portable_attribute(att, &self.point_ids)?;
                         rebuild_parent_point_map(
                             att,
@@ -1348,7 +1400,7 @@ impl MeshEncoder {
                             &self.point_ids,
                             self.point_cloud().expect("point_cloud set").num_points(),
                         )?;
-                        self.portable_attributes.push((i, portable));
+                        self.parent_attributes.register(i, portable);
                     }
 
                     let mut att_encoder = SequentialIntegerAttributeEncoder::new();
@@ -1366,7 +1418,6 @@ impl MeshEncoder {
                         predictions.push((i, method, transform));
                     }
                     quantization_transforms.push(None);
-                    portable_attributes.push(None);
                     normal_encoders.push(None);
                 }
                 0 => {
@@ -1379,7 +1430,6 @@ impl MeshEncoder {
                         out_buffer,
                     )?;
                     quantization_transforms.push(None);
-                    portable_attributes.push(None);
                     normal_encoders.push(None);
                 }
                 _ => {
@@ -1664,19 +1714,24 @@ impl MeshEncoder {
         // the parent's portable values, and in a single pass the parent would not
         // exist yet for anything encoded ahead of it.
         let mut quantization_transforms: Vec<Option<AttributeQuantizationTransform>> = Vec::new();
+        // The copy each type-2 attribute encodes from, kept for pass two. A
+        // parent's copy is not here: it is registered on `self`, where later
+        // groups' predictors reach it, and pass two reads it there.
+        let mut own_portables: Vec<(i32, PointAttribute)> = Vec::new();
         {
             let mesh = self
                 .mesh
                 .as_ref()
                 .expect("mesh must be set before encoding");
-            let mut portables: Vec<(i32, PointAttribute)> = Vec::new();
-            // Collected rather than written straight to `self`, which is
-            // borrowed as the mesh for as long as this loop runs.
+            // Parent registrations, collected rather than written straight to
+            // `self`, which is borrowed as the mesh for as long as this loop
+            // runs.
+            let mut parent_registrations: Vec<(i32, PointAttribute)> = Vec::new();
             let mut quantized: Vec<(i32, AttributeQuantizationTransform)> = Vec::new();
             for (local_i, &att_id) in attr_ids.iter().enumerate() {
                 let att = mesh.attribute(att_id);
-                let is_parent_attribute = att.attribute_type() == GeometryAttributeType::Position
-                    && position_is_a_prediction_parent(mesh, &self.options);
+                let is_parent_attribute =
+                    ParentAttributes::is_prediction_parent(att, mesh, &self.options);
                 if decoder_types[local_i] != 2 {
                     // An already-integral parent still needs a portable form,
                     // for the reason `integral_portable_attribute` gives: the
@@ -1693,7 +1748,7 @@ impl MeshEncoder {
                         // point's own index, and the decoder -- whose parent
                         // carries the rebuilt map -- reads a different one.
                         rebuild_parent_point_map(att, &mut portable, point_ids, mesh.num_points())?;
-                        portables.push((att_id, portable));
+                        parent_registrations.push((att_id, portable));
                     }
                     quantization_transforms.push(None);
                     continue;
@@ -1726,9 +1781,10 @@ impl MeshEncoder {
                 // alone, which is what this used to say.
                 if is_parent_attribute {
                     rebuild_parent_point_map(att, &mut portable, point_ids, mesh.num_points())?;
+                    parent_registrations.push((att_id, portable));
+                } else {
+                    own_portables.push((att_id, portable));
                 }
-
-                portables.push((att_id, portable));
                 quantized.push((att_id, q_transform.clone()));
                 quantization_transforms.push(Some(q_transform));
             }
@@ -1737,15 +1793,8 @@ impl MeshEncoder {
             // here would take the position's portable values away from every
             // later group's predictors.
             self.attribute_quantization.extend(quantized);
-            for (att_id, portable) in portables {
-                match self
-                    .portable_attributes
-                    .iter_mut()
-                    .find(|(id, _)| *id == att_id)
-                {
-                    Some((_, existing)) => *existing = portable,
-                    None => self.portable_attributes.push((att_id, portable)),
-                }
+            for (att_id, portable) in parent_registrations {
+                self.parent_attributes.register(att_id, portable);
             }
         }
 
@@ -1790,11 +1839,18 @@ impl MeshEncoder {
                     normal_encoders.push(Some(encoder));
                 }
                 2 => {
+                    // The attribute's own copy: a parent's is registered on
+                    // `self`, anything else type-2 sits in this group's own
+                    // collection from pass one.
                     let portable = self
-                        .portable_attributes
-                        .iter()
-                        .find(|(id, _)| *id == att_id)
-                        .map(|(_, att)| att)
+                        .parent_attributes
+                        .get(att_id)
+                        .or_else(|| {
+                            own_portables
+                                .iter()
+                                .find(|(id, _)| *id == att_id)
+                                .map(|(_, att)| att)
+                        })
                         .ok_or_else(|| {
                             DracoError::general(format!("Missing portable attribute for {att_id}"))
                         })?;

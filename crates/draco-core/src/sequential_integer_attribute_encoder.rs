@@ -118,15 +118,17 @@ pub(crate) fn uses_inline_quantization_parameters(
 /// Binds the position parent by the rule the decoder runs, not by the scheme.
 ///
 /// The decoder offers a parent-reading scheme one of two things: the portable
-/// copy, when the position has one it may read, or -- only below bitstream
-/// 2.0, where upstream's `InitPredictionScheme` passes the attribute itself --
-/// the attribute as it stands. Which of the two applies is the version's to
-/// decide, not the scheme's: the deprecated tex-coord predictor reads real
-/// positions, but from 2.0 there are no real positions on offer to anyone,
-/// and an encode that predicted from them wrote a stream its own decoder
-/// refuses. The two arguments are the two things the decoder can reach: what
-/// `GetPortableAttribute` offers, registered copy or the attribute itself,
-/// and the attribute behind the named position id.
+/// copy, when the position is a parent with a registered one, or -- only
+/// below bitstream 2.0, where upstream's `InitPredictionScheme` passes the
+/// attribute itself -- the attribute as it stands. Which of the two applies
+/// is the version's to decide, not the scheme's: the deprecated tex-coord
+/// predictor reads real positions, but from 2.0 there are no real positions
+/// on offer to anyone, and an encode that predicted from them wrote a stream
+/// its own decoder refuses. The two arguments are the two things that can
+/// exist: the registered copy, and the attribute behind the named position
+/// id. The `None` arm below is upstream's
+/// `portable_attribute_ != nullptr ? portable : attribute()` written where
+/// the choice is made rather than folded into the lookup.
 ///
 /// At 2.0 and above a parent the portable pass cannot have written fails the
 /// way upstream's decoder fails the scheme; the selection downgrade has
@@ -142,6 +144,9 @@ fn bind_position_parent<'p>(
     let needs_position =
         || DracoError::invalid_parameter(format!("{label} prediction needs a position attribute"));
     let Some(att) = portable_position else {
+        // No registered copy. Below 2.0 that leaves the attribute itself,
+        // which is what the decoder hands over; from 2.0 there is nothing to
+        // bind and the scheme fails.
         if pre_2_0 {
             return Ok(PredictionParent::legacy(
                 raw_position.ok_or_else(needs_position)?,
@@ -959,15 +964,10 @@ impl SequentialIntegerAttributeEncoder {
                                     .to_string(),
                             ));
                         }
-                        let Some(pos_att) = encoder.get_portable_attribute(pos_att_id) else {
-                            return Err(DracoError::general(
-                                "No portable position attribute for TexCoordsPortable".to_string(),
-                            ));
-                        };
                         let parent = bind_position_parent(
                             version_major,
                             version_minor,
-                            Some(pos_att),
+                            encoder.get_portable_attribute(pos_att_id),
                             encoder
                                 .point_cloud()
                                 .unwrap()
@@ -1095,16 +1095,10 @@ impl SequentialIntegerAttributeEncoder {
                                         .to_string(),
                                 ));
                             }
-                            let Some(pos_att) = encoder.get_portable_attribute(pos_att_id) else {
-                                return Err(DracoError::general(
-                                    "No portable position attribute for GeometricNormal"
-                                        .to_string(),
-                                ));
-                            };
                             let parent = bind_position_parent(
                                 version_major,
                                 version_minor,
-                                Some(pos_att),
+                                encoder.get_portable_attribute(pos_att_id),
                                 point_cloud.named_attribute(GeometryAttributeType::Position),
                                 "Geometric normal",
                             )?;

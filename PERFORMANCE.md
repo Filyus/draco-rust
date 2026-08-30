@@ -3545,6 +3545,41 @@ reads `1.35x`, data writes `1.22x`, D1 read misses `1.36x`, last-level misses
 reference whose `IndexTypeVector` does the same thing through
 `stl_vector.h`. That is the shape of what is left.
 
+### One Owner For The Parents, And Their Copies -- Encode Flat
+
+The portable-parent invariant had its decode side structural and its encoder
+side still spread: "is this a parent" was re-derived inline at three sites
+from the attribute type plus the speed/scheme check, the copies lived in two
+stores at once (`MeshEncoder::portable_attributes` searched by id, and a
+second `Vec<Option<PointAttribute>>` local to the non-group encode loop,
+pushed in the same iteration and provably identical data -- it had no reader
+at all), and `get_portable_attribute` answered a missing registration with
+the raw attribute, reading as success what upstream answers from a mark.
+
+One owner now holds both facts: `ParentAttributes`, whose `register` takes
+the copy as an argument and whose membership *is* the mark, so a parent
+without a registered copy is unrepresentable at the type's API rather than
+asserted afterwards. `is_prediction_parent` is the single derivation; the
+non-group store is deleted; `get_portable_attribute` answers registered
+copies only, and upstream's
+`portable_attribute_ != nullptr ? portable : attribute()` ternary now sits
+explicitly in the binding helper that needs both halves instead of folded
+into the lookup. In the group path, a parent's copy is registered on the
+owner where later groups' predictors reach it, and a non-parent's own-encode
+copy stays in the group-local collection it always effectively lived in.
+
+Encoded bytes did not move: byte-identical to the previous commit on the
+Bunny at speeds 1 and 5. Encode measured flat. Speed 1 -- the cell where
+parent registration and binding actually run -- paired `ABBA`, `24` rounds:
+median `+0.19%`, signs `11`/`24`, samples of zero. Speed 5, where no parent
+scheme runs and the changed code strictly removes the upsert loop, first
+read `+0.9%` with non-overlapping build clusters across `4` layout-perturbed
+builds per side -- and did not survive a re-sweep: the same binaries, with
+one previous-tree build perturbed by swapping two function definitions,
+interleaved (previous `14,186`/`14,148` us against head `14,164`/`14,158`),
+the gap reversed sign between sweeps, and the absolute level drifted `+2.5%`
+underneath both. Machine, not code.
+
 ### The Encoder Binds By Version Too -- And Still Flat
 
 The structural parent binding started on the decode side only, and the decode
