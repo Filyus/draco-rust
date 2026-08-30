@@ -126,6 +126,13 @@ impl Error {
 /// Result type returned by this crate.
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// The decode ceilings [`ImportOptions::draco_decode_limits`] carries.
+///
+/// Re-exported because a caller has to name the type to set the field, and
+/// making that caller depend on `draco-core` for a type this crate's own API
+/// demands is a dependency it did not choose.
+pub use draco_core::DecodeLimits;
+
 /// Options controlling document loading, resource resolution and validation.
 pub struct ImportOptions<'a> {
     /// Base directory used for relative external resources.

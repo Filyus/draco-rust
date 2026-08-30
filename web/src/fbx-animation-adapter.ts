@@ -124,7 +124,17 @@ function composeFbxRotationBasis(node: AnimationTarget, input: Float32Array, val
   // Lcl Rotation keys are absolute authored values in the static FBX
   // rotation basis, not deltas from the skin BindPose. Normalizing against
   // the first key would replace the opening dance pose with the T-pose.
-  const staticBasis = node.animationTrs?.rotation || node.restTrs?.rotation || [0, 0, 0, 1];
+  //
+  // Where the node's static rotation IS the authored `Lcl Rotation` -- which
+  // is what `usesAuthoredModelTrs` says -- the key is already expressed in
+  // that basis, and multiplying by it applies the rest rotation a second
+  // time. The translation path beside this one has carried that guard since
+  // it was written; this one did not, and no fixture could tell, because in
+  // both Mixamo probes every animated bone's rest rotation is the identity.
+  // The basis is what a complex stack (PreRotation and friends) still needs.
+  const staticBasis = node.usesAuthoredModelTrs
+    ? [0, 0, 0, 1]
+    : node.animationTrs?.rotation || node.restTrs?.rotation || [0, 0, 0, 1];
   for (let frame = 0; frame < input.length; frame++) {
     const offset = frame * 3;
     const q = quatMultiply(staticBasis, eulerXyzToQuat(
@@ -132,6 +142,27 @@ function composeFbxRotationBasis(node: AnimationTarget, input: Float32Array, val
       values[offset + 1] || 0,
       values[offset + 2] || 0,
     ));
+    // Keep consecutive keys in one hemisphere. `q` and `-q` are the same
+    // rotation, and converting each Euler key on its own lands on whichever
+    // sign the arithmetic produced; a pair that straddles the boundary is 180
+    // degrees apart as quaternions, and interpolating between them linearly
+    // passes through zero -- the bone snaps rather than turns. Measured on one
+    // character: 8 flips across 341 channels, two of them within a quarter
+    // second of the clip's midpoint, one on a root bone. glTF requires the
+    // same continuity of its own quaternion samplers.
+    if (frame > 0) {
+      const previous = frame * 4 - 4;
+      const dot = q[0] * quatOut[previous]
+        + q[1] * quatOut[previous + 1]
+        + q[2] * quatOut[previous + 2]
+        + q[3] * quatOut[previous + 3];
+      if (dot < 0) {
+        q[0] = -q[0];
+        q[1] = -q[1];
+        q[2] = -q[2];
+        q[3] = -q[3];
+      }
+    }
     quatOut[frame * 4] = q[0];
     quatOut[frame * 4 + 1] = q[1];
     quatOut[frame * 4 + 2] = q[2];

@@ -7,8 +7,8 @@ use draco_gltf::AccessorData;
 #[cfg(any(feature = "accessors", feature = "raw-resources"))]
 use draco_gltf::DocumentAccessorSource;
 use draco_gltf::{
-    parse, parse_with_options, Document, ExtensionRegistry, Import, OutputFormat, ResourceLimits,
-    ResourceResolver, ValidationProfile,
+    parse, parse_with_options, DecodeLimits, Document, ExtensionRegistry, Import, OutputFormat,
+    ResourceLimits, ResourceResolver, ValidationProfile,
 };
 #[cfg(feature = "read")]
 use draco_gltf::{ComponentType, PackedAttribute, PackedIndices, PrimitiveIndex, PrimitiveMode};
@@ -289,6 +289,7 @@ impl GltfAsset {
             None,
             Some(&resolver),
             &ResourceLimits::default(),
+            &DecodeLimits::default(),
             profile(validation_profile)?,
             &ExtensionRegistry::default(),
         )
