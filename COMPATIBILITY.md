@@ -233,9 +233,12 @@ the connectivity reaches, so the unused vertex never arrives at any decoder
 either way -- keeping it buys no data and no bytes, only the wider range.
 
 How often it costs anything in practice: across eight real assets -- 1,046
-primitives and 8,753,680 vertices -- not one vertex was unreferenced. The
-divergence is real and reachable by a hand-written or generated file; it was not
-reachable by anything measured.
+primitives and 8,753,680 vertices -- not one vertex was unreferenced, and not
+one carried values duplicating another's. Neither half of the finalization
+changes a delivered glTF at all: its exporters have already done both. The
+divergence is real and reachable by a hand-written or generated file -- an OBJ
+written by script, a scanner's PLY -- and was not reachable by anything
+measured.
 
 ### What each side does
 
