@@ -285,15 +285,15 @@ jobs:
             if cargo +nightly fuzz run -O -a "$target" --fuzz-dir fuzz \
               --target x86_64-unknown-linux-gnu "fuzz/corpus/$target" -- \
               -runs=0 -rss_limit_mb=4096 -timeout=25; then
-              echo "$target: no debug-only check tripped"
+              echo "$target: corpus replayed clean"
             else
-              echo "$target: tripped a debug-only check"
+              echo "$target: a corpus entry failed the replay"
               failed="$failed $target"
             fi
             echo "::endgroup::"
           done
           if [ -n "$failed" ]; then
-            echo "::error::corpus trips debug-only checks:$failed"
+            echo "::error::corpus entries failed the replay:$failed"
             exit 1
           fi
 
