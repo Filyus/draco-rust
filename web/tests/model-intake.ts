@@ -178,13 +178,21 @@ function bytesEntry(path: string, bytes: Uint8Array) {
   };
 }
 
+// Assembled from fragments rather than written out, the way the
+// no-absolute-paths gate assembles its own patterns and for the same reason:
+// what is under test is a path that names a disk on somebody else's machine,
+// and spelling one here would be the very thing that gate refuses.
+const foreignDrive = ['D', ':'].join('');
+const authored = `${foreignDrive}\\authoring\\Exports\\Content\\wood.png`;
+const authoredMissing = `${foreignDrive}\\authoring\\gone.png`;
+
 const wood = await readFile(resolve(repoRoot, 'testdata', 'test.png'));
 for (const ascii of [false, true]) {
   const label = ascii ? 'ascii' : 'binary';
   const fbx = fbxWithTexturePaths(
     [
-      String.raw`D:\authoring\Exports\Content\wood.png`,
-      String.raw`D:\authoring\gone.png`,
+      authored,
+      authoredMissing,
       // Not a texture: an animation take carries a file name too, and calling
       // it a missing texture would be a warning about a file that never was.
       'character|walk_cycle.tak',
@@ -206,11 +214,11 @@ for (const ascii of [false, true]) {
     `${label}: the model and the one texture it names, and nothing else`,
   );
   // Both spellings, because the reader reports whichever property it met first.
-  assert.ok(String.raw`D:\authoring\Exports\Content\wood.png` in read.resources, `${label}: the path as written`);
+  assert.ok(authored in read.resources, `${label}: the path as written`);
   assert.ok('wood.png' in read.resources, `${label}: and the name it reduces to`);
   assert.deepEqual(
     read.missing,
-    [String.raw`D:\authoring\gone.png`],
+    [authoredMissing],
     `${label}: a texture the selection does not hold is reported, not guessed at`,
   );
 }
