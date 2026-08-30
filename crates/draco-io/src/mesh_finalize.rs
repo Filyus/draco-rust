@@ -44,13 +44,17 @@ pub(crate) fn finalize_mesh(mesh: &mut Mesh) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use draco_core::geometry_indices::{FaceIndex, PointIndex};
+    #[cfg(feature = "obj-reader")]
+    use draco_core::geometry_indices::FaceIndex;
+    #[cfg(feature = "ply-reader")]
+    use draco_core::geometry_indices::PointIndex;
 
     /// Two `v` lines carrying the same coordinates are one vertex once the
     /// values merge, and the triangles around them then share an edge rather
     /// than a single corner. Measured against C++ Draco 1.5.7 on this exact
     /// geometry: it encodes to the same 75 bytes, and before the merge this
     /// crate wrote 77 and decoded six points instead of four.
+    #[cfg(feature = "obj-reader")]
     #[test]
     fn two_vertices_at_one_position_become_one_point() {
         let obj = "v 0 0 0\nv 1 0 0\nv 0 1 0\nv 1 0 0\nv 1 1 0\nf 1 2 3\nf 4 5 3\n";
@@ -76,6 +80,7 @@ mod tests {
     /// A vertex no face refers to leaves before the encoder sees the mesh, and
     /// leaves the same way in every reader -- the three disagreed before this
     /// was one step: OBJ dropped it by interning corners, PLY and glTF kept it.
+    #[cfg(feature = "obj-reader")]
     #[test]
     fn a_vertex_no_face_uses_is_dropped() {
         let obj = "v 0 0 0
@@ -94,6 +99,7 @@ f 1 2 3
         );
     }
 
+    #[cfg(feature = "ply-reader")]
     #[test]
     fn the_ply_reader_merges_the_same_way() {
         let mut ply = b"ply\nformat binary_little_endian 1.0\nelement vertex 5\n\

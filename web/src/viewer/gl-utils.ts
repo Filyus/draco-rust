@@ -1,6 +1,11 @@
 /** Thin WebGL helpers shared by every pass. */
 
-export const GL = WebGL2RenderingContext;
+// Read off `globalThis` rather than named directly: this module is reachable
+// from code that only wants `byteView`, and a bare reference throws a
+// `ReferenceError` at import time wherever the class does not exist -- which
+// is every Node test that never touches a GL context.
+export const GL = (globalThis as { WebGL2RenderingContext?: typeof WebGL2RenderingContext })
+  .WebGL2RenderingContext as typeof WebGL2RenderingContext;
 
 // createShader and createProgram return null only on a lost context, where
 // the original code already failed at its next call.
