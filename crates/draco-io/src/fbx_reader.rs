@@ -2487,11 +2487,40 @@ fn parse_legacy_curve(channel: &FbxNode, ktime_f: f64) -> Option<FbxAnimCurveDat
     })
 }
 
+/// Value of one component curve at an arbitrary key time.
+///
+/// Linear between the bracketing keys, constant outside the curve's own range,
+/// which is FBX's default extrapolation.
+fn sample_curve_at(curve: &FbxAnimCurveData, time: i64) -> f32 {
+    let value_at = |index: usize| curve.key_values.get(index).copied().unwrap_or(0.0);
+    match curve.key_times.binary_search(&time) {
+        Ok(index) => value_at(index),
+        Err(0) => value_at(0),
+        Err(index) if index >= curve.key_times.len() => value_at(curve.key_times.len() - 1),
+        Err(index) => {
+            let (before, after) = (curve.key_times[index - 1], curve.key_times[index]);
+            let span = after.saturating_sub(before) as f64;
+            let position = if span > 0.0 {
+                (time.saturating_sub(before) as f64) / span
+            } else {
+                0.0
+            };
+            let start = f64::from(value_at(index - 1));
+            let end = f64::from(value_at(index));
+            (start + (end - start) * position) as f32
+        }
+    }
+}
+
 /// Combine per-component curves into a single TRS channel sampler.
 ///
-/// Times are taken from the X (component 0) curve when available, then Y, then
-/// Z. Missing components default to 0. Interpolation is read from the first
-/// `KeyAttrFlags` entry of the chosen time axis.
+/// Each component is a separate `AnimationCurve` object with its own key grid;
+/// nothing in the format ties the three together, and exporters routinely
+/// write a different key count per axis. So the times are the union of every
+/// component's keys, and each component is sampled at them.
+///
+/// Where the components do agree the keys are used as authored, tangents and
+/// all. That is the case a file this decoder wrote always falls into.
 fn flatten_curve(
     by_component: &ComponentCurves,
     path: FbxAnimChannelPath,
@@ -2501,34 +2530,64 @@ fn flatten_curve(
         .as_ref()
         .or_else(|| by_component[1].as_ref())
         .or_else(|| by_component[2].as_ref())?;
-    let n = time_axis.key_times.len();
-    let mut input = Vec::with_capacity(n);
     let component_count = path.component_count();
+    // Reading component `i` at component 0's `i`-th key time is wrong twice
+    // over: it takes the value from whatever moment that axis happens to have
+    // a key at, and past the shorter curve's last key it takes no value at
+    // all. One character's take had 254 component curves end early, the root
+    // bone's vertical translation among them: it fell to zero six seconds in
+    // and put the skeleton through the floor.
+    let times_agree = by_component
+        .iter()
+        .take(component_count)
+        .flatten()
+        .all(|curve| curve.key_times == time_axis.key_times);
+    let merged_times = (!times_agree).then(|| {
+        let mut times: Vec<i64> = by_component
+            .iter()
+            .take(component_count)
+            .flatten()
+            .flat_map(|curve| curve.key_times.iter().copied())
+            .collect();
+        times.sort_unstable();
+        times.dedup();
+        times
+    });
+    let key_times: &[i64] = merged_times.as_deref().unwrap_or(&time_axis.key_times);
+    let n = key_times.len();
+    let mut input = Vec::with_capacity(n);
     let mut output = Vec::with_capacity(n * component_count);
     let mut in_tangents = Vec::with_capacity(n * component_count);
     let mut out_tangents = Vec::with_capacity(n * component_count);
     let flags = time_axis.key_attr_flags.first().copied().unwrap_or(0);
-    let interpolation = FbxAnimInterpolation::from_key_attr_flags(flags);
-    for i in 0..n {
-        input.push((time_axis.key_times[i] as f64 / ktime_f) as f32);
+    // A merged grid puts keys between the authored ones, where the authored
+    // tangents describe a segment that no longer exists. The sampled values
+    // are on the curve and the segments between them are straight.
+    let interpolation = if times_agree {
+        FbxAnimInterpolation::from_key_attr_flags(flags)
+    } else {
+        FbxAnimInterpolation::Linear
+    };
+    for (i, &time) in key_times.iter().enumerate() {
+        input.push((time as f64 / ktime_f) as f32);
         // `component_count` is 1 or 3 and `by_component` holds three slots, so
         // the take never shortens a path that has more components than curves.
         for slot in by_component.iter().take(component_count) {
-            let curve = slot.as_ref();
-            let value = curve.and_then(|curve| curve.key_values.get(i)).copied();
-            output.push(value.unwrap_or(0.0));
-            in_tangents.push(
-                curve
-                    .and_then(|curve| curve.in_tangents.get(i))
-                    .copied()
-                    .unwrap_or(0.0),
-            );
-            out_tangents.push(
-                curve
-                    .and_then(|curve| curve.out_tangents.get(i))
-                    .copied()
-                    .unwrap_or(0.0),
-            );
+            let Some(curve) = slot.as_ref() else {
+                output.push(0.0);
+                in_tangents.push(0.0);
+                out_tangents.push(0.0);
+                continue;
+            };
+            if times_agree {
+                output.push(curve.key_values.get(i).copied().unwrap_or(0.0));
+                in_tangents.push(curve.in_tangents.get(i).copied().unwrap_or(0.0));
+                out_tangents.push(curve.out_tangents.get(i).copied().unwrap_or(0.0));
+            } else {
+                output.push(sample_curve_at(curve, time));
+                in_tangents.push(0.0);
+                out_tangents.push(0.0);
+            }
         }
     }
     // FBX stores Euler rotations in degrees; convert to radians so the JS
@@ -2863,4 +2922,90 @@ fn expand_material_indices(
         out.push(value);
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const KTIME: f64 = 46_186_158_000.0;
+
+    fn curve(times: &[i64], values: &[f32]) -> FbxAnimCurveData {
+        FbxAnimCurveData {
+            key_times: times.to_vec(),
+            key_values: values.to_vec(),
+            key_attr_flags: vec![0x4; times.len()],
+            in_tangents: vec![0.0; times.len()],
+            out_tangents: vec![0.0; times.len()],
+        }
+    }
+
+    /// Seconds to FBX ticks, for building key times a test can read back.
+    fn ticks(seconds: f64) -> i64 {
+        (seconds * KTIME) as i64
+    }
+
+    #[test]
+    fn components_sharing_a_key_grid_keep_their_authored_keys() {
+        let by_component = [
+            Some(curve(&[0, ticks(1.0)], &[1.0, 2.0])),
+            Some(curve(&[0, ticks(1.0)], &[3.0, 4.0])),
+            Some(curve(&[0, ticks(1.0)], &[5.0, 6.0])),
+        ];
+        let channel =
+            flatten_curve(&by_component, FbxAnimChannelPath::Translation, KTIME).expect("channel");
+        assert_eq!(channel.sampler.input, vec![0.0, 1.0]);
+        assert_eq!(channel.sampler.output, vec![1.0, 3.0, 5.0, 2.0, 4.0, 6.0]);
+    }
+
+    #[test]
+    fn a_short_component_holds_its_last_value_instead_of_dropping_to_zero() {
+        // The shape that put a character through the floor: X is animated
+        // across the take while Y stops early. Y must hold, not vanish.
+        let by_component = [
+            Some(curve(&[0, ticks(1.0), ticks(2.0)], &[0.0, 10.0, 20.0])),
+            Some(curve(&[0], &[7.0])),
+            None,
+        ];
+        let channel =
+            flatten_curve(&by_component, FbxAnimChannelPath::Translation, KTIME).expect("channel");
+        assert_eq!(channel.sampler.input, vec![0.0, 1.0, 2.0]);
+        let y: Vec<f32> = channel.sampler.output.chunks(3).map(|c| c[1]).collect();
+        assert_eq!(y, vec![7.0, 7.0, 7.0]);
+    }
+
+    #[test]
+    fn differing_grids_merge_and_each_component_is_read_at_the_right_time() {
+        // X keys at 0 s and 2 s, Y at 0 s and 1 s. Pairing by index would read
+        // Y's 1 s value at X's 2 s key; the merged grid has all three times and
+        // samples each curve where it actually is.
+        let by_component = [
+            Some(curve(&[0, ticks(2.0)], &[0.0, 20.0])),
+            Some(curve(&[0, ticks(1.0)], &[0.0, 5.0])),
+            None,
+        ];
+        let channel =
+            flatten_curve(&by_component, FbxAnimChannelPath::Translation, KTIME).expect("channel");
+        assert_eq!(channel.sampler.input, vec![0.0, 1.0, 2.0]);
+        let x: Vec<f32> = channel.sampler.output.chunks(3).map(|c| c[0]).collect();
+        let y: Vec<f32> = channel.sampler.output.chunks(3).map(|c| c[1]).collect();
+        // X is interpolated onto Y's key, Y holds past its own last key.
+        assert_eq!(x, vec![0.0, 10.0, 20.0]);
+        assert_eq!(y, vec![0.0, 5.0, 5.0]);
+        assert_eq!(channel.sampler.interpolation, FbxAnimInterpolation::Linear);
+    }
+
+    #[test]
+    fn a_merged_grid_drops_tangents_that_no_longer_describe_a_segment() {
+        let mut x = curve(&[0, ticks(2.0)], &[0.0, 20.0]);
+        x.key_attr_flags = vec![0x8; 2];
+        x.in_tangents = vec![1.0, 2.0];
+        x.out_tangents = vec![3.0, 4.0];
+        let by_component = [Some(x), Some(curve(&[0, ticks(1.0)], &[0.0, 5.0])), None];
+        let channel =
+            flatten_curve(&by_component, FbxAnimChannelPath::Translation, KTIME).expect("channel");
+        assert_eq!(channel.sampler.interpolation, FbxAnimInterpolation::Linear);
+        assert!(channel.sampler.in_tangents.is_none());
+        assert!(channel.sampler.out_tangents.is_none());
+    }
 }
