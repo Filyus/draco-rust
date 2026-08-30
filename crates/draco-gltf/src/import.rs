@@ -27,6 +27,11 @@ pub struct Import {
     profile: ValidationProfile,
     #[cfg(any(feature = "draco-decode", feature = "draco-encode"))]
     pub(crate) extensions: ExtensionRegistry,
+    /// Caller's ceilings on what one Draco decode may produce, applied to
+    /// every primitive this import decodes -- directly, through
+    /// `decompress_in_place`, and in nested assets parsed from this one.
+    #[cfg(feature = "draco-decode")]
+    pub(crate) draco_decode_limits: draco_core::DecodeLimits,
     #[cfg(feature = "resources")]
     provenance: Vec<String>,
 }
@@ -192,9 +197,12 @@ impl Import {
     #[cfg(feature = "draco-decode")]
     pub fn decode_draco_primitive(&self, primitive: PrimitiveRef<'_>) -> Result<draco_core::Mesh> {
         self.validate(&self.extensions)?;
-        let mesh = self
-            .extensions
-            .decode_primitive(&self.document, &self.resources, primitive)?;
+        let mesh = self.extensions.decode_primitive(
+            &self.document,
+            &self.resources,
+            &self.draco_decode_limits,
+            primitive,
+        )?;
         self.validate_decoded_draco_counts(primitive, &mesh)?;
         Ok(mesh)
     }
@@ -715,6 +723,13 @@ impl Import {
         } else {
             parse_with_options(&bytes, None, Some(resolver), limits, profile, extensions)?
         };
+        // A nested asset decodes its Draco payloads under the same ceilings as
+        // the import that pulled it in: the caller set one policy for the
+        // scene, and an indirection does not widen it.
+        #[cfg(feature = "draco-decode")]
+        {
+            loaded.draco_decode_limits = self.draco_decode_limits;
+        }
         loaded.provenance = self.provenance.clone();
         loaded.provenance.push(source);
         Ok(loaded)
@@ -929,6 +944,10 @@ pub fn parse_with_options(
         profile,
         #[cfg(any(feature = "draco-decode", feature = "draco-encode"))]
         extensions: extensions.clone(),
+        // Overridden by the options-driven entry points; `parse` and `open`
+        // decode under the defaults.
+        #[cfg(feature = "draco-decode")]
+        draco_decode_limits: draco_core::decode_limits::DecodeLimits::default(),
         #[cfg(feature = "resources")]
         provenance: Vec::new(),
     })

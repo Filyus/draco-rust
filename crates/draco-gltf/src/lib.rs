@@ -113,6 +113,18 @@ pub struct ImportOptions<'a> {
     pub resolver: Option<&'a dyn ResourceResolver>,
     /// Resource and graph quotas applied during loading.
     pub limits: ResourceLimits,
+    /// Ceilings on what one Draco decode may reconstruct: decoded points,
+    /// faces and attribute bytes. A decode past one fails with
+    /// `ErrorKind::LimitExceeded` -- the caller's policy refusing a large
+    /// file, distinguishable from the decoder refusing a malformed one.
+    ///
+    /// This is deliberately separate from [`Self::limits`]: those are
+    /// container resources -- bytes of buffers, pixels of images, depth of
+    /// `files` chains -- while these bound geometry a Draco stream
+    /// reconstructs. The defaults match `draco_core::DecodeLimits::default`,
+    /// calibrated so legitimate assets pass and an absurd header does not.
+    #[cfg(feature = "draco-decode")]
+    pub draco_decode_limits: draco_core::DecodeLimits,
     /// Profile used for basic checks and strict validation when enabled.
     pub profile: ValidationProfile,
     /// Extension handlers available to validation and transforms.
@@ -125,6 +137,8 @@ impl Default for ImportOptions<'_> {
             external_file_policy: ExternalFilePolicy::Deny,
             resolver: None,
             limits: ResourceLimits::default(),
+            #[cfg(feature = "draco-decode")]
+            draco_decode_limits: draco_core::DecodeLimits::default(),
             profile: ValidationProfile::Gltf21Draft,
             extensions: ExtensionRegistry::default(),
         }
@@ -169,14 +183,20 @@ pub fn import_slice_with_options(bytes: &[u8], options: &ImportOptions<'_>) -> R
             .as_ref()
             .map(|value| value as &dyn ResourceResolver)
     });
-    parse_with_options(
+    #[cfg_attr(not(feature = "draco-decode"), allow(unused_mut))]
+    let mut import = parse_with_options(
         bytes,
         options.base_path,
         resolver,
         &options.limits,
         options.profile,
         &options.extensions,
-    )
+    )?;
+    #[cfg(feature = "draco-decode")]
+    {
+        import.draco_decode_limits = options.draco_decode_limits;
+    }
+    Ok(import)
 }
 
 /// Applies the available checks for the pinned draft profile.

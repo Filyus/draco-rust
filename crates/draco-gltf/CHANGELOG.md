@@ -11,6 +11,19 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- `ImportOptions` carries `draco_decode_limits`
+  (`#[cfg(feature = "draco-decode")]`): the caller's
+  `draco_core::DecodeLimits` -- ceilings on the points, faces and decoded
+  attribute bytes one Draco decode may reconstruct, applied to every primitive
+  the import decodes, including `decompress_in_place` and nested assets. The
+  defaults match `draco_core::DecodeLimits::default`; a decode past a ceiling
+  fails with `ErrorKind::LimitExceeded`, which reaches the caller as
+  `Error::Decode` with its kind intact -- the caller's policy refusing a large
+  file, distinguishable from the decoder refusing a malformed one. This is
+  deliberately a separate knob from `ImportOptions::limits`: those quota
+  container resources, these bound reconstructed geometry. The
+  `ExtensionHandler::decode_primitive` trait method gained the ceilings as a
+  parameter, which is a breaking change for out-of-tree handlers.
 - This crate permits `unsafe` in narrow, audited paths, on the same terms as
   `draco-io`, where `SECURITY.md` previously ruled it out for the whole
   workspace at once. Every block must carry a `// SAFETY:` comment naming its

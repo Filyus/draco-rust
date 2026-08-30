@@ -640,6 +640,56 @@ mod compression_tests {
         assert_eq!(accessor.value()["max"].as_array().unwrap().len(), 3);
     }
 
+    /// The caller's Draco ceilings travel from `ImportOptions` through the
+    /// import into every decode, and the failure reaches the caller with its
+    /// kind intact: `LimitExceeded` is the caller's own policy refusing a
+    /// large file, and a generic error would make it indistinguishable from
+    /// the decoder refusing a malformed one -- the exact collapse
+    /// `draco-core` once had across twelve re-wrapped errors.
+    #[cfg(all(feature = "draco-encode", feature = "draco-decode"))]
+    #[test]
+    fn draco_decode_limits_refuse_a_primitive_over_the_ceiling_and_keep_the_kind() {
+        use draco_core::status::ErrorKind;
+        use draco_core::DecodeLimits;
+
+        let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
+        let mut import = crate::parse(input, ValidationProfile::Gltf20).unwrap();
+        import
+            .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
+            .unwrap();
+        // A self-contained GLB, so the re-import reads the very buffer the
+        // encoder wrote.
+        let glb = import.to_bytes(crate::OutputFormat::GlbV2).unwrap();
+
+        // A ceiling of zero faces refuses the one-face primitive outright. The
+        // points ceiling is the wrong knob here: a mesh decode checks faces
+        // and decoded bytes -- its point count comes out of the connectivity,
+        // not the header -- and this fixture is the smallest mesh there is.
+        let options = crate::ImportOptions {
+            draco_decode_limits: DecodeLimits::default().with_max_faces(0),
+            ..crate::ImportOptions::default()
+        };
+        let import = crate::import_slice_with_options(&glb, &options).unwrap();
+        let primitive = import.draco_primitives().next().unwrap();
+        let error = import
+            .decode_draco_primitive(primitive)
+            .expect_err("a decoded face over a ceiling of zero");
+        match error {
+            crate::Error::Decode(error) => {
+                assert_eq!(error.kind(), ErrorKind::LimitExceeded);
+            }
+            other => panic!("the kind collapsed on the way out: {other:?}"),
+        }
+
+        // The same document under the defaults decodes: the refusal is the
+        // caller's ceiling, not the file.
+        let import = crate::import_slice(&glb, None).unwrap();
+        let primitive = import.draco_primitives().next().unwrap();
+        let decoded = import.decode_draco_primitive(primitive).unwrap();
+        assert_eq!(decoded.num_points(), 3);
+        assert_eq!(decoded.num_faces(), 1);
+    }
+
     /// One document, two extensions, two answers.
     ///
     /// The safety check is whole-document, so an extension on a *material*
