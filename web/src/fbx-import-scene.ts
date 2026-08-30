@@ -219,12 +219,19 @@ function splitFbxPrimitivesByMaterial(scene: ViewerSceneDraft, flatMeshes: FbxJs
  * neither does the preview.
  *
  * The layer used to survive where the material states no texture, on the
- * reasoning that there it was the only surface colour there is. What it
- * actually carried on such files was still a mask, and feeding it to the
- * surface shader on a skinned mesh lit up a driver-side failure that smeared
- * NaN over the frame -- a red wash in the base-colour view, shading that reads
- * as shadows in the photographic one. The export path is untouched: it reads
- * the layer from the parsed document, where it is kept for the round trip.
+ * reasoning that there it was the only surface colour there is. What such a
+ * file carries there is still a mask: with the layer applied, that character's
+ * face came out in patches of the mask's own purple and red.
+ *
+ * Binding it also brings on a secondary fault whose cause is not known. The
+ * frame fills with flat screen-aligned rectangles in the mask's colours, over
+ * the background as well, which no per-vertex multiply can reach. The vertex
+ * colours themselves arrive intact -- rendered straight to the frame with an
+ * explicit NaN test, they are the authored mask and nothing is NaN -- so the
+ * fault is downstream of the attribute and is only hidden here, not fixed.
+ *
+ * The export path is untouched: it reads the layer from the parsed document,
+ * where it is kept for the round trip.
  */
 function dropColourLayer(scene: ViewerSceneDraft) {
   for (const mesh of scene.meshes as FbxJson[]) {
