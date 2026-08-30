@@ -828,10 +828,19 @@ export function drawOutput(host: RenderHost) {
   gl.activeTexture(gl.TEXTURE0 + SHARED_TEXTURE_UNITS.morphDeltas);
   gl.bindTexture(gl.TEXTURE_2D, chain?.levels[0]?.texture ?? scene.resolved);
   gl.uniform1i(host.outputUniforms.uBloom, SHARED_TEXTURE_UNITS.morphDeltas);
-  gl.uniform1f(host.outputUniforms.uBloomStrength, host.bloomStrength ?? DEFAULT_BLOOM_STRENGTH);
-  gl.uniform1f(host.outputUniforms.uExposure, host.exposure ?? 1);
+  // The base-colour view drops the whole photographic stage, not just its last
+  // step. Glare is light moved about and exposure is how much of it was let in,
+  // and neither belongs in a view whose subject is the stored texel; the glare
+  // chain is also built at its own size, so reading it through the scene's crop
+  // laid rectangles of a blurred frame over the picture.
+  const inspecting = host.baseColorOnly;
+  gl.uniform1f(
+    host.outputUniforms.uBloomStrength,
+    inspecting ? 0 : host.bloomStrength ?? DEFAULT_BLOOM_STRENGTH,
+  );
+  gl.uniform1f(host.outputUniforms.uExposure, inspecting ? 1 : host.exposure ?? 1);
   gl.uniform1f(host.outputUniforms.uSceneCrop, 1 / scene.guard);
-  gl.uniform1i(host.outputUniforms.uToneMap, host.baseColorOnly ? 0 : 1);
+  gl.uniform1i(host.outputUniforms.uToneMap, inspecting ? 0 : 1);
   gl.bindVertexArray(host.backgroundVao);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   gl.bindVertexArray(null);
