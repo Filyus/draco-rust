@@ -645,6 +645,54 @@ mod shared_path_regressions {
         assert!(deepest <= 4, "cycle produced a chain {deepest} deep");
     }
 
+    /// The same bound stops a chain that is deep rather than circular, and it
+    /// used to stop it in silence. What the caller saw instead was the
+    /// consequence: a 340-bone rig came back missing its tail, and every skin
+    /// cluster bound into the missing part reported its own missing joint --
+    /// 1116 notices, none of them naming the cause.
+    #[test]
+    fn a_hierarchy_deeper_than_the_reader_descends_says_so() {
+        const BONES: usize = 300;
+        let mut objects = String::new();
+        let mut connections = String::from("\tC: \"OO\",1000,0\n");
+        for index in 0..BONES {
+            let id = 1000 + index;
+            objects.push_str(&format!(
+                "\tModel: {id}, \"Model::Bone{index:03}\", \"LimbNode\" {{\n\t}}\n"
+            ));
+            if index > 0 {
+                connections.push_str(&format!("\tC: \"OO\",{id},{}\n", id - 1));
+            }
+        }
+        let decoded = scene(&format!(
+            "FBXHeaderExtension:  {{\n\tFBXVersion: 7500\n}}\n\
+             Objects:  {{\n{objects}}}\n\
+             Connections:  {{\n{connections}}}\n"
+        ));
+
+        fn depth(node: &crate::FbxSceneNode) -> usize {
+            1 + node.children.iter().map(depth).max().unwrap_or(0)
+        }
+        let deepest = decoded.root_nodes.iter().map(depth).max().unwrap_or(0);
+        assert!(
+            deepest < BONES,
+            "the chain was expected to be cut, not kept"
+        );
+        assert!(
+            decoded
+                .warnings
+                .iter()
+                .any(|warning| warning.code
+                    == crate::fbx_scene::FbxWarningCode::ModelDepthLimitReached),
+            "the cut has to be reported: warnings were {:?}",
+            decoded
+                .warnings
+                .iter()
+                .map(|warning| warning.code)
+                .collect::<Vec<_>>()
+        );
+    }
+
     /// A whole-valued double is written without a decimal point, so a
     /// `DeformPercent: 100` arrives as an integer. Matching only the floating
     /// point widths read it as a missing weight, and a blend shape came back

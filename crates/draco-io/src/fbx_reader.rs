@@ -373,7 +373,7 @@ impl<R: Read + Seek> FbxReader<R> {
             templates,
         };
         for id in top_level {
-            root_nodes.push(build_model_node(id, &graph, &mut Vec::new()));
+            root_nodes.push(build_model_node(id, &graph, &mut Vec::new(), &mut warnings));
         }
 
         Ok(FbxScene {
@@ -461,7 +461,12 @@ struct ModelGraph<'a, 'n> {
     templates: &'a PropertyTemplates<'n>,
 }
 
-fn build_model_node(id: i64, graph: &ModelGraph<'_, '_>, ancestors: &mut Vec<i64>) -> FbxSceneNode {
+fn build_model_node(
+    id: i64,
+    graph: &ModelGraph<'_, '_>,
+    ancestors: &mut Vec<i64>,
+    warnings: &mut Vec<FbxWarning>,
+) -> FbxSceneNode {
     let node_src = graph.models.get(&id).unwrap();
     let mut node = FbxSceneNode::new(object_name(node_src));
     node.id = graph.node_ids[&id];
@@ -494,6 +499,19 @@ fn build_model_node(id: i64, graph: &ModelGraph<'_, '_>, ancestors: &mut Vec<i64
     // graph needs, and the depth is the file's to choose.
     const MAX_MODEL_DEPTH: usize = 256;
     if ancestors.len() >= MAX_MODEL_DEPTH {
+        // Said, and said once. Cutting the tree silently leaves a hole that
+        // every skin cluster bound below it then reports on its own account: a
+        // 340-bone chain produced 1116 warnings about missing joints and not
+        // one word about where the joints went.
+        push_warning(
+            warnings,
+            FbxWarningCode::ModelDepthLimitReached,
+            format!(
+                "FBX Model hierarchy runs deeper than the {MAX_MODEL_DEPTH} this reader \
+                 descends, so what hangs below is not in the scene"
+            ),
+            node.name.as_deref(),
+        );
         return node;
     }
     if let Some(children) = graph.children.get(&id) {
@@ -504,7 +522,8 @@ fn build_model_node(id: i64, graph: &ModelGraph<'_, '_>, ancestors: &mut Vec<i64
             // corpus does -- and following that cycle recurses until
             // the stack is gone. The scene simply stops there.
             if graph.models.contains_key(&cid) && !ancestors.contains(&cid) {
-                node.children.push(build_model_node(cid, graph, ancestors));
+                node.children
+                    .push(build_model_node(cid, graph, ancestors, warnings));
             }
         }
         ancestors.pop();

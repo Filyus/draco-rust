@@ -11,6 +11,20 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- An FBX `Model` hierarchy deeper than the 256 levels the reader descends is
+  still cut there -- the walk is recursive and a document chooses its own depth
+  -- but it now says so, with a `model-depth-limit-reached` warning raised once.
+  The cut was silent, and what a caller saw instead was its consequence: a
+  300-bone chain came back missing its tail, and every skin cluster bound into
+  the missing part reported a missing joint of its own.
+
+- Each axis of an animated FBX property is sampled at its own key times. The
+  three curves of a `Lcl Rotation` are separate objects and need not share a key
+  grid; they were combined by shared index against the X curve's times, so Y was
+  read wherever X happened to have a key, and past the shorter curve's last key
+  it was read as zero. One take had 254 component curves end early, a root
+  bone's vertical translation among them.
+
 - The OBJ, PLY and glTF readers finish a mesh the way upstream finishes one:
   merge bit-identical attribute values, then merge the points those values made
   identical. They shared a face-order renumbering before, which merges nothing,

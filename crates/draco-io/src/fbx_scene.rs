@@ -36,6 +36,9 @@ pub enum FbxWarningCode {
     /// object connection, so it is not part of the decoded scene graph --
     /// the same objects the source file kept out of its scene.
     UnconnectedModelDropped,
+    /// A Model hierarchy ran deeper than the reader descends, so the subtree
+    /// below that point -- and any skin cluster bound into it -- is absent.
+    ModelDepthLimitReached,
 }
 
 impl FbxWarningCode {
@@ -54,7 +57,8 @@ impl FbxWarningCode {
             | FbxWarningCode::UnsupportedLayerMapping
             | FbxWarningCode::DroppedLayerElement
             | FbxWarningCode::DroppedNodeAttribute
-            | FbxWarningCode::UnconnectedModelDropped => true,
+            | FbxWarningCode::UnconnectedModelDropped
+            | FbxWarningCode::ModelDepthLimitReached => true,
         }
     }
 
@@ -70,6 +74,7 @@ impl FbxWarningCode {
             FbxWarningCode::DroppedLayerElement => "dropped-layer-element",
             FbxWarningCode::DroppedNodeAttribute => "dropped-node-attribute",
             FbxWarningCode::UnconnectedModelDropped => "unconnected-model-dropped",
+            FbxWarningCode::ModelDepthLimitReached => "model-depth-limit-reached",
         }
     }
 }

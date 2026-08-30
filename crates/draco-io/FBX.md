@@ -48,6 +48,14 @@ them the same way. No corpus document reaches geometry through such a Model —
 the only two that hold one with any attached at all carry NURBS curves, which
 no scene path keeps.
 
+The scene graph is built by descending the `Model` hierarchy, and that descent
+stops at 256 levels: a document may chain models deeper than any scene needs,
+and the walk is recursive. A hierarchy that reaches the bound is cut there and
+raises `model-depth-limit-reached`, once. Without that notice the cut is
+invisible until something bound below it complains on its own account — a
+300-bone chain lost its tail and every skin cluster in the missing part
+reported a missing joint, which names the consequence and not the cause.
+
 ## The version floor
 
 The binary container is read for versions 6000 through 8000 and the ASCII one
