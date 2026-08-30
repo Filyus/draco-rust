@@ -471,9 +471,19 @@ impl PointAttribute {
             }
         } else {
             for entry in self.indices_map.iter_mut() {
-                *entry = AttributeValueIndex(value_map[entry.0 as usize]);
+                *entry = value_map
+                    .get(entry.0 as usize)
+                    .map(|value| AttributeValueIndex(*value))
+                    .unwrap_or(INVALID_ATTRIBUTE_VALUE_INDEX);
             }
         }
+        // The survivors were packed forward, so the tail is stale bytes. This
+        // crate's convention is that the buffer length follows the value count
+        // -- `renumbering_shrinks_attribute_size_with_its_buffer` states it --
+        // and a consumer reading `buffer().data().len()` gets the wrong answer
+        // until the tail is gone. Upstream leaves it, because its accessors go
+        // through the count instead.
+        self.buffer.resize(unique * stride);
         self.num_unique_entries = unique;
         Ok(unique)
     }
@@ -525,8 +535,16 @@ impl PointAttribute {
             }
         }
         for entry in self.indices_map.iter_mut() {
-            *entry = old_to_new[entry.0 as usize];
+            // An entry past the value count is the invalid index, which an
+            // attribute with no values maps every point to. It stays what it
+            // is: there is no value for it to point at, and the encoder is
+            // where that gets reported.
+            *entry = old_to_new
+                .get(entry.0 as usize)
+                .copied()
+                .unwrap_or(INVALID_ATTRIBUTE_VALUE_INDEX);
         }
+        self.buffer.resize(num_used * stride);
         self.num_unique_entries = num_used;
         num_used
     }

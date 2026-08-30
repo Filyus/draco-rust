@@ -980,7 +980,11 @@ test('converter resolves glTF companions and reports decoded geometry', async ({
     const downloadedPath = await download.path();
     expect(downloadedPath).not.toBeNull();
     const decoded = await decodeFirstDracoPrimitive(await readFile(downloadedPath!));
-    expect(decoded.points).toBe(1728);
+    // Fox.gltf ships one vertex per corner -- 1,728 of them for 576 triangles,
+    // 1,294 of which duplicate another exactly. Encoding merges them, as C++
+    // Draco does, so the payload carries the 434 the geometry actually has.
+    // The source count above stays 1,728: that is what the file holds.
+    expect(decoded.points).toBe(434);
     expect(decoded.faces).toBe(576);
     expect(decoded.declaredPoints).toBe(decoded.points);
     expect(decoded.declaredIndices).toBe(decoded.faces * 3);

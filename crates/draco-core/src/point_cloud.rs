@@ -212,19 +212,17 @@ impl PointCloud {
             return None;
         }
 
-        // Each survivor's value indices move down to its new point id. Read
-        // before write is safe because a survivor never moves up.
-        for &old in &unique_points {
-            let new = index_map[old as usize];
-            for att_id in 0..self.num_attributes() {
-                let value = self.attribute(att_id).mapped_index(PointIndex(old));
-                self.attribute_mut(att_id)
-                    .set_point_map_entry(PointIndex(new), value);
-            }
-        }
+        // Each attribute's new map is built whole and installed whole. Not
+        // through `set_point_map_entry`, which validates each entry against
+        // the value count and panics on one it does not like: an attribute
+        // with no values maps every point to the invalid index, that index is
+        // what a survivor carries, and reinstalling it is not an error -- it
+        // is the same map, shorter. The encoder refuses such an attribute
+        // later, where the refusal can be reported.
         for att_id in 0..self.num_attributes() {
-            let values: Vec<AttributeValueIndex> = (0..num_unique)
-                .map(|p| self.attribute(att_id).mapped_index(PointIndex(p)))
+            let values: Vec<AttributeValueIndex> = unique_points
+                .iter()
+                .map(|old| self.attribute(att_id).mapped_index(PointIndex(*old)))
                 .collect();
             self.attribute_mut(att_id)
                 .set_explicit_mapping_from(&values);

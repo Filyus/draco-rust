@@ -232,13 +232,21 @@ Nothing is lost by dropping it. Upstream's own encoder writes only the geometry
 the connectivity reaches, so the unused vertex never arrives at any decoder
 either way -- keeping it buys no data and no bytes, only the wider range.
 
-How often it costs anything in practice: across eight real assets -- 1,046
-primitives and 8,753,680 vertices -- not one vertex was unreferenced, and not
-one carried values duplicating another's. Neither half of the finalization
-changes a delivered glTF at all: its exporters have already done both. The
-divergence is real and reachable by a hand-written or generated file -- an OBJ
-written by script, a scanner's PLY -- and was not reachable by anything
-measured.
+How often it costs anything depends entirely on where the file came from.
+Across eight delivered glTF assets -- 1,046 primitives and 8,753,680 vertices
+-- not one vertex was unreferenced and not one duplicated another. That is a
+statement about those eight, not about glTF: the Khronos `Fox` sample this
+repository carries ships one vertex per corner, 1,294 of its 1,728 duplicating
+another exactly, and merging them takes its encoded point count to 434. What
+those eight had in common was an exporter that welds; a sample authored by hand
+need not.
+
+Raw geometry is the opposite. The Stanford Bunny this repository carries as a
+fixture reaches it immediately: 35,947 vertices in the PLY, 1,113 of which no
+face names. A scan is exactly the shape that carries them, which is why this
+divergence is not a corner case in the formats where it applies -- and why
+those 1,113 vertices, all of them dead, were setting the quantization range
+until this dropped them.
 
 ### What each side does
 

@@ -186,7 +186,13 @@ impl Mesh {
         };
         for face in &mut self.faces {
             for corner in face.iter_mut() {
-                *corner = PointIndex(index_map[corner.0 as usize]);
+                // A corner past the point count keeps its value. Such a face
+                // is not this function's to reject -- the encoder refuses it
+                // where the refusal can be reported -- and there is no new id
+                // to map it onto.
+                if let Some(new) = index_map.get(corner.0 as usize) {
+                    *corner = PointIndex(*new);
+                }
             }
         }
     }
@@ -217,9 +223,18 @@ impl Mesh {
         for face in &self.faces {
             for corner in face.iter() {
                 let point = corner.0 as usize;
-                if point < used.len() {
-                    used[point] = true;
+                if point >= used.len() {
+                    // A face naming a point this mesh does not have. Its
+                    // connectivity is already inconsistent -- a PLY carries
+                    // face indices straight from the file -- and compacting
+                    // under it would make the mesh worse, not better: the
+                    // corner cannot be renumbered, so dropping the points it
+                    // should have protected can leave faces over an empty
+                    // point set, which is a mesh no writer will take back.
+                    // Left exactly as it arrived, for the encoder to refuse.
+                    return;
                 }
+                used[point] = true;
             }
         }
         let num_used = used.iter().filter(|u| **u).count();
@@ -240,7 +255,11 @@ impl Mesh {
         }
         for face in &mut self.faces {
             for corner in face.iter_mut() {
-                *corner = PointIndex(old_to_new[corner.0 as usize]);
+                // Same as above: a corner naming no point of this mesh is left
+                // alone for the encoder to refuse.
+                if let Some(new) = old_to_new.get(corner.0 as usize) {
+                    *corner = PointIndex(*new);
+                }
             }
         }
         for att_id in 0..self.point_cloud.num_attributes() {

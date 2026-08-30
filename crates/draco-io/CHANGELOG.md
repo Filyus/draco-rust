@@ -29,6 +29,12 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the quantization range, where a stray far-away vertex costs every surviving
   coordinate precision. See `COMPATIBILITY.md`.
 
+  Both halves reach real files. The Khronos `Fox` sample carries one vertex per
+  corner -- 1,294 of its 1,728 duplicate another exactly -- and now encodes 434
+  points for the same 576 triangles. The Stanford Bunny carries 1,113 vertices
+  no face names among its 35,947, all of them setting the quantization range
+  until now.
+
 ### Added
 
 - FBX 6100 documents are read in either container: the name-keyed object model
