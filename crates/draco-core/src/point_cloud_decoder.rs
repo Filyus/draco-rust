@@ -232,11 +232,26 @@ impl PointCloudDecoder {
         // fixed-width int32 for both sequential (method=0) and KD-tree
         // (method=1) encodings (see C++ PointCloudSequentialDecoder and
         // PointCloudKdTreeDecoder). It is NOT varint encoded, even for v2.x.
-        let num_points: usize = buffer.decode_u32()? as usize;
-        // No count guard here, matching upstream: `PointCloudSequentialDecoder`
-        // and `PointCloudKdTreeDecoder` read the count and use it, checking only
-        // that it is not negative. What bounds the work is the allocation budget
-        // applied where the buffers are actually sized - see `decode_budget`.
+        // Read as the `int32_t` upstream reads, and refused when negative for
+        // the same reason `PointCloudSequentialDecoder` and
+        // `PointCloudKdTreeDecoder` refuse it: no encoder writes a count with
+        // the sign bit set, and C++ Draco stops on one before it allocates
+        // anything. Taking the same bytes unsigned is how a header claiming
+        // 2,147,483,652 points reached the KD-tree walk, which then expanded a
+        // single run-length node into 2.4 GB -- an OOM the `decode_drc` soak
+        // found, on a file upstream rejects in a fifth of a second having
+        // touched no memory at all.
+        //
+        // Past this the count is used but not guarded, which is also upstream's
+        // shape: what bounds the work is the allocation budget applied where
+        // the buffers are sized -- see `decode_budget`.
+        let declared_points = buffer.decode_u32()? as i32;
+        if declared_points < 0 {
+            return Err(DracoError::general(format!(
+                "Point cloud declares {declared_points} points"
+            )));
+        }
+        let num_points: usize = declared_points as usize;
         pc.set_num_points(num_points);
 
         let num_attributes_decoders = buffer.decode_u8()? as usize;

@@ -36,6 +36,18 @@ use crate::corner_table::CornerTable;
 /// This is the one place both encoders can share, so the refusal is stated once
 /// here rather than defended at each derivation.
 pub(crate) fn validate_encodable_attributes(point_cloud: &PointCloud) -> Status {
+    // The header carries the point count as a signed 32-bit field, and every
+    // decoder reads it back that way: upstream's `PointCloudSequentialDecoder`
+    // and `PointCloudKdTreeDecoder` refuse a negative value, and so does this
+    // crate's. Writing a count past `i32::MAX` therefore produces a file no
+    // decoder will read, which is the one thing an encoder must not do.
+    if point_cloud.num_points() > i32::MAX as usize {
+        return Err(DracoError::general(format!(
+            "Geometry has {} points, past the {} a Draco header can carry",
+            point_cloud.num_points(),
+            i32::MAX
+        )));
+    }
     for att_id in 0..point_cloud.num_attributes() {
         let attribute = point_cloud.attribute(att_id);
         if attribute.num_components() == 0 {

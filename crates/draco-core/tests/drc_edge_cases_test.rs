@@ -1378,3 +1378,53 @@ fn malformed_streams_do_not_trip_debug_only_checks() {
         "../../../fuzz/seeds/decode_drc/octahedral_correction_leaves_the_diamond.bin"
     ));
 }
+
+/// A point count with the sign bit set is refused before anything is sized.
+///
+/// The header carries the count as `int32`, and upstream refuses a negative
+/// one in `PointCloudKdTreeDecoder::DecodeGeometryData` before it allocates.
+/// Reading the same bytes unsigned let a header claiming 2,147,483,652 points
+/// through to the KD-tree walk, where one run-length node expanded into 2.4 GB
+/// -- an out-of-memory the `decode_drc` soak found on a 247-byte file that C++
+/// Draco rejects in a fifth of a second having touched no memory.
+///
+/// The stream is built here rather than committed as a blob: only the header
+/// and the count matter, and the decode has to stop before it reads further.
+#[test]
+fn a_point_count_past_i32_max_is_refused_before_allocation() {
+    for method in [0u8, 1] {
+        let mut stream = draco_header(2, 3, 0, method);
+        stream.extend_from_slice(&0x8000_0004u32.to_le_bytes());
+        // Room for the decode to keep going if the guard were missing, so a
+        // pass proves the count stopped it rather than the buffer running out.
+        stream.resize(stream.len() + 256, 0);
+
+        let error = decode_malformed_without_panic(DecoderKind::PointCloud, &stream)
+            .expect_err("a point count past i32::MAX must be refused");
+        assert!(
+            error.contains("points"),
+            "method {method} refused for another reason: {error}"
+        );
+    }
+}
+
+/// And the encoder does not write what that guard refuses.
+///
+/// An encoder that emits a count no decoder will read produces a file nothing
+/// can open; the refusal belongs on both sides of the same field.
+#[test]
+fn a_point_count_past_i32_max_is_refused_by_the_encoder() {
+    let mut point_cloud = PointCloud::new();
+    point_cloud.set_num_points(i32::MAX as usize + 1);
+
+    let mut encoder = PointCloudEncoder::new();
+    encoder.set_point_cloud(point_cloud);
+    let error = encoder
+        .encode(&EncoderOptions::new(), &mut EncoderBuffer::new())
+        .expect_err("a count no header can carry must be refused")
+        .to_string();
+    assert!(
+        error.contains("past"),
+        "refused for another reason: {error}"
+    );
+}
