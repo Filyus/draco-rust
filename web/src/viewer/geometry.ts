@@ -227,6 +227,110 @@ export function buildNormalizedWeightAttribute(
 }
 
 /**
+ * Reads `JOINTS_0` as plain indices, whatever width it was stored at.
+ *
+ * Unlike weights these are not normalized values, so an unsigned byte means
+ * joint 200, not 200/255.
+ */
+function jointIndices(attribute: RuntimeAccessor): Uint16Array | null {
+  // `byteView` throws on anything that is not binary, and a caller here is
+  // asking a question about the data rather than promising there is any: a
+  // hand-built primitive that carries no real payload is answered with `null`,
+  // not with an exception that would take the whole scene down with it.
+  if (!ArrayBuffer.isView(attribute.bytes)) return null;
+  const { buffer, byteOffset, byteLength } = byteView(attribute.bytes);
+  switch (attribute.componentType) {
+    case 5121:
+      return Uint16Array.from(new Uint8Array(buffer, byteOffset, byteLength));
+    case 5123:
+      return new Uint16Array(buffer, byteOffset, byteLength / 2);
+    default:
+      return null;
+  }
+}
+
+/**
+ * Renumber `JOINTS_0` onto the joints this primitive actually uses.
+ *
+ * The shader holds one fixed uniform array of joint matrices, so a joint index
+ * is a slot in it, and a skin with more joints than slots cannot be drawn as
+ * authored. A skin that large is ordinary: one measured character carries 489
+ * joints across four skins while no single primitive references more than 90
+ * of them, and the ones it references are spread to index 415. Truncating the
+ * palette at the slot count therefore does not drop unused joints, it drops
+ * used ones, and every vertex bound to them collapses.
+ *
+ * The renumbering removes the whole class: slots are handed out in order of
+ * first appearance, so a primitive needs as many as it references and no more.
+ * `palette[slot]` is the skin joint that slot stands for, which is what the
+ * matrices are then computed from.
+ *
+ * `null` leaves the attribute alone -- there is nothing to gain when the
+ * indices already fit, and nothing to be done when the primitive genuinely
+ * references more joints than the shader has slots.
+ */
+export function referencedJoints(primitive: ViewerPrimitive): Uint16Array | null {
+  const attribute = primitive.attributes.JOINTS_0;
+  if (!attribute) return null;
+  const source = jointIndices(attribute);
+  const width = attribute.components;
+  if (!source || width < 1 || source.length < attribute.count * width) return null;
+  const seen = new Set<number>();
+  const found: number[] = [];
+  for (let i = 0; i < attribute.count * width; i++) {
+    const joint = source[i];
+    if (!seen.has(joint)) {
+      seen.add(joint);
+      found.push(joint);
+    }
+  }
+  return Uint16Array.from(found);
+}
+
+export function buildJointPalette(
+  primitive: ViewerPrimitive,
+  maxJoints: number,
+): { attribute: RuntimeAccessor | null; palette: Uint16Array | null } {
+  const attribute = primitive.attributes.JOINTS_0;
+  if (!attribute) return { attribute: null, palette: null };
+  const source = jointIndices(attribute);
+  const width = attribute.components;
+  if (!source || width < 1 || source.length < attribute.count * width) {
+    return { attribute, palette: null };
+  }
+
+  const slotOf = new Map<number, number>();
+  const palette: number[] = [];
+  const remapped = new Uint16Array(attribute.count * width);
+  for (let i = 0; i < attribute.count * width; i++) {
+    const joint = source[i];
+    let slot = slotOf.get(joint);
+    if (slot === undefined) {
+      slot = palette.length;
+      slotOf.set(joint, slot);
+      palette.push(joint);
+    }
+    remapped[i] = slot;
+  }
+
+  if (palette.length > maxJoints) return { attribute, palette: null };
+  // Already dense and in order: the renumbering would be the identity, and the
+  // attribute the file carries is the one to bind.
+  if (palette.every((joint, slot) => joint === slot)) return { attribute, palette: null };
+
+  return {
+    attribute: {
+      bytes: remapped,
+      componentType: 5123,
+      components: width,
+      normalized: false,
+      count: attribute.count,
+    },
+    palette: Uint16Array.from(palette),
+  };
+}
+
+/**
  * Build GPU buffers for one Mesh primitive.
  * Returns an object describing attribute locations, VAO, index/element counts.
  */

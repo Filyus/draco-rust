@@ -278,6 +278,7 @@ jobs:
           npm run test:gltf-draco-references
           npm run test:gltf-draco-decode-failure
           npm run test:gltf-build-profile
+          npm run test:viewer-joint-palette
           npm run test:viewer-limit-warnings
           npm run test:viewer-texture-units
           npm run test:viewer-alpha-order

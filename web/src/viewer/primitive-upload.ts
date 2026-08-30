@@ -1,4 +1,4 @@
-import { buildNormalizedWeightAttribute, buildSmoothNormalAttribute } from './geometry.ts';
+import { buildJointPalette, buildNormalizedWeightAttribute, buildSmoothNormalAttribute } from './geometry.ts';
 import { byteView } from './gl-utils.ts';
 import { uploadMorphTexture } from './morph-texture.ts';
 import type { RuntimeAccessor, ViewerPrimitive } from '../viewer-scene.ts';
@@ -23,6 +23,12 @@ export interface UploadedPrimitive {
   hasTexCoords1: boolean;
   hasColors: boolean;
   hasJoints: boolean;
+  /**
+   * Which skin joint each slot of `uJointMatrix` stands for, when this
+   * primitive was renumbered onto its own palette. Absent when the joint
+   * indices are the skin's own -- see `buildJointPalette`.
+   */
+  jointPalette?: Uint16Array;
   hasWeights: boolean;
   /** How many WEIGHTS_0 vertices had to be renormalized on upload. */
   driftedWeights: number;
@@ -62,6 +68,7 @@ export function uploadPrimitive(
   gl: WebGL2RenderingContext,
   primitive: ViewerPrimitive,
   locationMap: LocationMap,
+  maxJoints: number,
 ): UploadedPrimitive {
   const vao = gl.createVertexArray();
   gl.bindVertexArray(vao);
@@ -97,6 +104,7 @@ export function uploadPrimitive(
   }
 
   const skinWeights = buildNormalizedWeightAttribute(primitive);
+  const skinJoints = buildJointPalette(primitive, maxJoints);
   const layout = {
     position: locationMap.position,
     normal: locationMap.normal,
@@ -121,11 +129,12 @@ export function uploadPrimitive(
     hasTexCoords0: !!bindAttribute('TEXCOORD_0', layout.texCoord),
     hasTexCoords1: !!bindAttribute('TEXCOORD_1', layout.texCoord1),
     hasColors: !!bindAttribute('COLOR_0', layout.color),
-    hasJoints: !!bindAttribute('JOINTS_0', layout.joints),
+    hasJoints: !!bindAccessor(skinJoints.attribute, 'JOINTS_0', layout.joints),
     hasWeights: !!bindAccessor(skinWeights.attribute, 'WEIGHTS_0', layout.weights),
     driftedWeights: skinWeights.drifted,
     mode: primitive.mode,
     elementCount: 0,
+    ...(skinJoints.palette ? { jointPalette: skinJoints.palette } : {}),
   };
 
   bindAttribute('POSITION', layout.position);

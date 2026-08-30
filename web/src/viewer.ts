@@ -13,5 +13,5 @@
  */
 
 export { Viewer } from './viewer/viewer-class.ts';
-export { buildNormalizedWeightAttribute, buildSmoothNormalAttribute } from './viewer/geometry.ts';
+export { buildJointPalette, buildNormalizedWeightAttribute, buildSmoothNormalAttribute } from './viewer/geometry.ts';
 export { cubicSplineInterpolate } from './viewer/animation.ts';

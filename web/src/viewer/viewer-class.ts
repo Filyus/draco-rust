@@ -395,7 +395,7 @@ export class Viewer {
       const primitives = [];
       for (const primitive of mesh.primitives) {
         try {
-          const uploaded = uploadPrimitive(gl, primitive, this.locations);
+          const uploaded = uploadPrimitive(gl, primitive, this.locations, MAX_JOINTS);
           if ((uploaded.morph?.dropped ?? 0) > 0) {
             this._log(
               `Mesh ${mesh.name}: ${uploaded.morph?.dropped} morph targets exceed this GPU's array texture layers and were ignored`,
@@ -452,14 +452,20 @@ export class Viewer {
     // skin rendered win for all earlier skinned meshes.
     resources.jointMatrices = scene.skins.map((skin) => {
       const count = Math.min(skin.joints.length, MAX_JOINTS);
-      if (skin.joints.length > MAX_JOINTS) {
-        this._log(
-          `Skin ${skin.name} has ${skin.joints.length} joints; preview uses the first ${MAX_JOINTS}`,
-          'warning',
-        );
-      }
       return new Float32Array(count * 16);
     });
+    // A skin larger than the shader's slot count is no longer a truncation:
+    // each primitive is renumbered onto the joints it references, and one that
+    // references more than the slots is the only case left that cannot be
+    // drawn -- `buildJointPalette` leaves those alone, and they warn below.
+    for (const skin of scene.skins) {
+      if (skin.joints.length > MAX_JOINTS) {
+        this._log(
+          `Skin ${skin.name} has ${skin.joints.length} joints, over the ${MAX_JOINTS} the preview holds at once; each mesh is drawn from the joints it uses`,
+          'info',
+        );
+      }
+    }
 
     this.glResources = resources;
     this._updateWorldMatrices();

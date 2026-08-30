@@ -1,3 +1,4 @@
+import { referencedJoints } from './geometry.ts';
 import { composeMatrix, mat4, vec3 } from '../math.ts';
 import type { Mat4, Vec3 } from '../math.ts';
 import type { ViewerNode, ViewerPrimitive, ViewerScene, ViewerSkin } from '../viewer-scene.ts';
@@ -88,10 +89,20 @@ export function updateSceneBounds(host: SceneGraphHost) {
     // was framed a hundred times too far out.
     //
     // Every vertex is a convex blend of its joints' results, so the union of
-    // the bind box under each jointWorld * IBM contains all of them. Loose when
-    // a distant joint drags the whole box along with it, but framing is a
-    // camera fit, and loose beats wrong by two orders of magnitude.
-    for (const joint of skin!.joints) {
+    // the bind box under each jointWorld * IBM contains all of them.
+    //
+    // Only the joints the mesh references, though. A skin is a rig, not a
+    // list of what one mesh is attached to: a character's four skins carry 611
+    // joints between them while no mesh uses more than 90, and taking the
+    // union over all of them framed a box 380 units across for meshes under
+    // one unit -- the model rendered correctly and was a dot in the middle of
+    // an empty view. Falling back to the whole skin keeps a mesh whose
+    // influences cannot be read from being framed to nothing.
+    const referenced = referencedJointsOf(mesh.primitives);
+    const joints = referenced
+      ? referenced.map((index) => skin!.joints[index]).filter(Boolean)
+      : skin!.joints;
+    for (const joint of joints) {
       if (!joint?.node) continue;
       if (joint.inverseBind) mat4.multiply(matrix, joint.node.world, joint.inverseBind);
       else mat4.copy(matrix, joint.node.world);
@@ -99,6 +110,22 @@ export function updateSceneBounds(host: SceneGraphHost) {
     }
   }
   if (isFinite(aabb.min[0])) host.scene.aabb = aabb;
+}
+
+/**
+ * The skin joints a mesh's primitives name between them, or `null` when none
+ * of them carries readable influences.
+ */
+function referencedJointsOf(primitives: ViewerPrimitive[] | undefined): number[] | null {
+  const all = new Set<number>();
+  let any = false;
+  for (const primitive of primitives || []) {
+    const joints = referencedJoints(primitive);
+    if (!joints) continue;
+    any = true;
+    for (const joint of joints) all.add(joint);
+  }
+  return any ? [...all] : null;
 }
 
 /**
@@ -141,17 +168,24 @@ export function computeJointMatrices(
   skin: ViewerSkin | null,
   meshWorld: Mat4,
   jointOut: Float32Array | null,
+  palette?: Uint16Array,
 ): Float32Array | null {
   if (!skin || !jointOut || !mat4.invert(host._scratch, meshWorld)) return null;
   const inverseMeshWorld = host._scratch;
   const tmp = host._jointScratch || (host._jointScratch = mat4.create());
-  const count = jointOut.length / 16;
+  // Slot `i` stands for `palette[i]` when the primitive was renumbered onto
+  // the joints it uses, and for joint `i` when it was not. Never more slots
+  // than the buffer holds: a palette that did not fit would write nothing
+  // through the clamped subarray below and leave whatever was there, which
+  // reads as a pose rather than as the failure it is.
+  const slots = Math.floor(jointOut.length / 16);
+  const count = palette ? Math.min(palette.length, slots) : slots;
   for (let i = 0; i < count; i++) {
-    const joint = skin.joints[i];
+    const joint = skin.joints[palette ? palette[i] : i];
     if (!joint?.node) return null;
     // In glTF, the palette is inverse(mesh world) * joint world * IBM.
     mat4.multiply(tmp, inverseMeshWorld, joint.node.world);
     mat4.multiply(jointOut.subarray(i * 16, (i + 1) * 16), tmp, joint.inverseBind);
   }
-  return jointOut;
+  return count * 16 === jointOut.length ? jointOut : jointOut.subarray(0, count * 16);
 }

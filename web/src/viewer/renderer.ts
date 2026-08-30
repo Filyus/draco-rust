@@ -4,6 +4,7 @@ import {
 } from '../material-extensions.ts';
 import { mat4, vec3 } from '../math.ts';
 import type { Mat4, Vec3 } from '../math.ts';
+import type { ViewerSkin } from '../viewer-scene.ts';
 import { cameraPosition } from './camera.ts';
 import type { CameraHost } from './camera.ts';
 import { GL } from './gl-utils.ts';
@@ -347,7 +348,13 @@ function ensureSceneResources(host: RenderHost): SceneTarget {
 }
 
 /**
- * Put one renderable's matrices on the host and return its joint palette.
+ * Put one renderable's matrices on the host and return what its primitives
+ * need to build their own joint palettes.
+ *
+ * The palette is per primitive rather than per renderable: each primitive is
+ * renumbered onto the joints it references, so the matrices depend on which
+ * primitive is being drawn. What is shared is the skin and the mesh's world
+ * transform, and that is what comes back.
  *
  * Split out of the pass because the deferred half no longer walks renderables
  * in order: it walks its own sorted list, and each entry has to arrive with
@@ -369,12 +376,30 @@ function prepareRenderable(host: RenderHost, renderable: Renderable) {
   mat4.transpose(host._normalMatrix, host._normalMatrix);
   const skinIndex = renderable.skinIndex;
   const skin = skinIndex >= 0 ? host.scene!.skins[skinIndex] : null;
-  // Recomputed rather than cached across the pass: the palette is written into
-  // one buffer per skin, so two renderables sharing a skin would hand back the
-  // same array with the last one's pose in it.
-  return skin
-    ? computeJointMatrices(host, skin, node.world, host.glResources!.jointMatrices?.[skinIndex] ?? null)
-    : null;
+  return skin ? { skin, world: node.world, skinIndex } : null;
+}
+
+/**
+ * The joint matrices one primitive draws with.
+ *
+ * Recomputed per primitive rather than cached: the matrices are written into
+ * one buffer per skin, so two primitives sharing a skin would otherwise hand
+ * back the same array filled for whichever was prepared last -- and with
+ * per-primitive palettes they no longer even agree on what a slot means.
+ */
+function jointMatricesFor(
+  host: RenderHost,
+  pose: { skin: ViewerSkin; world: Mat4; skinIndex: number } | null,
+  palette: Uint16Array | undefined,
+): Float32Array | null {
+  if (!pose) return null;
+  return computeJointMatrices(
+    host,
+    pose.skin,
+    pose.world,
+    host.glResources!.jointMatrices?.[pose.skinIndex] ?? null,
+    palette,
+  );
 }
 
 /**
@@ -384,11 +409,12 @@ function drawPrimitive(
   host: RenderHost,
   renderable: Renderable,
   primitiveIndex: number,
-  jointMatrices: Float32Array | null,
+  pose: { skin: ViewerSkin; world: Mat4; skinIndex: number } | null,
 ) {
   const gl = host.gl;
   const node = renderable.node;
   const { uploaded, materialIndex } = host.glResources!.primitives[renderable.meshIndex][primitiveIndex];
+  const jointMatrices = jointMatricesFor(host, pose, uploaded.jointPalette);
   const material = host.scene!.materials[materialIndex];
   // Which program draws this primitive is settled first: everything below
   // writes uniforms, and uniforms belong to whichever program is bound.
@@ -443,11 +469,11 @@ function drawOpaqueSurfaces(host: RenderHost) {
   for (const renderable of host.scene!.renderables) {
     const primitives = host.glResources!.primitives[renderable.meshIndex];
     if (!primitives || primitives.length === 0) continue;
-    const jointMatrices = prepareRenderable(host, renderable);
+    const pose = prepareRenderable(host, renderable);
     for (let i = 0; i < primitives.length; i++) {
       const material = host.scene!.materials[primitives[i].materialIndex];
       if (needsCompletedFrame(material)) continue;
-      drawPrimitive(host, renderable, i, jointMatrices);
+      drawPrimitive(host, renderable, i, pose);
     }
   }
 }
@@ -543,8 +569,8 @@ function drawDeferredSurfaces(host: RenderHost, scene: SceneTarget) {
       // The copy did not exist when the last program was bound.
       host._surfaceProgram = null;
     }
-    const jointMatrices = prepareRenderable(host, draw.renderable);
-    drawPrimitive(host, draw.renderable, draw.primitiveIndex, jointMatrices);
+    const pose = prepareRenderable(host, draw.renderable);
+    drawPrimitive(host, draw.renderable, draw.primitiveIndex, pose);
   });
 }
 
