@@ -2781,13 +2781,12 @@ fn extract_vertices(mesh: &Mesh) -> Vec<f64> {
     }
 
     let att = mesh.attribute(pos_att_id);
-    let byte_stride = att.byte_stride() as usize;
     let buffer = att.buffer();
     let mut vertices = Vec::with_capacity(mesh.num_points() * 3);
 
     for i in 0..mesh.num_points() {
         let mut bytes = [0u8; 12];
-        buffer.read(i * byte_stride, &mut bytes);
+        buffer.read(crate::traits::value_offset(att, i), &mut bytes);
         let x = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64;
         let y = f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as f64;
         let z = f32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as f64;

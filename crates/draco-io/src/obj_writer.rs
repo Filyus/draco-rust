@@ -218,10 +218,10 @@ impl ObjWriter {
 /// Read a float3 from an attribute at a given point index.
 fn read_float3(mesh: &Mesh, att_id: i32, point_idx: usize) -> [f32; 3] {
     let att = mesh.attribute(att_id);
-    let byte_stride = att.byte_stride() as usize;
+    let offset = crate::traits::value_offset(att, point_idx);
     let buffer = att.buffer();
     let mut bytes = [0u8; 12];
-    buffer.read(point_idx * byte_stride, &mut bytes);
+    buffer.read(offset, &mut bytes);
     [
         f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
         f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
@@ -232,10 +232,10 @@ fn read_float3(mesh: &Mesh, att_id: i32, point_idx: usize) -> [f32; 3] {
 /// Read a float2 from an attribute at a given point index.
 fn read_float2(mesh: &Mesh, att_id: i32, point_idx: usize) -> [f32; 2] {
     let att = mesh.attribute(att_id);
-    let byte_stride = att.byte_stride() as usize;
+    let offset = crate::traits::value_offset(att, point_idx);
     let buffer = att.buffer();
     let mut bytes = [0u8; 8];
-    buffer.read(point_idx * byte_stride, &mut bytes);
+    buffer.read(offset, &mut bytes);
     [
         f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
         f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),

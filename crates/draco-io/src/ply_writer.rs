@@ -522,7 +522,10 @@ fn read_color(mesh: &Mesh, att_id: i32, point_idx: usize) -> [u8; 4] {
         // u8 colors
         let mut bytes = [255u8; 4];
         let read_len = num_components.min(4);
-        if !buffer.try_read(point_idx * byte_stride, &mut bytes[..read_len]) {
+        if !buffer.try_read(
+            crate::traits::value_offset(att, point_idx),
+            &mut bytes[..read_len],
+        ) {
             return [255, 255, 255, 255];
         }
         bytes
@@ -530,7 +533,10 @@ fn read_color(mesh: &Mesh, att_id: i32, point_idx: usize) -> [u8; 4] {
         // f32 colors (0.0-1.0) - convert to u8
         let mut float_bytes = [0u8; 16];
         let read_len = (num_components * 4).min(16);
-        if !buffer.try_read(point_idx * byte_stride, &mut float_bytes[..read_len]) {
+        if !buffer.try_read(
+            crate::traits::value_offset(att, point_idx),
+            &mut float_bytes[..read_len],
+        ) {
             return [255, 255, 255, 255];
         }
 
@@ -1056,10 +1062,9 @@ fn read_components_as_f32<const N: usize>(att: &PointAttribute, point_idx: usize
 }
 
 fn read_f64x3(att: &PointAttribute, point_idx: usize) -> [f64; 3] {
-    let byte_stride = att.byte_stride() as usize;
     let buffer = att.buffer();
     let mut bytes = [0u8; 24];
-    buffer.read(point_idx * byte_stride, &mut bytes);
+    buffer.read(crate::traits::value_offset(att, point_idx), &mut bytes);
     [
         f64::from_le_bytes(bytes[0..8].try_into().unwrap()),
         f64::from_le_bytes(bytes[8..16].try_into().unwrap()),
@@ -1068,10 +1073,9 @@ fn read_f64x3(att: &PointAttribute, point_idx: usize) -> [f64; 3] {
 }
 
 fn read_i32x3(att: &PointAttribute, point_idx: usize) -> [i32; 3] {
-    let byte_stride = att.byte_stride() as usize;
     let buffer = att.buffer();
     let mut bytes = [0u8; 12];
-    buffer.read(point_idx * byte_stride, &mut bytes);
+    buffer.read(crate::traits::value_offset(att, point_idx), &mut bytes);
     [
         i32::from_le_bytes(bytes[0..4].try_into().unwrap()),
         i32::from_le_bytes(bytes[4..8].try_into().unwrap()),
@@ -1080,10 +1084,9 @@ fn read_i32x3(att: &PointAttribute, point_idx: usize) -> [i32; 3] {
 }
 
 fn read_u32x3(att: &PointAttribute, point_idx: usize) -> [u32; 3] {
-    let byte_stride = att.byte_stride() as usize;
     let buffer = att.buffer();
     let mut bytes = [0u8; 12];
-    buffer.read(point_idx * byte_stride, &mut bytes);
+    buffer.read(crate::traits::value_offset(att, point_idx), &mut bytes);
     [
         u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
         u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
@@ -1104,9 +1107,9 @@ fn append_positions_from_attribute(
         DataType::Float32 => {
             let values: Vec<[f32; 3]> = (0..num_points)
                 .map(|i| {
-                    let byte_stride = att.byte_stride() as usize;
                     let mut bytes = [0u8; 12];
-                    att.buffer().read(i * byte_stride, &mut bytes);
+                    att.buffer()
+                        .read(crate::traits::value_offset(att, i), &mut bytes);
                     [
                         f32::from_le_bytes(bytes[0..4].try_into().unwrap()),
                         f32::from_le_bytes(bytes[4..8].try_into().unwrap()),

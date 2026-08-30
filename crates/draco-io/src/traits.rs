@@ -40,6 +40,14 @@
 use std::io::{self, Write};
 use std::path::Path;
 
+// Used by the writer-side helpers below, which carry this same gate.
+#[cfg(any(
+    feature = "obj-writer",
+    feature = "ply-writer",
+    feature = "stl-writer",
+    feature = "fbx-writer"
+))]
+use draco_core::geometry_indices::PointIndex;
 use draco_core::mesh::Mesh;
 
 /// Common interface for geometry writers.
@@ -200,16 +208,55 @@ pub(crate) fn ensure_attributes_cover_points(mesh: &Mesh, format: &str) -> io::R
     let num_points = mesh.num_points();
     for att_id in 0..mesh.num_attributes() {
         let attribute = mesh.attribute(att_id);
-        if attribute.size() < num_points {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "{format} writer: attribute {att_id} ({:?}) holds {} values for {num_points} points",
-                    attribute.attribute_type(),
-                    attribute.size(),
-                ),
-            ));
+        if attribute.is_mapping_identity() {
+            if attribute.size() < num_points {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "{format} writer: attribute {att_id} ({:?}) holds {} values for {num_points} points",
+                        attribute.attribute_type(),
+                        attribute.size(),
+                    ),
+                ));
+            }
+            continue;
+        }
+        // With an explicit map the value count says nothing: several points
+        // legitimately name one value, which is what a reader's finalization
+        // and a Draco stream both produce. What has to hold is that every
+        // point names a value that exists.
+        for point in 0..num_points {
+            let value = attribute.mapped_index(PointIndex(point as u32)).0 as usize;
+            if value >= attribute.size() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "{format} writer: attribute {att_id} ({:?}) maps point {point} to value {value} of {}",
+                        attribute.attribute_type(),
+                        attribute.size(),
+                    ),
+                ));
+            }
         }
     }
     Ok(())
+}
+
+/// Where one point's value sits in an attribute's buffer.
+///
+/// Every writer here used to read `point * byte_stride`, which is the value's
+/// address only while the mapping is the identity. It is not: a reader merges
+/// values that repeat and a Draco stream carries the map it was written with,
+/// so several points share one value and the point index stops being an
+/// address. Upstream's writers resolve the map for the same reason.
+// The STL writer is not here: it writes triangles from positions it reads
+// through the OBJ helper's shape, and never indexes an attribute itself.
+#[cfg(any(feature = "obj-writer", feature = "ply-writer", feature = "fbx-writer"))]
+pub(crate) fn value_offset(attribute: &draco_core::PointAttribute, point: usize) -> usize {
+    let value = if attribute.is_mapping_identity() {
+        point
+    } else {
+        attribute.mapped_index(PointIndex(point as u32)).0 as usize
+    };
+    value.saturating_mul(attribute.byte_stride() as usize)
 }
