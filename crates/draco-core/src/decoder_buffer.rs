@@ -85,6 +85,7 @@ impl<'a> DecoderBuffer<'a> {
     }
 
     /// Refuses a decoded point count over the caller's ceiling.
+    #[cfg(feature = "point_cloud_decode")]
     pub(crate) fn check_points(&self, points: usize) -> crate::status::Status {
         self.limits.check_points(points as u64)
     }

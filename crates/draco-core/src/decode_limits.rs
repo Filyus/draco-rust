@@ -101,6 +101,9 @@ impl DecodeLimits {
         }
     }
 
+    // Only the point-cloud header carries a point count, and that path is
+    // gated: a `decoder` build without `point_cloud_decode` never asks.
+    #[cfg(feature = "point_cloud_decode")]
     pub(crate) fn check_points(self, points: u64) -> Status {
         Self::check("points", points, self.max_points)
     }
