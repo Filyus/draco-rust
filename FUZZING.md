@@ -17,8 +17,8 @@ status, threat model, and known residual risk live in
 | Target | Path | Surface |
 |---|---|---|
 | `decode_drc` | [`fuzz/fuzz_targets/decode_drc.rs`](fuzz/fuzz_targets/decode_drc.rs) | Feeds each input through both `MeshDecoder` and `PointCloudDecoder` under tight decode limits, including the legacy decode features used for old `.drc` streams. |
-| `compress_gltf` | [`fuzz/fuzz_targets/compress_gltf.rs`](fuzz/fuzz_targets/compress_gltf.rs) | Feeds arbitrary glTF/GLB bytes into the document-preserving glTF compressor with external file resolution disabled. |
-| `draco_gltf_import` | [`fuzz/fuzz_targets/draco_gltf_import.rs`](fuzz/fuzz_targets/draco_gltf_import.rs) | Imports a full scene through `draco-gltf`, decodes every Draco primitive, then exercises atomic in-place decompression. |
+| `compress_gltf` | [`fuzz/fuzz_targets/compress_gltf.rs`](fuzz/fuzz_targets/compress_gltf.rs) | Feeds arbitrary glTF/GLB bytes into the document-preserving glTF compressor with external file resolution disabled, under tight Draco decode limits. |
+| `draco_gltf_import` | [`fuzz/fuzz_targets/draco_gltf_import.rs`](fuzz/fuzz_targets/draco_gltf_import.rs) | Imports a full scene through `draco-gltf`, decodes every Draco primitive, then exercises atomic in-place decompression, all under tight Draco decode limits. |
 | `fbx_read_scene` | [`fuzz/fuzz_targets/fbx_read_scene.rs`](fuzz/fuzz_targets/fbx_read_scene.rs) | Reads arbitrary bytes as an FBX scene under tight decode limits, in both lenient and strict modes, and checks that reading the same input twice agrees. |
 | `fbx_roundtrip` | [`fuzz/fuzz_targets/fbx_roundtrip.rs`](fuzz/fuzz_targets/fbx_roundtrip.rs) | Writes back whatever the FBX reader accepted and requires the result to satisfy the reader's strict mode, so the writer is fuzzed with scenes nobody would hand-build. |
 | `encode_drc` | [`fuzz/fuzz_targets/encode_drc.rs`](fuzz/fuzz_targets/encode_drc.rs) | Builds a mesh or point cloud from the input - point count, triangle indices, attribute layouts and payloads, encoder options - encodes it, and requires that anything the encoder accepted decodes. |
@@ -47,6 +47,13 @@ hundred million points is a legitimate multi-gigabyte decode rather than a bug,
 and the campaign would spend its budget reporting those. The shipped defaults
 are covered instead by `decode_limits`' own tests, which decode real streams
 under them.
+
+The two glTF targets run under the same [`DecodeLimits::fuzzing()`] ceilings,
+through `ImportOptions::draco_decode_limits`. The reason is the same one
+stated above the format level: nothing in a glTF container bounds the geometry
+its Draco streams reconstruct, so a header naming a hundred million points is
+a legal multi-gigabyte decode, `-rss_limit_mb` fires on it, and real findings
+drown in that noise.
 
 [`DecodeLimits::fuzzing()`]: crates/draco-core/src/decode_limits.rs
 
