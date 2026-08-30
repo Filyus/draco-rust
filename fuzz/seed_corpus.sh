@@ -39,9 +39,9 @@ case "$target" in
   encode_drc)
     # Encoder-side target: its input describes geometry to encode, not a file
     # to parse, so no repository fixture is a seed. Seeded entirely from
-    # fuzz/seeds/encode_drc/, which holds reproducers for bugs already fixed.
-    # One still open lives in fuzz/known_failures/, which nothing copies here:
-    # a failing seed would end the campaign on its first execution.
+    # fuzz/seeds/encode_drc/, which holds past reproducers. A reproducer for a
+    # bug still open waits in fuzz/known_failures/ instead, which nothing copies
+    # here: a failing seed would end the campaign on its first execution.
     find_args=( -name '*.no-such-fixture' )
     ;;
   fbx_read_scene|fbx_roundtrip)

@@ -121,7 +121,6 @@ impl PredictionSchemeEncodingTransform<i32, i32> for PredictionSchemeWrapEncodin
             } else if corr_val > self.max_correction {
                 corr_val = corr_val.wrapping_sub(self.max_dif);
             }
-
             out_corr_vals[i] = corr_val;
         }
     }
@@ -202,13 +201,36 @@ impl PredictionSchemeDecodingTransform<i32> for PredictionSchemeWrapDecodingTran
                 pred = self.max_value;
             }
 
-            let mut val = pred.wrapping_add(data[i]);
-
-            if val < self.min_value {
-                val = val.wrapping_add(self.max_dif);
-            } else if val > self.max_value {
-                val = val.wrapping_sub(self.max_dif);
-            }
+            // The add is exact: when the `i32` sum would overflow, it is taken
+            // in `i64`, where the value sits at most half a span outside
+            // `[min, max]` -- the correction was wrapped into
+            // `min_correction..=max_correction` on the way in -- so the single
+            // wrap lands on the value the encoder coded. C++ performs this
+            // addition in `uint32` -- its own guard against signed overflow --
+            // and where the `uint32` sum wraps, its single wrap cannot reach:
+            // the reconstruction lands a whole span away, and every later
+            // prediction reads the aliased number. See the wrap transform
+            // section in COMPATIBILITY.md. Both arms wrap exactly once; the
+            // unit test below states the rule as arithmetic.
+            let val = match pred.checked_add(data[i]) {
+                Some(sum) => {
+                    if sum < self.min_value {
+                        sum.wrapping_add(self.max_dif)
+                    } else if sum > self.max_value {
+                        sum.wrapping_sub(self.max_dif)
+                    } else {
+                        sum
+                    }
+                }
+                None => {
+                    let sum = pred as i64 + data[i] as i64;
+                    if sum > self.max_value as i64 {
+                        (sum - self.max_dif as i64) as i32
+                    } else {
+                        (sum + self.max_dif as i64) as i32
+                    }
+                }
+            };
 
             data[i] = val;
         }
@@ -313,20 +335,20 @@ mod tests {
     /// enforces, and only if the wrapping is reproduced exactly.
     #[test]
     fn the_wrap_matches_an_independent_statement_of_the_same_rule() {
+        // The rule, stated as arithmetic rather than as branches: clamp the
+        // prediction into the range, add the correction exactly, wrap once.
+        // The `i64` add is what makes the wrap exact -- the overflow path of
+        // `compute_original_value` exists so this statement holds everywhere.
         fn branching(pred: i32, corr: i32, min_value: i32, max_value: i32, max_dif: i32) -> i32 {
-            let mut pred = pred;
-            if pred < min_value {
-                pred = min_value;
-            } else if pred > max_value {
-                pred = max_value;
+            let pred = pred.clamp(min_value, max_value);
+            let sum = pred as i64 + corr as i64;
+            if sum > max_value as i64 {
+                (sum - max_dif as i64) as i32
+            } else if sum < min_value as i64 {
+                (sum + max_dif as i64) as i32
+            } else {
+                sum as i32
             }
-            let mut val = pred.wrapping_add(corr);
-            if val < min_value {
-                val = val.wrapping_add(max_dif);
-            } else if val > max_value {
-                val = val.wrapping_sub(max_dif);
-            }
-            val
         }
 
         for &(min_value, max_value) in &[(0, 0), (0, 7), (-5, 5), (-100, -1), (i32::MIN, 0)] {

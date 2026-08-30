@@ -146,6 +146,72 @@ The refusal buys no interoperability: C++ Draco already reads what this encoder
 writes, which is what the bridge test shows. It buys a narrower accepted domain,
 identical to upstream's, at the price of the capability.
 
+## The wrap transform's reconstruction, and the tex-coord predictor's overflow discipline
+
+### What this means for a file
+
+Two related behaviours around prediction corrections differ from upstream, both
+in the direction of reconstructing what the encoder coded:
+
+- Where a prediction and its correction overflow `int32` when added back
+  together, this decoder reconstructs the value the encoder coded. C++ Draco
+  performs that addition in `uint32` (its own guard against signed overflow),
+  and where the `uint32` sum wraps, its single wrap step cannot reach: the
+  reconstruction lands a whole value span away, and every later prediction
+  reads the aliased number. Upstream then either decodes different geometry or
+  -- for inputs whose drifted data trips its own overflow guards -- refuses a
+  stream it wrote itself.
+- The portable tex-coord predictor wraps wherever upstream wraps and refuses
+  only where upstream refuses (the three guards in its `ComputePredictedValue`).
+  An earlier state of this port checked every step on the decode side and
+  refused streams whose scaled arithmetic left `i64` -- streams C++ Draco
+  decodes -- while the encode side wrapped; the two halves of this codec could
+  not read each other's work. They are one predictor now, and the discipline is
+  upstream's.
+
+The divergence is on the decode side alone, and upstream's own behaviour on
+these meshes is measured, not inferred. Built through C++ Draco 1.5.7's
+`ExpertEncoder` -- the same six points and forty-five faces, the same `uint16`
+position and `int32` tex coords, EdgeBreaker at speeds 0/4 with the same two
+prediction schemes -- the reproducer mesh encodes to 911 bytes **byte-identical
+to what this encoder writes**, and C++ Draco then fails to decode its own
+stream: "Failed to decode point attributes", its overflow guards firing on the
+aliased reconstruction. So no encoder can help: upstream cannot round-trip this
+mesh through itself, and the one stream both encoders agree on is a stream only
+this decoder reads.
+
+Files that decode identically in both implementations still do: every
+correction that stayed inside the wrap range reconstructs exactly as before.
+The differences appear only where C++'s own arithmetic aliases.
+
+### What each side does
+
+The encoder wraps each correction into `min_correction..=max_correction` -- half
+the value span -- exactly as upstream does. The decoder adds prediction and
+correction in `i64` when the `int32` sum would overflow
+(`checked_add` with an `i64` fallback in `compute_original_value`,
+[`prediction_scheme_wrap.rs`](crates/draco-core/src/prediction_scheme_wrap.rs)):
+the exact sum sits at most half a span outside `[min, max]`, so the transform's
+single wrap step lands on the original value, provably, for every correction the
+encoder can produce. Upstream's `ComputeOriginalValue`
+(`prediction_scheme_wrap_decoding_transform.h`) does the same addition in
+`uint32`, where the wrap loses the information that a `i64` add keeps.
+
+The tex-coord predictor is one body of code
+(`MeshPredictionSchemeTexCoordsPortablePredictor`,
+[`prediction_scheme_tex_coords_portable.rs`](crates/draco-core/src/prediction_scheme_tex_coords_portable.rs))
+run by both schemes with an `is_encoder` flag selecting only the orientation
+handling, mirroring upstream's shared predictor header. Past the three guards
+its arithmetic wraps in two's complement, which is bit-identical to upstream's
+mix of C++ signed and unsigned 64-bit math.
+
+### What pins it
+
+| test | where | what it would catch |
+| --- | --- | --- |
+| `a_texcoord_prediction_that_wraps_round_trips_through_the_shared_predictor` | [`draco-core/tests/encoder_hardening_test.rs`](crates/draco-core/tests/encoder_hardening_test.rs) | The round trip of `fuzz/seeds/encode_drc/texcoord_portable_encoder_wraps_where_decoder_refuses.bin` -- the input that needs both halves of this page: a prediction past the guards would refuse at encode, and an aliased reconstruction would refuse at decode. |
+| `encoder_and_decoder_produce_the_same_prediction_when_the_arithmetic_wraps` | [`draco-core/src/prediction_scheme_tex_coords_portable.rs`](crates/draco-core/src/prediction_scheme_tex_coords_portable.rs) | The two sides disagreeing about a prediction whose intermediate arithmetic wraps. |
+
 ## Smaller divergences in the same family
 
 - **A pre-2.0 `uint32` parent is read signed.** Below bitstream 2.0 upstream

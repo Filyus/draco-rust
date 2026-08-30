@@ -1844,6 +1844,66 @@ fn a_texcoord_predicts_from_a_uint32_position_as_the_encoder_read_it() {
         .expect("encoder wrote a stream its decoder rejects");
 }
 
+/// The tex-coord predictor's two halves once disagreed about what happens past
+/// the overflow guards: the encoder wrapped, the decoder refused, and an input
+/// whose scaled arithmetic leaves `i64` produced a stream nothing could read --
+/// "Portable texture-coordinate prediction failed at entry 14". The prediction
+/// is one body of code now, and its discipline is upstream's: refuse where
+/// upstream refuses, wrap where upstream wraps. This is the input that told the
+/// two apart, replayed end to end.
+#[test]
+fn a_texcoord_prediction_that_wraps_round_trips_through_the_shared_predictor() {
+    use encode_drc_replay::{build_attribute, read_spec, Reader};
+
+    let data = include_bytes!(
+        "../../../fuzz/seeds/encode_drc/texcoord_portable_encoder_wraps_where_decoder_refuses.bin"
+    );
+    let mut reader = Reader::new(data);
+    let spec = read_spec(&mut reader);
+    let payload = reader.rest().to_vec();
+
+    let mut mesh = Mesh::new();
+    mesh.set_num_points(spec.num_points);
+    mesh.try_set_num_faces(spec.faces.len())
+        .expect("face count within bounds");
+    for (index, face) in spec.faces.iter().enumerate() {
+        mesh.set_face_from_indices(index, *face);
+    }
+    for (index, attribute_spec) in spec.attributes.iter().enumerate() {
+        let attribute = build_attribute(attribute_spec, spec.num_points, &payload, index * 7 + 1)
+            .expect("attribute within bounds");
+        mesh.add_attribute(attribute);
+    }
+    mesh.deduplicate_point_ids();
+
+    let mut options = EncoderOptions::new();
+    options.set_prediction_scheme(spec.prediction_scheme);
+    options.set_global_int("encoding_speed", spec.encoding_speed);
+    options.set_global_int("decoding_speed", spec.decoding_speed);
+    if spec.split_on_seams >= 0 {
+        options.set_global_int("split_mesh_on_seams", spec.split_on_seams);
+    }
+    if spec.force_predictive_traversal {
+        options.set_global_int("force_predictive_traversal", 1);
+    }
+    if let Some((major, minor)) = spec.version {
+        options.set_version(major, minor);
+    }
+    for (id, attribute) in spec.attributes.iter().enumerate() {
+        let id = id as i32;
+        options.set_attribute_int(id, "quantization_bits", attribute.quantization_bits);
+        if attribute.prediction_scheme >= -1 {
+            options.set_attribute_int(id, "prediction_scheme", attribute.prediction_scheme);
+        }
+    }
+
+    let encoded = encode_mesh(mesh, &options).expect("encode");
+    let mut decoded = Mesh::new();
+    MeshDecoder::new()
+        .decode(&mut DecoderBuffer::new(&encoded), &mut decoded)
+        .expect("encoder wrote a stream its decoder rejects");
+}
+
 /// The `traversal_method` byte has to name the order the position values were
 /// actually written in.
 ///

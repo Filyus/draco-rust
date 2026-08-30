@@ -3545,6 +3545,46 @@ reads `1.35x`, data writes `1.22x`, D1 read misses `1.36x`, last-level misses
 reference whose `IndexTypeVector` does the same thing through
 `stl_vector.h`. That is the shape of what is left.
 
+### One Tex-Coord Predictor, And An Exact Wrap Reconstruction -- Both Flat
+
+The portable tex-coord prediction existed twice -- the decoder's body and the
+encoder's -- and the copies had drifted: the encoder wrapped where the decoder
+refused, and an input whose scaled arithmetic leaves `i64` produced a stream
+nothing could read. The prediction is one body of code now
+(`MeshPredictionSchemeTexCoordsPortablePredictor`, run by both schemes with an
+`is_encoder` flag), its discipline is upstream's -- refuse at the three guards,
+wrap past them -- and the reproducer moved back from `fuzz/known_failures/`
+into the seed corpus.
+
+Unifying the predictor alone did not close the reproducer. Instrumenting both
+sides showed their predictions agreeing entry by entry; the divergence was one
+step below, in the wrap transform's reconstruction: `prediction + correction`
+overflows `int32` (2,181,578,240 on the reproducer), the `uint32` add C++ uses
+wraps the same way, and the transform's single wrap step cannot reach a value
+that left the type. C++ 1.5.7 aliases identically there -- upstream cannot
+round-trip this mesh through itself either. The decoder now takes the sum in
+`i64` when the `int32` add would overflow (`checked_add` with an `i64`
+fallback), which is provably exact: the correction was wrapped to half a span,
+so the exact sum sits at most half a span outside the range and the single
+wrap lands on the original. Recorded in COMPATIBILITY.md as a divergence from
+C++ on exactly those inputs.
+
+Measured flat, both directions, paired `ABBA` over `24` rounds of `2` s
+against the previous commit, four binaries (two layout-perturbed builds per
+condition), System allocator:
+
+- decode, Bunny speed-1 payload: median `+0.064%`, signs `12`/`24`. The
+  `checked_add` sits on the wrap transform's hot path -- every wrap-predicted
+  component of every decode takes it -- and costs nothing measurable; the
+  per-round differences reach `+-8%` on this noisy session, with both signs
+  throughout.
+- encode, Bunny speed-1: median `+0.39%` in the previous tree's favor, signs
+  `13`/`24` -- samples of zero.
+
+Encoded bytes are byte-identical to the previous commit at both benchmark
+speeds, and the corpus replay (`-O -a`) runs in CI, where the reproducer is
+now a seed that holds the fix down instead of ending the campaign.
+
 ### One Owner For The Parents, And Their Copies -- Encode Flat
 
 The portable-parent invariant had its decode side structural and its encoder
