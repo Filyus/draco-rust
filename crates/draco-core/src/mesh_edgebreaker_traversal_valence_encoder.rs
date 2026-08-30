@@ -8,7 +8,7 @@ use crate::corner_table::CornerTable;
 use crate::encoder_buffer::EncoderBuffer;
 use crate::geometry_indices::{CornerIndex, VertexIndex, INVALID_CORNER_INDEX};
 use crate::mesh_edgebreaker_shared::EdgebreakerSymbol;
-use crate::status::{DracoError, Status};
+use crate::status::Status;
 
 pub struct MeshEdgebreakerTraversalValenceEncoder {
     vertex_valences: Vec<i32>,
@@ -188,9 +188,8 @@ impl MeshEdgebreakerTraversalValenceEncoder {
                 // encoder was configured with, because this block has to match
                 // C++ byte for byte and C++ never varies it.
                 let options = crate::symbol_encoding::SymbolEncodingOptions { compression_level };
-                crate::symbol_encoding::encode_symbols(symbols, 1, &options, out_buffer).map_err(
-                    |err| DracoError::general(format!("Failed to encode valence symbols: {err}")),
-                )?;
+                crate::symbol_encoding::encode_symbols(symbols, 1, &options, out_buffer)
+                    .map_err(|err| err.context("Failed to encode valence symbols"))?;
             }
         }
         Ok(())

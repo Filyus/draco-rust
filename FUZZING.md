@@ -16,7 +16,7 @@ status, threat model, and known residual risk live in
 
 | Target | Path | Surface |
 |---|---|---|
-| `decode_drc` | [`fuzz/fuzz_targets/decode_drc.rs`](fuzz/fuzz_targets/decode_drc.rs) | Feeds each input through both `MeshDecoder` and `PointCloudDecoder`, including the legacy decode features used for old `.drc` streams. |
+| `decode_drc` | [`fuzz/fuzz_targets/decode_drc.rs`](fuzz/fuzz_targets/decode_drc.rs) | Feeds each input through both `MeshDecoder` and `PointCloudDecoder` under tight decode limits, including the legacy decode features used for old `.drc` streams. |
 | `compress_gltf` | [`fuzz/fuzz_targets/compress_gltf.rs`](fuzz/fuzz_targets/compress_gltf.rs) | Feeds arbitrary glTF/GLB bytes into the document-preserving glTF compressor with external file resolution disabled. |
 | `draco_gltf_import` | [`fuzz/fuzz_targets/draco_gltf_import.rs`](fuzz/fuzz_targets/draco_gltf_import.rs) | Imports a full scene through `draco-gltf`, decodes every Draco primitive, then exercises atomic in-place decompression. |
 | `fbx_read_scene` | [`fuzz/fuzz_targets/fbx_read_scene.rs`](fuzz/fuzz_targets/fbx_read_scene.rs) | Reads arbitrary bytes as an FBX scene under tight decode limits, in both lenient and strict modes, and checks that reading the same input twice agrees. |
@@ -40,6 +40,15 @@ it, and real findings would drown in that noise. Under the fuzzing limits any
 allocation failure is a genuine bug.
 
 [`FbxDecodeLimits::fuzzing()`]: crates/draco-io/src/fbx_options.rs
+
+`decode_drc` runs under [`DecodeLimits::fuzzing()`] for the same reason. The
+Draco format puts no bound on reconstructed geometry, so a header naming a
+hundred million points is a legitimate multi-gigabyte decode rather than a bug,
+and the campaign would spend its budget reporting those. The shipped defaults
+are covered instead by `decode_limits`' own tests, which decode real streams
+under them.
+
+[`DecodeLimits::fuzzing()`]: crates/draco-core/src/decode_limits.rs
 
 `ktx2_transcode` covers `draco-texture`, which is the same shape of surface: a
 header of file-controlled offsets and lengths, a Zstd payload whose size the

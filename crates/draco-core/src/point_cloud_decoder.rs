@@ -252,6 +252,7 @@ impl PointCloudDecoder {
             )));
         }
         let num_points: usize = declared_points as usize;
+        buffer.check_points(num_points)?;
         pc.set_num_points(num_points);
 
         let num_attributes_decoders = buffer.decode_u8()? as usize;
@@ -262,12 +263,10 @@ impl PointCloudDecoder {
                 let mut att_decoder = KdTreeAttributesDecoder::new(0);
                 att_decoder
                     .decode_attributes_decoder_data(pc, buffer)
-                    .map_err(|err| {
-                        DracoError::general(format!("Failed to decode attribute metadata: {err}"))
-                    })?;
-                att_decoder.decode_attributes(pc, buffer).map_err(|err| {
-                    DracoError::general(format!("Failed to decode attributes: {err}"))
-                })?;
+                    .map_err(|err| err.context("Failed to decode attribute metadata"))?;
+                att_decoder
+                    .decode_attributes(pc, buffer)
+                    .map_err(|err| err.context("Failed to decode attributes"))?;
             }
         } else {
             // Sequential encoding.
@@ -359,14 +358,22 @@ impl PointCloudDecoder {
                         }
                     }
 
+                    buffer.charge_decoded_bytes(
+                        (spec.num_components as usize)
+                            .saturating_mul(spec.data_type.byte_length())
+                            .saturating_mul(num_points),
+                    )?;
                     let mut att = PointAttribute::new();
-                    // Nothing is charged for this attribute, because nothing is
-                    // taken for it: the buffer is left unreserved and sized by
-                    // whichever decoder writes the values, once they exist. A
-                    // charge here would be for an allocation that no longer
-                    // happens, and it is not free -- the budget is a backstop
-                    // against unbacked reservations, and billing it for backed
-                    // ones is what made it refuse files this crate writes.
+                    // Nothing is charged against the *budget* for this
+                    // attribute, because nothing is taken for it: the buffer is
+                    // left unreserved and sized by whichever decoder writes the
+                    // values, once they exist. A charge there would be for an
+                    // allocation that no longer happens, and it is not free --
+                    // the budget is a backstop against unbacked reservations,
+                    // and billing it for backed ones is what made it refuse
+                    // files this crate writes. The caller's ceiling above is
+                    // the other question and is charged: it bounds what the
+                    // decode may produce at all, backed or not.
                     att.init_deferred(
                         spec.att_type,
                         spec.num_components,

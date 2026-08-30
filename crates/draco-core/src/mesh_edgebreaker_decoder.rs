@@ -231,6 +231,11 @@ impl MeshEdgebreakerDecoder {
             ));
         }
 
+        // Last, once the counts have been found coherent: a malformed file has
+        // to report as malformed, and only a file that got this far can be
+        // refused honestly for being large rather than wrong.
+        in_buffer.check_faces(num_faces as usize)?;
+
         // Deliberately not sized from |num_faces| here. The faces are written
         // further down from the corner table the traversal actually built, so
         // reserving for the declared count buys nothing and lets a few hundred

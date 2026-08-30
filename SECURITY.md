@@ -202,7 +202,7 @@ bound the work it is willing to do.
 | Control | Recommendation | Rationale |
 |---|---|---|
 | Input byte size | Reject streams larger than your application maximum **before** decoding. | A small compressed stream can describe a much larger mesh; capping input bytes is the cheapest first gate. |
-| Output / memory budget | Run decode where a memory ceiling is enforceable (container limit, cgroup, or a dedicated allocator/arena). | The decoder does not cap reconstructed geometry size by design. |
+| Output / memory budget | Set [`DecodeLimits`](https://docs.rs/draco-core/latest/draco_core/struct.DecodeLimits.html) to your application's ceiling, and still run decode where a memory ceiling is enforceable (container limit, cgroup, or a dedicated allocator/arena). | The format puts no bound on reconstructed geometry, and no bound derived from the stream can supply one -- a legitimate file decodes to four to five orders of magnitude its own size. Only an absolute ceiling works, and only the caller knows where it sits. The defaults refuse an absurd header; they are not a memory budget. |
 | Timeout / cancellation | Decode untrusted input on a worker with a wall-clock timeout and drop it on expiry. | Guards against pathological inputs that are slow rather than large. |
 | Process / worker isolation | Decode untrusted input off the main thread, ideally in a separate process or WASM instance. | Contains any residual unforeseen failure without taking down the host. |
 | Feature surface | Build untrusted-decode profiles with `default-features = false` and only `decoder` (+ `point_cloud_decode`). | Drops legacy bitstream and deprecated prediction decode paths that hostile callers do not need. |

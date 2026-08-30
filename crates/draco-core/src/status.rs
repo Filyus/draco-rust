@@ -38,6 +38,14 @@ pub enum ErrorKind {
     /// `decode_budget`. A stream that trips it is malformed or adversarial; a
     /// large but genuine mesh scales its own budget with it.
     AllocationExceedsInput,
+    /// A decode would produce more than the caller's [`DecodeLimits`] allow.
+    ///
+    /// Distinct from [`AllocationExceedsInput`](Self::AllocationExceedsInput)
+    /// on purpose: that one says the file is malformed, this one says the file
+    /// may well be fine and the caller declined to decode something that
+    /// large. Raise the limits, or use
+    /// [`DecodeLimits::permissive`](crate::DecodeLimits::permissive).
+    LimitExceeded,
 }
 
 impl ErrorKind {
@@ -53,6 +61,7 @@ impl ErrorKind {
             ErrorKind::BitstreamVersionUnsupported => "Bitstream version unsupported",
             ErrorKind::Buffer => "Buffer decode error",
             ErrorKind::AllocationExceedsInput => "Allocation exceeds input",
+            ErrorKind::LimitExceeded => "Decode limit exceeded",
         }
     }
 }
@@ -175,6 +184,27 @@ impl DracoError {
 
     /// A decode that asked for more memory than its input could describe.
     /// See [`ErrorKind::AllocationExceedsInput`].
+    /// Prefixes this error's message with `context`, keeping its kind.
+    ///
+    /// The kind is what a caller matches on, so a layer that adds context has
+    /// to carry it through. Rebuilding the error as
+    /// [`general`](Self::general) instead flattens every refusal underneath
+    /// into one kind -- which is how a caller's own
+    /// [`LimitExceeded`](ErrorKind::LimitExceeded) ceiling became
+    /// indistinguishable from a corrupt file.
+    #[cold]
+    #[inline(never)]
+    #[must_use]
+    pub fn context(self, context: impl std::fmt::Display) -> Self {
+        let kind = self.inner.kind;
+        let message = if self.inner.message.is_empty() {
+            format!("{context}")
+        } else {
+            format!("{context}: {}", self.inner.message)
+        };
+        Self::new(kind, message)
+    }
+
     pub fn allocation_exceeds_input(requested_bytes: usize, stream_bytes: usize) -> Self {
         Self::new(
             ErrorKind::AllocationExceedsInput,

@@ -132,6 +132,14 @@ impl KdTreeAttributesDecoder {
             // so the buffer is left unreserved and sized in
             // `decode_portable_attributes`, once the KD-tree has produced the
             // values and their length has been checked against the count.
+            // The caller's ceiling, unlike the budget above, counts what a
+            // legitimate file decodes as well as what a hostile one claims, so
+            // it is charged here where the size is first known.
+            in_buffer.charge_decoded_bytes(
+                (num_components as usize)
+                    .saturating_mul(data_type.byte_length())
+                    .saturating_mul(point_cloud.num_points()),
+            )?;
             let mut att = PointAttribute::new();
             att.init_deferred(
                 att_type,
@@ -295,9 +303,7 @@ impl KdTreeAttributesDecoder {
                 &mut portable,
                 DataType::Uint32,
             )
-            .map_err(|err| {
-                DracoError::general(format!("Portable copy of attribute {att_id}: {err}"))
-            })?;
+            .map_err(|err| err.context(format!("Portable copy of attribute {att_id}")))?;
 
             self.quantized_portable_attributes.push(portable);
         }
@@ -318,7 +324,7 @@ impl KdTreeAttributesDecoder {
                     att,
                     spec.data_type,
                 )
-                .map_err(|err| DracoError::general(format!("Attribute {att_id}: {err}")))?;
+                .map_err(|err| err.context(format!("Attribute {att_id}")))?;
             }
         }
 
@@ -477,9 +483,7 @@ impl KdTreeAttributesDecoder {
                         spec.data_type,
                         signed,
                     )
-                    .map_err(|err| {
-                        DracoError::general(format!("Point {p} component {c}: {err}"))
-                    })?;
+                    .map_err(|err| err.context(format!("Point {p} component {c}")))?;
                 }
             }
             min_index += spec.num_components;

@@ -424,7 +424,7 @@ impl MeshDecoder {
                         *dst = index_value as u32;
                         last_index_value = index_value;
                     }
-                    mesh.try_set_num_faces(num_faces)?;
+                    set_num_faces_within_limits(mesh, buffer, num_faces)?;
                     mesh.set_faces_from_flat_indices(&indices);
                 } else if connectivity_method == 1 {
                     // Raw - bulk read indices from buffer
@@ -433,7 +433,7 @@ impl MeshDecoder {
                         let bytes = buffer.decode_slice(bytes_needed).map_err(|_| {
                             DracoError::general("Not enough data for u8 indices".to_string())
                         })?;
-                        mesh.try_set_num_faces(num_faces)?;
+                        set_num_faces_within_limits(mesh, buffer, num_faces)?;
                         mesh.set_faces_from_u8_indices(bytes);
                     } else if num_points < 65536 {
                         let bytes_needed = num_indices.checked_mul(2).ok_or_else(|| {
@@ -442,7 +442,7 @@ impl MeshDecoder {
                         let bytes = buffer.decode_slice(bytes_needed).map_err(|_| {
                             DracoError::general("Not enough data for u16 indices".to_string())
                         })?;
-                        mesh.try_set_num_faces(num_faces)?;
+                        set_num_faces_within_limits(mesh, buffer, num_faces)?;
                         mesh.set_faces_from_le_u16_indices(bytes);
                     } else if num_points < (1 << 21) && seq_uses_varint {
                         // Three varints a face, and a varint is at least one
@@ -462,7 +462,7 @@ impl MeshDecoder {
                                 buffer.remaining_size()
                             )));
                         }
-                        mesh.try_set_num_faces(num_faces)?;
+                        set_num_faces_within_limits(mesh, buffer, num_faces)?;
                         for face_id in 0..num_faces {
                             mesh.set_face_from_indices(
                                 face_id,
@@ -480,7 +480,7 @@ impl MeshDecoder {
                         let bytes = buffer.decode_slice(bytes_needed).map_err(|_| {
                             DracoError::general("Not enough data for u32 indices".to_string())
                         })?;
-                        mesh.try_set_num_faces(num_faces)?;
+                        set_num_faces_within_limits(mesh, buffer, num_faces)?;
                         mesh.set_faces_from_le_u32_indices(bytes);
                     }
                 } else {
@@ -894,6 +894,11 @@ impl MeshDecoder {
                     buffer.decode_varint()? as u32
                 };
 
+                buffer.charge_decoded_bytes(
+                    (num_components as usize)
+                        .saturating_mul(data_type.byte_length())
+                        .saturating_mul(num_points),
+                )?;
                 let mut att = PointAttribute::new();
                 att.init_deferred(att_type, num_components, data_type, normalized, num_points)?;
                 att.set_unique_id(unique_id);
@@ -1870,6 +1875,25 @@ fn make_zeroed_indices(num_indices: usize) -> Result<Vec<u32>, DracoError> {
         .map_err(|_| DracoError::general("Failed to allocate mesh indices".to_string()))?;
     indices.resize(num_indices, 0);
     Ok(indices)
+}
+
+/// Sizes the face array, after the caller's ceiling has had its say.
+///
+/// The ceiling is checked here rather than where the count is read, and the
+/// order is the point: every structural refusal on the way to this call --
+/// a count no stream that size can carry, an index that overflows, bytes that
+/// are not there -- says the *file* is wrong, and must be what a caller sees.
+/// [`ErrorKind::LimitExceeded`](crate::ErrorKind::LimitExceeded) says the file
+/// may be fine and the caller declined to decode something this large, which
+/// is only a truthful answer once the file has been found coherent.
+#[cfg(feature = "decoder")]
+fn set_num_faces_within_limits(
+    mesh: &mut Mesh,
+    buffer: &DecoderBuffer,
+    num_faces: usize,
+) -> Status {
+    buffer.check_faces(num_faces)?;
+    mesh.try_set_num_faces(num_faces)
 }
 
 #[cfg(test)]

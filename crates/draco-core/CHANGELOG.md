@@ -20,6 +20,11 @@ premise holds, and the encoder reports the choices it makes for itself.
 
 ### Changed
 
+- `DracoError::context` adds context to an error while keeping its kind, and
+  the twelve decode and encode sites that rebuilt an error as
+  `DracoError::general` to add a prefix now use it. Those sites flattened every
+  refusal underneath them into one kind, which made a caller's own
+  `LimitExceeded` ceiling indistinguishable from a corrupt file.
 - `PredictionSchemeDecodingTransform::init` returns a `Status`. It is the point
   where a transform learns the component count it will be handed, and the
   octahedral transforms have no meaning at any width but two: they read and
@@ -43,6 +48,24 @@ premise holds, and the encoder reports the choices it makes for itself.
 
 ### Added
 
+- `DecodeLimits`, installed with `DecoderBuffer::with_limits`, caps what one
+  decode may reconstruct: points, faces, and the total size of decoded
+  attribute values. Exceeding one fails with the new
+  `ErrorKind::LimitExceeded`, which a caller can tell from
+  `ErrorKind::AllocationExceedsInput` -- its own ceiling refusing a large file,
+  rather than the decoder refusing a malformed one. `permissive()` restores the
+  previous behaviour of no ceiling at all; `fuzzing()` is what the `decode_drc`
+  target now runs under.
+
+  This is a behaviour change for every caller, and deliberately so. The format
+  puts no bound on reconstructed geometry and no bound derived from the stream
+  can supply one: a legitimate file decodes to four or five orders of magnitude
+  its own size, which is why `decode_budget` is a backstop against unbacked
+  reservations rather than a cap. Only an absolute ceiling works, and until now
+  only a caller who read `SECURITY.md` had one. The defaults were calibrated
+  against real assets and sit an order of magnitude above the largest measured
+  stream -- 25 million points, 6.6 million faces, 700 MB -- so they refuse an
+  absurd header without policing legitimate files.
 - `Mesh::faces` hands back every face at once, where `Mesh::face` answers for
   one. For a caller that walks all of them, `as_flattened()` on the result is
   the mesh's corners in the corner table's own order, so a walk over both can

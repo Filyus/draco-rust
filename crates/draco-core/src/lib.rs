@@ -113,6 +113,10 @@ pub mod data_buffer;
 /// the ratio is an implementation detail, not a knob.
 #[cfg(feature = "decoder")]
 mod decode_budget;
+/// Caller-set ceilings on what one decode may produce. Public: unlike the
+/// budget above, where the ceiling sits is the caller's policy.
+#[cfg(feature = "decoder")]
+pub mod decode_limits;
 /// Coarse decode phase timing for the performance harness (`DECODE_PHASES=1`).
 #[doc(hidden)]
 #[cfg(feature = "decoder")]
@@ -384,6 +388,9 @@ pub use status::{DracoError, ErrorKind, Status};
 // Decoder re-exports
 // =============================================================================
 
+#[cfg(feature = "decoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
+pub use decode_limits::DecodeLimits;
 #[cfg(feature = "decoder")]
 #[cfg_attr(docsrs, doc(cfg(feature = "decoder")))]
 pub use decoder_buffer::DecoderBuffer;

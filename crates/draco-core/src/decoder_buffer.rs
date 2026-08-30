@@ -37,6 +37,15 @@ pub struct DecoderBuffer<'a> {
     /// is what makes the bound cumulative rather than per-allocation -- see
     /// [`charge`](Self::charge).
     spent: usize,
+    /// The caller's ceilings on what this decode may produce, and what it has
+    /// produced so far against the byte one.
+    ///
+    /// Here rather than on the decoders because this type is the stream and
+    /// already reaches every site that learns a count -- the same reason the
+    /// budget above lives here. A decode of a mesh runs a point-cloud decoder
+    /// and an attributes decoder under it; one buffer is what all three share.
+    limits: crate::decode_limits::DecodeLimits,
+    decoded_bytes: u64,
 }
 
 impl<'a> DecoderBuffer<'a> {
@@ -54,7 +63,49 @@ impl<'a> DecoderBuffer<'a> {
             version_major: DEFAULT_MESH_VERSION.0,
             version_minor: DEFAULT_MESH_VERSION.1,
             spent: 0,
+            limits: crate::decode_limits::DecodeLimits::default(),
+            decoded_bytes: 0,
         }
+    }
+
+    /// Decodes under `limits` rather than under
+    /// [`DecodeLimits::default`](crate::DecodeLimits::default).
+    ///
+    /// ```
+    /// use draco_core::{DecodeLimits, DecoderBuffer};
+    ///
+    /// let stream = [0u8; 0];
+    /// let buffer = DecoderBuffer::new(&stream).with_limits(DecodeLimits::permissive());
+    /// # let _ = buffer;
+    /// ```
+    #[must_use]
+    pub fn with_limits(mut self, limits: crate::decode_limits::DecodeLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    /// Refuses a decoded point count over the caller's ceiling.
+    pub(crate) fn check_points(&self, points: usize) -> crate::status::Status {
+        self.limits.check_points(points as u64)
+    }
+
+    /// Refuses a decoded face count over the caller's ceiling.
+    pub(crate) fn check_faces(&self, faces: usize) -> crate::status::Status {
+        self.limits.check_faces(faces as u64)
+    }
+
+    /// Adds one attribute's declared size to this decode's running total and
+    /// refuses when the total passes the caller's ceiling.
+    ///
+    /// Cumulative for the same reason [`charge`](Self::charge) is: the
+    /// attribute count is the header's, so a per-attribute check bounds
+    /// nothing. Called where the size becomes known and before anything is
+    /// allocated for it.
+    pub(crate) fn charge_decoded_bytes(&mut self, bytes: usize) -> crate::status::Status {
+        let total = self.decoded_bytes.saturating_add(bytes as u64);
+        self.limits.check_decoded_bytes(total)?;
+        self.decoded_bytes = total;
+        Ok(())
     }
 
     /// Charges `bytes` against what this stream is allowed to make the decoder

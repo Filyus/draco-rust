@@ -751,9 +751,7 @@ impl SequentialIntegerAttributeDecoder {
                 in_buffer,
                 &mut symbols,
             )
-            .map_err(|err| {
-                DracoError::general(format!("Failed to decode the entropy-coded symbols: {err}"))
-            })?;
+            .map_err(|err| err.context("Failed to decode the entropy-coded symbols"))?;
             symbols_to_corrections(symbols, needs_zigzag_conversion)
         } else {
             // Raw uncompressed integers. Read directly as bytes.
