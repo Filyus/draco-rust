@@ -769,4 +769,76 @@ mod shared_path_regressions {
             == crate::fbx_scene::FbxWarningCode::UnconnectedModelDropped
             && warning.message.contains("2 FBX Models")));
     }
+
+    /// The animation side names a morph target by its position in the flat
+    /// target list. That position is decided where the list is built, over
+    /// shapes; counting channels per deformer instead agrees with it only when
+    /// every deformer carries exactly one single-shape channel and nothing is
+    /// dropped. With two `BlendShape` deformers both channels were numbered 0,
+    /// their curves collapsed into one animation group and one target lost its
+    /// animation entirely -- and a rewrite wrote the weights back onto the
+    /// wrong targets, making the damage permanent.
+    #[test]
+    fn morph_animation_targets_come_from_the_target_list_they_index() {
+        let decoded = scene(
+            "FBXHeaderExtension:  {\n\tFBXVersion: 7500\n}\n\
+             Objects:  {\n\
+             \tGeometry: 100, \"Geometry::Tri\", \"Mesh\" {\n\
+             \t\tVertices: *9 {\n\t\t\ta: 0,0,0,1,0,0,0,1,0\n\t\t}\n\
+             \t\tPolygonVertexIndex: *3 {\n\t\t\ta: 0,1,-3\n\t\t}\n\t}\n\
+             \tModel: 200, \"Model::Cube\", \"Mesh\" {\n\t}\n\
+             \tDeformer: 300, \"Deformer::A\", \"BlendShape\" {\n\t}\n\
+             \tDeformer: 301, \"Deformer::ChanA\", \"BlendShapeChannel\" {\n\
+             \t\tDeformPercent: 0\n\
+             \t\tFullWeights: *1 {\n\t\t\ta: 100\n\t\t}\n\t}\n\
+             \tGeometry: 310, \"Geometry::ShapeA\", \"Shape\" {\n\
+             \t\tIndexes: *1 {\n\t\t\ta: 0\n\t\t}\n\
+             \t\tVertices: *3 {\n\t\t\ta: 0,0,1\n\t\t}\n\t}\n\
+             \tDeformer: 302, \"Deformer::B\", \"BlendShape\" {\n\t}\n\
+             \tDeformer: 303, \"Deformer::ChanB\", \"BlendShapeChannel\" {\n\
+             \t\tDeformPercent: 0\n\
+             \t\tFullWeights: *1 {\n\t\t\ta: 100\n\t\t}\n\t}\n\
+             \tGeometry: 311, \"Geometry::ShapeB\", \"Shape\" {\n\
+             \t\tIndexes: *1 {\n\t\t\ta: 1\n\t\t}\n\
+             \t\tVertices: *3 {\n\t\t\ta: 0,0,-1\n\t\t}\n\t}\n\
+             \tAnimationStack: 500, \"AnimStack::Take\", \"\" {\n\t}\n\
+             \tAnimationLayer: 510, \"AnimLayer::BaseLayer\", \"\" {\n\t}\n\
+             \tAnimationCurveNode: 520, \"AnimCurveNode::ChanA\", \"\" {\n\t}\n\
+             \tAnimationCurveNode: 521, \"AnimCurveNode::ChanB\", \"\" {\n\t}\n\
+             \tAnimationCurve: 530, \"AnimCurve::ChanA\", \"\" {\n\
+             \t\tKeyTime: *2 {\n\t\t\ta: 0,46186158000\n\t\t}\n\
+             \t\tKeyValueFloat: *2 {\n\t\t\ta: 0,100\n\t\t}\n\t}\n\
+             \tAnimationCurve: 531, \"AnimCurve::ChanB\", \"\" {\n\
+             \t\tKeyTime: *2 {\n\t\t\ta: 0,46186158000\n\t\t}\n\
+             \t\tKeyValueFloat: *2 {\n\t\t\ta: 0,100\n\t\t}\n\t}\n}\n\
+             Connections:  {\n\
+             \tC: \"OO\",100,200\n\
+             \tC: \"OO\",200,0\n\
+             \tC: \"OO\",300,100\n\
+             \tC: \"OO\",301,300\n\
+             \tC: \"OO\",310,301\n\
+             \tC: \"OO\",302,100\n\
+             \tC: \"OO\",303,302\n\
+             \tC: \"OO\",311,303\n\
+             \tC: \"OO\",500,0\n\
+             \tC: \"OO\",510,500\n\
+             \tC: \"OO\",520,510\n\
+             \tC: \"OO\",521,510\n\
+             \tC: \"OP\",520,301,\"DeformPercent\"\n\
+             \tC: \"OP\",521,303,\"DeformPercent\"\n\
+             \tC: \"OP\",530,520,\"d|X\"\n\
+             \tC: \"OP\",531,521,\"d|X\"\n}\n",
+        );
+        let weights: Vec<Option<u32>> = decoded.animations[0]
+            .channels
+            .iter()
+            .filter(|channel| channel.path == crate::fbx_scene::FbxAnimChannelPath::MorphWeight)
+            .map(|channel| channel.morph_target_index)
+            .collect();
+        assert_eq!(
+            weights,
+            vec![Some(0), Some(1)],
+            "two deformers must number their targets apart, not both at 0"
+        );
+    }
 }

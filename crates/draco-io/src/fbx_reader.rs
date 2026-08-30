@@ -222,13 +222,15 @@ impl<R: Read + Seek> FbxReader<R> {
             };
         let mut geometry_ids: Vec<i64> = geometry_map.keys().copied().collect();
         geometry_ids.sort_unstable();
+        let mut morph_channel_targets: std::collections::HashMap<i64, u32> =
+            std::collections::HashMap::new();
         for geom_id in geometry_ids {
             let geom_node = geometry_map[&geom_id];
             if let Some(source) = geometry_to_mesh(geom_node, &mut warnings)? {
                 // find connection mapping geometry -> model
                 for conn in connections.iter() {
                     if conn.child == geom_id && model_map.contains_key(&conn.parent) {
-                        let mesh_instance = build_mesh_instance(
+                        let (mesh_instance, channel_targets) = build_mesh_instance(
                             geom_id,
                             geom_node,
                             &source,
@@ -240,6 +242,7 @@ impl<R: Read + Seek> FbxReader<R> {
                             &model_node_ids,
                             geometry_map,
                         );
+                        morph_channel_targets.extend(channel_targets);
                         model_mesh_instances
                             .entry(conn.parent)
                             .or_default()
@@ -261,7 +264,7 @@ impl<R: Read + Seek> FbxReader<R> {
                 continue;
             }
             if let Some(source) = geometry_to_mesh(model_node, &mut warnings)? {
-                let mesh_instance = build_mesh_instance(
+                let (mesh_instance, channel_targets) = build_mesh_instance(
                     model_id,
                     model_node,
                     &source,
@@ -273,6 +276,7 @@ impl<R: Read + Seek> FbxReader<R> {
                     &model_node_ids,
                     geometry_map,
                 );
+                morph_channel_targets.extend(channel_targets);
                 model_mesh_instances
                     .entry(model_id)
                     .or_default()
@@ -291,7 +295,13 @@ impl<R: Read + Seek> FbxReader<R> {
             &index,
             &model_name_map,
             &model_node_ids,
-            &morph_animation_targets(geometry_map, deformer_map, connections, model_map),
+            &morph_animation_targets(
+                geometry_map,
+                deformer_map,
+                connections,
+                model_map,
+                &morph_channel_targets,
+            ),
         );
         if animations.is_empty() {
             // A pre-7000 document states no AnimationStack objects; its clips
@@ -606,33 +616,33 @@ fn build_mesh_instance(
     connections: &[FbxConnection],
     model_node_ids: &std::collections::HashMap<i64, FbxNodeId>,
     geometry_map: &std::collections::HashMap<i64, &FbxNode>,
-) -> FbxMeshInstance {
-    FbxMeshInstance {
-        name: object_name(node),
-        material_indices,
-        mesh: source.mesh.clone(),
-        control_points: source.control_points.clone(),
-        polygon_vertex_indices: source.polygon_vertex_indices.clone(),
-        layers: source.layers.clone(),
-        edges: source.edges.clone(),
-        skin: parse_skin_for_geometry(
-            id,
-            names,
-            deformer_map,
-            pose_map,
-            connections,
-            model_node_ids,
-        ),
-        morph_targets: parse_morph_targets_for_geometry(
-            id,
-            geometry_map,
-            deformer_map,
-            connections,
-        ),
-        // Filled in by `build_model_node`, which is where the attaching Model
-        // and therefore the offset is known.
-        geometric_transform: None,
-    }
+) -> (FbxMeshInstance, std::collections::HashMap<i64, u32>) {
+    let (morph_targets, morph_channel_targets) =
+        parse_morph_targets_for_geometry(id, geometry_map, deformer_map, connections);
+    (
+        FbxMeshInstance {
+            name: object_name(node),
+            material_indices,
+            mesh: source.mesh.clone(),
+            control_points: source.control_points.clone(),
+            polygon_vertex_indices: source.polygon_vertex_indices.clone(),
+            layers: source.layers.clone(),
+            edges: source.edges.clone(),
+            skin: parse_skin_for_geometry(
+                id,
+                names,
+                deformer_map,
+                pose_map,
+                connections,
+                model_node_ids,
+            ),
+            morph_targets,
+            // Filled in by `build_model_node`, which is where the attaching Model
+            // and therefore the offset is known.
+            geometric_transform: None,
+        },
+        morph_channel_targets,
+    )
 }
 
 fn parse_skin_for_geometry(
@@ -789,13 +799,29 @@ fn child_f64(node: &FbxNode, name: &str) -> Option<f64> {
         })
 }
 
+/// Read the blend-shape targets of one geometry and record where each
+/// BlendShapeChannel landed in the flat target list.
+///
+/// The animation reader must name a target by this list's index, so the two
+/// have to come out of one traversal: an independent count over channels
+/// would disagree whenever a geometry carries more than one `BlendShape`
+/// deformer, a channel carries more than one shape, or a shape fails its
+/// validation and is dropped -- and two channels numbered alike collapse into
+/// one animation group, losing a curve in silence.
+///
+/// The map holds the first target a channel produced: a channel's animation
+/// drives its weight, and the scene exposes one target index per channel.
 fn parse_morph_targets_for_geometry(
     geometry_id: i64,
     geometries: &std::collections::HashMap<i64, &FbxNode>,
     deformers: &std::collections::HashMap<i64, &FbxNode>,
     connections: &[FbxConnection],
-) -> Vec<crate::fbx_scene::FbxMorphTarget> {
+) -> (
+    Vec<crate::fbx_scene::FbxMorphTarget>,
+    std::collections::HashMap<i64, u32>,
+) {
     let mut targets = Vec::new();
+    let mut channel_targets = std::collections::HashMap::new();
     for blend_shape_id in connections
         .iter()
         .filter(|connection| {
@@ -850,6 +876,9 @@ fn parse_morph_targets_for_geometry(
                     .first()
                     .copied()
                     .unwrap_or(100.0) as f32;
+                channel_targets
+                    .entry(channel_id)
+                    .or_insert_with(|| targets.len() as u32);
                 targets.push(crate::fbx_scene::FbxMorphTarget {
                     name: match shape.properties.get(1) {
                         Some(FbxProperty::String(name)) => {
@@ -866,17 +895,21 @@ fn parse_morph_targets_for_geometry(
             }
         }
     }
-    targets
+    (targets, channel_targets)
 }
 
 /// Resolve BlendShapeChannel object ids to their owning Model and target slot.
 /// FBX animation curves target the channel deformer rather than the mesh
 /// model, so this bridge is required to expose them through the scene API.
+///
+/// `channel_targets` comes from [`parse_morph_targets_for_geometry`], the same
+/// traversal that built the target list the slot indexes into.
 fn morph_animation_targets(
     geometries: &std::collections::HashMap<i64, &FbxNode>,
     deformers: &std::collections::HashMap<i64, &FbxNode>,
     connections: &[FbxConnection],
     models: &std::collections::HashMap<i64, &FbxNode>,
+    channel_targets: &std::collections::HashMap<i64, u32>,
 ) -> std::collections::HashMap<i64, (i64, u32)> {
     let mut result = std::collections::HashMap::new();
     for geometry_id in geometries.keys().copied() {
@@ -888,7 +921,7 @@ fn morph_animation_targets(
         }) else {
             continue;
         };
-        for blend_shape_id in connections
+        for channel_id in connections
             .iter()
             .filter(|connection| {
                 connection.kind == ConnectionKind::Oo
@@ -899,21 +932,22 @@ fn morph_animation_targets(
                         == Some("BlendShape")
             })
             .map(|connection| connection.child)
+            .flat_map(|blend_shape_id| {
+                connections
+                    .iter()
+                    .filter(move |connection| {
+                        connection.kind == ConnectionKind::Oo
+                            && connection.parent == blend_shape_id
+                            && deformers
+                                .get(&connection.child)
+                                .and_then(|node| deformer_type(node))
+                                == Some("BlendShapeChannel")
+                    })
+                    .map(|connection| connection.child)
+            })
         {
-            for (index, channel_id) in connections
-                .iter()
-                .filter(|connection| {
-                    connection.kind == ConnectionKind::Oo
-                        && connection.parent == blend_shape_id
-                        && deformers
-                            .get(&connection.child)
-                            .and_then(|node| deformer_type(node))
-                            == Some("BlendShapeChannel")
-                })
-                .map(|connection| connection.child)
-                .enumerate()
-            {
-                result.insert(channel_id, (model_id, index as u32));
+            if let Some(&target_index) = channel_targets.get(&channel_id) {
+                result.insert(channel_id, (model_id, target_index));
             }
         }
     }
