@@ -50,9 +50,15 @@ export async function buildSceneFromFbx(
   if (flatMeshes.length === 0) throw new Error('No meshes were decoded from this FBX scene');
 
   const scene = await buildSceneFromMeshes({ ...parsed, meshes: flatMeshes }, resources, hooks);
-  applyFbxMaterials(scene, parsed, flatMeshes);
+  const documentMaterials = applyFbxMaterials(scene, parsed, flatMeshes);
   expandFbxMorphTargets(scene, flatMeshes);
+  // After the morph expansion, which writes to the mesh's first primitive and
+  // is then shared by every primitive the split makes from it. Both steps read
+  // a material index against the document's list, so neither applies when the
+  // scene kept the per-mesh defaults instead.
+  if (documentMaterials) splitFbxPrimitivesByMaterial(scene, flatMeshes);
   await applyFbxTextures(scene, parsed, resources, hooks);
+  if (documentMaterials) dropColourLayerUnderTextures(scene);
 
   const { nodes, renderables, nodeById, nodeByName, rootIndices } = buildFbxNodes(roots);
   scene.nodes = nodes;
@@ -114,18 +120,116 @@ function flipUvV(values: ArrayLike<number>): Float32Array {
   return output;
 }
 
-function applyFbxMaterials(scene: ViewerSceneDraft, parsed: FbxJson, flatMeshes: FbxJson[]) {
+/**
+ * The document material index a mesh's triangle draws with.
+ *
+ * Out of range falls back to the first material, which is what a mesh naming
+ * no material at all gets.
+ */
+function materialIndexOf(named: unknown, count: number): number {
+  const index = typeof named === 'number' ? named : 0;
+  return index >= 0 && index < count ? index : 0;
+}
+
+/**
+ * Carry the document's materials into the scene, indexed as the document has
+ * them.
+ *
+ * They used to be rebuilt one per mesh, which put the scene list in a
+ * different index space from `parsed.materials` -- and `applyFbxTextures`
+ * still walked the two together by position, so a mesh was given whichever
+ * material happened to sit at its own ordinal. The two lists share one index
+ * space now, and a primitive names its material within it.
+ */
+function applyFbxMaterials(
+  scene: ViewerSceneDraft,
+  parsed: FbxJson,
+  flatMeshes: FbxJson[],
+): boolean {
   const fbxMaterials = parsed?.scene?.materials || parsed?.materials || [];
-  if (fbxMaterials.length === 0) return;
-  const converted = fbxMaterials.map(adaptFbxMaterial);
-  scene.materials = scene.meshes.map((mesh: FbxJson, meshIndex: number) => {
-    const materialIndex = typeof flatMeshes[meshIndex]?.material === 'number'
-      ? flatMeshes[meshIndex].material : 0;
-    return converted[materialIndex] || converted[0] || mesh._defaultMaterial;
-  });
+  // Nothing to index into: the scene keeps the per-mesh defaults it was built
+  // with, and a material index means what it meant there.
+  if (fbxMaterials.length === 0) return false;
+  scene.materials = fbxMaterials.map(adaptFbxMaterial);
   scene.meshes.forEach((mesh: FbxJson, meshIndex: number) => {
-    mesh.primitives.forEach((primitive: FbxJson) => { primitive.materialIndex = meshIndex; });
+    const material = materialIndexOf(flatMeshes[meshIndex]?.material, scene.materials.length);
+    mesh.primitives.forEach((primitive: FbxJson) => { primitive.materialIndex = material; });
   });
+  return true;
+}
+
+/**
+ * Give each material of a multi-material mesh its own primitive.
+ *
+ * FBX assigns a material per polygon, and a character is usually one mesh with
+ * a material for the face, one for the hair, one for each piece of clothing.
+ * Drawing that mesh with a single material puts one texture over the whole
+ * body: on one character, 92 311 of its 101 381 triangles were a single mesh
+ * carrying ten materials, and nine of them never reached the screen.
+ *
+ * The split is of the index buffer alone. Every primitive keeps the mesh's
+ * vertex attributes and morph targets, which are per vertex and shared.
+ */
+function splitFbxPrimitivesByMaterial(scene: ViewerSceneDraft, flatMeshes: FbxJson[]) {
+  const materialCount = scene.materials.length;
+  if (materialCount === 0) return;
+  scene.meshes.forEach((mesh: FbxJson, meshIndex: number) => {
+    const perTriangle = flatMeshes[meshIndex]?.materialIndices;
+    const primitive = mesh.primitives?.[0];
+    if (!primitive?.indices || !perTriangle || mesh.primitives.length !== 1) return;
+    const indices = primitive.indices.bytes as { length: number; [index: number]: number };
+    // The decoder aligns these with the fan-triangulated faces; anything else
+    // is not a correspondence this can act on.
+    if (perTriangle.length * 3 !== indices.length) return;
+    const groups = new Map<number, number[]>();
+    for (let triangle = 0; triangle < perTriangle.length; triangle++) {
+      const material = materialIndexOf(perTriangle[triangle], materialCount);
+      let group = groups.get(material);
+      if (!group) groups.set(material, group = []);
+      const corner = triangle * 3;
+      group.push(indices[corner], indices[corner + 1], indices[corner + 2]);
+    }
+    if (groups.size <= 1) {
+      // Still authoritative over the mesh-level `material`, which is only the
+      // first one the decoder saw.
+      for (const [material] of groups) primitive.materialIndex = material;
+      return;
+    }
+    mesh.primitives = [...groups].map(([material, group]) => ({
+      ...primitive,
+      materialIndex: material,
+      indices: {
+        ...primitive.indices,
+        bytes: Uint32Array.from(group),
+        componentType: 5125,
+        count: group.length,
+      },
+    }));
+  });
+}
+
+/**
+ * Stop an FBX colour layer from tinting a textured surface.
+ *
+ * glTF's COLOR_0 multiplies the base colour, and an FBX colour layer is not
+ * that. FBX materials have no vertex-colour term: the layer is data a shader
+ * may sample, and a Phong material never says to. Engines export masks in it --
+ * one character carried (1, 1, 0) across its body -- and the reference glTF
+ * written from that same file keeps no COLOR_0 on any of its primitives.
+ *
+ * Where the material states no texture, the layer is the only surface colour
+ * there is, so a vertex-coloured scan keeps its colours.
+ */
+function dropColourLayerUnderTextures(scene: ViewerSceneDraft) {
+  for (const mesh of scene.meshes as FbxJson[]) {
+    for (const primitive of mesh.primitives as FbxJson[]) {
+      const material = scene.materials[primitive.materialIndex];
+      if (!primitive.attributes?.COLOR_0 || material?.baseColorTexture == null) continue;
+      // Cloned because the split primitives of one mesh share this object.
+      const { COLOR_0: _dropped, ...rest } = primitive.attributes;
+      primitive.attributes = rest;
+    }
+  }
 }
 
 function expandFbxMorphTargets(scene: ViewerSceneDraft, flatMeshes: FbxJson[]) {
@@ -184,11 +288,22 @@ async function applyFbxTextures(
   if (textures.length === 0) return;
   scene.textures = textures;
   const materials = parsed?.scene?.materials || parsed?.materials || [];
+  // Walked together by position because `applyFbxMaterials` builds the scene
+  // list from this one, entry for entry. It is the same index space or none.
   for (let index = 0; index < scene.materials.length && index < materials.length; index++) {
     for (const binding of materials[index]?.textures || []) {
       if (!(binding.textureIndex in textures)) continue;
       const target = scene.materials[index];
-      if (binding.slot === 'diffuse') target.baseColorTexture = binding.textureIndex;
+      if (binding.slot === 'diffuse') {
+        target.baseColorTexture = binding.textureIndex;
+        // A texture connected to a property stands in for that property's
+        // value; it does not modulate it. Keeping the constant as a factor
+        // dimmed every textured surface by the exporter's default DiffuseColor,
+        // which for Autodesk's own is 0.8. The alpha is a separate property and
+        // stays.
+        const alpha = target.baseColorFactor?.[3] ?? 1;
+        target.baseColorFactor = [1, 1, 1, alpha];
+      }
       else if (binding.slot === 'normal') target.normalTexture = { index: binding.textureIndex };
       else if (binding.slot === 'emissive') target.emissiveTexture = { index: binding.textureIndex };
       else if (binding.slot === 'roughness' || binding.slot === 'metallic') target.metallicRoughnessTexture = { index: binding.textureIndex };

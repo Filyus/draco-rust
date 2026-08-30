@@ -145,7 +145,16 @@ export async function buildSceneFromMeshes(
     const indices = mesh.indices ? Uint32Array.from(mesh.indices) : null;
     const normals = mesh.normals?.length === positions.length ? Float32Array.from(mesh.normals) : null;
     const uvs = mesh.uvs?.length === vertexCount * 2 ? Float32Array.from(mesh.uvs) : null;
-    const colors = mesh.colors && mesh.colors.length > 0 ? Uint8Array.from(mesh.colors) : null;
+    // Two domains reach here. PLY and DRC hand over bytes in 0..255; FBX hands
+    // over the format's own floats in 0..1. Reading the second as the first
+    // truncates every channel to 0 or 1 and then normalizes it by 255, so the
+    // vertex colour a base colour is multiplied by becomes 0.004 and the model
+    // renders black -- which is what a fully textured character did.
+    const colorSource = mesh.colors && mesh.colors.length > 0 ? mesh.colors : null;
+    const colorsAreFloat = colorSource instanceof Float32Array;
+    const colors = colorSource
+      ? (colorsAreFloat ? Float32Array.from(colorSource) : Uint8Array.from(colorSource))
+      : null;
     const joints = mesh.joints0?.length === vertexCount * 4 ? Uint16Array.from(mesh.joints0) : null;
     const weights = mesh.weights0?.length === vertexCount * 4 ? Float32Array.from(mesh.weights0) : null;
     if (mesh.joints1?.length === vertexCount * 4 || mesh.weights1?.length === vertexCount * 4) {
@@ -165,7 +174,13 @@ export async function buildSceneFromMeshes(
     if (normals) attributes.NORMAL = { bytes: normals, componentType: 5126, components: 3, normalized: false, count: vertexCount };
     if (uvs) attributes.TEXCOORD_0 = { bytes: uvs, componentType: 5126, components: 2, normalized: false, count: vertexCount };
     if (colors) {
-      attributes.COLOR_0 = { bytes: colors, componentType: 5121, components: colors.length === vertexCount * 4 ? 4 : 3, normalized: true, count: vertexCount };
+      attributes.COLOR_0 = {
+        bytes: colors,
+        componentType: colorsAreFloat ? 5126 : 5121,
+        components: colors.length === vertexCount * 4 ? 4 : 3,
+        normalized: !colorsAreFloat,
+        count: vertexCount,
+      };
     }
     if (joints && weights) {
       attributes.JOINTS_0 = { bytes: joints, componentType: 5123, components: 4, normalized: false, count: vertexCount };
