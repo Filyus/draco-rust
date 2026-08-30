@@ -52,6 +52,7 @@ import {
 import { enableCompressedFormats } from './compressed-formats.ts';
 import { setSampler, uploadImage } from './textures.ts';
 import { uploadPrimitive } from './primitive-upload.ts';
+import type { SharedVertexBuffers } from './primitive-upload.ts';
 import type { GlResources, UploadedPrimitive } from './primitive-upload.ts';
 import {
   computeJointMatrices,
@@ -390,12 +391,20 @@ export class Viewer {
       jointMatrices: null,
     };
 
-    // Upload meshes
+    // Upload meshes. One cache for the scene, so primitives that are the same
+    // vertices under different materials upload those vertices once.
+    const sharedVertexBuffers: SharedVertexBuffers = new Map();
     for (const mesh of scene.meshes) {
       const primitives = [];
       for (const primitive of mesh.primitives) {
         try {
-          const uploaded = uploadPrimitive(gl, primitive, this.locations, MAX_JOINTS);
+          const uploaded = uploadPrimitive(
+            gl,
+            primitive,
+            this.locations,
+            MAX_JOINTS,
+            sharedVertexBuffers,
+          );
           if ((uploaded.morph?.dropped ?? 0) > 0) {
             this._log(
               `Mesh ${mesh.name}: ${uploaded.morph?.dropped} morph targets exceed this GPU's array texture layers and were ignored`,
@@ -529,15 +538,19 @@ export class Viewer {
   _disposeGlResources() {
     const gl = this.gl;
     if (!this.glResources) return;
+    // Vertex buffers are shared across the primitives of one mesh, so gather
+    // them before deleting: the same buffer is listed by each reader.
+    const vertexBuffers = new Set<WebGLBuffer>();
     for (const primitives of this.glResources.primitives) {
       for (const p of primitives) {
         for (const buf of p.uploaded.buffers) {
-          if (buf) gl.deleteBuffer(buf);
+          if (buf) vertexBuffers.add(buf);
         }
         if (p.uploaded.morph) gl.deleteTexture(p.uploaded.morph.texture);
         if (p.uploaded.vao) gl.deleteVertexArray(p.uploaded.vao);
       }
     }
+    for (const buf of vertexBuffers) gl.deleteBuffer(buf);
     // Textures and images are both shared across slots, so delete and close
     // each distinct object once.
     for (const tex of new Set(this.glResources.textures)) {

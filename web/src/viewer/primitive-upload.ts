@@ -64,11 +64,22 @@ export interface GlResources {
 
 /** One primitive's VAO, buffers and attribute layout. */
 
+/**
+ * Vertex buffers already uploaded for this scene, keyed by the accessor.
+ *
+ * Several primitives of one mesh are commonly the same vertices drawn under
+ * different materials, and they carry the very same accessor objects. Without
+ * this each of them uploaded its own copy of every attribute: one character
+ * split into thirteen primitives put 224 MiB on the GPU for 24 MiB of vertices.
+ */
+export type SharedVertexBuffers = Map<object, WebGLBuffer>;
+
 export function uploadPrimitive(
   gl: WebGL2RenderingContext,
   primitive: ViewerPrimitive,
   locationMap: LocationMap,
   maxJoints: number,
+  shared?: SharedVertexBuffers,
 ): UploadedPrimitive {
   const vao = gl.createVertexArray();
   gl.bindVertexArray(vao);
@@ -88,9 +99,18 @@ export function uploadPrimitive(
       gl.disableVertexAttribArray(location);
       return false;
     }
-    const buf = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-    gl.bufferData(gl.ARRAY_BUFFER, byteView(attr.bytes), gl.STATIC_DRAW);
+    // Keyed by the accessor rather than its bytes: the accessor is what states
+    // how they are read, and two primitives sharing one carry the same object.
+    let buf = shared?.get(attr as object) ?? null;
+    if (buf) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    } else {
+      buf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+      gl.bufferData(gl.ARRAY_BUFFER, byteView(attr.bytes), gl.STATIC_DRAW);
+      shared?.set(attr as object, buf);
+    }
+    // Listed on every primitive that reads it; release deletes each once.
     buffers.push(buf);
     const normalized = attr.normalized
       || semantic.startsWith('COLOR_') || semantic.startsWith('WEIGHTS_');

@@ -281,6 +281,7 @@ jobs:
           npm run test:fbx-rotation-basis
           npm run test:fbx-material-split
           npm run test:viewer-joint-palette
+          npm run test:viewer-shared-buffers
           npm run test:viewer-limit-warnings
           npm run test:viewer-texture-units
           npm run test:viewer-alpha-order
