@@ -31,6 +31,7 @@ function summarizeByWalkingTheAsset(data: Uint8Array, resources: Record<string, 
   const asset = gltfModule.GltfAsset.withResources(data, resources, '2.1');
   let vertexCount = 0;
   let triangleCount = 0;
+  let pointCount = 0;
   let hasNormals = false;
   let hasUvs = false;
   try {
@@ -48,6 +49,9 @@ function summarizeByWalkingTheAsset(data: Uint8Array, resources: Record<string, 
           vertexCount += primitiveVertexCount;
           const elementCount = geometry.hasIndices() ? geometry.indexCount() : primitiveVertexCount;
           triangleCount += triangleCountForMode(geometry.mode(), elementCount);
+          // One point per element, by the same rule that gives such a
+          // primitive no triangles.
+          if (geometry.mode() === 0) pointCount += elementCount;
         } finally {
           geometry.free();
         }
@@ -56,7 +60,7 @@ function summarizeByWalkingTheAsset(data: Uint8Array, resources: Record<string, 
   } finally {
     asset.free();
   }
-  return { vertexCount, triangleCount, hasNormals, hasUvs };
+  return { vertexCount, triangleCount, pointCount, hasNormals, hasUvs };
 }
 
 /** A .gltf needs its companions by name; a .glb needs none. */
