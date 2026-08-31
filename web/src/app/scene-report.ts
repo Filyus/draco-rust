@@ -202,6 +202,7 @@ export function displayMeshInfo(result: LoadedFile) {
     meshStatFields.meshes.textContent = count(result.meshCount);
     meshStatFields.vertices.textContent = count(result.vertexCount);
     meshStatFields.triangles.textContent = count(result.triangleCount);
+    meshStatFields.points.textContent = result.pointCount ? result.pointCount.toLocaleString() : '—';
     meshStatFields.hasNormals.textContent = result.hasNormals ? 'Yes' : 'No';
     meshStatFields.hasUvs.textContent = result.hasUvs ? 'Yes' : 'No';
     setWarningSource('mesh', result.warnings || []);
@@ -211,19 +212,25 @@ export function displayMeshInfo(result: LoadedFile) {
   
   let totalVertices = 0;
   let totalTriangles = 0;
+  let totalPoints = 0;
   let hasNormals = false;
   let hasUvs = false;
-  
+
   for (const mesh of meshes) {
     totalVertices += (mesh.positions?.length || 0) / 3;
-    totalTriangles += (mesh.indices?.length || 0) / 3;
+    const indexCount = mesh.indices?.length || 0;
+    totalTriangles += indexCount / 3;
+    // The flat readers state the index stream unconditionally, so an empty one
+    // is geometry with no faces: every vertex is a point the preview draws.
+    if (indexCount === 0) totalPoints += (mesh.positions?.length || 0) / 3;
     if ((mesh.normals?.length ?? 0) > 0) hasNormals = true;
     if ((mesh.uvs?.length ?? 0) > 0) hasUvs = true;
   }
-  
+
   meshStatFields.meshes.textContent = String(meshes.length);
   meshStatFields.vertices.textContent = totalVertices.toLocaleString();
   meshStatFields.triangles.textContent = totalTriangles.toLocaleString();
+  meshStatFields.points.textContent = totalPoints ? totalPoints.toLocaleString() : '—';
   meshStatFields.hasNormals.textContent = hasNormals ? 'Yes' : 'No';
   meshStatFields.hasUvs.textContent = hasUvs ? 'Yes' : 'No';
 

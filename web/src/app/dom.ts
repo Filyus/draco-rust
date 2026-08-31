@@ -118,6 +118,7 @@ export const meshStatFields = {
   meshes: element('mesh-count'),
   vertices: element('vertex-count'),
   triangles: element('triangle-count'),
+  points: element('point-count'),
   hasNormals: element('has-normals'),
   hasUvs: element('has-uvs'),
 };

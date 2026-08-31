@@ -71,6 +71,8 @@ export interface LoadedFile {
   meshCount?: number;
   vertexCount?: number;
   triangleCount?: number;
+  /** Points the file carries, when any primitive draws mode 0. */
+  pointCount?: number;
   hasNormals?: boolean;
   hasUvs?: boolean;
   /** FBX only. */

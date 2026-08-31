@@ -127,4 +127,24 @@ async function loadWasm(name: string) {
   assert.equal(capped, 1.5, 'the size was not held inside the hardware range');
 }
 
+// ---------------------------------------------------------------------------
+// The panel counts points instead of reporting zero triangles
+// ---------------------------------------------------------------------------
+
+{
+  const { summarizeSceneDocumentGeometry } = await import(
+    pathToFileURL(resolve(here, '..', 'src', 'scene-document.ts')).href
+  );
+  const document = {
+    meshes: [
+      { primitives: [{ attributes: { POSITION: 0 }, mode: 0 }] },
+      { primitives: [{ attributes: { POSITION: 1 }, mode: 4, indices: 2 }] },
+    ],
+    accessors: [{ count: 4 }, { count: 8 }, { count: 12 }],
+  } as any;
+  const summary = summarizeSceneDocumentGeometry(document);
+  assert.equal(summary.pointCount, 4, "the cloud's points were not counted");
+  assert.equal(summary.triangleCount, 4, 'the mesh triangles were miscounted');
+}
+
 console.log('viewer-point-clouds: ok');

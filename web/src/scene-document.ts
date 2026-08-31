@@ -310,21 +310,27 @@ export function triangleCountForMode(mode: number, elementCount: number) {
 export function summarizeSceneDocumentGeometry(document: SceneDocument) {
   let vertexCount = 0;
   let triangleCount = 0;
+  let pointCount = 0;
   let hasNormals = false;
   let hasUvs = false;
   for (const mesh of document.meshes) {
     for (const primitive of mesh.primitives) {
       const position = document.accessors[primitive.attributes.POSITION];
       const indices = primitive.indices === undefined ? undefined : document.accessors[primitive.indices];
+      const elements = indices?.count ?? position?.count ?? 0;
       vertexCount += position?.count ?? 0;
-      triangleCount += triangleCountForMode(primitive.mode ?? 4, indices?.count ?? position?.count ?? 0);
+      triangleCount += triangleCountForMode(primitive.mode ?? 4, elements);
+      // A mode-0 primitive draws one point per element, so its triangle
+      // figure is zero by the same rule -- which read as a broken panel on
+      // the files that are nothing but points.
+      if ((primitive.mode ?? 4) === 0) pointCount += elements;
       for (const semantic of Object.keys(primitive.attributes)) {
         if (semantic === 'NORMAL') hasNormals = true;
         else if (semantic.startsWith('TEXCOORD_')) hasUvs = true;
       }
     }
   }
-  return { vertexCount, triangleCount, hasNormals, hasUvs };
+  return { vertexCount, triangleCount, pointCount, hasNormals, hasUvs };
 }
 
 /** Return an empty, transferable SceneDocument. */
