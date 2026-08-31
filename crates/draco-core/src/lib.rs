@@ -135,6 +135,8 @@ pub mod folded_bit32_coder;
 #[doc(hidden)]
 pub mod math_utils;
 #[doc(hidden)]
+pub mod mesh_attribute_corner_table;
+#[doc(hidden)]
 pub mod mesh_edgebreaker_shared;
 #[doc(hidden)]
 pub mod mesh_prediction_scheme_data;

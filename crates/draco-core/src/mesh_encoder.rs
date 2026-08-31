@@ -1654,24 +1654,14 @@ impl MeshEncoder {
             return Ok(self.point_ids.clone());
         }
 
-        let mut attr_ct = base_ct.clone();
-        for c_idx in 0..attr_conn.seam_edges.len() {
-            if !attr_conn.seam_edges[c_idx] {
-                continue;
-            }
-            let c = crate::geometry_indices::CornerIndex(c_idx as u32);
-            let opp = attr_ct.opposite(c);
-            if opp != crate::geometry_indices::INVALID_CORNER_INDEX {
-                attr_ct.set_opposite(c, crate::geometry_indices::INVALID_CORNER_INDEX);
-                attr_ct.set_opposite(opp, crate::geometry_indices::INVALID_CORNER_INDEX);
-            }
-        }
-        let base_num_vertices = attr_ct.num_vertices();
-        if !attr_ct.compute_vertex_corners(base_num_vertices) {
-            return Err(DracoError::general(
-                "Failed to compute attribute seam corner table".to_string(),
-            ));
-        }
+        // Same seam-cut-and-recompute the decoder runs on its own seam bits
+        // (`mesh_decoder.rs::make_attribute_corner_table`) -- one function
+        // instead of the two hand-rolled copies this used to be.
+        let (attr_ct, _is_vertex_on_seam) =
+            crate::mesh_attribute_corner_table::cut_seam_edges_and_recompute_vertices(
+                base_ct,
+                &attr_conn.seam_edges,
+            )?;
 
         // Walk the attribute's own table depth first, seeded by the edgebreaker
         // corner order, as upstream does with

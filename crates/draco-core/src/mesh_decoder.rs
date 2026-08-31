@@ -508,10 +508,10 @@ impl MeshDecoder {
         base_ct: &CornerTable,
         seam_corners: &[u32],
     ) -> Result<(CornerTable, Vec<bool>), DracoError> {
-        let mut ct = base_ct.clone();
+        // Seam corners come off the wire, so every index gets checked before
+        // it addresses anything; the encoder's own seam detection never needs
+        // this because it can only ever name a corner its own corner table has.
         let mut is_edge_on_seam = vec![false; base_ct.num_corners()];
-        let mut is_vertex_on_seam = vec![false; base_ct.num_vertices()];
-
         for &c_u32 in seam_corners {
             let c = CornerIndex(c_u32);
             if c == INVALID_CORNER_INDEX {
@@ -523,16 +523,6 @@ impl MeshDecoder {
                 ));
             }
             is_edge_on_seam[c.0 as usize] = true;
-            ct.set_opposite(c, INVALID_CORNER_INDEX);
-
-            let next_vertex = base_ct.vertex_after(c);
-            if next_vertex != crate::geometry_indices::INVALID_VERTEX_INDEX {
-                is_vertex_on_seam[next_vertex.0 as usize] = true;
-            }
-            let previous_vertex = base_ct.vertex_before(c);
-            if previous_vertex != crate::geometry_indices::INVALID_VERTEX_INDEX {
-                is_vertex_on_seam[previous_vertex.0 as usize] = true;
-            }
 
             let opp = base_ct.opposite(c);
             if opp != INVALID_CORNER_INDEX {
@@ -542,92 +532,13 @@ impl MeshDecoder {
                     ));
                 }
                 is_edge_on_seam[opp.0 as usize] = true;
-                ct.set_opposite(opp, INVALID_CORNER_INDEX);
-
-                let next_vertex = base_ct.vertex_after(opp);
-                if next_vertex != crate::geometry_indices::INVALID_VERTEX_INDEX {
-                    is_vertex_on_seam[next_vertex.0 as usize] = true;
-                }
-                let previous_vertex = base_ct.vertex_before(opp);
-                if previous_vertex != crate::geometry_indices::INVALID_VERTEX_INDEX {
-                    is_vertex_on_seam[previous_vertex.0 as usize] = true;
-                }
             }
         }
 
-        let seam_opposite = |corner: CornerIndex| -> CornerIndex {
-            if corner == INVALID_CORNER_INDEX {
-                return INVALID_CORNER_INDEX;
-            }
-            if is_edge_on_seam[corner.0 as usize] {
-                INVALID_CORNER_INDEX
-            } else {
-                base_ct.opposite(corner)
-            }
-        };
-        let seam_swing_left = |corner: CornerIndex| -> CornerIndex {
-            base_ct.next(seam_opposite(base_ct.next(corner)))
-        };
-
-        ct.corner_to_vertex_map
-            .fill(crate::geometry_indices::INVALID_VERTEX_INDEX);
-        ct.vertex_corners.clear();
-
-        let mut num_new_vertices = 0usize;
-        for v in 0..base_ct.num_vertices() {
-            let c = base_ct.left_most_corner(VertexIndex(v as u32));
-            if c == INVALID_CORNER_INDEX {
-                continue;
-            }
-
-            let mut first_vertex_id = VertexIndex(num_new_vertices as u32);
-            num_new_vertices += 1;
-
-            let mut first_c = c;
-            if is_vertex_on_seam[v] {
-                let mut act_c = seam_swing_left(first_c);
-                let mut swing_steps = 0usize;
-                let max_swing_steps = base_ct.num_corners().saturating_add(1);
-                while act_c != INVALID_CORNER_INDEX {
-                    swing_steps += 1;
-                    if swing_steps > max_swing_steps {
-                        return Err(DracoError::general(
-                            "Attribute seam left-swing traversal did not terminate".to_string(),
-                        ));
-                    }
-                    first_c = act_c;
-                    act_c = seam_swing_left(act_c);
-                }
-            }
-
-            ct.corner_to_vertex_map[first_c.0 as usize] = first_vertex_id;
-            ct.vertex_corners.push(first_c);
-
-            let mut act_c = base_ct.swing_right(first_c);
-            let mut swing_steps = 0usize;
-            let max_swing_steps = base_ct.num_corners().saturating_add(1);
-            while act_c != INVALID_CORNER_INDEX && act_c != first_c {
-                swing_steps += 1;
-                if swing_steps > max_swing_steps {
-                    return Err(DracoError::general(
-                        "Attribute seam right-swing traversal did not terminate".to_string(),
-                    ));
-                }
-                if is_edge_on_seam[base_ct.next(act_c).0 as usize] {
-                    first_vertex_id = VertexIndex(num_new_vertices as u32);
-                    num_new_vertices += 1;
-                    ct.vertex_corners.push(act_c);
-                }
-                ct.corner_to_vertex_map[act_c.0 as usize] = first_vertex_id;
-                act_c = base_ct.swing_right(act_c);
-            }
-        }
-
-        ct.num_original_vertices = ct.vertex_corners.len();
-        ct.num_isolated_vertices = 0;
-        ct.num_degenerated_faces = base_ct.num_degenerated_faces;
-
-        Ok((ct, is_vertex_on_seam))
+        crate::mesh_attribute_corner_table::cut_seam_edges_and_recompute_vertices(
+            base_ct,
+            &is_edge_on_seam,
+        )
     }
 
     fn rebuild_edgebreaker_attribute_corner_tables(&mut self) -> Status {
