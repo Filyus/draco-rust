@@ -17,6 +17,7 @@
     "test:viewer-joint-palette": "node tests/viewer-joint-palette.ts",
     "test:viewer-skin-weights": "node tests/viewer-skin-weights.ts",
     "test:viewer-shared-buffers": "node tests/viewer-shared-buffers.ts",
+    "test:viewer-point-clouds": "node tests/viewer-point-clouds.ts",
     "test:viewer-framing": "node tests/viewer-framing.ts",
     "test:viewer-texture-units": "node tests/viewer-texture-units.ts",
     "test:viewer-alpha-order": "node tests/viewer-alpha-order.ts",

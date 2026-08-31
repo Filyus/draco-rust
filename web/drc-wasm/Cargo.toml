@@ -23,6 +23,6 @@ draco-core = { path = "../../crates/draco-core", default-features = false }
 default = ["read", "write"]
 console_error_panic_hook = ["dep:console_error_panic_hook"]
 # Draco decoding (`parse_drc_bytes`).
-read = ["draco-core/decoder", "draco-core/edgebreaker_valence_decode", "draco-core/legacy_bitstream_decode"]
+read = ["draco-core/decoder", "draco-core/point_cloud_decode", "draco-core/edgebreaker_valence_decode", "draco-core/legacy_bitstream_decode"]
 # Draco encoding (`create_drc`).
 write = ["draco-core/encoder", "draco-core/edgebreaker_valence_encode"]
