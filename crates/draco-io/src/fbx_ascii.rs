@@ -979,6 +979,43 @@ mod shared_path_regressions {
         );
     }
 
+    /// And where the document states nothing at all -- no curve on the axis
+    /// and no `d|*` entry beside it -- the axis holds the property's own
+    /// default. For a scale that is one. Zero is the right answer for a
+    /// rotation or a translation and the wrong one here: a file that animates
+    /// a single axis of a scale would flatten the object on the other two.
+    #[test]
+    fn an_unstated_scale_axis_holds_one_rather_than_zero() {
+        let decoded = scene(
+            "FBXHeaderExtension:  {\n\tFBXVersion: 7500\n}\n\
+             Objects:  {\n\
+             \tGeometry: 100, \"Geometry::Tri\", \"Mesh\" {\n\
+             \t\tVertices: *9 {\n\t\t\ta: 0,0,0,1,0,0,0,1,0\n\t\t}\n\
+             \t\tPolygonVertexIndex: *3 {\n\t\t\ta: 0,1,-3\n\t\t}\n\t}\n\
+             \tModel: 200, \"Model::Cube\", \"Mesh\" {\n\t}\n\
+             \tAnimationStack: 500, \"AnimStack::Take\", \"\" {\n\t}\n\
+             \tAnimationLayer: 510, \"AnimLayer::BaseLayer\", \"\" {\n\t}\n\
+             \tAnimationCurveNode: 520, \"AnimCurveNode::S\", \"\" {\n\t}\n\
+             \tAnimationCurve: 530, \"AnimCurve::X\", \"\" {\n\
+             \t\tKeyTime: *2 {\n\t\t\ta: 0,46186158000\n\t\t}\n\
+             \t\tKeyValueFloat: *2 {\n\t\t\ta: 1,4\n\t\t}\n\t}\n}\n\
+             Connections:  {\n\
+             \tC: \"OO\",100,200\n\
+             \tC: \"OO\",200,0\n\
+             \tC: \"OO\",500,0\n\
+             \tC: \"OO\",510,500\n\
+             \tC: \"OO\",520,510\n\
+             \tC: \"OP\",520,200,\"Lcl Scaling\"\n\
+             \tC: \"OP\",530,520,\"d|X\"\n}\n",
+        );
+        let output = &decoded.animations[0].channels[0].sampler.output;
+        assert_eq!(
+            output,
+            &[1.0, 1.0, 1.0, 4.0, 1.0, 1.0],
+            "the axes the file leaves unstated hold the scale default, not zero"
+        );
+    }
+
     /// The pre-7000 `Takes` section carries no statics of its own: an axis
     /// without a `Channel` subtree is constant at the Model's transform
     /// property. Reading only channels left such axes at zero.

@@ -2733,13 +2733,22 @@ fn flatten_curve(
     } else {
         FbxAnimInterpolation::Linear
     };
+    // What an axis holds when the document states nothing for it at all: no
+    // curve, and no value beside the curve node either. That is the property's
+    // own default, and for a scale it is one -- zero would collapse the object
+    // on the axis the file happened to leave out. The Takes path reasons the
+    // same way about a Model that states no `Lcl Scaling`.
+    let unstated = match path {
+        FbxAnimChannelPath::Scale => 1.0,
+        _ => 0.0,
+    };
     for (i, &time) in key_times.iter().enumerate() {
         input.push((time as f64 / ktime_f) as f32);
         // `component_count` is 1 or 3 and `by_component` holds three slots, so
         // the take never shortens a path that has more components than curves.
         for (component_index, slot) in by_component.iter().take(component_count).enumerate() {
             let Some(curve) = slot.as_ref() else {
-                output.push(static_values[component_index].unwrap_or(0.0));
+                output.push(static_values[component_index].unwrap_or(unstated));
                 in_tangents.push(0.0);
                 out_tangents.push(0.0);
                 continue;
