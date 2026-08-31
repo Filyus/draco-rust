@@ -261,6 +261,8 @@ export interface RenderHost extends CameraHost, SceneGraphHost {
   _texMatrices?: Float32Array;
   _emptyMorphTexture?: WebGLTexture | null;
   _morphPlaceholderTexture?: WebGLTexture | null;
+  /** The clamped point size, read from ALIASED_POINT_SIZE_RANGE once. */
+  _pointSize?: number;
   _log(message: string, type?: string): void;
   _disposeGrid(): void;
 }
@@ -453,6 +455,11 @@ function drawPrimitive(
   }
 
   const mode = glMode(host, uploaded.mode, host.wireframe);
+  // Stated per draw because the uniform belongs to whatever surface program is
+  // bound, and programs are shared between point and triangle primitives.
+  const isPoints = uploaded.mode === 0;
+  gl.uniform1i(host.uniforms.uPointDraw, isPoints ? 1 : 0);
+  if (isPoints) gl.uniform1f(host.uniforms.uPointSize, pointSize(host));
   const instances = bindInstances(host, node);
   if (uploaded.indexType !== undefined) {
     if (instances > 0) gl.drawElementsInstanced(mode, uploaded.elementCount, uploaded.indexType, 0, instances);
@@ -641,6 +648,24 @@ export function glMode(host: RenderHost, mode: number, wireframe: boolean) {
     case 6: return gl.TRIANGLE_FAN;
     default: return gl.TRIANGLES;
   }
+}
+
+/**
+ * The screen-pixel size a point draws at, inside what this GL allows.
+ *
+ * Two pixels: one reads as dropout on a dense scan, and anything larger
+ * overdraws neighbours that a zoom would separate anyway. Asked once, because
+ * the range is a property of the context; the first element is the minimum the
+ * implementation guarantees, which a driver is free to raise above one.
+ */
+const POINT_SIZE_PIXELS = 2;
+
+export function pointSize(host: RenderHost): number {
+  if (host._pointSize === undefined) {
+    const range = host.gl.getParameter(host.gl.ALIASED_POINT_SIZE_RANGE) as Float32Array;
+    host._pointSize = Math.min(Math.max(POINT_SIZE_PIXELS, range[0]), range[1]);
+  }
+  return host._pointSize;
 }
 
 export function applyMaterial(

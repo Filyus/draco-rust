@@ -87,4 +87,44 @@ async function loadWasm(name: string) {
   assert.equal(meshPrimitive.indices.count, 3);
 }
 
+// ---------------------------------------------------------------------------
+// The shader states a point size and shades points flat
+// ---------------------------------------------------------------------------
+
+// OpenGL ES leaves gl_PointSize undefined when the vertex shader never writes
+// it, so the draw call the mode fixes above still produces nothing -- or one
+// driver-defined speck -- until the shader states the size. And with no
+// normals the fragment shader's screen-space derivative normal is zero inside
+// a point, so a cloud has to take the flat-colour path, not the lit one.
+{
+  const shaders = await import(
+    pathToFileURL(resolve(here, '..', 'src', 'viewer', 'shaders.ts')).href
+  );
+  assert.match(
+    shaders.VERT_SRC, /gl_PointSize\s*=/,
+    'the vertex shader never states a point size',
+  );
+  assert.match(shaders.VERT_SRC, /uniform float uPointSize;/);
+  const fragment = shaders.buildSurfaceFragmentSource([]);
+  assert.match(fragment, /uniform int uPointDraw;/);
+  assert.match(
+    fragment, /uPointDraw == 1[^;]*\{/,
+    'the fragment shader has no flat path for points',
+  );
+
+  const { pointSize } = await import(
+    pathToFileURL(resolve(here, '..', 'src', 'viewer', 'renderer.ts')).href
+  );
+  const range = new Float32Array([1, 1024]);
+  const clamped = pointSize({
+    gl: { ALIASED_POINT_SIZE_RANGE: 33901, getParameter: () => range },
+  } as any);
+  assert.equal(clamped, 2, 'the default size did not survive a wide range');
+  range[1] = 1.5;
+  const capped = pointSize({
+    gl: { ALIASED_POINT_SIZE_RANGE: 33901, getParameter: () => range },
+  } as any);
+  assert.equal(capped, 1.5, 'the size was not held inside the hardware range');
+}
+
 console.log('viewer-point-clouds: ok');

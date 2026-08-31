@@ -183,6 +183,14 @@ uniform mat4 uModel;
 uniform mat4 uNormalMatrix;
 uniform int uUseSkin;
 uniform int uJointCount;
+// Mode 0 draws one vertex per point, and OpenGL ES leaves gl_PointSize
+// undefined unless the vertex shader states it -- without this a cloud draws
+// as at most a speck per primitive, or as nothing at all. Screen pixels, not
+// world units: a scan spanning kilometres and a scan spanning millimetres
+// then read the same way, and there is no near-camera blow-up to clamp. The
+// renderer holds the value inside ALIASED_POINT_SIZE_RANGE before upload, so
+// the hardware cap is never hit silently.
+uniform float uPointSize;
 uniform mat4 uJointMatrix[${MAX_JOINTS}];
 // Morph deltas live in an array texture: one layer per target, uMorphStride
 // texels per vertex (position, plus a normal when the asset ships one).
@@ -244,6 +252,7 @@ void main() {
     vTexCoord = aTexCoord;
     vTexCoord1 = aTexCoord1;
     vColor = aColor;
+    gl_PointSize = uPointSize;
     gl_Position = uProjection * uView * worldPos;
 }
 `;
@@ -270,6 +279,12 @@ uniform int uHasNormals;
 uniform int uHasVertexColors;
 uniform int uUnlit;
 uniform int uBaseColorOnly;
+// Mode 0. A point is not a surface: it usually ships no normal, and the
+// screen-space derivative that stands in for one is zero inside a
+// point-sized primitive, so the shading below it has nothing to act on. What
+// a point shows is its colour -- COLOR_0, else the base colour factor --
+// which is the answer the unlit path already gives and why it shares it.
+uniform int uPointDraw;
 // glTF alpha modes. MASK cuts the surface at the cutoff and is opaque on
 // either side of it; OPAQUE ignores the alpha channel entirely, which is not
 // the same as it happening to be one — a base colour texture is free to carry
@@ -751,7 +766,7 @@ void main() {
     // Hard unlit materials (KHR_materials_unlit) keep flat shading. Their
     // colour is the picture already, so the capture takes it back to linear
     // rather than leaving it encoded twice over.
-    if (uUnlit == 1 || uBaseColorOnly == 1) {
+    if (uUnlit == 1 || uBaseColorOnly == 1 || uPointDraw == 1) {
         // Authored as a colour, so it is taken back to the light that colour
         // stands for; the output pass turns light into a picture, not this.
         outColor = vec4(pow(base.rgb, vec3(2.2)), base.a);
