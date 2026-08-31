@@ -66,6 +66,7 @@
     "test:ktx2-uastc-modes": "node tests/ktx2-uastc-modes.ts",
     "test:ktx2-differential": "node tests/ktx2-differential.ts",
     "test:ktx2-format-choice": "node tests/ktx2-format-choice.ts",
+    "test:warning-collapse": "node tests/warning-collapse.ts",
     "test:viewer-limit-warnings": "node tests/viewer-limit-warnings.ts",
     "test:gltf-scene-provenance": "node tests/gltf-scene-provenance.ts",
     "test:gltf-extension-support": "node tests/gltf-extension-support.ts",

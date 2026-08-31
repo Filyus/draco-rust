@@ -48,8 +48,33 @@ export function setWarningList(list: HTMLElement, warnings: string[], limit = WA
   return unique;
 }
 
+/**
+ * The warnings worth showing, one line per thing that is wrong.
+ *
+ * Identical text has always collapsed. What did not was the same notice raised
+ * against a different subject, and a stage that walks a document raises exactly
+ * that: a point cloud of 797 meshes filled the card with 797 lines saying its
+ * primitives would need triangulating, and a skin whose joints went missing
+ * reported each of them by number, 1116 times. The card is then a wall, and the
+ * one notice that is not a repeat is lost in it.
+ *
+ * So the subject is what a line is allowed to differ by, and a subject is a
+ * number that names one: an index in brackets, or a bare figure like a joint's
+ * ordinal. A number written after `=` is not a subject but a stated value --
+ * `mode=0` and `mode=5` are two different facts and stay two lines. Warnings
+ * that agree once their subjects are blanked are one notice: the first is
+ * shown, the rest become a count after it.
+ */
 export function uniqueWarnings(warnings: string[]) {
-  return [...new Set(warnings.filter((warning: string) => typeof warning === 'string' && warning.trim()))];
+  const groups = new Map<string, { text: string; count: number }>();
+  for (const warning of warnings) {
+    if (typeof warning !== 'string' || !warning.trim()) continue;
+    const key = warning.replace(/\[\d+\]/g, '[]').replace(/(?<![=\d])\d+/g, '#');
+    const group = groups.get(key);
+    if (group) group.count += 1;
+    else groups.set(key, { text: warning, count: 1 });
+  }
+  return [...groups.values()].map(({ text, count }) => (count > 1 ? `${text} (x${count})` : text));
 }
 
 // Warnings arrive from independent stages, so each stage owns one slot and the
