@@ -9,8 +9,6 @@
 //! module resolves them onto corners instead, which is what Blender's importer
 //! and every renderer do.
 
-use crate::mesh_weld::CornerWeld;
-
 use draco_core::draco_types::DataType;
 use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use draco_core::geometry_indices::{FaceIndex, PointIndex};
@@ -331,42 +329,20 @@ pub fn build_draco_mesh(render: &FbxRenderMesh) -> Mesh {
 
 /// [`build_draco_mesh`], additionally returning the corner/point
 /// correspondence the weld produced.
+///
+/// Built one point per corner -- an explicit-mapping attribute would only
+/// reproduce the identity this default already is -- and welded through
+/// [`crate::mesh_finalize::finalize_mesh_returning_corner_map`], the same
+/// merge-bit-identical-values-then-merge-points pass the OBJ, PLY and glTF
+/// readers all end construction with. One fewer bespoke weld in the crate.
 pub fn build_draco_mesh_with_corner_map(render: &FbxRenderMesh) -> DracoMeshWithCornerMap {
     let normals = render.normals.first();
     let uvs = render.uvs.first();
     let colors = render.colors.first();
+    let corner_count = render.corner_count();
 
-    // Weld on the exact bit patterns so the key is hashable and two corners
-    // only merge when they are genuinely identical.
-    type WeldKey = (
-        [u32; 3],
-        Option<[u32; 3]>,
-        Option<[u32; 2]>,
-        Option<[u32; 4]>,
-    );
-    // The key is the values themselves because FBX gives layer elements no
-    // identity to share: two corners are the same vertex only when everything
-    // on them agrees. `CornerWeld` owns the interning and the hasher choice it
-    // needs -- see that module.
-    let mut weld: CornerWeld<WeldKey> = CornerWeld::with_capacity(render.corner_count());
-    let mut order: Vec<u32> = Vec::new();
-    let mut remapped: Vec<u32> = Vec::with_capacity(render.corner_count());
-
-    for corner in 0..render.corner_count() {
-        let position = render.positions[corner].map(f32::to_bits);
-        let normal = normals.map(|layer| layer.values[corner].map(f32::to_bits));
-        let uv = uvs.map(|layer| layer.values[corner].map(f32::to_bits));
-        let color = colors.map(|layer| layer.values[corner].map(f32::to_bits));
-        let (index, is_new) = weld.intern((position, normal, uv, color));
-        if is_new {
-            order.push(corner as u32);
-        }
-        remapped.push(index);
-    }
-
-    let point_count = order.len();
     let mut mesh = Mesh::new();
-    mesh.set_num_points(point_count);
+    mesh.set_num_points(corner_count);
 
     let mut position = PointAttribute::new();
     position.init(
@@ -374,14 +350,11 @@ pub fn build_draco_mesh_with_corner_map(render: &FbxRenderMesh) -> DracoMeshWith
         3,
         DataType::Float32,
         false,
-        point_count,
+        corner_count,
     );
-    for (index, corner) in order.iter().copied().enumerate() {
-        let bytes: Vec<u8> = render.positions[corner as usize]
-            .iter()
-            .flat_map(|value| value.to_le_bytes())
-            .collect();
-        position.buffer_mut().write(index * 12, &bytes);
+    for (corner, value) in render.positions.iter().enumerate() {
+        let bytes: Vec<u8> = value.iter().flat_map(|v| v.to_le_bytes()).collect();
+        position.buffer_mut().write(corner * 12, &bytes);
     }
     mesh.add_attribute(position);
 
@@ -392,14 +365,11 @@ pub fn build_draco_mesh_with_corner_map(render: &FbxRenderMesh) -> DracoMeshWith
             3,
             DataType::Float32,
             false,
-            point_count,
+            corner_count,
         );
-        for (index, corner) in order.iter().copied().enumerate() {
-            let bytes: Vec<u8> = layer.values[corner as usize]
-                .iter()
-                .flat_map(|value| value.to_le_bytes())
-                .collect();
-            normal.buffer_mut().write(index * 12, &bytes);
+        for (corner, value) in layer.values.iter().enumerate() {
+            let bytes: Vec<u8> = value.iter().flat_map(|v| v.to_le_bytes()).collect();
+            normal.buffer_mut().write(corner * 12, &bytes);
         }
         mesh.add_attribute(normal);
     }
@@ -411,14 +381,11 @@ pub fn build_draco_mesh_with_corner_map(render: &FbxRenderMesh) -> DracoMeshWith
             2,
             DataType::Float32,
             false,
-            point_count,
+            corner_count,
         );
-        for (index, corner) in order.iter().copied().enumerate() {
-            let bytes: Vec<u8> = layer.values[corner as usize]
-                .iter()
-                .flat_map(|value| value.to_le_bytes())
-                .collect();
-            tex_coord.buffer_mut().write(index * 8, &bytes);
+        for (corner, value) in layer.values.iter().enumerate() {
+            let bytes: Vec<u8> = value.iter().flat_map(|v| v.to_le_bytes()).collect();
+            tex_coord.buffer_mut().write(corner * 8, &bytes);
         }
         mesh.add_attribute(tex_coord);
     }
@@ -430,33 +397,46 @@ pub fn build_draco_mesh_with_corner_map(render: &FbxRenderMesh) -> DracoMeshWith
             4,
             DataType::Float32,
             false,
-            point_count,
+            corner_count,
         );
-        for (index, corner) in order.iter().copied().enumerate() {
-            let bytes: Vec<u8> = layer.values[corner as usize]
-                .iter()
-                .flat_map(|value| value.to_le_bytes())
-                .collect();
-            color.buffer_mut().write(index * 16, &bytes);
+        for (corner, value) in layer.values.iter().enumerate() {
+            let bytes: Vec<u8> = value.iter().flat_map(|v| v.to_le_bytes()).collect();
+            color.buffer_mut().write(corner * 16, &bytes);
         }
         mesh.add_attribute(color);
     }
 
-    mesh.set_num_faces(remapped.len() / 3);
-    for (face, triangle) in remapped.as_chunks::<3>().0.iter().enumerate() {
+    mesh.set_num_faces(corner_count / 3);
+    for face in 0..corner_count / 3 {
+        let base = (face * 3) as u32;
         mesh.set_face(
             FaceIndex(face as u32),
             [
-                PointIndex(triangle[0]),
-                PointIndex(triangle[1]),
-                PointIndex(triangle[2]),
+                PointIndex(base),
+                PointIndex(base + 1),
+                PointIndex(base + 2),
             ],
         );
     }
+
+    let corner_to_point = crate::mesh_finalize::finalize_mesh_returning_corner_map(&mut mesh)
+        .expect("deduplicating an in-memory mesh cannot fail on I/O");
+
+    // The first corner to reach each point, matching what the point's
+    // attribute values were themselves read from -- one representative per
+    // point, for a caller that needs data (a tangent, a second UV set) this
+    // mesh has no attribute for.
+    let mut point_to_corner = vec![u32::MAX; mesh.num_points()];
+    for (corner, &point) in corner_to_point.iter().enumerate() {
+        if point_to_corner[point as usize] == u32::MAX {
+            point_to_corner[point as usize] = corner as u32;
+        }
+    }
+
     DracoMeshWithCornerMap {
         mesh,
-        corner_to_point: remapped,
-        point_to_corner: order,
+        corner_to_point,
+        point_to_corner,
     }
 }
 

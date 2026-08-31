@@ -181,8 +181,18 @@ impl Mesh {
     /// distinct value indices until it merges them, so nothing here would see
     /// them as one point.
     pub fn deduplicate_point_ids(&mut self) {
+        self.deduplicate_point_ids_returning_map();
+    }
+
+    /// [`deduplicate_point_ids`](Self::deduplicate_point_ids), additionally
+    /// handing back the old-point-to-new-point map -- identity when nothing
+    /// merged -- for a caller that has to carry data addressed by the
+    /// original point (an FBX corner's skin weight or morph delta) onto the
+    /// point that now stands in for it.
+    pub fn deduplicate_point_ids_returning_map(&mut self) -> Vec<u32> {
+        let original_num_points = self.num_points() as u32;
         let Some(index_map) = self.point_cloud.deduplicate_point_ids_returning_map() else {
-            return;
+            return (0..original_num_points).collect();
         };
         for face in &mut self.faces {
             for corner in face.iter_mut() {
@@ -195,6 +205,7 @@ impl Mesh {
                 }
             }
         }
+        index_map
     }
 
     /// Drops points no face names, and then the attribute values left with no

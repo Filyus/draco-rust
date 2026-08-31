@@ -29,6 +29,11 @@ use draco_core::mesh::Mesh;
 /// The order is upstream's and is load-bearing: two vertices with equal bytes
 /// hold distinct value indices until the values merge, so a point merge run
 /// first would find nothing to do.
+#[cfg(any(
+    feature = "obj-reader",
+    feature = "ply-reader",
+    feature = "gltf-geometry"
+))]
 pub(crate) fn finalize_mesh(mesh: &mut Mesh) -> io::Result<()> {
     mesh.deduplicate_attribute_values()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
@@ -40,6 +45,30 @@ pub(crate) fn finalize_mesh(mesh: &mut Mesh) -> io::Result<()> {
     // is not there. See the section on it in COMPATIBILITY.md.
     mesh.remove_points_unused_by_faces();
     Ok(())
+}
+
+/// [`finalize_mesh`], additionally returning the point-merge map -- what a
+/// caller that built one point per polygon corner (FBX, which has to carry a
+/// per-corner skin weight or morph delta onto whichever point now stands in
+/// for that corner) needs, and the other readers that call [`finalize_mesh`]
+/// do not.
+///
+/// The unused-point drop [`finalize_mesh`] ends with cannot apply to such a
+/// caller: a mesh built one point per corner has, by construction, no point
+/// that starts out unused, so the map handed back stays valid.
+#[cfg(feature = "fbx-reader")]
+pub(crate) fn finalize_mesh_returning_corner_map(mesh: &mut Mesh) -> io::Result<Vec<u32>> {
+    mesh.deduplicate_attribute_values()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+    let corner_to_point = mesh.deduplicate_point_ids_returning_map();
+    let before = mesh.num_points();
+    mesh.remove_points_unused_by_faces();
+    debug_assert_eq!(
+        mesh.num_points(),
+        before,
+        "a mesh built one point per corner should have no point left unused by a face"
+    );
+    Ok(corner_to_point)
 }
 
 #[cfg(test)]

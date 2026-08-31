@@ -53,14 +53,19 @@ mod gltf_error;
 /// Reader-agnostic accessor and Draco geometry contracts.
 pub mod gltf_geometry;
 // Every reader that builds a mesh from scratch ends through this, so its gate
-// is the union of theirs rather than the weld's.
+// is the union of theirs rather than any one weld's.
 #[cfg(any(
     feature = "obj-reader",
     feature = "ply-reader",
-    feature = "gltf-geometry"
+    feature = "gltf-geometry",
+    feature = "fbx-reader"
 ))]
 mod mesh_finalize;
-#[cfg(any(feature = "fbx-reader", feature = "fbx-writer", feature = "obj-reader"))]
+// The only remaining user of the hashable-tuple weld: OBJ interns `(v, vt,
+// vn)` index triples into points during parsing. FBX used to key one on
+// resolved attribute *values* here too, before it moved onto the same
+// mesh_finalize pass every other from-scratch reader ends with.
+#[cfg(feature = "obj-reader")]
 mod mesh_weld;
 #[cfg(feature = "gltf-container")]
 /// `EXT_meshopt_compression` bitstream decoders.
