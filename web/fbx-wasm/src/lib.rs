@@ -1423,42 +1423,28 @@ fn mesh_instance_to_data(instance: &draco_io::FbxMeshInstance) -> MeshData {
     let render_control_points: Vec<u32> = if render.positions.is_empty() {
         (0..mesh.positions.len() as u32 / 3).collect()
     } else {
-        mesh.positions = render
-            .positions
-            .iter()
-            .flat_map(|point| point.iter().copied())
-            .collect();
-        mesh.indices = render.indices.clone();
-        mesh.normals = render
-            .normals
-            .first()
-            .map(|layer| {
-                layer
-                    .values
-                    .iter()
-                    .flat_map(|value| value.iter().copied())
-                    .collect()
-            })
-            .unwrap_or_default();
-        mesh.colors = render
-            .colors
-            .first()
-            .map(|layer| {
-                layer
-                    .values
-                    .iter()
-                    .flat_map(|value| value.iter().copied())
-                    .collect()
-            })
-            .unwrap_or_default();
+        // Welded, not the raw per-corner expansion: `render` triples every
+        // interior vertex by construction (`render.indices` is the identity
+        // permutation), which is what put a 100k-triangle character at one
+        // point per corner instead of the ~4x fewer points its own topology
+        // shares. `point_to_corner` carries a representative corner per
+        // welded point forward for the per-set data Draco has no attribute
+        // for (tangents, extra UV sets) and for remapping control-point-keyed
+        // skin weights and morph deltas below.
+        let with_map = draco_io::fbx_render_mesh::build_draco_mesh_with_corner_map(&render);
+        let welded = mesh_to_js_data(&with_map.mesh);
+        mesh.positions = welded.positions;
+        mesh.indices = welded.indices;
+        mesh.normals = welded.normals;
+        mesh.colors = welded.colors;
         mesh.tangents = render
             .tangents
             .first()
             .map(|layer| {
-                layer
-                    .values
+                with_map
+                    .point_to_corner
                     .iter()
-                    .flat_map(|value| value.iter().copied())
+                    .flat_map(|&corner| layer.values[corner as usize].iter().copied())
                     .collect()
             })
             .unwrap_or_default();
@@ -1466,15 +1452,19 @@ fn mesh_instance_to_data(instance: &draco_io::FbxMeshInstance) -> MeshData {
             .uvs
             .iter()
             .map(|layer| {
-                layer
-                    .values
+                with_map
+                    .point_to_corner
                     .iter()
-                    .flat_map(|value| value.iter().copied())
+                    .flat_map(|&corner| layer.values[corner as usize].iter().copied())
                     .collect()
             })
             .collect();
         mesh.uvs = mesh.uv_layers.first().cloned().unwrap_or_default();
-        render.corner_to_control_point.clone()
+        with_map
+            .point_to_corner
+            .iter()
+            .map(|&corner| render.corner_to_control_point[corner as usize])
+            .collect()
     };
     let mut render_points_by_control = std::collections::HashMap::<u32, Vec<u32>>::new();
     for (render, control) in render_control_points.iter().copied().enumerate() {

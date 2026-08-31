@@ -300,6 +300,22 @@ pub fn expand_to_render_mesh(source: FbxGeometryLayers<'_>) -> FbxRenderMesh {
     render
 }
 
+/// [`build_draco_mesh_with_corner_map`]'s output, for a caller that also
+/// needs to carry data addressed by the original render corner -- a skin
+/// weight or a morph delta, both defined per FBX control point -- onto the
+/// welded points that now stand in for them.
+pub struct DracoMeshWithCornerMap {
+    /// The welded Draco mesh -- identical to what [`build_draco_mesh`] returns.
+    pub mesh: Mesh,
+    /// The welded point each original render corner collapsed into.
+    /// Indexed by corner, length [`FbxRenderMesh::corner_count`].
+    pub corner_to_point: Vec<u32>,
+    /// One representative render corner per welded point -- the same one
+    /// [`build_draco_mesh_with_corner_map`] read the point's attributes from.
+    /// Indexed by point, length `mesh.num_points()`.
+    pub point_to_corner: Vec<u32>,
+}
+
 /// Builds a Draco mesh from corner-domain data, welding corners that agree on
 /// every attribute.
 ///
@@ -310,6 +326,12 @@ pub fn expand_to_render_mesh(source: FbxGeometryLayers<'_>) -> FbxRenderMesh {
 /// Only the first UV, normal and colour set reach the Draco mesh; Draco has no
 /// concept of multiple sets. The rest stay on [`FbxRenderMesh`].
 pub fn build_draco_mesh(render: &FbxRenderMesh) -> Mesh {
+    build_draco_mesh_with_corner_map(render).mesh
+}
+
+/// [`build_draco_mesh`], additionally returning the corner/point
+/// correspondence the weld produced.
+pub fn build_draco_mesh_with_corner_map(render: &FbxRenderMesh) -> DracoMeshWithCornerMap {
     let normals = render.normals.first();
     let uvs = render.uvs.first();
     let colors = render.colors.first();
@@ -431,7 +453,11 @@ pub fn build_draco_mesh(render: &FbxRenderMesh) -> Mesh {
             ],
         );
     }
-    mesh
+    DracoMeshWithCornerMap {
+        mesh,
+        corner_to_point: remapped,
+        point_to_corner: order,
+    }
 }
 
 impl FbxMeshInstance {
@@ -450,6 +476,28 @@ impl FbxMeshInstance {
             return self.mesh.clone();
         }
         build_draco_mesh(&render)
+    }
+
+    /// [`Self::to_draco_mesh`], additionally returning the corner/point
+    /// correspondence the weld produced -- what a caller needs to carry a
+    /// per-control-point skin weight or morph delta onto the welded points
+    /// that now stand in for the corners it used to be duplicated across.
+    ///
+    /// The stored-mesh fallback has no corners to map from, so both maps are
+    /// the identity over its own points -- matching the WASM binding's own
+    /// prior assumption that a point *is* its control point when there is no
+    /// raw geometry to re-derive one from.
+    pub fn to_draco_mesh_with_corner_map(&self) -> DracoMeshWithCornerMap {
+        let render = self.to_render_mesh();
+        if render.positions.is_empty() {
+            let identity: Vec<u32> = (0..self.mesh.num_points() as u32).collect();
+            return DracoMeshWithCornerMap {
+                mesh: self.mesh.clone(),
+                corner_to_point: identity.clone(),
+                point_to_corner: identity,
+            };
+        }
+        build_draco_mesh_with_corner_map(&render)
     }
 }
 
