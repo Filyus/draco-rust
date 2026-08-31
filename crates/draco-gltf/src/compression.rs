@@ -903,7 +903,12 @@ impl Import {
         Ok((output.data().to_vec(), info))
     }
 
-    /// Compresses one ordinary triangle primitive atomically.
+    /// Compresses one ordinary triangle, triangle-strip or triangle-fan
+    /// primitive atomically.
+    ///
+    /// A strip or fan is unwound into a triangle list before Draco ever sees
+    /// it -- Draco's connectivity has no notion of either -- and the output
+    /// primitive's `mode` is rewritten to `TRIANGLES` to say so truthfully.
     ///
     /// The document and resolved resources are updated only after encoding,
     /// validation, reference remapping, and output-limit checks all succeed.
@@ -944,11 +949,12 @@ impl Import {
         if options.mode == CompressionMode::DracoOnly {
             self.ensure_document_binary_transform_safe()?;
         }
-        if reference.mode() != 4 {
-            return Err(Error::Extension(
-                "KHR_draco_mesh_compression encoding currently supports only TRIANGLES (mode 4)"
-                    .into(),
-            ));
+        let source_mode = reference.mode();
+        if !matches!(source_mode, 4..=6) {
+            return Err(Error::Extension(format!(
+                "KHR_draco_mesh_compression encoding supports only TRIANGLES (4), \
+                 TRIANGLE_STRIP (5) and TRIANGLE_FAN (6), not mode {source_mode}"
+            )));
         }
         let (geometry, mapping) = self.decode_geometry_primitive(reference)?;
         let (bytes, encoded_info) = self.encode_draco_geometry(geometry, options)?;
@@ -986,6 +992,16 @@ impl Import {
                 ("bufferView", crate::JsonValue::from(view)),
                 ("attributes", attributes),
             ]);
+            // A strip or fan was unwound into an ordinary triangle list before
+            // Draco ever saw it -- its connectivity has no notion of either --
+            // so the primitive now truthfully is TRIANGLES, whatever mode it
+            // arrived as. Left untouched when it already was: an explicit
+            // `mode: 4` next to an unchanged geometry stream would be a diff
+            // with nothing behind it.
+            if source_mode != 4 {
+                root["meshes"][mesh.0]["primitives"][primitive]["mode"] =
+                    crate::JsonValue::from(4u64);
+            }
             add_extension_name(root, "extensionsUsed")?;
             if options.mode == CompressionMode::DracoOnly {
                 add_extension_name(root, "extensionsRequired")?;

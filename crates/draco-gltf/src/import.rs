@@ -326,7 +326,6 @@ impl Import {
                     })
                     .collect();
                 let geometry = crate::PackedGeometry::from_draco_mesh(
-                    mode,
                     &decoded,
                     &contract.attributes,
                     &normalized,

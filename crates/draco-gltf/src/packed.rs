@@ -465,9 +465,20 @@ impl PackedGeometry {
         Ok(())
     }
 
+    /// Builds packed geometry from a decoded Draco mesh.
+    ///
+    /// Always tagged `TRIANGLES`, regardless of what mode the source
+    /// primitive declared: Draco's connectivity is an explicit triangle
+    /// list by construction, with no way to reconstruct a strip or a fan
+    /// from it, and `KHR_draco_mesh_compression` allows a compressed
+    /// primitive to declare `TRIANGLE_STRIP` even though decoding one never
+    /// yields strip-shaped indices. Reference decoders (three.js's
+    /// `DRACOLoader` among them) already ignore the declared mode for a
+    /// Draco primitive for exactly this reason; trusting it here would tag
+    /// an ordinary triangle list as a strip, which is wrong for any caller
+    /// that takes `mode` at its word instead of also ignoring it.
     #[cfg(feature = "draco-decode")]
     pub(crate) fn from_draco_mesh(
-        mode: PrimitiveMode,
         mesh: &Mesh,
         attributes: &[(String, u32)],
         normalized: &std::collections::BTreeMap<String, bool>,
@@ -504,7 +515,7 @@ impl PackedGeometry {
         let indices =
             PackedIndices::new(count, ComponentType::U32, packed_draco_index_bytes(mesh)?)
                 .map_err(Error::Geometry)?;
-        Self::new(mode, attributes, Some(indices)).map_err(Error::Geometry)
+        Self::new(PrimitiveMode::Triangles, attributes, Some(indices)).map_err(Error::Geometry)
     }
 }
 

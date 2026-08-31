@@ -574,13 +574,8 @@ mod compression_tests {
         ];
         let normalized = [("COLOR_0".to_owned(), true)].into_iter().collect();
 
-        let geometry = crate::PackedGeometry::from_draco_mesh(
-            crate::PrimitiveMode::Triangles,
-            &mesh,
-            &contract,
-            &normalized,
-        )
-        .unwrap();
+        let geometry =
+            crate::PackedGeometry::from_draco_mesh(&mesh, &contract, &normalized).unwrap();
 
         let flag = |semantic: &str| {
             geometry
@@ -639,6 +634,122 @@ mod compression_tests {
         assert_eq!(accessor.count(), Some(3));
         assert_eq!(accessor.value()["min"].as_array().unwrap().len(), 3);
         assert_eq!(accessor.value()["max"].as_array().unwrap().len(), 3);
+    }
+
+    /// Four points forming a unit-square strip: (0,0,0)-(1,0,0)-(0,1,0)-(1,1,0),
+    /// mode 5, no index accessor. Draco has no notion of a strip, so
+    /// compression has to unwind it into the two triangles the strip actually
+    /// draws -- (0,1,2) and (2,1,3) by glTF's own strip convention -- before
+    /// encoding, and the output primitive has to stop claiming `mode: 5`
+    /// afterward: nothing about the Draco stream is a strip any more.
+    #[test]
+    fn compression_unwinds_a_triangle_strip_before_encoding() {
+        let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":48,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAACAPwAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":48}],"accessors":[{"bufferView":0,"componentType":5126,"count":4,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}],"meshes":[{"primitives":[{"mode":5,"attributes":{"POSITION":0}}]}]}"#;
+        let mut import = parse(input, ValidationProfile::Gltf20).unwrap();
+        import
+            .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
+            .unwrap();
+
+        let primitive = import.document.primitive(crate::MeshIndex(0), 0).unwrap();
+        assert_eq!(
+            primitive.mode(),
+            4,
+            "a strip has nothing left to mean once Draco has flattened it"
+        );
+
+        let triangles = decode_triangle_vertex_sets(
+            &import
+                .read_primitive(crate::PrimitiveIndex::new(crate::MeshIndex(0), 0))
+                .unwrap(),
+        );
+        assert_triangle_sets_match(
+            &triangles,
+            &[
+                [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                [[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]],
+            ],
+        );
+    }
+
+    /// The same four points, mode 6: a fan roots every triangle at vertex 0,
+    /// so it draws (0,1,2) and (0,2,3) instead of the strip's pairing --
+    /// different triangles from the same vertices, which is exactly what
+    /// distinguishes a fan from a strip and worth pinning separately.
+    #[test]
+    fn compression_unwinds_a_triangle_fan_before_encoding() {
+        let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":48,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAACAPwAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":48}],"accessors":[{"bufferView":0,"componentType":5126,"count":4,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}],"meshes":[{"primitives":[{"mode":6,"attributes":{"POSITION":0}}]}]}"#;
+        let mut import = parse(input, ValidationProfile::Gltf20).unwrap();
+        import
+            .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
+            .unwrap();
+
+        let primitive = import.document.primitive(crate::MeshIndex(0), 0).unwrap();
+        assert_eq!(primitive.mode(), 4);
+
+        let triangles = decode_triangle_vertex_sets(
+            &import
+                .read_primitive(crate::PrimitiveIndex::new(crate::MeshIndex(0), 0))
+                .unwrap(),
+        );
+        assert_triangle_sets_match(
+            &triangles,
+            &[
+                [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]],
+            ],
+        );
+    }
+
+    /// Decodes a compressed primitive's positions and index buffer into one
+    /// `[position; 3]` per triangle, with each coordinate snapped to the
+    /// nearest of 0.0/1.0 -- the two extremes every fixture in this file
+    /// uses -- so a comparison doesn't have to guess how close Draco's
+    /// default quantization keeps them.
+    fn decode_triangle_vertex_sets(geometry: &crate::PackedGeometry) -> Vec<[[f32; 3]; 3]> {
+        let snap = |value: f32| if value > 0.5 { 1.0 } else { 0.0 };
+        let positions: Vec<[f32; 3]> = geometry.attributes()[0]
+            .bytes()
+            .as_chunks::<12>()
+            .0
+            .iter()
+            .map(|point| {
+                std::array::from_fn(|component| {
+                    let bytes = point[component * 4..component * 4 + 4].try_into().unwrap();
+                    snap(f32::from_le_bytes(bytes))
+                })
+            })
+            .collect();
+        let indices: Vec<u32> = geometry
+            .indices()
+            .unwrap()
+            .bytes()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| u32::from_le_bytes(*chunk))
+            .collect();
+        indices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|face| face.map(|index| positions[index as usize]))
+            .collect()
+    }
+
+    /// Compares two lists of triangles up to face order and up to each
+    /// triangle's own corner order -- both of which Draco's connectivity
+    /// encoding is free to change without changing the geometry.
+    fn assert_triangle_sets_match(actual: &[[[f32; 3]; 3]], expected: &[[[f32; 3]; 3]]) {
+        let normalize = |triangle: &[[f32; 3]; 3]| {
+            let mut corners = *triangle;
+            corners.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            corners
+        };
+        let mut actual: Vec<_> = actual.iter().map(normalize).collect();
+        let mut expected: Vec<_> = expected.iter().map(normalize).collect();
+        actual.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        expected.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert_eq!(actual, expected);
     }
 
     /// The caller's Draco ceilings travel from `ImportOptions` through the
@@ -914,6 +1025,32 @@ mod compression_tests {
         assert!(import
             .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
             .is_err());
+    }
+
+    /// A Draco-compressed primitive may legally declare `mode: TRIANGLE_STRIP`
+    /// per the extension's own spec text ("must be either TRIANGLES or
+    /// TRIANGLE_STRIP"), but decoding one never produces strip-shaped
+    /// indices -- Draco's connectivity is always an explicit triangle list --
+    /// and no real decoder (three.js's `DRACOLoader` among them) treats the
+    /// declared mode as anything but TRIANGLES for a Draco primitive.
+    /// `from_draco_mesh` must not repeat the primitive's own claim.
+    #[test]
+    fn draco_decode_ignores_a_strip_mode_the_source_primitive_declared() {
+        let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
+        let mut import = parse(input, ValidationProfile::Gltf20).unwrap();
+        import
+            .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
+            .unwrap();
+        // Overwritten by hand: no real encoder emits this combination (see
+        // compression_unwinds_a_triangle_strip_before_encoding), but the
+        // extension's own spec text permits it on a file this crate merely
+        // reads, and decode must not be fooled by it either.
+        import.document.as_value_mut()["meshes"][0]["primitives"][0]["mode"] = 5u64.into();
+
+        let geometry = import
+            .read_primitive(crate::PrimitiveIndex::new(crate::MeshIndex(0), 0))
+            .unwrap();
+        assert_eq!(geometry.mode(), crate::PrimitiveMode::Triangles);
     }
 
     #[test]

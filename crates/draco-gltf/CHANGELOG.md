@@ -62,6 +62,31 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   valence traversal — wrote the same stream as speed 5. On the grid above it is
   worth 23% at the default speed, against 1.1 KiB of gzipped WASM.
 
+### Added
+
+- `Import::compress_primitive` accepts `TRIANGLE_STRIP` and `TRIANGLE_FAN`
+  source primitives, not only `TRIANGLES`. Draco's connectivity has no
+  notion of a strip or a fan, so either is unwound into an ordinary triangle
+  list before encoding (`draco_io::decode_geometry`), and the output
+  primitive's `mode` is rewritten to `TRIANGLES` to describe the Draco
+  stream truthfully -- left untouched when the source was already
+  `TRIANGLES`. Previously any mode other than `TRIANGLES` was refused.
+
+### Fixed
+
+- `PackedGeometry::from_draco_mesh` no longer trusts the source primitive's
+  declared `mode`; it always tags the result `TRIANGLES`. Decoding a Draco
+  mesh is always an explicit triangle list by construction, but
+  `KHR_draco_mesh_compression`'s own spec text permits a compressed
+  primitive to declare `TRIANGLE_STRIP`, and this crate previously carried
+  that declared mode straight into the decoded `PackedGeometry` unchanged --
+  mislabeling an ordinary triangle list as a strip for any caller that
+  trusts `mode`, though not for reference decoders such as three.js's
+  `DRACOLoader`, which already ignore the declared mode for a Draco
+  primitive for exactly this reason. No known real-world file was found
+  triggering this: no mainstream exporter is known to emit
+  `TRIANGLE_STRIP` alongside `KHR_draco_mesh_compression`.
+
 ## [0.2.0](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.1.0...draco-gltf-v0.2.0) - 2026-07-29
 
 ### Added

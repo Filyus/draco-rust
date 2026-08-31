@@ -16,6 +16,8 @@ use draco_core::mesh::Mesh;
 
 pub(crate) const GLTF_MODE_POINTS: u32 = 0;
 pub(crate) const GLTF_MODE_TRIANGLES: u32 = 4;
+pub(crate) const GLTF_MODE_TRIANGLE_STRIP: u32 = 5;
+pub(crate) const GLTF_MODE_TRIANGLE_FAN: u32 = 6;
 pub(crate) const GLTF_COMPONENT_BYTE: u32 = 5120;
 pub(crate) const GLTF_COMPONENT_UNSIGNED_BYTE: u32 = 5121;
 pub(crate) const GLTF_COMPONENT_SHORT: u32 = 5122;
@@ -179,10 +181,12 @@ const GENERIC_COMPONENT_TYPES: &[u32] = &[
 /// `(glTF semantic, Draco unique id)` mapping, reading attribute and index data
 /// through any [`AccessorSource`].
 ///
-/// `mode` is the glTF primitive mode (only `POINTS` = 0 and `TRIANGLES` = 4 are
-/// supported), `attributes` maps each glTF semantic to its accessor index, and
-/// `indices` is the optional index accessor. This is the single place the
-/// geometry model is built — faces, deduplication, attribute typing, multi-set
+/// `mode` is the glTF primitive mode -- `POINTS` = 0, `TRIANGLES` = 4,
+/// `TRIANGLE_STRIP` = 5 and `TRIANGLE_FAN` = 6 are supported, with the strip
+/// and fan unwound into an ordinary triangle list before the mesh is built.
+/// `attributes` maps each glTF semantic to its accessor index, and `indices`
+/// is the optional index accessor. This is the single place the geometry
+/// model is built — faces, deduplication, attribute typing, multi-set
 /// `TEXCOORD_n`/`COLOR_n`, `TANGENT`/`JOINTS_n`/`WEIGHTS_n`, and custom `_*`
 /// attributes — so different glTF front ends share it by implementing only
 /// [`AccessorSource`], never duplicating this logic.
@@ -195,9 +199,13 @@ pub fn decode_geometry<S: AccessorSource>(
     attributes: &[(String, usize)],
     indices: Option<usize>,
 ) -> Result<(Mesh, Vec<(String, u32)>)> {
-    if mode != GLTF_MODE_TRIANGLES && mode != GLTF_MODE_POINTS {
+    if !matches!(
+        mode,
+        GLTF_MODE_TRIANGLES | GLTF_MODE_TRIANGLE_STRIP | GLTF_MODE_TRIANGLE_FAN | GLTF_MODE_POINTS
+    ) {
         return Err(GltfError::Unsupported(format!(
-            "Primitive mode {} not supported (only POINTS=0 and TRIANGLES=4)",
+            "Primitive mode {} not supported (only POINTS=0, TRIANGLES=4, \
+             TRIANGLE_STRIP=5 and TRIANGLE_FAN=6)",
             mode
         )));
     }
@@ -240,15 +248,7 @@ pub fn decode_geometry<S: AccessorSource>(
                     "Index count not divisible by 3 for triangles".into(),
                 ));
             }
-            for &index in &indices {
-                if index as usize >= mesh.num_points() {
-                    return Err(GltfError::InvalidGltf(format!(
-                        "Triangle index {} out of bounds for {} points",
-                        index,
-                        mesh.num_points()
-                    )));
-                }
-            }
+            validate_indices_in_range(&indices, mesh.num_points())?;
             let num_faces = indices.len() / 3;
             mesh.try_set_num_faces(num_faces)
                 .map_err(GltfError::DracoEncode)?;
@@ -282,6 +282,36 @@ pub fn decode_geometry<S: AccessorSource>(
                     .ok_or_else(|| GltfError::InvalidGltf("Triangle point-id overflow".into()))?;
                 mesh.set_face_from_indices(face_id, [base, second, third]);
             }
+        }
+    } else if mode == GLTF_MODE_TRIANGLE_STRIP || mode == GLTF_MODE_TRIANGLE_FAN {
+        // Draco has no notion of a strip or a fan -- its connectivity is
+        // always an explicit triangle list -- so the only choice is to unwind
+        // one here. Mirrors `triangleIndices` in `web/src/gltf-loader.ts`,
+        // which the preview path already uses for these two modes, so
+        // preview and Draco-compressed output agree on what geometry they
+        // name.
+        let source = match indices {
+            Some(indices_accessor_idx) => {
+                let raw = src.read_indices(indices_accessor_idx)?;
+                validate_indices_in_range(&raw, mesh.num_points())?;
+                raw
+            }
+            None => (0..mesh.num_points())
+                .map(|index| {
+                    u32::try_from(index).map_err(|_| {
+                        GltfError::InvalidGltf(
+                            "Non-indexed primitive exceeds Draco's u32 point-id limit".into(),
+                        )
+                    })
+                })
+                .collect::<Result<Vec<u32>>>()?,
+        };
+        let triangles = unwind_strip_or_fan(mode, &source);
+        let num_faces = triangles.len() / 3;
+        mesh.try_set_num_faces(num_faces)
+            .map_err(GltfError::DracoEncode)?;
+        for (face_id, face) in triangles.as_chunks::<3>().0.iter().enumerate() {
+            mesh.set_face_from_indices(face_id, [face[0], face[1], face[2]]);
         }
     }
 
@@ -334,6 +364,42 @@ pub fn decode_geometry<S: AccessorSource>(
     crate::mesh_finalize::finalize_mesh(&mut mesh)?;
 
     Ok((mesh, semantics))
+}
+
+fn validate_indices_in_range(indices: &[u32], num_points: usize) -> Result<()> {
+    for &index in indices {
+        if index as usize >= num_points {
+            return Err(GltfError::InvalidGltf(format!(
+                "Triangle index {} out of bounds for {} points",
+                index, num_points
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Unwinds a `TRIANGLE_STRIP` (mode 5) or `TRIANGLE_FAN` (mode 6) vertex
+/// sequence into a flat triangle list, dropping a triangle that repeats a
+/// vertex across its three corners -- glTF's convention for a strip restart,
+/// and simply degenerate for a fan. Strip winding alternates every other
+/// triangle so every triangle in the unwound list faces the same way the
+/// strip drew it.
+fn unwind_strip_or_fan(mode: u32, source: &[u32]) -> Vec<u32> {
+    let mut result = Vec::new();
+    for index in 2..source.len() {
+        let (a, b, c) = if mode == GLTF_MODE_TRIANGLE_FAN {
+            (source[0], source[index - 1], source[index])
+        } else if index % 2 == 0 {
+            (source[index - 2], source[index - 1], source[index])
+        } else {
+            (source[index - 1], source[index - 2], source[index])
+        };
+        if a == b || b == c || a == c {
+            continue;
+        }
+        result.extend_from_slice(&[a, b, c]);
+    }
+    result
 }
 
 fn read_and_add_standard_attribute<S: AccessorSource>(

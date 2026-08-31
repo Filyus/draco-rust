@@ -51,6 +51,14 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `gltf_geometry::decode_geometry` accepts `TRIANGLE_STRIP` (mode 5) and
+  `TRIANGLE_FAN` (mode 6) primitives, not only `TRIANGLES`. Draco's
+  connectivity has no notion of either, so both are unwound into an ordinary
+  triangle list before the mesh is built -- the same algorithm the web
+  preview already used to render these two modes (`triangleIndices` in
+  `web/src/gltf-loader.ts`), so preview and Draco-compressed output now agree
+  on what geometry a strip or fan means. Previously any primitive mode other
+  than `TRIANGLES`/`POINTS` was refused outright.
 - FBX 6100 documents are read in either container: the name-keyed object model
   (`"Name\0\x01Class"` keys, `Connect` records, geometry on the `Model`,
   `Properties60`, repeated-scalar arrays) is normalized into the same scene the

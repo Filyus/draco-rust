@@ -38,9 +38,13 @@ contract. Ordinary and Draco primitives both read into `PackedGeometry`.
   geometry.
 - Raw writes preserve draft component storage, including 64-bit and floating
   component definitions.
-- Draco encode currently accepts triangles and the component layouts supported
-  by the KHR contract. `f16`, `f64`, `i64` and `u64` are rejected with a typed
-  error; they are never cast or normalized silently. Draco has no compressed
+- Draco encode accepts `TRIANGLES`, `TRIANGLE_STRIP` and `TRIANGLE_FAN` source
+  primitives -- a strip or fan is unwound into an ordinary triangle list first,
+  since Draco's connectivity has no notion of either, and the output
+  primitive's `mode` is rewritten to `TRIANGLES` to say so -- plus the
+  component layouts supported by the KHR contract. `f16`, `f64`, `i64` and
+  `u64` are rejected with a typed error; they are never cast or normalized
+  silently. Draco has no compressed
   representation for the 64-bit ones: its compressed path is `int32` throughout,
   so they would be stored raw. See
   [Attribute encoders & semantics](../draco-core/SUPPORT_MATRIX.md#attribute-encoders--semantics)
