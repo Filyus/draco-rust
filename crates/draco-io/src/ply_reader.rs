@@ -5,6 +5,7 @@
 //! triangulated with a fan.
 
 use crate::mesh_finalize::finalize_mesh;
+use crate::raw_attribute::{make_f32x2_attribute, make_f32x3_attribute};
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use std::fs;
 use std::io::{self, Cursor, Write};
@@ -273,44 +274,6 @@ impl PointCloudReader for PlyReader {
 /// Returns a vec of [x, y, z] positions.
 pub fn read_ply_positions<P: AsRef<Path>>(path: P) -> io::Result<Vec<[f32; 3]>> {
     Ok(read_ply(path)?.positions.to_f32_positions())
-}
-
-fn make_f32x3_attribute(
-    attribute_type: GeometryAttributeType,
-    values: &[[f32; 3]],
-) -> PointAttribute {
-    let mut attribute = PointAttribute::new();
-    attribute.init(attribute_type, 3, DataType::Float32, false, values.len());
-
-    let buffer = attribute.buffer_mut();
-    for (i, value) in values.iter().enumerate() {
-        let bytes: Vec<u8> = value
-            .iter()
-            .flat_map(|component| component.to_le_bytes())
-            .collect();
-        buffer.write(i * 12, &bytes);
-    }
-
-    attribute
-}
-
-fn make_f32x2_attribute(
-    attribute_type: GeometryAttributeType,
-    values: &[[f32; 2]],
-) -> PointAttribute {
-    let mut attribute = PointAttribute::new();
-    attribute.init(attribute_type, 2, DataType::Float32, false, values.len());
-
-    let buffer = attribute.buffer_mut();
-    for (i, value) in values.iter().enumerate() {
-        let bytes: Vec<u8> = value
-            .iter()
-            .flat_map(|component| component.to_le_bytes())
-            .collect();
-        buffer.write(i * 8, &bytes);
-    }
-
-    attribute
 }
 
 fn make_i32x3_attribute(

@@ -9,11 +9,11 @@ use std::fs;
 use std::io::{self, Cursor, Read};
 use std::path::Path;
 
-use draco_core::draco_types::DataType;
-use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
+use draco_core::geometry_attribute::GeometryAttributeType;
 use draco_core::geometry_indices::{FaceIndex, PointIndex};
 use draco_core::mesh::Mesh;
 
+use crate::raw_attribute::make_f32x3_attribute;
 use crate::traits::{ReadFromBytes, Reader};
 
 /// The fixed part of a binary STL: an 80-byte header and the triangle count.
@@ -263,23 +263,6 @@ fn triangles_to_mesh(triangles: &[StlTriangle]) -> Mesh {
     }
 
     mesh
-}
-
-fn make_f32x3_attribute(
-    attribute_type: GeometryAttributeType,
-    values: &[[f32; 3]],
-) -> PointAttribute {
-    let mut attribute = PointAttribute::new();
-    attribute.init(attribute_type, 3, DataType::Float32, false, values.len());
-    let buffer = attribute.buffer_mut();
-    for (index, value) in values.iter().enumerate() {
-        let bytes: Vec<u8> = value
-            .iter()
-            .flat_map(|component| component.to_le_bytes())
-            .collect();
-        buffer.write(index * 12, &bytes);
-    }
-    attribute
 }
 
 #[cfg(test)]

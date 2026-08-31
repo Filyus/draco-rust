@@ -8,8 +8,8 @@ use std::io::{self, BufRead, BufReader, Cursor};
 use std::path::Path;
 
 use crate::mesh_weld::CornerWeld;
-use draco_core::draco_types::DataType;
-use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
+use crate::raw_attribute::{make_f32x2_attribute, make_f32x3_attribute};
+use draco_core::geometry_attribute::GeometryAttributeType;
 use draco_core::mesh::Mesh;
 
 use crate::traits::{PointCloudReader, ReadFromBytes, Reader};
@@ -218,44 +218,6 @@ struct ObjVertexRef {
 
 fn strip_obj_comment(line: &str) -> &str {
     line.split('#').next().unwrap_or("").trim()
-}
-
-fn make_f32x3_attribute(
-    attribute_type: GeometryAttributeType,
-    values: &[[f32; 3]],
-) -> PointAttribute {
-    let mut attribute = PointAttribute::new();
-    attribute.init(attribute_type, 3, DataType::Float32, false, values.len());
-
-    let buffer = attribute.buffer_mut();
-    for (i, value) in values.iter().enumerate() {
-        let bytes: Vec<u8> = value
-            .iter()
-            .flat_map(|component| component.to_le_bytes())
-            .collect();
-        buffer.write(i * 12, &bytes);
-    }
-
-    attribute
-}
-
-fn make_f32x2_attribute(
-    attribute_type: GeometryAttributeType,
-    values: &[[f32; 2]],
-) -> PointAttribute {
-    let mut attribute = PointAttribute::new();
-    attribute.init(attribute_type, 2, DataType::Float32, false, values.len());
-
-    let buffer = attribute.buffer_mut();
-    for (i, value) in values.iter().enumerate() {
-        let bytes: Vec<u8> = value
-            .iter()
-            .flat_map(|component| component.to_le_bytes())
-            .collect();
-        buffer.write(i * 8, &bytes);
-    }
-
-    attribute
 }
 
 fn parse_obj_index(token: &str, len: usize, label: &str) -> io::Result<usize> {
@@ -485,6 +447,7 @@ mod tests {
 
     #[test]
     fn test_read_obj_mesh_preserves_normals_and_texcoords() {
+        use draco_core::draco_types::DataType;
         let obj = br#"
 v 0.0 0.0 0.0
 v 1.0 0.0 0.0

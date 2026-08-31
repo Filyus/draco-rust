@@ -84,6 +84,11 @@ pub mod ply_reader;
 #[cfg(feature = "ply-writer")]
 /// PLY writer.
 pub mod ply_writer;
+// Shared by the readers that pack typed component arrays into an attribute
+// buffer themselves -- OBJ, PLY and STL. glTF decodes accessors straight into
+// native byte layout and never needs this.
+#[cfg(any(feature = "obj-reader", feature = "ply-reader", feature = "stl-reader"))]
+mod raw_attribute;
 #[cfg(feature = "stl-reader")]
 /// STL reader.
 pub mod stl_reader;
