@@ -51,4 +51,40 @@ async function loadWasm(name: string) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// The flat scene builder presents index-less meshes as points, not triangles
+// ---------------------------------------------------------------------------
+
+// Every flat reader states its index stream unconditionally, so an empty one
+// is a file with no faces -- what a PLY vertex list or a point-cloud .drc
+// decodes to. Forcing mode 4 on it asked the GPU to draw triangles from a
+// stream that never arrives in threes, which shows nothing.
+{
+  const { buildSceneFromMeshes } = await import(
+    pathToFileURL(resolve(here, '..', 'src', 'mesh-loader.ts')).href
+  );
+
+  const cloud = await buildSceneFromMeshes({
+    meshes: [{
+      name: 'cloud',
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 1]),
+      indices: [],
+    }],
+  });
+  const cloudPrimitive = cloud.meshes[0].primitives[0];
+  assert.equal(cloudPrimitive.mode, 0, 'an index-less mesh must draw as points');
+  assert.equal(cloudPrimitive.indices, undefined, 'a cloud carries no index buffer');
+
+  const mesh = await buildSceneFromMeshes({
+    meshes: [{
+      name: 'mesh',
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 1, 1, 0]),
+      indices: [0, 1, 2],
+    }],
+  });
+  const meshPrimitive = mesh.meshes[0].primitives[0];
+  assert.equal(meshPrimitive.mode, 4, 'an indexed mesh keeps drawing as triangles');
+  assert.equal(meshPrimitive.indices.count, 3);
+}
+
 console.log('viewer-point-clouds: ok');

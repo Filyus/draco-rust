@@ -142,7 +142,11 @@ export async function buildSceneFromMeshes(
   for (const mesh of meshes) {
     const positions = Float32Array.from(mesh.positions || []);
     const vertexCount = positions.length / 3;
-    const indices = mesh.indices ? Uint32Array.from(mesh.indices) : null;
+    // These readers always index their faces, so an absent or empty index
+    // stream means geometry with no connectivity at all: a point set. Mode 0
+    // is what carries that to the renderer; claiming triangles would draw
+    // nothing, since three vertices never arrive.
+    const indices = mesh.indices && mesh.indices.length > 0 ? Uint32Array.from(mesh.indices) : null;
     const normals = mesh.normals?.length === positions.length ? Float32Array.from(mesh.normals) : null;
     const uvs = mesh.uvs?.length === vertexCount * 2 ? Float32Array.from(mesh.uvs) : null;
     // Two domains reach here. PLY and DRC hand over bytes in 0..255; FBX hands
@@ -186,7 +190,7 @@ export async function buildSceneFromMeshes(
       attributes.JOINTS_0 = { bytes: joints, componentType: 5123, components: 4, normalized: false, count: vertexCount };
       attributes.WEIGHTS_0 = { bytes: weights, componentType: 5126, components: 4, normalized: false, count: vertexCount };
     }
-    const primitive: ViewerPrimitive = { attributes, mode: 4, materialIndex: 0 };
+    const primitive: ViewerPrimitive = { attributes, mode: indices ? 4 : 0, materialIndex: 0 };
     if (indices) {
       primitive.indices = {
         bytes: indices, componentType: 5125, components: 1, normalized: false, count: indices.length,
