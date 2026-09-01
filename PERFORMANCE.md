@@ -258,9 +258,15 @@ The difference between the two profiles is mesh size, so the reading that fits
 is per-call setup: a memo table earns its keep across thousands of faces and
 is pure overhead on a mesh of eight, and half this corpus is under `170`
 faces. That is a hypothesis this snapshot does not settle -- what it measures
-is the sign and the size on both profiles, with the same control. Anyone
-taking it further should measure the memo allocations directly rather than
-inferring them from these two tables.
+is the sign and the size on both profiles, with the same control.
+
+**It was taken further and it does not hold.** Measured payload by payload
+against both revisions, the corpus figure is not a property of small meshes:
+`3.6%` at eight faces at speed 5 and nothing resolvable anywhere else, with
+the allocation counts identical across the series on every speed-5 cell. See
+"The Small-Mesh Encode Cost, Reproduced Against Its Own Hypothesis" below --
+including what an aggregate over a Gaussian sample of `17` files can do to a
+per-payload effect.
 
 ### The 2026-08-18 Round, Including What Did Not Work
 
@@ -3697,6 +3703,101 @@ that way and it held:
 
 Recorded as flat. The structural claim rests on the type system, not on a
 speed number.
+
+### The Small-Mesh Encode Cost, Reproduced Against Its Own Hypothesis
+
+`actionable_status.yaml` carried `encode-setup-cost-on-small-meshes`: the 2.0
+series was `1-11%` faster encoding an 18k-face mesh and `3-13%` slower over the
+real corpus, whose meshes are mostly under `170` faces, and it named the
+memoisation commits -- the entropy memo, the geometric-normal position memos --
+as the shape that inverts when the element count is small. Its own next step
+was to measure those allocations rather than infer them from two profiles. Both
+halves of that reading are now measured, and both are wrong: the effect is
+real but an order of magnitude smaller and confined to one payload, and the
+memos are not what causes it.
+
+**Three revisions, one harness.** `7a277ff` (before the series), `f18f3e1`
+(after it) and `4353e7a` (today), each built from a detached worktree with
+HEAD's `[profile.release]` copied in -- **neither older revision sets one**, and
+`codegen-units = 1` plus fat LTO are worth `3-7%` of an encode by themselves,
+which is larger than the effect being read and would have been charged to the
+code. `encode_loop` and `counting.rs` are copied from this tree into all three,
+so the harness is the same source as well. Seven rounds, the three sides
+alternating within each round, one core, high priority, `us/encode` over
+`150-20,000` iterations by payload. The `cpp` row is the same C++ library
+linked into all three binaries: the control.
+
+| payload | faces | speed | `7a277ff` | `f18f3e1` | today | series | signs | today |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| annulus | 8 | 1 | `5.9` | `5.9` | `4.8` | `1.036x` | `5/7` | `0.842x` |
+| annulus | 8 | 5 | `5.8` | `6.0` | `4.9` | **`1.036x`** | **`7/7`** | `0.852x` |
+| annulus | 8 | 9 | `7.0` | `7.1` | `6.3` | `1.014x` | `5/7` | `0.900x` |
+| cube_att | 12 | 1 | `11.3` | `11.0` | `10.0` | `0.983x` | `0/7` | `0.882x` |
+| cube_att | 12 | 5 | `10.2` | `10.1` | `9.5` | `1.010x` | `4/7` | `0.930x` |
+| cube_att | 12 | 9 | `8.9` | `8.7` | `6.9` | `0.989x` | `2/7` | `0.782x` |
+| test_nm | 170 | 1 | `96.0` | `83.0` | `71.5` | `0.855x` | `0/7` | `0.742x` |
+| test_nm | 170 | 5 | `48.8` | `48.8` | `39.4` | `1.000x` | `3/7` | `0.817x` |
+| test_nm | 170 | 9 | `48.5` | `48.1` | `41.1` | `0.994x` | `1/7` | `0.855x` |
+| sphere | 224 | 1 | `117.6` | `98.8` | `88.6` | `0.855x` | `0/7` | `0.752x` |
+| sphere | 224 | 5 | `58.6` | `57.9` | `47.9` | `0.993x` | `1/7` | `0.837x` |
+| sphere | 224 | 9 | `51.8` | `51.4` | `41.6` | `1.000x` | `3/7` | `0.829x` |
+| test_grid | 19,602 | 1 | `6,637` | `5,753` | `4,850` | `0.860x` | `0/7` | `0.724x` |
+| test_grid | 19,602 | 5 | `2,573` | `2,490` | `1,829` | `0.960x` | `1/7` | `0.710x` |
+| test_grid | 19,602 | 9 | `2,462` | `2,272` | `1,721` | `0.942x` | `0/7` | `0.683x` |
+| *control, C++* | 8 | 5 | `19.0` | `19.0` | `19.0` | `1.000x` | `0/7` | `1.000x` |
+
+`series` is `f18f3e1`/`7a277ff` and `today` is `4353e7a`/`7a277ff`, both as the
+median of the seven per-round ratios; `signs` counts the rounds in which the
+series read slower. The control moved by nothing in either direction and its
+signs are `0/7` and `2/7`, so the machine contributed nothing to any row.
+
+**One cell resolves, and it is not the one the item described.** The 8-face
+mesh at speed 5 is `3.6%` slower after the series in all seven rounds, spread
+`[1.017..1.071]`. Its speed-1 and speed-9 neighbours lean the same way at
+`5/7` signs and do not resolve. Every payload from `12` faces up is inside its
+own spread with scattered signs, and at speed 1 the series is a `14-15%` win
+from `170` faces upward. So the corpus figure of "`3%` to `13%` slower across
+speeds `1` to `9`" does not reproduce as a property of small meshes: what
+reproduces is `3.6%` at eight faces at one speed, and it is gone by twelve.
+
+**The allocation counts refute the mechanism outright, with no noise in them.**
+Per encode, counted by the harness's global allocator:
+
+| payload | faces | speed | `7a277ff` | `f18f3e1` | today |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| annulus | 8 | 5 | `96` | `96` | `85` |
+| cube_att | 12 | 5 | `154` | `154` | `152` |
+| test_nm | 170 | 5 | `158` | `158` | `123` |
+| test_grid | 19,602 | 5 | `150` | `150` | `86` |
+| test_grid | 19,602 | 1 | `10,309` | `10,323` | `263` |
+
+The series changed the count by **zero** on every speed-5 cell, small meshes
+included, and by `+2` to `+14` only at speed 1, which is the speed where it
+wins by `14%`. A memo whose setup is the cost has to allocate the memo; these
+do not, because the entropy cache grows lazily from empty and the
+geometric-normal caches need a normal attribute, which the 8-face payload does
+not have. Whatever the `3.6%` is, it is per-call *work* -- the memo lookups'
+own comparisons on an input too small to amortise them, which is the same
+mechanism `e568bb6` recorded when capping the entropy memo cost `1.2%` -- and
+it is not setup that a face-count gate could skip.
+
+**None of it stands today.** Today's revision is faster than the pre-series one
+on every payload and every speed measured, `0/7` signs throughout: `0.85x` on
+the eight-face mesh that the series had slowed, `0.68-0.72x` on the 18k one.
+The rounds after `f18f3e1` -- the release profile among them -- more than repaid
+the small-mesh cost, and `test_grid` at speed 1 shows where the allocation work
+went: `10,309` allocations per encode down to `263`.
+
+**What is left is a floor, not a regression.** An eight-face encode costs `4.9`
+us today, of which the marginal cost of its faces is `0.75` us at the `0.093`
+us/face `test_grid` pays -- so roughly `85%` of a tiny encode is per-call cost.
+The `85` allocations behind it do not scale: the same count answers for eight
+faces and for `19,602`. Sampled at `SAMPLE_ALLOC_MIN=0`, the largest named
+blocks in one 8-face encode are the edgebreaker encoder's setup (~`23` of the
+first `64`), `encode_edgebreaker_attributes_split` (`9`), `CornerTable::init`
+(`11`) and `EncoderOptions::clone`, which `MeshEncoder::encode` makes once per
+call and which costs `6` allocations for two `HashMap`s of `String` keys that
+are string literals at every call site in the tree.
 
 ## Unexplored
 

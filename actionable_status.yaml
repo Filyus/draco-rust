@@ -19,6 +19,13 @@
 #     impact: "Why this still matters."
 #     next_steps:
 #       - "Smallest useful implementation or investigation step."
+#     refuted:
+#       - "A claim this item used to make that measurement has since killed."
+#
+# `refuted` is optional and exists so an item that survives a measurement does
+# not silently re-acquire the reading that measurement disproved. Put a claim
+# there when the item stays open but its evidence, cause or size has changed;
+# the numbers behind it belong in PERFORMANCE.md, and only the verdict here.
 #
 # An empty items list means there are currently no known actionable implementation
 # gaps. Completed behavior and policy decisions belong in implementation_state.yaml.
@@ -26,7 +33,7 @@
 # hardening_status.yaml; keep only concrete implementation actions here.
 
 version: 1
-last_reviewed: "2026-08-27"
+last_reviewed: "2026-09-01"
 
 items:
   - id: pgo-two-pass-build
@@ -60,13 +67,18 @@ items:
     area: draco-core
     priority: medium
     status: open
-    summary: "The 2.0 optimization series is 1-11% faster encoding an 18k-face mesh and 3-13% slower encoding the real corpus, whose meshes are mostly under 170 faces."
+    summary: "An encode allocates the same ~85 times whether the mesh has 8 faces or 19,602, so about 85% of a tiny encode is per-call cost that no per-face work can reach."
     evidence:
       - path: "PERFORMANCE.md"
-        note: "Paired A/B of 7a277ff against f18f3e1, both built with one toolchain, interleaved, each binary carrying the unchanged C++ side as a same-run control that agrees to 0.9%. Seeded sweep: newer faster in all 88 comparisons. Real corpus: newer faster in 11/55 encode comparisons and 41/55 decode ones."
-      - path: "crates/draco-core/src/shannon_entropy.rs"
-        note: "The memoisation commits (f9a331d entropy, c806dcd/c8e1be6 geometric normal positions, e568bb6 which recorded the memo's memory bound) all trade setup for per-element work, which is the shape that inverts when the element count is small. Named as the hypothesis to test first, not as a measured cause."
-    impact: "Decode is unaffected -- it improved on both profiles. This is encode only, and it matters for the caller encoding many small meshes: a glTF with hundreds of tiny primitives pays the setup per primitive."
+        note: "\"The Small-Mesh Encode Cost, Reproduced Against Its Own Hypothesis\". Allocations per encode at speed 5: 85 on an 8-face mesh, 86 on a 19,602-face one. An 8-face encode costs 4.9 us against the 0.093 us/face the large mesh pays, so 0.75 us of it is its faces."
+      - path: "crates/draco-core/src/mesh_encoder.rs"
+        note: "`encode` opens with `self.options = options.clone()`, which copies two HashMaps of String keys -- 6 allocations for keys that are string literals at every call site here. The rest of the fixed count is edgebreaker-encoder setup (~23 of the first 64 sampled), encode_edgebreaker_attributes_split (9) and CornerTable::init (11)."
+    impact: "Encode only; decode has its own item. It matters for the caller encoding many small meshes -- a glTF with hundreds of tiny primitives pays this per primitive -- and not at all for one large mesh."
     next_steps:
-      - "Measure the memo allocations directly on an 8-face and a 170-face encode rather than inferring them from the two profiles."
-      - "If setup is the cause, gate the memo on a point or face count threshold and re-run both profiles -- the seeded sweep is the control that the gate must not cost anything on."
+      - "Name the whole fixed count, not the first 64: encode_matrix's SAMPLE_LIMIT is not env-controlled, so raise it alongside SAMPLE_ALLOC_MIN/MAX before sampling a payload that allocates more than that."
+      - "Take the cheapest block first and measure it alone: the options clone is 6 allocations of pure bookkeeping, and interning the keys keeps EncoderOptions' fields private and the API additive."
+      - "Measure on a mesh small enough for the floor to show -- an 18k-face payload dilutes a 4 us effect to 0.2%, and the seeded sweep is the control the change must not cost anything on."
+    refuted:
+      - "That the 2.0 series (7a277ff..f18f3e1) left small-mesh encode 3-13% slower. Measured payload by payload with the release profile matched across revisions: 3.6% at 8 faces at speed 5 (7/7 rounds) and nothing resolvable at 12 faces or above, with the series a 14-15% win at speed 1 from 170 faces up."
+      - "That the memoisation commits are the cause. The series changed the allocation count by zero on every speed-5 cell measured; the entropy cache grows lazily from empty and the geometric-normal caches need a normal attribute the 8-face payload does not have. A face-count gate would have had no setup to skip."
+      - "That any of it stands today. 4353e7a is faster than 7a277ff on every payload and speed measured, 0/7 signs throughout -- 0.85x on the 8-face mesh, 0.68-0.72x on the 18k one."
