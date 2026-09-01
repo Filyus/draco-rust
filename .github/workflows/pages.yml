@@ -1,5 +1,11 @@
 name: "Pages: deploy converter"
-run-name: "pages: deploy converter"
+# Name the run after the commit it is judging, which is not the one GitHub
+# files it under: a `workflow_run` run is attributed to the tip of the default
+# branch, while the gate reads the *triggering* run's commit. Those differ
+# whenever a check for an older commit finishes late, and the run list then
+# reads as several deploys of the newest commit when one of them was about
+# something else entirely.
+run-name: "pages: ${{ github.event.workflow_run.head_sha || github.sha }} (after ${{ github.event.workflow_run.name || 'manual dispatch' }})"
 
 # The converter is the only place the web modules are shown working together --
 # import, inspect, compress, view, export -- and until now it existed solely as
