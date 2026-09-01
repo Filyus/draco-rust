@@ -1,11 +1,11 @@
 //! Compressed size of a `uint32` position attribute carrying values above
 //! `i32::MAX`, against a control with the same geometry below the boundary.
 //!
-//! Reports the number behind `dev/docs/wide-uint32-attributes.md`. Sizes are
-//! deterministic, so one run per case is the whole measurement -- there is no
-//! spread to report and nothing to warm up. The control exists because a size
-//! on its own says nothing: what is being asked is whether allowing the wider
-//! domain costs compression, and only the difference answers that.
+//! Sizes are deterministic, so one run per case is the whole measurement --
+//! there is no spread to report and nothing to warm up. The control exists
+//! because a size on its own says nothing: what is being asked is whether
+//! allowing the wider domain costs compression, and only the difference
+//! answers that.
 //!
 //! Run with `cargo run --release -p draco-core --example wide_uint32_ratio`.
 use draco_core::draco_types::DataType;

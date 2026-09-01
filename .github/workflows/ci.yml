@@ -267,6 +267,7 @@ jobs:
           npm run test:fbx-export-space
           npm run test:fbx-geometric-transform
           npm run test:no-absolute-paths
+          npm run test:no-dev-paths
           npm run test:blender-resolver
           npm run test:export-branches
           npm run test:fbx-export-interpretation

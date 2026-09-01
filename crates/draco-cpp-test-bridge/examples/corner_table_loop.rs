@@ -1,11 +1,10 @@
 //! Corner-table construction, C++ against Rust, on identical faces.
 //!
-//! Corner-table construction is about 45% of a position-only Rust encode --
-//! measured by `dev/profiling/bench-profile/src/bin/ct_bench.rs`, which times
-//! the Rust side alone. Nothing had compared it against the C++ it was ported
-//! from: a whole-encode benchmark times this stage together with everything
-//! around it, so a gap here reads as a few percent of the total and a gap
-//! elsewhere reads the same way.
+//! Corner-table construction is about 45% of a position-only Rust encode, as
+//! timed by a Rust-only construction benchmark. Nothing had compared it against
+//! the C++ it was ported from: a whole-encode benchmark times this stage
+//! together with everything around it, so a gap here reads as a few percent of
+//! the total and a gap elsewhere reads the same way.
 //!
 //! Both sides build the face array once, outside the timed loop, and both are
 //! timed around `Create`/`init` only. The vertex and degenerated-face counts

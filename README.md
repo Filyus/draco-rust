@@ -162,7 +162,7 @@ knobs. Decode and encode are CPU-bound and branchy.
 | `crates/` | The published crates, plus `draco-texture` and the C++ test bridge. |
 | `web/` | WASM wrappers, the converter front-end, and its Node and Playwright suites. |
 | `fuzz/`, `.clusterfuzzlite/` | Fuzz targets and the continuous fuzzing setup. |
-| `testdata/`, `dev/`, `tools/` | Fixtures and development tooling. |
+| `testdata/`, `tools/` | Fixtures and development tooling. |
 
 ## License
 

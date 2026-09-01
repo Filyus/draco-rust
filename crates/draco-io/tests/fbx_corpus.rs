@@ -7,7 +7,7 @@
 //! `Result` either way.
 //!
 //! ```text
-//! DRACO_FBX_CORPUS=dev/fbx/ufbx/data cargo test -p draco-io \
+//! DRACO_FBX_CORPUS=path/to/fbx/corpus cargo test -p draco-io \
 //!     --features test --test fbx_corpus -- --nocapture
 //! ```
 

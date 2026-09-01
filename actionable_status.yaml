@@ -37,9 +37,7 @@ items:
     evidence:
       - path: "PGO.md"
         note: "Covers the two-pass build, how it relates to a source library rather than a shipped binary, training-corpus guidance and the WASM-target tradeoff. Nothing consumes it."
-      - path: "dev/profiling/README.md"
-        note: "Named as the largest single remaining lever after rounds 2-6, and the only one left that is not a code change."
-    impact: "Larger than any individual source change still on the table, but it is a build-level decision: it needs a training corpus that represents real input, and it is a poor fit for the WASM target, so it is the maintainer's call rather than an edit."
+    impact: "Larger than any individual source change still on the table after profiling rounds 2-6, and the only remaining lever that is not a code change at all -- but it is a build-level decision: it needs a training corpus that represents real input, and it is a poor fit for the WASM target, so it is the maintainer's call rather than an edit."
     next_steps:
       - "Decide whether the benefit is claimed by this repo's own builds or only documented for downstream consumers -- the crates are published as source, so the win reaches users only if they opt in."
       - "If claimed here, pick the training corpus first: PGO trained on the wrong stream shape can lose, and the C++-default fixtures and this crate's own encodes profile differently."
@@ -52,9 +50,7 @@ items:
     evidence:
       - path: "crates/draco-core/src/mesh_decoder.rs"
         note: "The entry point takes a &mut Mesh but the decode allocates its own corner table, index maps and per-attribute DataBuffers per call; nothing is retained between calls."
-      - path: "dev/profiling/bench-profile/src/bin/drc_bench.rs"
-        note: "The warm loop constructs MeshDecoder::new() and Mesh::new() per iteration because that is the only shape the API offers, and the cold-vs-warm gap it reports (car.drc: 68 us cold against 3 us warm) is largely allocator state."
-    impact: "Aimed at the repeated-decode caller -- a viewer or a server decoding many assets -- not at one-shot decode. It is an additive API change in the crate that owns the allocations, so draco-io and draco-gltf would benefit without owning any of it."
+    impact: "Aimed at the repeated-decode caller -- a viewer or a server decoding many assets -- not at one-shot decode. A warm decode loop has to construct MeshDecoder::new() and Mesh::new() per iteration because that is the only shape the API offers, and the cold-vs-warm gap it reports (car.drc: 68 us cold against 3 us warm) is largely allocator state. It is an additive API change in the crate that owns the allocations, so draco-io and draco-gltf would benefit without owning any of it."
     next_steps:
       - "Measure first: profile what a second decode into an already-populated Mesh would actually skip, since the buffers are sized from each stream and may not be reusable in practice."
       - "If the win is real, add a reuse entry point rather than changing the existing one -- draco-core is published, so this must stay additive."

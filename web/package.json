@@ -30,6 +30,7 @@
     "test:fbx-geometric-transform": "node tests/fbx-geometric-transform.ts",
     "test:fbx-blender-axis-spaces": "node tests/fbx-blender-axis-spaces.ts",
     "test:no-absolute-paths": "node tests/no-absolute-paths.ts",
+    "test:no-dev-paths": "node tests/no-dev-paths.ts",
     "test:blender-resolver": "node tests/blender-resolver.ts",
     "test:fbx-source-provenance": "node tests/fbx-source-provenance-roundtrip.ts",
     "test:fbx-source-provenance-blender": "node tests/fbx-source-provenance-blender-roundtrip.ts",

@@ -301,9 +301,6 @@ fn test_grid_encoding_sequential() {
 /// back under the attribute's declared type. Upstream's own decoder reads such a
 /// stream correctly -- its `StoreTypedValues` is a plain `static_cast` with no
 /// range check -- so the wider domain stays readable by C++ Draco.
-///
-/// See `dev/docs/wide-uint32-attributes.md` for what to change if this should
-/// ever become a refusal instead.
 #[test]
 fn a_uint32_attribute_keeps_values_above_i32_max_through_a_round_trip() {
     const WIDTH: u32 = 5;

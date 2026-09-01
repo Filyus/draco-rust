@@ -1593,7 +1593,7 @@ mod encode_drc_replay {
 /// `mesh.num_attributes() > 1` to decide whether a non-position attribute
 /// needs its own depth-first traversal (position takes MaxPredictionDegree at
 /// speed 0), and undercounts by one whenever there is no separate Position
-/// attribute to count. See `dev/docs/per-attribute-connectivity.md`.
+/// attribute to count.
 #[test]
 fn a_color_attribute_without_a_position_attribute_round_trips_at_speed_zero() {
     use encode_drc_replay::*;

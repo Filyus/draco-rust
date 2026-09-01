@@ -24,8 +24,7 @@ from re-deriving it.
 **Entries marked "re-measured 2026-08-14"** were checked against the tree as
 it stands, because their original number was either missing (a day-one design
 nobody had ever benchmarked) or taken in the old 8s x 6-10 run regime that
-cannot resolve below ~2%. The method is the one
-[`dev/profiling/README.md`](dev/profiling/README.md) prescribes: revert the
+cannot resolve below ~2%. The method is: revert the
 trick in place, confirm the revert still decodes bit-identically, and run both
 binaries interleaved at `SECONDS_PER_RUN=2` over 18-24 rounds, with a second
 build per condition wherever the gap is small enough for code layout to
@@ -630,7 +629,7 @@ those. ("It is not what dominates, and this comment says so because the
 first guess was wrong.")
 
 The `#[cold] #[inline(never)]` pair on `new` is not decoration. Measured by
-temporarily removing it (`dev/profiling/README.md`, round 4):
+temporarily removing it (round 4):
 
 ```
 binary        903,168 -> 999,936 bytes   (+96 KiB, +10.7%)
@@ -710,9 +709,7 @@ and a codegen diff showed why -- the edit moved shared helpers
 (`core::slice::index` grew 320 bytes, `CornerTable::previous` shrank 64), so
 every path's code placement shifted. The −1.7%/−0.7%/−0.6% figures are from
 the paths that actually run the changed code, measured against null edits of
-the same shape; see [How to tell a real win from code
-placement](dev/profiling/README.md#how-to-tell-a-real-win-from-code-placement)
-for the full method.
+the same shape -- which is how a real win is told apart from code placement.
 
 ### Fold a consistency scan into one branch-free comparison
 
@@ -2024,7 +2021,7 @@ these and burns the time this session already spent.
 | Remove the corner-table bounds check via `get_unchecked` | `corner_table.rs`, `432344b` | **2.0%** real, on Bunny decode -- the actual price of `unsafe_code = "forbid"` on this path (`SECURITY.md`). Not taken: `draco-core` forbids `unsafe` by policy, not by omission. |
 | Cap the entropy `f*log2(f)` memo at 2^16 entries | `shannon_entropy.rs`, `e568bb6` | **+1.2% slower** encode. The function is hot enough that one more comparison per call outweighs the memory the cap would save; documented rather than applied. |
 | Rewrite the wrap-transform's inner loop as a zip over equal-length slices, the same shape as the parallelogram-helper fix above | `prediction_scheme_wrap.rs`, mentioned in `50c2b48` | Accounts for **none** of that commit's measured win and costs **1.4%** on top of it. Not applied. |
-| Eliding rANS LUT bounds checks, two variants | rANS decode path, `dev/profiling/README.md` | **+0.7%** and **+1.4%** respectively -- both slower. Not applied. |
+| Eliding rANS LUT bounds checks, two variants | rANS decode path | **+0.7%** and **+1.4%** respectively -- both slower. Not applied. |
 | Copy a kd-tree node's row in constant-size 4-word blocks, to avoid the twelve `match` arms in the const-generic dispatch | `dynamic_integer_points_kd_tree.rs`, considered alongside `d674fd6` | **+1.0%** against the `copy_within` it would have replaced -- slower than doing nothing. The dispatch-by-dimension version (**-3.4%**) shipped instead. |
 | Pre-size the kd-tree decoder's output `Vec` and fill it through a cursor, to drop the per-point `resize` | `dynamic_integer_points_kd_tree.rs`, considered alongside `d674fd6` | **0.1%**, i.e. nothing. `resize` within existing capacity already costs about what the bounds check it replaces costs. |
 | Reserve the kd-tree traversal stack instead of letting it grow | `dynamic_integer_points_kd_tree.rs`, considered alongside `d674fd6` | **0.0%**. |

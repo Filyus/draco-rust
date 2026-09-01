@@ -1301,13 +1301,14 @@ size_t draco_encode_generic(
 }
 } // extern "C"
 
-// Time CornerTable::Create alone, the C++ side of `ct_bench`.
+// Time CornerTable::Create alone, the C++ side of the Rust-only construction
+// benchmark.
 //
 // Corner-table construction is about 45% of a position-only Rust encode, and
 // nothing had ever compared it against the C++ it was ported from -- a whole
 // encode compares the stage together with everything around it. The face array
-// is built once, outside the timed loop, matching what `ct_bench` does and what
-// both encoders do before they reach the table.
+// is built once, outside the timed loop, matching what the Rust side does and
+// what both encoders do before they reach the table.
 extern "C" int draco_profile_corner_table(
     uint32_t num_faces,
     const uint32_t* faces,

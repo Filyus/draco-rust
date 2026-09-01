@@ -161,8 +161,7 @@ mod tests {
     #[test]
     fn the_defaults_clear_every_asset_the_calibration_measured() {
         let limits = DecodeLimits::default();
-        // The largest single stream of each kind, from
-        // `dev/docs/decode-limits-calibration.md`.
+        // The largest single stream of each kind measured against real assets.
         assert!(limits.check_points(25_000_000).is_ok());
         assert!(limits.check_faces(6_618_864).is_ok());
         assert!(limits.check_decoded_bytes(700_000_000).is_ok());

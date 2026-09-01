@@ -2726,7 +2726,7 @@ fn profile_decode_sequential_breakdown() {
 }
 
 /// Writes the seeded sweep's meshes out as `.obj`, so the stage-comparison
-/// tools (`corner_table_loop`, `encode_loop`, `ct_bench`) can be pointed at
+/// tools (`corner_table_loop`, `encode_loop`) can be pointed at
 /// the payloads the sweep's own ratios came from.
 ///
 /// The sweep is where encode reads `0.90x` of C++ at speeds 5-9, while the

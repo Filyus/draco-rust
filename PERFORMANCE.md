@@ -58,7 +58,7 @@ Against the 2026-08-18 numbers this table replaces: position-only moved from
 `0.70x`/`0.69x` to `0.78x`/`0.76x` at speeds 5 and 9, and the normal-carrying
 mesh from `0.97x`/`0.86x` to `1.01x`/`0.93x` at speeds 5 and 9 -- consistent
 with the `11-13%` and `2.7-2.9%` the two payloads showed in the interleaved
-`abn.sh` measurement of the same round, which is a different tool measuring
+A/B measurement of the same round, which is a different tool measuring
 the same change and landing on the same number twice.
 
 So the port is ahead on a real mesh at speed 1, at or past parity at speed 5
@@ -264,7 +264,7 @@ inferring them from these two tables.
 
 ### The 2026-08-18 Round, Including What Did Not Work
 
-Measured with `dev/profiling/abn.sh` on the Bunny, `2` seconds per run, `24`
+Measured on the Bunny, `2` seconds per run, `24`
 to `40` interleaved runs per binary, and -- for anything claimed as a result --
 two builds per condition, perturbed by a never-called function so their code
 layout differs. That last part is not ceremony: on this workload two builds of
@@ -372,7 +372,7 @@ traversal. Landing was gated on behavioural identity and no regression, not on
 a speed threshold -- the goal was fewer places the access pattern lives, and a
 speedup was a secondary question.
 
-Measured with the same `abn.sh` protocol as above, position-only Bunny at
+Measured with the same protocol as above, position-only Bunny at
 speed 5 and the normal-carrying Bunny at speed 1, two builds per condition:
 
 - `vertex_after`/`vertex_before` replacing the `vertex(next(c))` /
@@ -443,8 +443,8 @@ truncated to exactly that length -- so every call was answering a question a
 direct transform of the vec already in hand could answer without a bounds
 check.
 
-Deleting the dead traversal and simplifying the vec build (`dev/profiling/abn.sh`,
-two builds per condition): `11-13%` faster on the position-only Bunny at
+Deleting the dead traversal and simplifying the vec build (two builds per
+condition): `11-13%` faster on the position-only Bunny at
 speeds `5` and `9`, `2.7-2.9%` faster on the normal-carrying Bunny at speed
 `1` -- all several times the `~1%` build-to-build spread. A `decode_loop` run
 confirms the mechanism rather than just the direction: `137` to `129`
@@ -553,8 +553,7 @@ Before restructuring any of that, the cheaper question: is this bucket
 allocator overhead or data-volume bandwidth? Swapping the global allocator to
 `mimalloc` (dev-only, `#[global_allocator]` in the harness binaries, never in
 the library -- allocator choice is the consumer's call, same as PGO) answers
-it without touching a line of `draco-core`. `dev/profiling/abn.sh`, two builds
-per condition:
+it without touching a line of `draco-core`. Two builds per condition:
 
 | payload | speed | system allocator | mimalloc | win |
 | --- | ---: | ---: | ---: | ---: |
@@ -692,7 +691,7 @@ what already keeps that count from being honoured past what the buffer could
 describe, for the other two tables, and this reuses that guarantee rather than
 placing new trust in an unvalidated count.
 
-`dev/profiling/abn.sh`, two builds per condition: `3.0-3.4%` on position-only
+Two builds per condition: `3.0-3.4%` on position-only
 at speed 5, `1.2-1.4%` at speed 9, `1.8-1.9%` on the normal-carrying mesh at
 speed 1 -- several times the `0.0-0.4%` build-to-build spread on these runs.
 `decode_loop`'s own count: `91` to `77` allocations per decode, `7.39` to
@@ -751,7 +750,7 @@ the corner removes the second pass's redundant calls entirely, along with an
 which -- given the first pass already succeeded on the same lookup -- could
 not occur.
 
-Landed anyway, but not for a measured win: `dev/profiling/abn.sh` at speeds 0
+Landed anyway, but not for a measured win: speeds 0
 and 1, two builds per condition, found `0.0-0.4%`, inside the build-to-build
 spread. Re-reading which lines the profile actually named explains why: `1066`
 and `1070` are the *qualifying* pass's own lookups, run once per swing step
@@ -780,7 +779,7 @@ this fusion this session.
 
 No tracked asset carries texture coordinates at Bunny scale, so measuring
 needed a synthetic UV-carrying variant built from the normal-carrying mesh.
-`dev/profiling/abn.sh`, two builds per condition: no detectable change at
+Two builds per condition: no detectable change at
 speeds 1 and 5, ambiguous at speed 9 where the two baseline builds disagreed
 with each other by more than the apparent head/base gap. The geometric-normal
 fix's `2.5%` came from a call inside a fan walk, repeated once per neighbour
@@ -805,7 +804,7 @@ purpose. Reserved the same way, against `max_num_vertices.min(input_face_bound)`
 `decode_loop`'s allocation count: `77` to `65` allocations per decode, `7.02`
 to `6.95` MB -- the same drop-in-count-and-bytes signature as round five,
 confirming a reallocation chain was removed rather than the amount of work
-changing. `dev/profiling/abn.sh`, two builds per condition, position-only at
+changing. Two builds per condition, position-only at
 speeds 5 and 9 and the normal-carrying mesh at speed 1: no change past the
 build-to-build spread at any of the three. `is_vert_hole` is `Vec<bool>`,
 one byte per vertex against `vertex_corners`' four, so the reallocation
@@ -844,7 +843,7 @@ no such table inherits the trait's no-op default.
 
 `decode_loop`'s allocation count at speed 1: `105` to `91` allocations per
 decode, `7.61` to `7.25` MB -- the same signature as the two fixes before it.
-`dev/profiling/abn.sh`, two builds per condition, speed 1: `~0.5-0.8%` on
+Two builds per condition, speed 1: `~0.5-0.8%` on
 `bunny_pos` and the normal-carrying Bunny, both past the `~0.4%`
 build-to-build spread; no change past the spread on the UV variant. The
 type-1 predictive decoder has no benchmark payload -- it is reachable only
@@ -888,7 +887,7 @@ splitting).
 `encode_loop` on the position-only Bunny at speed 5: `163` to `101`
 allocations per encode, `17.2` to `12.5` MB, output byte-identical
 (`58,893` bytes; `83,754` at speed 9, also matching the C++ bridge's output
-exactly). `dev/profiling/abn.sh`, two builds per condition:
+exactly). Two builds per condition:
 
 | payload | speed | encode |
 | --- | ---: | ---: |
@@ -930,12 +929,12 @@ It is not a target at all: upstream computes `frequency * log2(frequency)`
 for the old and new frequency of every symbol on every peek, with no memo,
 and this port has memoised it since `f9a331d`. On that axis the port is ahead
 of C++ by construction, and the remaining calls are the cost model itself,
-which byte parity pins. A new `dev/profiling/callers.py` (which call sites
-put time in a hot leaf, as opposed to `resolve.py`'s "where does time go")
+which byte parity pins. A new caller-attribution pass (which call sites put
+time in a hot leaf, as opposed to the profile resolver's "where does time go")
 settled that in one command instead of a benchmark round.
 
-The real shape came from a harness the tooling did not have: `ct_bench`,
-which loops `CornerTable::init` alone. **Corner-table construction is `5.4`
+The real shape came from a harness the tooling did not have: one that loops
+`CornerTable::init` alone. **Corner-table construction is `5.4`
 ms of an `11.4` ms position-only speed-5 encode -- about `45%`.** The
 whole-encode profile had attributed `10%` to `CornerTable::init`, because
 inlining splits the function across source lines and an inclusive-by-name
@@ -1134,7 +1133,7 @@ operations, no attributes materialized.
 `quantization_round_trip_monotonic_test` pins the monotonicity itself, and
 fails when the round trip is deliberately broken.
 
-`dev/profiling/abn.sh`, two builds per condition perturbed inside
+Two builds per condition perturbed inside
 `draco-core`, 24 interleaved rounds: **`12.2-12.8%` on the ribbon, `6.0-6.4%`
 on the Bunny**, paired builds agreeing to `0.6%`. Against C++ at speed 5,
 medians of three rounds, the ribbon family goes from `0.85-0.96x` to
@@ -1966,7 +1965,7 @@ instantiation's name for code reached from many places:
 
 - `quicksort::<..., RAnsSymbolEncoder::create::{closure#0}>` at `2.2%` reads
   as an encoder building a symbol table during a decode. There is no such
-  call. `callers.py` puts the samples under `traverse_from_corner`, and
+  call. Caller attribution puts the samples under `traverse_from_corner`, and
   neither that function nor the generator it serves contains a sort at all --
   the name belongs to some other `sort_by::<[usize]>` the linker folded it
   into.
@@ -3641,7 +3640,7 @@ method.
 
 Decode cost, again by construction: the plumbing is a version read once per
 decode, and the binding decisions it changes happen once per binding. Four
-`drc_bench` binaries (two layout-perturbed builds per condition) against the
+decode-benchmark binaries (two layout-perturbed builds per condition) against the
 previous commit, `30` interleaved rounds of `2` s on the Bunny speed-1
 payload (geometric-normal predictor on the hot path): medians lean `+0.7` to
 `+0.8%` toward the previous tree -- and the speed-5 control payload, whose
@@ -3678,10 +3677,10 @@ per decode; the hot read is the same byte read and widen as the functions it
 replaces, through a struct with no discriminant. No new allocation. Measured
 that way and it held:
 
-- Four `drc_bench` binaries -- two builds per condition, perturbed inside
+- Four decode-benchmark binaries -- two builds per condition, perturbed inside
   `sequential_integer_attribute_decoder.rs` so their layout differs -- on a
   Bunny payload encoded at speed 1 (the geometric-normal predictor on the hot
-  path), interleaved `30` rounds of `2` s via `abn.sh`, System allocator.
+  path), interleaved `30` rounds of `2` s, System allocator.
   Parent medians `10,970.8` / `10,993.3` us/decode; this tree `10,886.4` /
   `10,931.6` -- `-0.5` to `-0.7%` in the medians. But the control payload
   (speed 5, no parent-reading scheme anywhere) leaned the same way

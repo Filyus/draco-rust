@@ -14,8 +14,6 @@
 //! `a_uint32_attribute_keeps_values_above_i32_max_through_a_round_trip` in
 //! `draco-core/tests/attribute_integration_test.rs`; this test needs the C++
 //! build and is skipped without it.
-//!
-//! See `dev/docs/wide-uint32-attributes.md`.
 
 use draco_core::decoder_buffer::DecoderBuffer;
 use draco_core::draco_types::DataType;
