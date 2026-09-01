@@ -113,6 +113,17 @@ tool-spawning tests return early, and the bridge's build script compiles its
 tests out of existence. Both report success. The two variables turn that silence
 into a failure, so the job cannot pass without actually having compared.
 
+**One comparison is not against the release, and cannot be.** The randomized
+sweep in `draco-cpp-test-bridge/tests/parity_random_meshes.rs` is measured
+against a C++ checkout carrying a fix for an upstream defect it found — released
+1.5.7 reads a `uint32` symbol through an `int32` parameter, prices a
+configuration no sane encoder would choose, and tries to allocate for it.
+Against the tag the sweep reaches 11.5 GB and aborts on `std::bad_alloc`;
+against the patched checkout it passes in under a minute. The parity job skips
+it by name, so it remains the one comparison that needs a reference built by
+hand — and any parity number quoted from it describes 1.5.7 plus that fix, not
+1.5.7.
+
 ### If this should become a refusal instead
 
 The alternative is to refuse the value at encode time, as upstream does. That was

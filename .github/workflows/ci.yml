@@ -483,6 +483,16 @@ jobs:
       # tools. Its build script compiles them out when it cannot find a build,
       # leaving no test to fail, so DRACO_REQUIRE_CPP_BRIDGE makes that a build
       # error here.
+      #
+      # `random_sweep` is the one comparison this job cannot make, and the
+      # reason is upstream's own defect, documented at the top of
+      # `parity_random_meshes.rs`: released 1.5.7 reads a `uint32` symbol
+      # through an `int32` parameter, so it prices a configuration no sane
+      # encoder would choose and then tries to allocate for it. Against the
+      # release the sweep reaches 11.5 GB and aborts on `std::bad_alloc`;
+      # against a checkout carrying the fix it passes in under a minute. It
+      # needs a patched reference, which is what pinning the tag exists to
+      # avoid, and so stays a comparison run by hand.
       - name: Compare against upstream Draco through the linked bridge
         env:
           DRACO_CPP_SOURCE_DIR: ${{ github.workspace }}/draco-cpp
@@ -490,4 +500,4 @@ jobs:
           DRACO_REQUIRE_CPP_BRIDGE: '1'
         run: >-
           cargo test --manifest-path crates/Cargo.toml
-          -p draco-cpp-test-bridge --release
+          -p draco-cpp-test-bridge --release -- --skip random_sweep
