@@ -36,23 +36,25 @@ permissions:
   contents: read
   pages: write
   id-token: write
-  # The gate reads the sibling workflow's runs, and the environment's
-  # deployment history to learn what is actually published.
+  # The gate reads the sibling workflow's runs.
   actions: read
-  deployments: read
 
 jobs:
-  # Two questions, and the second is the one that is easy to get wrong.
+  # Waiting for the checks is the easy half. The hard half is that a workflow
+  # which produced no run for this commit is not pending: `Fuzz` filters pushes
+  # by path, so a web-only change never starts it, and waiting for it would wait
+  # forever. Absent counts as satisfied.
   #
-  # Are both checks happy? Waiting is the easy half. The hard half is that a
-  # workflow which produced no run for this commit is not pending: `Fuzz`
-  # filters pushes by path, so a web-only change never starts it, and waiting
-  # for it would wait forever. Absent counts as satisfied.
-  #
-  # Is there anything to deploy? `workflow_run` carries no path filter, so the
-  # one this workflow used to have is rebuilt here -- against the last commit
-  # actually deployed rather than against this commit's parent, so a push of
-  # several commits cannot walk past a change the way a one-commit diff would.
+  # There is deliberately no "did anything relevant change?" test. This workflow
+  # had one as a `paths:` filter, and `workflow_run` carries none, so rebuilding
+  # it meant knowing which commit is currently published -- and the deployment
+  # record cannot say. `actions/deploy-pages` files a deployment against the
+  # run's own commit, which under `workflow_run` is the branch tip rather than
+  # the commit the run checked out and built. Reading it back would have marked
+  # the tip published without publishing it, and the tip's own run would then
+  # decline as redundant, leaving the site frozen with everything green. So the
+  # site is rebuilt on every accepted push: a few minutes of runner time in
+  # exchange for a question that has no reliable answer.
   gate:
     name: gate
     runs-on: ubuntu-latest
@@ -65,8 +67,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Decide whether to deploy
         id: decide
@@ -117,44 +117,17 @@ jobs:
             [ -n "$states" ] && echo "$workflow: success." || true
           done
 
-          # Ask what was deployed, not what ran. Now that a run can legitimately
-          # end without deploying, its own history would answer the wrong
-          # question -- the first such run would become the baseline and the
-          # site would never move again.
-          # A deployment record exists whether or not it succeeded, so take the
-          # most recent one that actually did. Otherwise a failed deploy would
-          # become the baseline and no later push would ever retry it.
-          deployed=""
-          for id in $(gh api "repos/$REPO/deployments?environment=github-pages&per_page=10" --jq '.[].id'); do
-            state=$(gh api "repos/$REPO/deployments/$id/statuses?per_page=1" --jq '.[0].state // ""')
-            if [ "$state" = "success" ]; then
-              deployed=$(gh api "repos/$REPO/deployments/$id" --jq '.sha')
-              break
-            fi
-          done
-          if [ -z "$deployed" ] || ! git cat-file -e "${deployed}^{commit}" 2>/dev/null; then
-            echo "No previous deployment to compare against; deploying."
-            echo "deploy=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # Out-of-order arrivals are possible -- two pushes in flight, one
-          # cancelled by the concurrency group -- and publishing an ancestor
-          # over its own descendant would quietly roll the site back.
-          if git merge-base --is-ancestor "$SHA" "$deployed"; then
-            echo "$deployed is already deployed and contains $SHA. Nothing to do."
+          # Waiting above takes minutes, and main can move during them.
+          # Publish only what is currently the tip: an older commit arriving
+          # here means a newer one exists, and that one's own checks bring it.
+          tip=$(git ls-remote origin main | cut -f1)
+          if [ "$SHA" != "$tip" ]; then
+            echo "main is at $tip, not $SHA. That commit's own run deploys it."
             echo "deploy=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          changed=$(git diff --name-only "$deployed" "$SHA" -- .github/workflows/pages.yml crates web)
-          if [ -z "$changed" ]; then
-            echo "Nothing under crates/, web/ or this workflow changed since $deployed."
-            echo "deploy=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "Changed since $deployed:"
-          echo "$changed"
+          echo "$SHA is the tip of main and its checks passed. Deploying."
           echo "deploy=true" >> "$GITHUB_OUTPUT"
 
   deploy:
