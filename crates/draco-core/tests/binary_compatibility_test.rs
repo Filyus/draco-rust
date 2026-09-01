@@ -10,6 +10,9 @@ use draco_core::EncoderOptions;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
+
+mod common;
+use common::{optional_cpp_codec, optional_cpp_tool, ENCODER};
 use std::process::Command;
 use tempfile::Builder;
 
@@ -23,21 +26,6 @@ fn read_ply_header(path: &Path) -> std::io::Result<String> {
         .map(|pos| pos + marker.len())
         .unwrap_or(bytes.len());
     Ok(String::from_utf8_lossy(&bytes[..end]).into_owned())
-}
-
-fn get_cpp_tools_path() -> Option<std::path::PathBuf> {
-    let path = Path::new("../../build/Debug");
-    if path.exists() {
-        Some(path.to_path_buf())
-    } else {
-        // Try Release
-        let path = Path::new("../../build/Release");
-        if path.exists() {
-            Some(path.to_path_buf())
-        } else {
-            None
-        }
-    }
 }
 
 fn create_torus_mesh() -> Mesh {
@@ -80,19 +68,9 @@ fn create_torus_mesh() -> Mesh {
 
 #[test]
 fn test_rust_encode_cpp_decode() {
-    let tools_path = match get_cpp_tools_path() {
-        Some(p) => p,
-        None => {
-            println!("Skipping compatibility test: C++ tools not found");
-            return;
-        }
-    };
-    let decoder_path = tools_path.join("draco_decoder.exe");
-    let encoder_path = tools_path.join("draco_encoder.exe");
-    if !decoder_path.exists() || !encoder_path.exists() {
-        println!("Skipping compatibility test: tools not found");
+    let Some((encoder_path, decoder_path)) = optional_cpp_codec() else {
         return;
-    }
+    };
 
     let temp_dir = Builder::new()
         .prefix("draco_test")
@@ -219,18 +197,9 @@ fn test_rust_encode_rust_decode() {
 
 #[test]
 fn test_cpp_encode_rust_decode() {
-    let tools_path = match get_cpp_tools_path() {
-        Some(p) => p,
-        None => {
-            println!("Skipping compatibility test: C++ tools not found");
-            return;
-        }
-    };
-    let encoder_path = tools_path.join("draco_encoder.exe");
-    if !encoder_path.exists() {
-        println!("Skipping compatibility test: draco_encoder.exe not found");
+    let Some(encoder_path) = optional_cpp_tool(ENCODER) else {
         return;
-    }
+    };
 
     let temp_dir = Builder::new()
         .prefix("draco_test_cpp")

@@ -7,8 +7,11 @@ use draco_core::mesh_encoder::MeshEncoder;
 use draco_core::EncoderOptions;
 use std::fs::File;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
+
+mod common;
+use common::optional_cpp_codec;
 
 fn print_speed_table_header() {
     println!(
@@ -16,16 +19,6 @@ fn print_speed_table_header() {
         "Speed", "cl", "C++ bytes", "Rust bytes", "Status"
     );
     println!("{}", "-".repeat(52));
-}
-
-fn get_cpp_tools_path() -> Option<PathBuf> {
-    // Corrected path based on previous exploration
-    let path = Path::new("../../build-original/src/draco/Release");
-    if path.exists() {
-        Some(path.to_path_buf())
-    } else {
-        None
-    }
 }
 
 fn create_complex_mesh() -> Mesh {
@@ -105,24 +98,10 @@ fn create_complex_mesh() -> Mesh {
 
 #[test]
 fn compat_encoding_speed() {
-    let tools_path = match get_cpp_tools_path() {
-        Some(p) => p,
-        None => {
-            eprintln!(
-                "SKIPPING comparison: C++ tools not found at {:?}",
-                Path::new("../../build-original/src/draco/Release").canonicalize()
-            );
-            return;
-        }
-    };
-    eprintln!("Using C++ tools from: {:?}", tools_path.canonicalize());
-    let encoder_path = tools_path.join("draco_encoder.exe");
-    let decoder_path = tools_path.join("draco_decoder.exe");
-
-    if !encoder_path.exists() {
-        eprintln!("draco_encoder.exe not found");
+    let Some((encoder_path, decoder_path)) = optional_cpp_codec() else {
         return;
-    }
+    };
+    eprintln!("Using the C++ encoder at {}", encoder_path.display());
 
     let mesh = create_complex_mesh();
 

@@ -1,8 +1,11 @@
 //! Required Rust/C++ interop coverage for Rust-encoded Edgebreaker meshes.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
+
+mod common;
+use common::{require_cpp_tool, BUILD_HINT, DECODER, ENCODER};
 
 use draco_core::decoder_buffer::DecoderBuffer;
 use draco_core::draco_types::DataType;
@@ -21,10 +24,6 @@ const POSITION_TOLERANCE: f32 = 0.01;
 const NORMAL_TOLERANCE: f32 = 0.02;
 const TEX_COORD_TOLERANCE: f32 = 0.01;
 
-const BUILD_HINT: &str = "C++ Draco tools are required for this test. Build them with: \
-cmake -S . -B build -G \"Visual Studio 17 2022\" && \
-cmake --build build --config Release --target draco_decoder draco_encoder";
-
 #[derive(Debug, Clone)]
 struct VertexRecord {
     position: [f32; 3],
@@ -38,84 +37,6 @@ struct ObjSummary {
     normals: Vec<[f32; 3]>,
     tex_coords: Vec<[f32; 2]>,
     faces: Vec<Vec<String>>,
-}
-
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("crates directory")
-        .parent()
-        .expect("repo root")
-        .to_path_buf()
-}
-
-fn cpp_tool_from_dir(build_dir: &Path, tool_name: &str) -> Option<PathBuf> {
-    let direct = build_dir.join(tool_name);
-    if direct.exists() {
-        return Some(direct);
-    }
-
-    for config in ["Release", "Debug"] {
-        let configured = build_dir.join(config).join(tool_name);
-        if configured.exists() {
-            return Some(configured);
-        }
-    }
-
-    let nested = build_dir.join("src").join("draco");
-    for config in ["Release", "Debug"] {
-        let configured = nested.join(config).join(tool_name);
-        if configured.exists() {
-            return Some(configured);
-        }
-    }
-
-    None
-}
-
-fn find_cpp_tool(env_var: &str, tool_name: &str) -> PathBuf {
-    if let Ok(path) = std::env::var(env_var) {
-        let path = PathBuf::from(path);
-        assert!(
-            path.exists(),
-            "{} points to a missing {}: {}\n{}",
-            env_var,
-            tool_name,
-            path.display(),
-            BUILD_HINT
-        );
-        return path;
-    }
-
-    if let Ok(build_dir) = std::env::var("DRACO_CPP_BUILD_DIR") {
-        if let Some(path) = cpp_tool_from_dir(Path::new(&build_dir), tool_name) {
-            return path;
-        }
-    }
-
-    let root = repo_root();
-    let candidates = [
-        root.join("build-original")
-            .join("src")
-            .join("draco")
-            .join("Release")
-            .join(tool_name),
-        root.join("build")
-            .join("src")
-            .join("draco")
-            .join("Release")
-            .join(tool_name),
-        root.join("build")
-            .join("src")
-            .join("draco")
-            .join("Debug")
-            .join(tool_name),
-    ];
-
-    candidates
-        .into_iter()
-        .find(|path| path.exists())
-        .unwrap_or_else(|| panic!("Could not find required C++ tool {tool_name}.\n{BUILD_HINT}"))
 }
 
 fn parse_obj(obj_content: &str) -> ObjSummary {
@@ -671,7 +592,7 @@ fn assert_vec2_sets_match(
 
 #[test]
 fn rust_encode_cpp_decode_small_matrix() {
-    let decoder_exe = find_cpp_tool("DRACO_CPP_DECODER", "draco_decoder.exe");
+    let decoder_exe = require_cpp_tool(DECODER);
     let tmp = std::env::temp_dir().join("draco_rust_encode_cpp_decode_small_matrix");
     fs::create_dir_all(&tmp).expect("create temp dir");
 
@@ -865,7 +786,7 @@ fn annulus_mesh(n: usize) -> (Mesh, Vec<[f32; 3]>) {
 #[test]
 #[cfg(feature = "legacy_bitstream_encode")]
 fn cpp_decodes_the_legacy_streams_this_crate_writes() {
-    let decoder_exe = find_cpp_tool("DRACO_CPP_DECODER", "draco_decoder.exe");
+    let decoder_exe = require_cpp_tool(DECODER);
     let tmp = std::env::temp_dir().join("draco_cpp_decodes_legacy_streams");
     fs::create_dir_all(&tmp).expect("create temp dir");
 
@@ -1028,7 +949,7 @@ fn multi_attribute_annulus_mesh(n: usize) -> (Mesh, Vec<VertexRecord>) {
 #[test]
 #[cfg(feature = "legacy_bitstream_encode")]
 fn cpp_decodes_legacy_normal_and_tex_coord_encodings() {
-    let decoder_exe = find_cpp_tool("DRACO_CPP_DECODER", "draco_decoder.exe");
+    let decoder_exe = require_cpp_tool(DECODER);
     let tmp = std::env::temp_dir().join("draco_cpp_decodes_legacy_attributes");
     fs::create_dir_all(&tmp).expect("create temp dir");
 
@@ -1171,7 +1092,7 @@ fn cpp_decodes_legacy_normal_and_tex_coord_encodings() {
 #[test]
 #[cfg(feature = "legacy_bitstream_encode")]
 fn cpp_decodes_the_predictive_traversal_this_crate_writes() {
-    let decoder_exe = find_cpp_tool("DRACO_CPP_DECODER", "draco_decoder.exe");
+    let decoder_exe = require_cpp_tool(DECODER);
     let tmp = std::env::temp_dir().join("draco_cpp_decodes_predictive_traversal");
     fs::create_dir_all(&tmp).expect("create temp dir");
 
@@ -1213,8 +1134,8 @@ fn cpp_decodes_the_predictive_traversal_this_crate_writes() {
 
 #[test]
 fn compare_rust_vs_cpp_decode() {
-    let decoder_exe = find_cpp_tool("DRACO_CPP_DECODER", "draco_decoder.exe");
-    let encoder_exe = find_cpp_tool("DRACO_CPP_ENCODER", "draco_encoder.exe");
+    let decoder_exe = require_cpp_tool(DECODER);
+    let encoder_exe = require_cpp_tool(ENCODER);
     assert!(
         encoder_exe.exists(),
         "Required C++ encoder is missing: {}\n{}",

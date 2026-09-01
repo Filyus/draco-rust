@@ -8,8 +8,10 @@ use draco_core::mesh::Mesh;
 use draco_core::mesh_decoder::MeshDecoder;
 use draco_core::mesh_encoder::MeshEncoder;
 use draco_core::version::{has_header_flags, uses_varint_encoding};
-use std::path::Path;
 use std::process::Command;
+
+mod common;
+use common::{optional_cpp_tool, DECODER};
 
 fn write_f32s(attribute: &mut PointAttribute, values: &[f32]) {
     for (i, value) in values.iter().enumerate() {
@@ -91,19 +93,6 @@ fn encoded_edgebreaker_num_attribute_data(bytes: &[u8]) -> u8 {
         let _ = buffer.decode_u32().expect("num faces");
     }
     buffer.decode_u8().expect("num attribute data")
-}
-
-fn find_cpp_decoder() -> Option<String> {
-    std::env::var("DRACO_CPP_DECODER").ok().or_else(|| {
-        [
-            "../../build-original/src/draco/Release/draco_decoder.exe",
-            "../../build/src/draco/Release/draco_decoder.exe",
-            "../../build/src/draco/Debug/draco_decoder.exe",
-        ]
-        .iter()
-        .find(|path| Path::new(path).exists())
-        .map(|path| path.to_string())
-    })
 }
 
 fn encode_uv_seam_mesh() -> Vec<u8> {
@@ -205,8 +194,7 @@ fn assert_pairings_are_from_the_input(decoded: &Mesh) {
 
 #[test]
 fn cpp_decoder_accepts_rust_edgebreaker_attribute_seam_stream_when_available() {
-    let Some(decoder_path) = find_cpp_decoder() else {
-        eprintln!("C++ decoder not found, skipping seam interop test");
+    let Some(decoder_path) = optional_cpp_tool(DECODER) else {
         return;
     };
 

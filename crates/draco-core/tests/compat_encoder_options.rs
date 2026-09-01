@@ -9,9 +9,12 @@ use draco_core::mesh_encoder::MeshEncoder;
 use draco_core::EncoderOptions;
 use std::fs::File;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::sync::Mutex;
+
+mod common;
+use common::optional_cpp_codec;
 
 static OUTPUT_LOCK: Mutex<()> = Mutex::new(());
 
@@ -33,15 +36,6 @@ fn print_size_row(case: impl std::fmt::Display, cpp_size: usize, rust_size: usiz
 
 fn print_case_status(case: impl std::fmt::Display, status: &str) {
     println!("{:<28} {:>11} {:>11} {:>10}", case, "-", "-", status);
-}
-
-fn get_cpp_tools_path() -> Option<PathBuf> {
-    let path = Path::new("../../build-original/src/draco/Release");
-    if path.exists() {
-        Some(path.to_path_buf())
-    } else {
-        None
-    }
 }
 
 /// Create a mesh with position, normals, and texture coordinates
@@ -124,20 +118,9 @@ fn create_mesh_with_attributes() -> Mesh {
 #[test]
 fn test_quantization_bits_compatibility() {
     let _output_lock = OUTPUT_LOCK.lock().unwrap();
-    let tools_path = match get_cpp_tools_path() {
-        Some(p) => p,
-        None => {
-            eprintln!("SKIPPING: C++ tools not found");
-            return;
-        }
-    };
-    let encoder_path = tools_path.join("draco_encoder.exe");
-    let decoder_path = tools_path.join("draco_decoder.exe");
-
-    if !encoder_path.exists() || !decoder_path.exists() {
-        eprintln!("SKIPPING: C++ encoder/decoder not found");
+    let Some((encoder_path, decoder_path)) = optional_cpp_codec() else {
         return;
-    }
+    };
 
     let mesh = create_mesh_with_attributes();
     let obj_path = Path::new("temp_qbits_test.obj");
@@ -251,20 +234,9 @@ fn test_quantization_bits_compatibility() {
 #[test]
 fn test_compression_levels_compatibility() {
     let _output_lock = OUTPUT_LOCK.lock().unwrap();
-    let tools_path = match get_cpp_tools_path() {
-        Some(p) => p,
-        None => {
-            eprintln!("SKIPPING: C++ tools not found");
-            return;
-        }
-    };
-    let encoder_path = tools_path.join("draco_encoder.exe");
-    let decoder_path = tools_path.join("draco_decoder.exe");
-
-    if !encoder_path.exists() || !decoder_path.exists() {
-        eprintln!("SKIPPING: C++ encoder/decoder not found");
+    let Some((encoder_path, decoder_path)) = optional_cpp_codec() else {
         return;
-    }
+    };
 
     let mesh = create_mesh_with_attributes();
     let obj_path = Path::new("temp_cl_test.obj");
@@ -380,20 +352,9 @@ fn test_compression_levels_compatibility() {
 #[test]
 fn test_quantization_edge_cases() {
     let _output_lock = OUTPUT_LOCK.lock().unwrap();
-    let tools_path = match get_cpp_tools_path() {
-        Some(p) => p,
-        None => {
-            eprintln!("SKIPPING: C++ tools not found");
-            return;
-        }
-    };
-    let encoder_path = tools_path.join("draco_encoder.exe");
-    let decoder_path = tools_path.join("draco_decoder.exe");
-
-    if !encoder_path.exists() || !decoder_path.exists() {
-        eprintln!("SKIPPING: C++ encoder/decoder not found");
+    let Some((encoder_path, decoder_path)) = optional_cpp_codec() else {
         return;
-    }
+    };
 
     let mesh = create_mesh_with_attributes();
     let obj_path = Path::new("temp_qedge_test.obj");
@@ -510,20 +471,9 @@ fn test_quantization_edge_cases() {
 #[test]
 fn test_speed_quantization_matrix() {
     let _output_lock = OUTPUT_LOCK.lock().unwrap();
-    let tools_path = match get_cpp_tools_path() {
-        Some(p) => p,
-        None => {
-            eprintln!("SKIPPING: C++ tools not found");
-            return;
-        }
-    };
-    let encoder_path = tools_path.join("draco_encoder.exe");
-    let decoder_path = tools_path.join("draco_decoder.exe");
-
-    if !encoder_path.exists() || !decoder_path.exists() {
-        eprintln!("SKIPPING: C++ encoder/decoder not found");
+    let Some((encoder_path, _decoder_path)) = optional_cpp_codec() else {
         return;
-    }
+    };
 
     let mesh = create_mesh_with_attributes();
     let obj_path = Path::new("temp_matrix_test.obj");

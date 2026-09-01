@@ -8,17 +8,11 @@ use draco_core::mesh_encoder::MeshEncoder;
 use draco_core::EncoderOptions;
 use std::fs::File;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
-fn get_cpp_tools_path() -> Option<PathBuf> {
-    let path = Path::new("../../build-original/src/draco/Release");
-    if path.exists() {
-        Some(path.to_path_buf())
-    } else {
-        None
-    }
-}
+mod common;
+use common::{optional_cpp_tool, ENCODER};
 
 fn create_grid_mesh(grid_size: usize, z_variation: f32) -> Mesh {
     let mut mesh = Mesh::new();
@@ -135,19 +129,9 @@ fn compare_bytes(rust: &[u8], cpp: &[u8]) {
 
 #[test]
 fn test_speed1_detailed_comparison() {
-    let tools_path = match get_cpp_tools_path() {
-        Some(p) => p,
-        None => {
-            eprintln!("SKIPPING: C++ tools not found");
-            return;
-        }
-    };
-    let encoder_path = tools_path.join("draco_encoder.exe");
-
-    if !encoder_path.exists() {
-        eprintln!("SKIPPING: C++ encoder not found at {:?}", encoder_path);
+    let Some(encoder_path) = optional_cpp_tool(ENCODER) else {
         return;
-    }
+    };
 
     // Test the specific failing case: grid=10, z_var=0.2, qp=10, speed=1
     let grid_size = 10;

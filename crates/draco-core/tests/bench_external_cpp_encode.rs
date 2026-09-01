@@ -12,24 +12,8 @@ use draco_core::mesh_decoder::MeshDecoder;
 use draco_core::mesh_encoder::MeshEncoder;
 use draco_core::EncoderOptions;
 
-fn get_cpp_encoder_path() -> Option<PathBuf> {
-    let path = Path::new("../../build-original/src/draco/Release/draco_encoder.exe");
-    if path.exists() {
-        Some(path.to_path_buf())
-    } else {
-        None
-    }
-}
-
-#[allow(dead_code)]
-fn get_cpp_decoder_path() -> Option<PathBuf> {
-    let path = Path::new("../../build-original/src/draco/Release/draco_decoder.exe");
-    if path.exists() {
-        Some(path.to_path_buf())
-    } else {
-        None
-    }
-}
+mod common;
+use common::{optional_cpp_tool, ENCODER};
 
 #[allow(dead_code)]
 fn create_grid_mesh(grid_size: usize) -> Mesh {
@@ -257,12 +241,8 @@ fn benchmark_cpp_encoding(
 
 #[test]
 fn bench_external_cpp_encode() {
-    let encoder_path = match get_cpp_encoder_path() {
-        Some(p) => p,
-        None => {
-            eprintln!("SKIPPING: C++ encoder not found");
-            return;
-        }
+    let Some(encoder_path) = optional_cpp_tool(ENCODER) else {
+        return;
     };
 
     let grid_sizes = [50, 100, 200];

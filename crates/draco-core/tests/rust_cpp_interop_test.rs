@@ -1,8 +1,10 @@
 //! Test that Rust-encoded files can be decoded by C++
 
 use std::fs;
-use std::path::Path;
 use std::process::Command;
+
+mod common;
+use common::{optional_cpp_tool, DECODER};
 
 #[test]
 fn test_rust_encoded_cpp_decoded() {
@@ -71,56 +73,31 @@ fn test_rust_encoded_cpp_decoded() {
     fs::write(&output_path, encoded_data).expect("Failed to write file");
     println!("Saved to: {:?}", output_path);
 
-    // Try to decode with C++ decoder (if available via env var or default paths)
-    let cpp_decoder_path = std::env::var("DRACO_CPP_DECODER").ok().or_else(|| {
-        // Try common build paths
-        let candidates = [
-            "../../build-original/src/draco/Release/draco_decoder.exe",
-            "../../build/src/draco/Release/draco_decoder.exe",
-            "../../build/src/draco/Debug/draco_decoder.exe",
-        ];
-        candidates
-            .iter()
-            .find(|p| Path::new(p).exists())
-            .map(|s| s.to_string())
-    });
+    if let Some(decoder_path) = optional_cpp_tool(DECODER) {
+        let output = Command::new(&decoder_path)
+            .args(["-i", output_path.to_string_lossy().as_ref()])
+            .output()
+            .expect("Failed to run C++ decoder");
 
-    if let Some(decoder_path) = cpp_decoder_path {
-        if Path::new(&decoder_path).exists() {
-            let output = Command::new(&decoder_path)
-                .args(["-i", output_path.to_string_lossy().as_ref()])
-                .output()
-                .expect("Failed to run C++ decoder");
+        println!(
+            "C++ decoder stdout: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        println!(
+            "C++ decoder stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
 
-            println!(
-                "C++ decoder stdout: {}",
-                String::from_utf8_lossy(&output.stdout)
-            );
-            println!(
-                "C++ decoder stderr: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-
-            // If decoding succeeds, the output should contain some info
-            // If it fails, it will contain "Failed to decode"
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if stdout.contains("Failed") || !output.stderr.is_empty() {
-                println!("C++ decoder failed - checking error...");
-                if stdout.contains("Failed to decode point attributes") {
-                    panic!(
-                        "CRITICAL: PredictionScheme encoding error - check enum values match C++"
-                    );
-                }
-            } else {
-                println!("C++ decoder succeeded!");
+        // If decoding succeeds, the output should contain some info
+        // If it fails, it will contain "Failed to decode"
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if stdout.contains("Failed") || !output.stderr.is_empty() {
+            println!("C++ decoder failed - checking error...");
+            if stdout.contains("Failed to decode point attributes") {
+                panic!("CRITICAL: PredictionScheme encoding error - check enum values match C++");
             }
         } else {
-            println!(
-                "C++ decoder not found at {:?}, skipping interop test",
-                decoder_path
-            );
+            println!("C++ decoder succeeded!");
         }
-    } else {
-        println!("C++ decoder not found, skipping interop test");
     }
 }

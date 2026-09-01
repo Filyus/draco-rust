@@ -9,17 +9,11 @@ use draco_core::mesh_encoder::MeshEncoder;
 use draco_core::EncoderOptions;
 use std::fs::File;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
-fn get_cpp_tools_path() -> Option<PathBuf> {
-    let path = Path::new("../../build-original/src/draco/Release");
-    if path.exists() {
-        Some(path.to_path_buf())
-    } else {
-        None
-    }
-}
+mod common;
+use common::optional_cpp_codec;
 
 fn create_grid_mesh(grid_size: usize, z_variation: f32) -> Mesh {
     let mut mesh = Mesh::new();
@@ -103,20 +97,9 @@ fn find_first_diff(rust_data: &[u8], cpp_data: &[u8]) -> Option<(usize, u8, u8)>
 /// Test to find actual mismatches with various parameters
 #[test]
 fn test_find_implementation_differences() {
-    let tools_path = match get_cpp_tools_path() {
-        Some(p) => p,
-        None => {
-            eprintln!("SKIPPING: C++ tools not found");
-            return;
-        }
-    };
-    let encoder_path = tools_path.join("draco_encoder.exe");
-    let decoder_path = tools_path.join("draco_decoder.exe");
-
-    if !encoder_path.exists() || !decoder_path.exists() {
-        eprintln!("SKIPPING: C++ encoder/decoder not found");
+    let Some((encoder_path, _decoder_path)) = optional_cpp_codec() else {
         return;
-    }
+    };
 
     println!("\n=== Testing Multiple Grid Sizes and Parameters ===\n");
 

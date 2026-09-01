@@ -429,3 +429,52 @@ jobs:
       - name: Compare draco-texture against the reference transcoder
         run: cargo test --manifest-path tools/basis-cpp-oracle/Cargo.toml -- --nocapture
 
+
+  draco-cpp-parity:
+    name: draco C++ parity
+    runs-on: ubuntu-latest
+
+    # The comparisons against upstream Draco itself. They spawn its command
+    # line encoder and decoder, so until this job existed they ran only on a
+    # machine that happened to have a build of them -- which is to say by hand,
+    # while a green CI said nothing about them.
+    #
+    # Two things make the result mean something. The reference is pinned to the
+    # 1.5.7 tag, the version COMPATIBILITY.md records this port as targeting,
+    # so a divergence reports a change here rather than upstream moving. And
+    # DRACO_REQUIRE_CPP_TOOLS turns a tool that cannot be found into a failure:
+    # every one of these tests otherwise returns quietly and passes, which is
+    # indistinguishable from a comparison that ran and agreed.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check out upstream Draco at the version this port targets
+        uses: actions/checkout@v4
+        with:
+          repository: google/draco
+          ref: '1.5.7'
+          path: draco-cpp
+
+      - name: Build the upstream encoder and decoder
+        run: >-
+          cmake -S draco-cpp -B draco-cpp/build -DCMAKE_BUILD_TYPE=Release &&
+          cmake --build draco-cpp/build --parallel
+          --target draco_decoder draco_encoder
+
+      - name: Compare against upstream Draco
+        env:
+          DRACO_CPP_SOURCE_DIR: ${{ github.workspace }}/draco-cpp
+          DRACO_CPP_BUILD_DIR: ${{ github.workspace }}/draco-cpp/build
+          DRACO_REQUIRE_CPP_TOOLS: '1'
+        run: >-
+          cargo test --manifest-path crates/Cargo.toml -p draco-core --release
+          --test rust_vs_cpp_decode_test
+          --test binary_compatibility_test
+          --test compat_encoder_options
+          --test rust_cpp_interop_test
+          --test edgebreaker_attribute_seams_test
+          --test encoder_diagnostic_test
