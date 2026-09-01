@@ -32,8 +32,10 @@
 //!    catastrophically expensive configuration came out *cheaper* than every
 //!    sane one, and C++ picked it. Rust, computing the same estimate in
 //!    `i64`/`u64` throughout, correctly rejected that configuration -- so the
-//!    two disagreed by 22 bytes on a mesh where Rust was right. Fixed in the
-//!    local C++ checkout; the parity numbers below are measured against it.
+//!    two disagreed by 22 bytes on a mesh where Rust was right. The parameter
+//!    is still `int32_t` in released 1.5.7 and in upstream `main`, which have
+//!    identical entropy sources, so this defect is present in whatever C++
+//!    build the sweep is run against.
 //! 6. The encoding half of the portable texcoord predictor was missing the
 //!    three overflow guards upstream applies before its scaled-space
 //!    multiplications. Upstream shares one predictor between encoder and
@@ -58,8 +60,8 @@
 //! quantization**, upstream's own documented maximum. Prediction residuals
 //! there exceed `int32` and both implementations are in overflow territory;
 //! C++ Draco reads out of bounds in `ShannonEntropyTracker` on some of these
-//! inputs, which is a bug reported upstream rather than behaviour to
-//! reproduce.
+//! inputs, which is a defect of upstream's rather than behaviour to reproduce.
+//! Neither it nor the `int32` defect above has been reported to upstream.
 use draco_core::draco_types::DataType;
 use draco_core::encoder_buffer::EncoderBuffer;
 use draco_core::encoder_options::EncoderOptions;
