@@ -127,6 +127,7 @@ impl<R: Read + Seek> FbxReader<R> {
             deformer_map,
             pose_map,
             connections,
+            material_slots,
             names,
             templates,
             ..
@@ -154,20 +155,22 @@ impl<R: Read + Seek> FbxReader<R> {
         );
 
         // ---- Model hierarchy + per-model materials -----------------------
-        // Map each model id to the list of material indices connected to it.
-        let mut model_material_ids: HashMap<i64, Vec<i32>> = HashMap::new();
-        for conn in connections {
-            if conn.kind == ConnectionKind::Oo
-                && material_map.contains_key(&conn.child)
-                && model_map.contains_key(&conn.parent)
-            {
-                let mat_index = material_index_by_id[&conn.child] as i32;
-                model_material_ids
-                    .entry(conn.parent)
-                    .or_default()
-                    .push(mat_index);
-            }
-        }
+        // Each Model's slots, as scene material indices. The slot list is the
+        // one place a repeated connection means a repeated thing, so it is
+        // read from the index's own record of it rather than from the
+        // deduplicated connection list.
+        let model_material_ids: HashMap<i64, Vec<i32>> = material_slots
+            .iter()
+            .map(|(&model_id, slots)| {
+                (
+                    model_id,
+                    slots
+                        .iter()
+                        .map(|id| material_index_by_id[id] as i32)
+                        .collect(),
+                )
+            })
+            .collect();
 
         // Build parent map for models (same as before but over FbxConnection).
         let mut model_children: HashMap<i64, Vec<i64>> = HashMap::new();
@@ -998,6 +1001,15 @@ struct FbxObjectIndex<'a> {
     pose_map: HashMap<i64, &'a FbxNode>,
     attribute_map: HashMap<i64, &'a FbxNode>,
     connections: Vec<FbxConnection>,
+    /// Each Model's material slots, in the order the document connects them
+    /// and with the repeats it spells.
+    ///
+    /// `LayerElementMaterial` addresses this list by position, so a Model that
+    /// connects one Material into two of its slots means two slots and the
+    /// second is not the same as the first being stated twice. This is the one
+    /// reading of a connection that counts copies, which is why it is taken
+    /// before `connections` drops them.
+    material_slots: HashMap<i64, Vec<i64>>,
     /// The name keys of a pre-7000 document, for resolving the references
     /// that reach the scene passes after this index was built.
     names: NameInterner,
@@ -1022,20 +1034,13 @@ impl<'a> FbxObjectIndex<'a> {
             pose_map: HashMap::new(),
             attribute_map: HashMap::new(),
             connections: Vec::new(),
+            material_slots: HashMap::new(),
             names: NameInterner::default(),
             templates: PropertyTemplates::build(nodes),
         };
         // Keyed by whichever spelling identifies objects in this document:
         // an `i64` id in 7000 and later, an interned name key before that.
         let mut names = NameInterner::default();
-        // A connection is a relation, so stating it twice states it once. The
-        // passes over this list walk it per object and nest -- a geometry's
-        // BlendShapes, their channels, their shapes -- so a repeated edge does
-        // not cost one extra target but multiplies the whole subtree under it,
-        // and a document may repeat an edge as often as it has room to spell
-        // it. Deduplicating here bounds every consumer at once.
-        let mut seen: std::collections::HashSet<(ConnectionKind, i64, i64, Option<String>)> =
-            std::collections::HashSet::new();
 
         for node in nodes {
             if node.name == "Objects" {
@@ -1072,19 +1077,44 @@ impl<'a> FbxObjectIndex<'a> {
                 index.connections.extend(
                     node.children
                         .iter()
-                        .filter_map(|child| FbxConnection::from_node(child, &mut names))
-                        .filter(|connection| {
-                            seen.insert((
-                                connection.kind,
-                                connection.child,
-                                connection.parent,
-                                connection.property.clone(),
-                            ))
-                        }),
+                        .filter_map(|child| FbxConnection::from_node(child, &mut names)),
                 );
             }
         }
         index.names = names;
+        // Objects and Connections are separate records and a document may
+        // spell them in either order, so the slots are read once the loop
+        // above has seen both.
+        for connection in &index.connections {
+            if connection.kind == ConnectionKind::Oo
+                && index.material_map.contains_key(&connection.child)
+                && index.model_map.contains_key(&connection.parent)
+            {
+                index
+                    .material_slots
+                    .entry(connection.parent)
+                    .or_default()
+                    .push(connection.child);
+            }
+        }
+        // Everything else reads a connection as a relation, where stating it
+        // twice states it once. Those readings walk the list per object and
+        // nest -- a geometry's BlendShapes, their channels, their shapes --
+        // so a repeated edge does not cost one extra target but multiplies
+        // the whole subtree under it, and a document may repeat an edge as
+        // often as it has room to spell it. ZBrush connects a BlendShape to
+        // its geometry twice in an ordinary export, which decoded to each of
+        // its shapes twice over.
+        let mut seen: std::collections::HashSet<(ConnectionKind, i64, i64, Option<String>)> =
+            std::collections::HashSet::new();
+        index.connections.retain(|connection| {
+            seen.insert((
+                connection.kind,
+                connection.child,
+                connection.parent,
+                connection.property.clone(),
+            ))
+        });
         index
     }
 }

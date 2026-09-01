@@ -707,6 +707,60 @@ mod shared_path_regressions {
         assert_eq!(root.mesh_instances[0].morph_targets.len(), 1);
     }
 
+    /// A Model's material slots are addressed by position, so the one place a
+    /// repeated connection is not a repetition. A mesh whose faces use the
+    /// same material in two separate slots is spelled by connecting that
+    /// material twice, and reading the connection list as a set renumbers
+    /// every slot after the repeat: face 0 asks for slot 3 and gets whatever
+    /// slid into it.
+    #[test]
+    fn a_material_connected_into_two_slots_keeps_both_of_them() {
+        let decoded = scene(
+            "FBXHeaderExtension:  {
+	FBXVersion: 7500
+}
+             Objects:  {
+             	Geometry: 100, \"Geometry::Quad\", \"Mesh\" {
+             		Vertices: *12 {
+			a: 0,0,0,1,0,0,0,1,0,1,1,0
+		}
+             		PolygonVertexIndex: *6 {
+			a: 0,1,-3,1,3,-3
+		}
+             		LayerElementMaterial: 0 {
+             			MappingInformationType: \"ByPolygon\"
+             			ReferenceInformationType: \"IndexToDirect\"
+             			Materials: *2 {
+				a: 3,2
+			}
+		}
+	}
+             	Model: 200, \"Model::Quad\", \"Mesh\" {
+	}
+             	Material: 300, \"Material::a\", \"\" {
+	}
+             	Material: 301, \"Material::b\", \"\" {
+	}
+             	Material: 302, \"Material::c\", \"\" {
+	}
+}
+             Connections:  {
+             	C: \"OO\",100,200
+	C: \"OO\",200,0
+             	C: \"OO\",300,200
+	C: \"OO\",301,200
+             	C: \"OO\",300,200
+	C: \"OO\",302,200
+}
+",
+        );
+        // Slots are a, b, a, c; the layer sends the first face to slot 3 and
+        // the second to slot 2, which are materials c and a.
+        assert_eq!(decoded.materials.len(), 3);
+        let mesh = &decoded.root_nodes[0].mesh_instances[0];
+        assert_eq!(mesh.material_indices, vec![2, 0]);
+    }
+
     /// The same bound stops a chain that is deep rather than circular, and it
     /// used to stop it in silence. What the caller saw instead was the
     /// consequence: a 340-bone rig came back missing its tail, and every skin
