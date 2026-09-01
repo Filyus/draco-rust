@@ -55,6 +55,193 @@ const ASCII_VALID: &str = concat!(
     "}\n",
 );
 
+/// A document whose Model connects one material into two separate slots.
+///
+/// `LayerElementMaterial` names a slot, not a material, so the slot list is
+/// positional and `a, b, a, c` is four slots rather than three. Nothing else
+/// in the corpus reaches that mapping at all: no input the round-trip target
+/// had ever built carried a material layer, so the pass that renumbers slots
+/// on the way out and back was fuzzed with the mapping empty.
+const ASCII_MATERIAL_SLOTS: &str = concat!(
+    "; FBX 7.5.0 project file
+",
+    "FBXHeaderExtension:  {
+",
+    "    FBXHeaderVersion: 1003
+",
+    "    FBXVersion: 7500
+",
+    "}
+",
+    "Objects:  {
+",
+    "    Geometry: 100, \"Geometry::seed\", \"Mesh\" {
+",
+    "        Vertices: *12 {
+",
+    "            a: 0,0,0,1,0,0,0,1,0,1,1,0
+",
+    "        }
+",
+    "        PolygonVertexIndex: *6 {
+",
+    "            a: 0,1,-3,1,3,-3
+",
+    "        }
+",
+    "        LayerElementMaterial: 0 {
+",
+    "            MappingInformationType: \"ByPolygon\"
+",
+    "            ReferenceInformationType: \"IndexToDirect\"
+",
+    "            Materials: *2 {
+",
+    "                a: 3,2
+",
+    "            }
+",
+    "        }
+",
+    "    }
+",
+    "    Model: 200, \"Model::seed\", \"Mesh\" {
+",
+    "        Version: 232
+",
+    "    }
+",
+    "    Material: 300, \"Material::a\", \"\" {
+",
+    "        Version: 102
+",
+    "    }
+",
+    "    Material: 301, \"Material::b\", \"\" {
+",
+    "        Version: 102
+",
+    "    }
+",
+    "    Material: 302, \"Material::c\", \"\" {
+",
+    "        Version: 102
+",
+    "    }
+",
+    "}
+",
+    "Connections:  {
+",
+    "    C: \"OO\",100,200
+",
+    "    C: \"OO\",200,0
+",
+    "    C: \"OO\",300,200
+",
+    "    C: \"OO\",301,200
+",
+    "    C: \"OO\",300,200
+",
+    "    C: \"OO\",302,200
+",
+    "}
+",
+);
+
+/// A document carrying a blend shape, for the same reason: the deformer chain
+/// -- geometry to `BlendShape`, to `BlendShapeChannel`, to the `Shape`
+/// geometry that holds the deltas -- was unreachable from a corpus in which
+/// no input had a deformer at all.
+const ASCII_BLEND_SHAPE: &str = concat!(
+    "; FBX 7.5.0 project file
+",
+    "FBXHeaderExtension:  {
+",
+    "    FBXHeaderVersion: 1003
+",
+    "    FBXVersion: 7500
+",
+    "}
+",
+    "Objects:  {
+",
+    "    Geometry: 100, \"Geometry::seed\", \"Mesh\" {
+",
+    "        Vertices: *9 {
+",
+    "            a: 0,0,0,1,0,0,0,1,0
+",
+    "        }
+",
+    "        PolygonVertexIndex: *3 {
+",
+    "            a: 0,1,-3
+",
+    "        }
+",
+    "    }
+",
+    "    Model: 200, \"Model::seed\", \"Mesh\" {
+",
+    "        Version: 232
+",
+    "    }
+",
+    "    Deformer: 300, \"Deformer::shapes\", \"BlendShape\" {
+",
+    "        Version: 100
+",
+    "    }
+",
+    "    Deformer: 400, \"SubDeformer::wide\", \"BlendShapeChannel\" {
+",
+    "        Version: 100
+",
+    "        DeformPercent: 0
+",
+    "        FullWeights: *1 {
+",
+    "            a: 100
+",
+    "        }
+",
+    "    }
+",
+    "    Geometry: 500, \"Geometry::wide\", \"Shape\" {
+",
+    "        Indexes: *2 {
+",
+    "            a: 0,2
+",
+    "        }
+",
+    "        Vertices: *6 {
+",
+    "            a: 1,0,0,0,1,0
+",
+    "        }
+",
+    "    }
+",
+    "}
+",
+    "Connections:  {
+",
+    "    C: \"OO\",100,200
+",
+    "    C: \"OO\",200,0
+",
+    "    C: \"OO\",300,100
+",
+    "    C: \"OO\",400,300
+",
+    "    C: \"OO\",500,400
+",
+    "}
+",
+);
+
 fn header(version: u32) -> Vec<u8> {
     let mut data = Vec::new();
     data.extend_from_slice(MAGIC);
@@ -205,6 +392,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // so mutation had to synthesize that prefix by chance to reach the parser
     // at all -- which is why it never did.
     seeds.push(("ascii_valid.fbx", ASCII_VALID.as_bytes().to_vec()));
+    seeds.push((
+        "ascii_material_slots.fbx",
+        ASCII_MATERIAL_SLOTS.as_bytes().to_vec(),
+    ));
+    seeds.push((
+        "ascii_blend_shape.fbx",
+        ASCII_BLEND_SHAPE.as_bytes().to_vec(),
+    ));
 
     // Nesting to the fuzzing depth limit and one past it, so both sides of the
     // check sit in the corpus.
@@ -265,6 +460,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "bad_zlib_bomb.fbx",
                 "bad_property_list_len.fbx",
                 "ascii_valid.fbx",
+                "ascii_material_slots.fbx",
+                "ascii_blend_shape.fbx",
                 "ascii_deep_nesting.fbx",
                 "ascii_huge_array_len.fbx",
                 "ascii_unterminated_string.fbx",
@@ -278,12 +475,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "empty_7400.fbx",
                 "empty_7500.fbx",
                 "empty_big_endian_7500.fbx",
-                // The writer emits binary, so this is the only seed that
-                // reaches it through the ASCII reader. Only the valid one:
-                // the round-trip target returns early on anything the reader
+                // The writer emits binary, so these are the only seeds that
+                // reach it through the ASCII reader. Only valid ones: the
+                // round-trip target returns early on anything the reader
                 // rejects, so a malformed seed exercises nothing it does not
                 // already get from fbx_read_scene.
                 "ascii_valid.fbx",
+                // What the writer is asked to spell decides what this target
+                // can check. Without a scene that carries material slots or a
+                // blend shape, the passes that renumber them run over nothing.
+                "ascii_material_slots.fbx",
+                "ascii_blend_shape.fbx",
             ],
         ),
     ] {

@@ -20,7 +20,7 @@ status, threat model, and known residual risk live in
 | `compress_gltf` | [`fuzz/fuzz_targets/compress_gltf.rs`](fuzz/fuzz_targets/compress_gltf.rs) | Feeds arbitrary glTF/GLB bytes into the document-preserving glTF compressor with external file resolution disabled, under tight Draco decode limits. |
 | `draco_gltf_import` | [`fuzz/fuzz_targets/draco_gltf_import.rs`](fuzz/fuzz_targets/draco_gltf_import.rs) | Imports a full scene through `draco-gltf`, decodes every Draco primitive, then exercises atomic in-place decompression, all under tight Draco decode limits. |
 | `fbx_read_scene` | [`fuzz/fuzz_targets/fbx_read_scene.rs`](fuzz/fuzz_targets/fbx_read_scene.rs) | Reads arbitrary bytes as an FBX scene under tight decode limits, in both lenient and strict modes, and checks that reading the same input twice agrees. |
-| `fbx_roundtrip` | [`fuzz/fuzz_targets/fbx_roundtrip.rs`](fuzz/fuzz_targets/fbx_roundtrip.rs) | Writes back whatever the FBX reader accepted and requires the result to satisfy the reader's strict mode, so the writer is fuzzed with scenes nobody would hand-build. |
+| `fbx_roundtrip` | [`fuzz/fuzz_targets/fbx_roundtrip.rs`](fuzz/fuzz_targets/fbx_roundtrip.rs) | Writes back whatever the FBX reader accepted and requires the result to satisfy the reader's strict mode, so the writer is fuzzed with scenes nobody would hand-build. The rewrite has to carry every mesh's control points, polygon corners, blend-shape targets and per-face material indices through unchanged, which counting nodes and materials cannot see. |
 | `encode_drc` | [`fuzz/fuzz_targets/encode_drc.rs`](fuzz/fuzz_targets/encode_drc.rs) | Builds a mesh or point cloud from the input - point count, triangle indices, attribute layouts and payloads, encoder options - encodes it, and requires that anything the encoder accepted decodes. |
 | `mesh_text_readers` | [`fuzz/fuzz_targets/mesh_text_readers.rs`](fuzz/fuzz_targets/mesh_text_readers.rs) | Feeds each input to the OBJ, PLY and STL readers, which parse untrusted files with no limits API of their own. |
 | `ktx2_transcode` | [`fuzz/fuzz_targets/ktx2_transcode.rs`](fuzz/fuzz_targets/ktx2_transcode.rs) | Parses arbitrary bytes as KTX2 and transcodes every level small enough into every target, so that an allocation failure is a finding rather than the header's own arithmetic. |
@@ -259,13 +259,21 @@ minimises to an obvious cause:
 cargo run --manifest-path crates/Cargo.toml --example fbx_make_seeds -- fuzz/seeds
 ```
 
-Five of them are ASCII. FBX has two containers and the reader auto-detects
+Seven of them are ASCII. FBX has two containers and the reader auto-detects
 between them, so the ASCII parser was reachable in principle and unexercised in
 practice: every seed began with the binary magic, and mutation will essentially
-never synthesize a `; FBX` or `FBXHeaderExtension:` prefix from those. The five
+never synthesize a `; FBX` or `FBXHeaderExtension:` prefix from those. Five
 cover a valid document, a deep block nest, a huge declared array length, an
 unterminated string and an unterminated block. Campaign over the widened corpus:
 452,946 executions, 2,323 new units, clean.
+
+The other two carry a mapping rather than a hazard: `ascii_material_slots.fbx`
+connects one material into two of a Model's slots, and `ascii_blend_shape.fbx`
+carries the deformer chain down to a `Shape`. `fbx_roundtrip` compares what a
+rewrite preserves per mesh, and those two mappings are the ones it cannot check
+from any other input: over the 1,244 units the corpus held when they were
+written, not one carried a material layer or a deformer, so the passes that
+renumber a slot table and re-emit a blend shape ran over nothing.
 
 [`crates/draco-io/tests/fbx_seeds.rs`](crates/draco-io/tests/fbx_seeds.rs)
 asserts what each seed does — which container it routes to, and whether it

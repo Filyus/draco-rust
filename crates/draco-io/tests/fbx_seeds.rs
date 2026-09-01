@@ -26,7 +26,7 @@ use draco_io::{FbxDecodeLimits, FbxReadOptions, FbxScene};
 ///
 /// A `bad_`/`unterminated` seed that strict mode accepts has stopped testing
 /// what it was written for.
-const SEEDS: [(&str, bool, bool, bool); 14] = [
+const SEEDS: [(&str, bool, bool, bool); 16] = [
     // name, is ASCII, lenient parses, strict parses
     ("valid_triangle.fbx", false, true, true),
     // Structurally fine, but empty: strict mode wants scene content.
@@ -44,6 +44,8 @@ const SEEDS: [(&str, bool, bool, bool); 14] = [
     ("bad_array_element_count.fbx", false, false, false),
     ("bad_zlib_bomb.fbx", false, false, false),
     ("ascii_valid.fbx", true, true, true),
+    ("ascii_material_slots.fbx", true, true, true),
+    ("ascii_blend_shape.fbx", true, true, true),
     // 24 levels against the fuzzing limit of 16.
     ("ascii_deep_nesting.fbx", true, false, false),
     ("ascii_huge_array_len.fbx", true, false, false),
@@ -119,6 +121,43 @@ fn the_valid_ascii_seed_carries_a_mesh() {
         .expect("the seed declares one Geometry node");
     assert_eq!(instance.mesh.num_points(), 3, "three vertices");
     assert_eq!(instance.mesh.num_faces(), 1, "one triangle");
+}
+
+/// The two seeds written for the round-trip target reach what they were
+/// written for.
+///
+/// Parsing is not the bar here. These exist because the round-trip target can
+/// only check the mapping a scene actually carries, and every other input in
+/// the corpus carries neither a material layer nor a deformer -- so a seed
+/// that parsed into a plain mesh would leave that mapping fuzzed over nothing
+/// while the corpus listing showed it covered.
+#[test]
+fn the_round_trip_seeds_carry_the_mappings_they_were_written_for() {
+    let read = |name: &str| {
+        let bytes = std::fs::read(seed(name)).unwrap_or_else(|error| panic!("{name}: {error}"));
+        FbxScene::from_bytes_with_options(
+            &bytes,
+            FbxReadOptions::default().with_limits(FbxDecodeLimits::fuzzing()),
+        )
+        .unwrap_or_else(|error| panic!("{name} should parse: {error}"))
+    };
+
+    let slots = read("ascii_material_slots.fbx");
+    assert_eq!(slots.materials.len(), 3, "three materials");
+    let mesh = &slots.root_nodes[0].mesh_instances[0];
+    // Slots are a, b, a, c: the layer sends one face to the fourth slot and
+    // one to the third, which are materials c and a. Reading the repeated
+    // connection as one slot answers [0, 2] here.
+    assert_eq!(mesh.material_indices, vec![2, 0], "per-face materials");
+
+    let morphs = read("ascii_blend_shape.fbx");
+    let mesh = &morphs.root_nodes[0].mesh_instances[0];
+    assert_eq!(mesh.morph_targets.len(), 1, "one blend-shape target");
+    assert_eq!(
+        mesh.morph_targets[0].control_point_indices,
+        vec![0, 2],
+        "the deltas the shape names"
+    );
 }
 
 /// The one seed that comes from our own writer is still what the writer emits.
