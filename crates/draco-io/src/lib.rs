@@ -53,12 +53,15 @@ mod gltf_error;
 /// Reader-agnostic accessor and Draco geometry contracts.
 pub mod gltf_geometry;
 // Every reader that builds a mesh from scratch ends through this, so its gate
-// is the union of theirs rather than any one weld's.
+// is the union of theirs rather than any one weld's. `fbx-writer` is in that
+// union without being a reader: the FBX corner expansion welds through here as
+// well, and it serves both directions.
 #[cfg(any(
     feature = "obj-reader",
     feature = "ply-reader",
     feature = "gltf-geometry",
-    feature = "fbx-reader"
+    feature = "fbx-reader",
+    feature = "fbx-writer"
 ))]
 mod mesh_finalize;
 // The only remaining user of the hashable-tuple weld: OBJ interns `(v, vt,

@@ -49,6 +49,13 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   no face names among its 35,947, all of them setting the quantization range
   until now.
 
+### Fixed
+
+- The crate builds again with `fbx-writer` selected and no reader. The FBX
+  corner expansion serves both directions and welds through the shared
+  mesh-finalize pass, which was gated on the readers alone, so the combination
+  failed to compile rather than failing a test.
+
 ### Added
 
 - `gltf_geometry::decode_geometry` accepts `TRIANGLE_STRIP` (mode 5) and

@@ -56,7 +56,7 @@ pub(crate) fn finalize_mesh(mesh: &mut Mesh) -> io::Result<()> {
 /// The unused-point drop [`finalize_mesh`] ends with cannot apply to such a
 /// caller: a mesh built one point per corner has, by construction, no point
 /// that starts out unused, so the map handed back stays valid.
-#[cfg(feature = "fbx-reader")]
+#[cfg(any(feature = "fbx-reader", feature = "fbx-writer"))]
 pub(crate) fn finalize_mesh_returning_corner_map(mesh: &mut Mesh) -> io::Result<Vec<u32>> {
     mesh.deduplicate_attribute_values()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
