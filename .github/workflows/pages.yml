@@ -13,12 +13,17 @@ run-name: "pages: ${{ github.event.workflow_run.head_sha || github.sha }} (after
 # this publishes the app that uses them.
 #
 # Deploying is gated on the checks rather than on the push, so the site is only
-# ever built from a commit `Rust CI` and `Fuzz` have both accepted. Either of
-# them completing fires this workflow; the gate below decides whether that is
-# yet enough.
+# ever built from a commit `Rust CI` and `Fuzz` have both accepted.
+#
+# Only `Rust CI` fires this, and the gate waits for `Fuzz` itself. Listening to
+# both instead gives one run per check, all but the last of which finds a
+# sibling unfinished and declines -- and worse, the last one is only reliably
+# last if the checks finish in the order the events arrive, which they need not.
+# `Rust CI` has no path filter, so every push to main starts exactly one of it,
+# which makes it the one dependable trigger.
 on:
   workflow_run:
-    workflows: ["Rust CI", "Fuzz"]
+    workflows: ["Rust CI"]
     types: [completed]
     branches: [main]
   workflow_dispatch:
@@ -39,11 +44,10 @@ permissions:
 jobs:
   # Two questions, and the second is the one that is easy to get wrong.
   #
-  # Are both checks happy? A workflow that produced no run for this commit is
-  # not pending -- `Fuzz` filters pushes by path, so a web-only change never
-  # starts it, and waiting for it would wait forever. Absent counts as
-  # satisfied; only a run that exists and either has not finished or did not
-  # succeed holds the deploy back.
+  # Are both checks happy? Waiting is the easy half. The hard half is that a
+  # workflow which produced no run for this commit is not pending: `Fuzz`
+  # filters pushes by path, so a web-only change never starts it, and waiting
+  # for it would wait forever. Absent counts as satisfied.
   #
   # Is there anything to deploy? `workflow_run` carries no path filter, so the
   # one this workflow used to have is rebuilt here -- against the last commit
@@ -82,23 +86,35 @@ jobs:
             exit 0
           fi
 
+          # Only what this push started counts. A soak someone dispatched by
+          # hand, or a nightly, attaches to the same commit and can run for
+          # hours; waiting on it would hold the deploy behind work that has
+          # nothing to say about this commit.
           for workflow in "Rust CI" "Fuzz"; do
-            states=$(gh run list --repo "$REPO" --commit "$SHA" --workflow "$workflow" --json status,conclusion --jq '.[] | "\(.status)/\(.conclusion // "-")"')
-            if [ -z "$states" ]; then
-              echo "$workflow: no run for this commit -- filtered out, not pending."
-              continue
-            fi
-            if echo "$states" | grep -qv '^completed/'; then
-              echo "$workflow: still running. Its completion will fire this again."
-              echo "deploy=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            if echo "$states" | grep -qv '^completed/success$'; then
+            deadline=$((SECONDS + 1800))
+            while :; do
+              states=$(gh run list --repo "$REPO" --commit "$SHA" --workflow "$workflow" --event push --json status,conclusion --jq '.[] | "\(.status)/\(.conclusion // "-")"')
+              if [ -z "$states" ]; then
+                echo "$workflow: no push-triggered run for this commit -- filtered out, not pending."
+                break
+              fi
+              if ! echo "$states" | grep -qv '^completed/'; then
+                break
+              fi
+              if [ "$SECONDS" -ge "$deadline" ]; then
+                echo "$workflow: still running after 30 minutes. Not deploying."
+                echo "deploy=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              echo "$workflow: not finished yet; waiting."
+              sleep 30
+            done
+            if [ -n "$states" ] && echo "$states" | grep -qv '^completed/success$'; then
               echo "$workflow: did not succeed ($states). Not deploying."
               echo "deploy=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            echo "$workflow: success."
+            [ -n "$states" ] && echo "$workflow: success." || true
           done
 
           # Ask what was deployed, not what ran. Now that a run can legitimately
