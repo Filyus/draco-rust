@@ -411,11 +411,7 @@ pub fn build_draco_mesh_with_corner_map(render: &FbxRenderMesh) -> DracoMeshWith
         let base = (face * 3) as u32;
         mesh.set_face(
             FaceIndex(face as u32),
-            [
-                PointIndex(base),
-                PointIndex(base + 1),
-                PointIndex(base + 2),
-            ],
+            [PointIndex(base), PointIndex(base + 1), PointIndex(base + 2)],
         );
     }
 

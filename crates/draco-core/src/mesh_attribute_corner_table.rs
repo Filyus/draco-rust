@@ -12,7 +12,9 @@
 //! function instead of porting the class.
 
 use crate::corner_table::CornerTable;
-use crate::geometry_indices::{CornerIndex, VertexIndex, INVALID_CORNER_INDEX, INVALID_VERTEX_INDEX};
+use crate::geometry_indices::{
+    CornerIndex, VertexIndex, INVALID_CORNER_INDEX, INVALID_VERTEX_INDEX,
+};
 use crate::status::DracoError;
 
 /// Cuts every marked seam edge out of a clone of `base_ct` and gives each
@@ -251,9 +253,7 @@ mod tests {
             // Face A: corners 0,1,2 at vertices 0,1,2. Face B: corners 3,4,5
             // at vertices 0,3,4 -- sharing vertex 0 with face A, but not
             // linked to it by any opposite pointer.
-            corner_to_vertex_map: [0, 1, 2, 0, 3, 4]
-                .map(VertexIndex)
-                .to_vec(),
+            corner_to_vertex_map: [0, 1, 2, 0, 3, 4].map(VertexIndex).to_vec(),
             // Face A's pointers form a closed cycle among themselves instead
             // of the real (all-INVALID) topology of two disjoint triangles --
             // `next` never sees an invalid corner and never revisits corner 0
