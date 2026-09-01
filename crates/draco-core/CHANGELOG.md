@@ -134,6 +134,11 @@ premise holds, and the encoder reports the choices it makes for itself.
   `update` rather than for `write` because it grows the buffer past its end,
   which `write` panics on and `try_write` refuses, and it counts as an update
   so a buffer whose count did not move genuinely was not touched.
+- `Mesh::clear` and `PointCloud::clear` drop every face, point, attribute and
+  the metadata while keeping the face and attribute lists' allocated capacity.
+  They are what the decoders now do to the geometry they are handed, and they
+  are what a caller wanting to decode a sequence into one mesh needs in order
+  to do it deliberately rather than by luck.
 
 ### Changed
 
@@ -396,6 +401,18 @@ premise holds, and the encoder reports the choices it makes for itself.
   is now taken under it.
 
 ### Fixed
+
+- `MeshDecoder::decode` and `PointCloudDecoder::decode` replace what the mesh
+  or cloud they are given already held, instead of adding to it. Both take it
+  by `&mut`, and every stage below them appends -- attributes are pushed, faces
+  are written from index zero -- so decoding a second stream into a mesh that
+  had decoded a first left it carrying both: a position/normal/texcoord stream
+  decoded twice came out with six attributes, twenty times with sixty, the
+  first of each set stale. The point and face counts stayed right throughout,
+  which is why nothing noticed; the mesh is now cleared on entry, so those
+  counts and the attribute list agree again. A caller who has always passed a
+  fresh mesh -- which is every caller in this repository, and the only usage the
+  suite covered -- sees no change.
 
 - The `traversal_method` byte named an order the position values were not
   written in. At speed 0 the position walks the mesh by max prediction degree,

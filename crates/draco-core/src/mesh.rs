@@ -23,6 +23,16 @@ impl Mesh {
         Self::default()
     }
 
+    /// Drops every face and everything the underlying point cloud holds,
+    /// keeping the allocated capacity of both lists.
+    ///
+    /// What a decode does to the mesh it is given, so that decoding into one
+    /// that already holds geometry replaces it rather than adding to it.
+    pub fn clear(&mut self) {
+        self.point_cloud.clear();
+        self.faces.clear();
+    }
+
     /// Appends one triangle face.
     pub fn add_face(&mut self, face: Face) {
         self.faces.push(face);

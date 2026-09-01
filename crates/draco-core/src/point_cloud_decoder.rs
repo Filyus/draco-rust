@@ -148,11 +148,18 @@ impl PointCloudDecoder {
     #[cfg(feature = "point_cloud_decode")]
     /// Decodes a Draco point cloud from `in_buffer` into `out_pc`.
     ///
+    /// `out_pc` need not be empty: whatever it held is replaced, the same way
+    /// [`MeshDecoder::decode`](crate::mesh_decoder::MeshDecoder::decode)
+    /// replaces its mesh. `decode_after_header` does not clear, because its
+    /// caller has already done so and has decoded metadata since.
+    ///
     /// # Errors
     ///
     /// Returns an error if the header is invalid, the bitstream version is
     /// unsupported, or the encoded attributes are malformed.
     pub fn decode(&mut self, in_buffer: &mut DecoderBuffer, out_pc: &mut PointCloud) -> Status {
+        out_pc.clear();
+
         // 1. Decode Header
         self.decode_header(in_buffer)?;
 

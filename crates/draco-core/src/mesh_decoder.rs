@@ -212,8 +212,12 @@ impl MeshDecoder {
     /// Decodes a Draco mesh from `in_buffer` into `out_mesh`.
     ///
     /// Reads the header, optional metadata, connectivity, and attributes,
-    /// populating `out_mesh`. Point-cloud bitstreams are decoded into the
-    /// mesh's underlying point cloud (no faces).
+    /// replacing whatever `out_mesh` held. Point-cloud bitstreams are decoded
+    /// into the mesh's underlying point cloud (no faces).
+    ///
+    /// `out_mesh` need not be empty, and one mesh can serve a whole sequence of
+    /// decodes: it is cleared here, which keeps the face and attribute lists'
+    /// capacity. On error it is left cleared rather than half-written.
     ///
     /// # Errors
     ///
@@ -221,6 +225,11 @@ impl MeshDecoder {
     /// is unsupported, the geometry is malformed, or a required feature (such
     /// as `point_cloud_decode`) is disabled.
     pub fn decode(&mut self, in_buffer: &mut DecoderBuffer, out_mesh: &mut Mesh) -> Status {
+        // Every stage below adds to the mesh -- attributes are pushed, faces
+        // are written from index zero -- so a mesh that arrives holding a
+        // previous decode would come out carrying both.
+        out_mesh.clear();
+
         // 1. Decode Header
         self.decode_header(in_buffer)?;
 

@@ -19,6 +19,17 @@ impl PointCloud {
         Self::default()
     }
 
+    /// Drops every attribute, point and the metadata, keeping the allocated
+    /// capacity of the attribute list.
+    ///
+    /// What a decode does to the cloud it is given, so that decoding into one
+    /// that already holds geometry replaces it rather than adding to it.
+    pub fn clear(&mut self) {
+        self.attributes.clear();
+        self.num_points = 0;
+        self.metadata = None;
+    }
+
     /// Sets the number of logical points.
     pub fn set_num_points(&mut self, num_points: usize) {
         self.num_points = num_points;
