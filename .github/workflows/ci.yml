@@ -484,20 +484,24 @@ jobs:
       # leaving no test to fail, so DRACO_REQUIRE_CPP_BRIDGE makes that a build
       # error here.
       #
-      # `random_sweep` is the one comparison this job cannot make, and the
-      # reason is upstream's own defect, documented at the top of
-      # `parity_random_meshes.rs`: released 1.5.7 reads a `uint32` symbol
-      # through an `int32` parameter, so it prices a configuration no sane
-      # encoder would choose and then tries to allocate for it. Against the
-      # release the sweep reaches 11.5 GB and aborts on `std::bad_alloc`;
-      # against a checkout carrying the fix it passes in under a minute. It
-      # needs a patched reference, which is what pinning the tag exists to
-      # avoid, and so stays a comparison run by hand.
+      # SWEEP_ASSERTED_ONLY confines the randomized sweep to the region it makes
+      # claims about. It also explores 30-bit quantization, where both encoders
+      # overflow by construction and upstream misbehaves rather than merely
+      # disagreeing -- on a gcc build of the reference one of those cases has it
+      # ask for memory without bound, reaching 11.5 GB before `std::bad_alloc`
+      # takes the process down. The same case survives against an MSVC build, so
+      # this is the toolchain the reference was built with and not the version:
+      # released 1.5.7 and upstream `main` both do it.
+      #
+      # Dropping that exploration costs no assertion. What remains is every
+      # claim the sweep makes -- no panics, both encoders agreeing on what is
+      # encodable, and byte parity below 30 bits -- over 349 comparisons in 37s.
       - name: Compare against upstream Draco through the linked bridge
         env:
           DRACO_CPP_SOURCE_DIR: ${{ github.workspace }}/draco-cpp
           DRACO_CPP_BUILD_DIR: ${{ github.workspace }}/draco-cpp/build
           DRACO_REQUIRE_CPP_BRIDGE: '1'
+          SWEEP_ASSERTED_ONLY: '1'
         run: >-
           cargo test --manifest-path crates/Cargo.toml
-          -p draco-cpp-test-bridge --release -- --skip random_sweep
+          -p draco-cpp-test-bridge --release

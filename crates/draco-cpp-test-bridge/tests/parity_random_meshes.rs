@@ -365,6 +365,13 @@ fn random_sweep() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(400);
 
+    // The 30-bit region is explored, not asserted -- both encoders are in
+    // overflow there and upstream misbehaves rather than merely disagreeing.
+    // Exploring it needs a machine willing to absorb that; asserting the rest
+    // does not. `SWEEP_ASSERTED_ONLY` keeps the part that carries the
+    // expectations, which is what an unattended run can conclude anything from.
+    let asserted_only = std::env::var_os("SWEEP_ASSERTED_ONLY").is_some();
+
     // Each encode is wrapped in `catch_unwind`, and a panicking case is a
     // finding to be collected rather than a crash to be watched. Silence the
     // hook while the sweep runs so the transcript stays readable -- but restore
@@ -383,6 +390,11 @@ fn random_sweep() {
 
     for i in 0..iterations {
         let case = make_case(&mut rng);
+        // Draw every case either way, so the sequence a given seed produces is
+        // the same in both modes and a finding keeps its index.
+        if asserted_only && !case.is_asserted() {
+            continue;
+        }
         let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| encode_rust(&case)));
         let cpp = encode_cpp(&case);
         let rust = match caught {

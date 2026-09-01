@@ -113,16 +113,20 @@ tool-spawning tests return early, and the bridge's build script compiles its
 tests out of existence. Both report success. The two variables turn that silence
 into a failure, so the job cannot pass without actually having compared.
 
-**One comparison is not against the release, and cannot be.** The randomized
-sweep in `draco-cpp-test-bridge/tests/parity_random_meshes.rs` is measured
-against a C++ checkout carrying a fix for an upstream defect it found — released
-1.5.7 reads a `uint32` symbol through an `int32` parameter, prices a
-configuration no sane encoder would choose, and tries to allocate for it.
-Against the tag the sweep reaches 11.5 GB and aborts on `std::bad_alloc`;
-against the patched checkout it passes in under a minute. The parity job skips
-it by name, so it remains the one comparison that needs a reference built by
-hand — and any parity number quoted from it describes 1.5.7 plus that fix, not
-1.5.7.
+**The randomized sweep runs in CI over the region it makes claims about.** The
+sweep in `draco-cpp-test-bridge/tests/parity_random_meshes.rs` also explores
+30-bit quantization, where prediction residuals leave `int32` and both encoders
+are in overflow — a region it measures rather than asserts. Upstream there does
+not merely disagree: built with gcc, one of those cases has it ask for memory
+without bound, reaching 11.5 GB before `std::bad_alloc` ends the process. An
+MSVC build of the same sources survives it, so what decides this is the compiler
+the reference was built with, not its version — released 1.5.7 and upstream
+`main` carry identical entropy sources and both do it.
+
+`SWEEP_ASSERTED_ONLY` confines the sweep to the asserted region, and the parity
+job sets it. Nothing asserted is lost: 349 comparisons across grid, soup and
+degenerate meshes, in 37 seconds. Exploring the 30-bit region stays a local run,
+on a machine willing to absorb it.
 
 ### If this should become a refusal instead
 
