@@ -332,7 +332,7 @@ pub fn build_draco_mesh(render: &FbxRenderMesh) -> Mesh {
 ///
 /// Built one point per corner -- an explicit-mapping attribute would only
 /// reproduce the identity this default already is -- and welded through
-/// [`crate::mesh_finalize::finalize_mesh_returning_corner_map`], the same
+/// `mesh_finalize::finalize_mesh_returning_corner_map`, the same
 /// merge-bit-identical-values-then-merge-points pass the OBJ, PLY and glTF
 /// readers all end construction with. One fewer bespoke weld in the crate.
 pub fn build_draco_mesh_with_corner_map(render: &FbxRenderMesh) -> DracoMeshWithCornerMap {
