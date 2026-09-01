@@ -69,12 +69,61 @@ paths get outlined.
 
 ## PGO on a WASM target
 
-For `wasm32` builds PGO has two extra costs versus native. The profile has to
-be collected by running the bundle in a browser or a WASI runner rather than
-by a plain process exit, and the browser JIT already does its own dynamic
-profiling, which absorbs part of the win. The native figures above are an
-upper bound for the WASM case; the real yield is smaller and costs more to
-set up. Whether that tradeoff is worth it is a per-target build decision.
+**Step 1 above cannot be done at all on `wasm32`, and step 4 does not need to
+be.** `-Cprofile-generate` injects a dependency on `profiler_builtins`, and the
+Rust toolchain ships that crate for the native targets and for neither wasm
+one:
+
+```sh
+ls "$(rustc --print sysroot)/lib/rustlib/<target>/lib/" | grep profiler_builtins
+```
+
+`x86_64-pc-windows-msvc` and `x86_64-unknown-linux-gnu` return two files each;
+`wasm32-unknown-unknown` and `wasm32-wasip1` return nothing, and an
+instrumented build for either fails with `can't find crate for
+profiler_builtins`. `-Zbuild-std=std,panic_abort,profiler_builtins` on nightly
+does not rescue it: that crate's `build.rs` compiles the LLVM profile runtime
+from `src/llvm-project/compiler-rt`, which the `rust-src` component does not
+carry, so it panics with `profiler runtime source directory not found`. A full
+Rust checkout with submodules would, which is a different undertaking.
+
+`-Cprofile-use` needs no runtime, and that is the way through: **train on a
+native build and spend the profile on the wasm one.** It works today with the
+stock toolchain --
+
+```sh
+# 1. instrument and train natively, where the runtime exists
+RUSTFLAGS="-Cprofile-generate=$PROFDIR" cargo build --release --example encode_loop
+./encode_loop <mesh.obj> rust 5 30      # and decode_loop, and the payloads you care about
+llvm-profdata merge -o $PROFDIR/merged.profdata $PROFDIR/*.profraw
+
+# 2. spend it on the wasm build -- no profiler runtime involved
+CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS="-Cprofile-use=$PROFDIR/merged.profdata" \
+  cargo build --release --target wasm32-unknown-unknown -p drc-wasm
+```
+
+-- and it demonstrably attaches: the module comes out byte-different from the
+same source built without it, in a clean target directory.
+
+The remaining costs are the ones that make it a poor deal. The profile is a
+native build's, so the `968` functions the wasm module has and the native run
+never executed -- the bindings, the allocator shims, the panic paths -- carry
+no data (`-Cllvm-args=-pgo-warn-missing-function` counts them). And the browser
+JIT does its own dynamic profiling on top, absorbing part of whatever is left.
+
+### Measured here: nothing, for `2.8%` of the download
+
+On `drc-wasm`, against the shipped module and with `draco-core` already at
+`opt-level = 2`, eleven interleaved rounds in one process: encode `0.989x`
+with `6/11` rounds faster, decode `1.028x` with `2/11`. Both are inside their
+own spread and their signs are scattered, which is what samples of zero look
+like. The module grows `2.8%` of its gzip.
+
+So the answer for this repository is that PGO is *wireable* and is not worth
+wiring: the level (below) took `1.74-1.78x` from the same build for a manifest
+change, and a profile on top of it adds nothing measurable. Anyone revisiting
+this should train on a corpus this one did not -- five `testdata` meshes at
+speed 5, encode and decode -- before concluding it can never pay.
 
 **And for this repository, WASM is the whole of the question.** These crates
 are published as source and nothing here links them into a native binary --
