@@ -118,6 +118,19 @@ export const mat4 = {
     return out;
   },
 
+  /**
+   * Whether the transform turns a right-handed frame into a left-handed one.
+   *
+   * The sign of the upper 3x3 determinant, which is what a mirror inverts and
+   * no rotation, translation or positive scale can. A renderer needs it
+   * because mirroring reverses the winding of every triangle underneath.
+   */
+  mirrors(a: Numbers): boolean {
+    return a[0] * (a[5] * a[10] - a[6] * a[9])
+      - a[4] * (a[1] * a[10] - a[2] * a[9])
+      + a[8] * (a[1] * a[6] - a[2] * a[5]) < 0;
+  },
+
   transpose(out: Mat4, a: Numbers): Mat4 {
     if (out === a) {
       const a01 = a[1], a02 = a[2], a03 = a[3];

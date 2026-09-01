@@ -263,6 +263,10 @@ export interface RenderHost extends CameraHost, SceneGraphHost {
   _morphPlaceholderTexture?: WebGLTexture | null;
   /** The clamped point size, read from ALIASED_POINT_SIZE_RANGE once. */
   _pointSize?: number;
+  /** Whether the renderable being drawn is placed by a mirroring transform. */
+  _modelMirrors?: boolean;
+  /** Which winding GL currently calls front, so the call is made on change. */
+  _frontFaceCw?: boolean;
   _log(message: string, type?: string): void;
   _disposeGrid(): void;
 }
@@ -318,6 +322,9 @@ export function render(host: RenderHost) {
   gl.depthMask(true);
   gl.disable(gl.BLEND);
   gl.bindVertexArray(null);
+  // The passes that follow, and the backdrop the next frame starts with, are
+  // drawn from their own vertex order rather than a node's.
+  setFrontFace(host, false);
 
   resolveScene(gl, scene);
   drawGlare(host);
@@ -376,6 +383,7 @@ function prepareRenderable(host: RenderHost, renderable: Renderable) {
   // Normal matrix = inverse-transpose(model)
   mat4.invert(host._normalMatrix, host._model);
   mat4.transpose(host._normalMatrix, host._normalMatrix);
+  host._modelMirrors = mat4.mirrors(host._model);
   const skinIndex = renderable.skinIndex;
   const skin = skinIndex >= 0 ? host.scene!.skins[skinIndex] : null;
   return skin ? { skin, world: node.world, skinIndex } : null;
@@ -402,6 +410,28 @@ function jointMatricesFor(
     host.glResources!.jointMatrices?.[pose.skinIndex] ?? null,
     palette,
   );
+}
+
+/**
+ * Which winding counts as the front face for the draw about to happen.
+ *
+ * A mirroring transform reverses the winding of every triangle under it, so
+ * the side the vertex order calls front is the side the geometry calls back.
+ * glTF states the rule, and a scene built by mirroring one half -- a
+ * character's second eye, its other hand -- depends on it: without the flip
+ * a single-sided primitive culls the half that faces the camera, and a
+ * double-sided one shades with `gl_FrontFacing` inverted, which turns every
+ * normal away from the viewer. A smooth material then sits at grazing
+ * incidence over its whole surface, where Fresnel is total, and reflects the
+ * environment like a mirror instead of showing its own colour.
+ *
+ * Per-instance transforms are outside this: one draw has one winding, and
+ * `EXT_mesh_gpu_instancing` can mirror an instance on its own.
+ */
+function setFrontFace(host: RenderHost, mirrored: boolean) {
+  if (host._frontFaceCw === mirrored) return;
+  host._frontFaceCw = mirrored;
+  host.gl.frontFace(mirrored ? host.gl.CW : host.gl.CCW);
 }
 
 /**
@@ -444,6 +474,11 @@ function drawPrimitive(
 
   if (material?.doubleSided) gl.disable(gl.CULL_FACE);
   else gl.enable(gl.CULL_FACE);
+  // A skinned primitive is placed by its joint palette, which carries the
+  // inverse of this very matrix: whatever the node does, mirror included,
+  // cancels before a vertex sees it. Only what the joints do could reverse
+  // such a mesh, and one draw has one winding for all of them.
+  setFrontFace(host, host._modelMirrors === true && !usesSkin);
 
   if (material?.alphaMode === 'BLEND') {
     gl.enable(gl.BLEND);

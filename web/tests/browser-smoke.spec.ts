@@ -3395,6 +3395,59 @@ test('EXT_mesh_gpu_instancing draws the mesh once per instance transform', async
   expect(Math.abs((samples.centres[0] + samples.centres[3]) / 2 - samples.width / 2)).toBeLessThan(4);
 });
 
+test('a mirrored node keeps the face that points at the camera', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  // A negative determinant reverses the winding of everything under it, which
+  // glTF states and a scene built by mirroring one half relies on: a
+  // character's second eye, its other hand. The fixture is the smallest case —
+  // one quad, one plain node, one mirrored — and single-sided, so a renderer
+  // that keeps its front-face rule culls the mirrored copy outright instead of
+  // merely lighting it from behind.
+  await page.locator('#file-input').setInputFiles(
+    path.join(repoRoot, 'testdata', 'MirroredQuads.gltf'),
+  );
+  await expect(page.locator('#console')).toContainText('Preview ready');
+
+  const samples = await page.evaluate(async () => {
+    const { state } = await import('/app/state.js' as string);
+    const viewer = state.viewer;
+    viewer.showGrid = false;
+    viewer.camera.target.set([0, 0, 0]);
+    viewer.camera.distance = 6;
+    viewer.camera.azimuth = 0;
+    viewer.camera.elevation = 0;
+    viewer._render();
+    const width = viewer.gl.drawingBufferWidth;
+    const height = viewer.gl.drawingBufferHeight;
+    const row = new Uint8Array(width * 4);
+    viewer.gl.readPixels(0, Math.floor(height / 2), width, 1, viewer.gl.RGBA, viewer.gl.UNSIGNED_BYTE, row);
+    // The quads emit green, so a covered column is one where green leads.
+    const covered: { start: number; end: number }[] = [];
+    let run: { start: number } | null = null;
+    for (let x = 0; x < width; x += 1) {
+      const green = row[x * 4 + 1] > row[x * 4] + 20;
+      if (green && !run) run = { start: x };
+      if (!green && run) {
+        covered.push({ ...run, end: x });
+        run = null;
+      }
+    }
+    if (run) covered.push({ ...run, end: width });
+    return {
+      bands: covered.map((band) => band.end - band.start),
+      centres: covered.map((band) => (band.start + band.end) / 2),
+      width,
+    };
+  });
+
+  // Both copies drawn, the same size, and placed symmetrically about the
+  // centre: the mirrored one is what goes missing when the winding is wrong.
+  expect(samples.bands).toHaveLength(2);
+  expect(Math.abs(samples.bands[0] - samples.bands[1])).toBeLessThan(samples.bands[0] * 0.15);
+  expect(Math.abs((samples.centres[0] + samples.centres[1]) / 2 - samples.width / 2)).toBeLessThan(4);
+});
+
 test('KHR_lights_punctual lights the scene from the node that places it', async ({ page }) => {
   await page.goto('/index.html');
   // A light is the first thing the portable document carries that is neither

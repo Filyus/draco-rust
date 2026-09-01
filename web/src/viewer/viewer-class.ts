@@ -166,6 +166,8 @@ export class Viewer {
   declare _morphPlaceholderTexture?: WebGLTexture | null;
   declare _snapshotPlaceholder?: WebGLTexture | null;
   declare _sceneTargetHdr?: boolean;
+  declare _modelMirrors?: boolean;
+  declare _frontFaceCw?: boolean;
   declare bloomStrength?: number;
   declare supersample?: boolean;
   declare exposure?: number;
