@@ -76,6 +76,21 @@ profiling, which absorbs part of the win. The native figures above are an
 upper bound for the WASM case; the real yield is smaller and costs more to
 set up. Whether that tradeoff is worth it is a per-target build decision.
 
+**And for this repository, WASM is the whole of the question.** These crates
+are published as source and nothing here links them into a native binary --
+the only `main.rs` files are `web/build-tool` and `web/dev-server`, neither of
+which is a codec, and the benchmark harnesses are dev tooling. The binaries
+this repository ships are the `*-wasm` modules, which consume `draco-core`,
+`draco-io` and `draco-gltf` directly. So "apply PGO here" means applying it to
+those, and the paragraph above is the applicable one.
+
+The figures above are also measured at `-Copt-level=3`, and `web/Cargo.toml`
+builds release at `opt-level = "z"` with `panic = "abort"` and `strip`. That
+is a deliberate size choice for a module downloaded per page load, and it
+overlaps part of what PGO would buy -- cold-path outlining -- while removing
+the speed baseline the `9%`/`12%` was measured against. Neither figure carries
+over to this target without being re-taken on it.
+
 ## See also
 
 [`PERFORMANCE.md`](PERFORMANCE.md) covers how to benchmark and profile

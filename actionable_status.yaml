@@ -37,17 +37,22 @@ last_reviewed: "2026-09-01"
 
 items:
   - id: pgo-two-pass-build
-    area: draco-io
+    area: web
     priority: low
     status: open
-    summary: "Profile-guided optimisation is documented and measured at 9-12% but has never been wired into a build."
+    summary: "Profile-guided optimisation is documented and measured at 9-12%, and the only build here it could be applied to is the WASM one, where neither figure holds."
     evidence:
       - path: "PGO.md"
-        note: "Covers the two-pass build, how it relates to a source library rather than a shipped binary, training-corpus guidance and the WASM-target tradeoff. Nothing consumes it."
-    impact: "Larger than any individual source change still on the table after profiling rounds 2-6, and the only remaining lever that is not a code change at all -- but it is a build-level decision: it needs a training corpus that represents real input, and it is a poor fit for the WASM target, so it is the maintainer's call rather than an edit."
+        note: "The two-pass build, the training-corpus guidance, and why a source library cannot enable PGO for anyone: it is a flag on whoever compiles the final binary, and nothing is done inside the crates."
+      - path: "web/Cargo.toml"
+        note: "The seven *-wasm modules are the only binaries this repository ships, and they consume draco-core, draco-io and draco-gltf directly. Release there is opt-level = \"z\", panic = abort, strip -- a size build, where the 9-12% measured at -Copt-level=3 has neither its baseline nor its whole mechanism, cold-path outlining being part of what \"z\" already does."
+    impact: "Not a code change in any crate, and not draco-io's: a downstream consumer's native binary would gain the documented amount, and giving it to them is what PGO.md already does. What is undone is only the in-repo half, which is the WASM half."
     next_steps:
-      - "Decide whether the benefit is claimed by this repo's own builds or only documented for downstream consumers -- the crates are published as source, so the win reaches users only if they opt in."
-      - "If claimed here, pick the training corpus first: PGO trained on the wrong stream shape can lose, and the C++-default fixtures and this crate's own encodes profile differently."
+      - "If it is taken up at all, take it on web: an instrumented wasm build, a profile collected in a browser or a WASI runner, and a re-measurement on that target -- the native numbers do not carry to opt-level = \"z\"."
+      - "Decide the size budget first. web/README records what each module weighs, and PGO trades size for layout in the direction \"z\" was chosen to refuse."
+      - "Pick the training corpus before the machinery: meshes and point clouds, the attribute types actually used, a spread of speeds. A profile trained on one shape can lose on another."
+    refuted:
+      - "That this belongs to draco-io. PGO is a flag on the final binary, and there is no native binary here to set it on -- the only main.rs files are web/build-tool and web/dev-server, neither a codec, and the benchmark harnesses are dev tooling."
 
   - id: decoder-buffer-reuse-across-decodes
     area: draco-core
