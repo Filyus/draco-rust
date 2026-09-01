@@ -101,18 +101,17 @@ attribute should know the compressor will pay for it.
 | `test_read_component_as_i64_reads_a_uint32_position_as_the_portable_int32` | [`draco-core/src/portable_attribute.rs`](crates/draco-core/src/portable_attribute.rs) | The parent reader's `Uint32` arm alone, without going through a full encode. |
 | `cpp_decodes_a_uint32_attribute_above_i32_max_the_same_way` | [`draco-cpp-test-bridge/tests/parity_wide_uint32_attributes.rs`](crates/draco-cpp-test-bridge/tests/parity_wide_uint32_attributes.rs) | Upstream C++ Draco disagreeing with this decoder on the decoded bytes. |
 
-The first three run on ordinary CI. The fourth links the C++ library through
-`draco-cpp-test-bridge`, which needs a build of it (`DRACO_CPP_SOURCE_DIR`,
-`DRACO_CPP_BUILD_DIR`) and **compiles itself out without one**, so a green CI run
-says nothing about it. It was last run by hand against C++ Draco 1.5.7 on
-2026-08-30 and passed. If you touch anything on this page, run it again and
-update that date — a test that was never built reports success.
+All four run on CI. The first three need nothing outside this repository; the
+fourth links the C++ library through `draco-cpp-test-bridge`, so it runs in the
+`draco C++ parity` job, which builds Draco at the 1.5.7 tag and compares against
+it both ways — spawning its command line tools, and linking its library.
 
-The comparisons that spawn the upstream *command line* tools rather than linking
-its library are no longer in that position: the `draco C++ parity` job builds
-Draco at the 1.5.7 tag and runs them with `DRACO_REQUIRE_CPP_TOOLS` set, which
-makes a missing tool fail the run instead of skipping it. Only the bridge above
-still depends on someone remembering.
+That job sets `DRACO_REQUIRE_CPP_TOOLS` and `DRACO_REQUIRE_CPP_BRIDGE`, and the
+reason is worth keeping in mind before trusting any parity result. Every one of
+these comparisons is written to stand down when it cannot find a C++ Draco: the
+tool-spawning tests return early, and the bridge's build script compiles its
+tests out of existence. Both report success. The two variables turn that silence
+into a failure, so the job cannot pass without actually having compared.
 
 ### If this should become a refusal instead
 

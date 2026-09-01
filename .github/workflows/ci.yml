@@ -459,11 +459,11 @@ jobs:
           ref: '1.5.7'
           path: draco-cpp
 
-      - name: Build the upstream encoder and decoder
+      - name: Build the upstream encoder, decoder and library
         run: >-
           cmake -S draco-cpp -B draco-cpp/build -DCMAKE_BUILD_TYPE=Release &&
           cmake --build draco-cpp/build --parallel
-          --target draco_decoder draco_encoder
+          --target draco_decoder draco_encoder draco
 
       - name: Compare against upstream Draco
         env:
@@ -478,3 +478,16 @@ jobs:
           --test rust_cpp_interop_test
           --test edgebreaker_attribute_seams_test
           --test encoder_diagnostic_test
+
+      # The comparisons that link upstream's library rather than spawning its
+      # tools. Its build script compiles them out when it cannot find a build,
+      # leaving no test to fail, so DRACO_REQUIRE_CPP_BRIDGE makes that a build
+      # error here.
+      - name: Compare against upstream Draco through the linked bridge
+        env:
+          DRACO_CPP_SOURCE_DIR: ${{ github.workspace }}/draco-cpp
+          DRACO_CPP_BUILD_DIR: ${{ github.workspace }}/draco-cpp/build
+          DRACO_REQUIRE_CPP_BRIDGE: '1'
+        run: >-
+          cargo test --manifest-path crates/Cargo.toml
+          -p draco-cpp-test-bridge --release

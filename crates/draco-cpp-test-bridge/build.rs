@@ -16,8 +16,18 @@ fn main() {
 
     // Paths to the original Draco checkout and pre-built C++ libraries. These
     // can live outside the Rust workspace for local interop tests.
+    // The headers are included as `draco/...`, so what this needs is the
+    // directory holding `draco/`. Accept either that or the checkout above it,
+    // which is the natural thing to point at and differs only by one segment.
     let draco_src = env::var_os("DRACO_CPP_SOURCE_DIR")
         .map(PathBuf::from)
+        .map(|dir| {
+            if dir.join("draco").is_dir() {
+                dir
+            } else {
+                dir.join("src")
+            }
+        })
         .unwrap_or_else(|| repo_root.join("src"));
     let draco_build = env::var_os("DRACO_CPP_BUILD_DIR")
         .map(PathBuf::from)
@@ -25,26 +35,38 @@ fn main() {
     println!("cargo:rerun-if-env-changed=DRACO_CPP_SOURCE_DIR");
     println!("cargo:rerun-if-env-changed=DRACO_CPP_BUILD_DIR");
 
-    // Two CMake layouts are in the wild. Draco used to place its libraries
-    // under `src/draco/`; current upstream puts them at the build root. Probe
-    // for the one that exists rather than requiring a particular Draco vintage,
-    // so a checkout can be pointed at either.
-    let (lib_path, component_root) = {
-        let nested = draco_build.join("src/draco/Release");
-        if nested.exists() {
-            (nested, draco_build.join("src/draco"))
-        } else {
-            (draco_build.join("Release"), draco_build.clone())
-        }
-    };
-    if !lib_path.exists() {
+    // Several CMake layouts are in the wild and a checkout may be pointed at
+    // any of them, so probe for the library itself rather than for a directory
+    // that a particular Draco vintage or generator would have made. A
+    // multi-configuration generator puts it under the configuration name; a
+    // single-configuration one at the root; older Draco nested either under
+    // `src/draco`. Probe in that order and take the first that holds a library.
+    println!("cargo:rerun-if-env-changed=DRACO_REQUIRE_CPP_BRIDGE");
+    let roots = [draco_build.join("src/draco"), draco_build.clone()];
+    let found = roots.iter().find_map(|root| {
+        [root.join("Release"), root.join("Debug"), root.clone()]
+            .into_iter()
+            .find(|dir| dir.join("draco.lib").exists() || dir.join("libdraco.a").exists())
+            .map(|dir| (dir, root.clone()))
+    });
+    let Some((lib_path, component_root)) = found else {
+        // Disabling compiles the tests out, so they neither run nor fail and
+        // the build stays green. That is fine on a machine with no C++ Draco
+        // and useless anywhere the comparisons are the point, which is what
+        // this variable is for.
+        assert!(
+            env::var_os("DRACO_REQUIRE_CPP_BRIDGE").is_none(),
+            "DRACO_REQUIRE_CPP_BRIDGE is set and no C++ Draco library was found under {}. \
+Point DRACO_CPP_BUILD_DIR at a build of it.",
+            draco_build.display()
+        );
         println!(
-            "cargo:warning=C++ Draco library not found at {:?}. C++ test bridge will be disabled.",
-            lib_path
+            "cargo:warning=C++ Draco library not found under {:?}. C++ test bridge will be disabled.",
+            draco_build
         );
         println!("cargo:rustc-cfg=cpp_test_bridge_disabled");
         return;
-    }
+    };
 
     // Compile the private C++ test bridge.
     let mut build = cc::Build::new();
