@@ -26,3 +26,41 @@ lto = true               # Enable Link-Time Optimization
 codegen-units = 1        # Reduce parallelism for better optimization
 panic = "abort"          # Smaller panic handling
 strip = true             # Strip symbols from binary
+
+# The codec is the exception, and it is worth 1.7x. At "z" there is no
+# unrolling, no auto-vectorisation and almost no inlining, and `draco-core` is
+# a port of C++ with ordinary loops that all three transform well -- so the
+# level that is right for glue code is wrong for it. Measured on `drc-wasm`,
+# arms alternating in one process, all four levels producing byte-identical
+# streams: encode 1.78x and decode 1.74x against "z" on a 257x257 grid, 1.70x
+# decoding a real `bunny_cpp_standard.drc`, faster in every one of 11 rounds.
+#
+# It costs 24.9% of the gzip a browser downloads for that module, which is the
+# trade being taken and the reason this is one package rather than the profile:
+# raising the whole thing would charge the glue and the bindings for it too.
+# "s" was the other candidate at +8.7% gzip for 1.4-1.5x; the level above, 3,
+# adds 2.3 points of gzip for nothing measurable.
+#
+# Do not copy this to a crate that has been *written* for "z". zlite is that
+# case and reads monotonically slower as the level rises, its widening being
+# hand-written; `draco-core` is the opposite case. Anything moved here needs
+# re-measuring, not inheriting.
+[profile.release.package.draco-core]
+opt-level = 2
+
+# The readers and writers, measured the same way and answering the same. Per
+# module, against "z", every arm writing identical bytes and 7/7 rounds unless
+# noted: STL 2.6x writing and 2.9x reading, PLY 2.2x and 1.7x, FBX 1.1x (6/7)
+# and 1.4x, OBJ nothing.
+#
+# OBJ is the reason that last figure can be believed: its module comes out
+# byte-identical at all four levels, so its 0.996-1.045x with 2-4/7 signs is
+# this measurement's own floor, printed by a case that cannot have moved.
+#
+# The size is bought per module rather than evenly: STL pays 0.6% of its gzip
+# for 2.6-2.9x, PLY 6.9% for 1.7-2.2x, FBX 13.7% for 1.4x on the read, and OBJ
+# nothing for nothing. FBX is the one worth revisiting if the budget tightens;
+# STL is nearly free. 3 was measured too and is 2 within the floor.
+[profile.release.package.draco-io]
+opt-level = 2
+

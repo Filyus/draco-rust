@@ -85,11 +85,27 @@ this repository ships are the `*-wasm` modules, which consume `draco-core`,
 those, and the paragraph above is the applicable one.
 
 The figures above are also measured at `-Copt-level=3`, and `web/Cargo.toml`
-builds release at `opt-level = "z"` with `panic = "abort"` and `strip`. That
-is a deliberate size choice for a module downloaded per page load, and it
-overlaps part of what PGO would buy -- cold-path outlining -- while removing
-the speed baseline the `9%`/`12%` was measured against. Neither figure carries
-over to this target without being re-taken on it.
+builds release at `opt-level = "z"` with `panic = "abort"` and `strip` -- for
+everything except `draco-core`, which is at `2`. That size choice is
+deliberate for a module downloaded per page load, and it overlaps part of what
+PGO would buy: cold-path outlining is what `"z"` already does. Neither figure
+carries over to this target without being re-taken on it.
+
+### The level itself was worth more than PGO claims to be
+
+Before reaching for a profile, check the level. `draco-core` was on `"z"` with
+the rest of the module until it was measured, and moving that one package to
+`opt-level = 2` is worth **`1.78x` on encode and `1.74x` on decode** in
+`drc-wasm` -- larger than the `9%`/`12%` PGO offers natively, from a
+three-line manifest change and no profile to collect. It costs `24.7%` of that
+module's gzip and between nothing and `6.9%` of the others'.
+
+The knob is per package on purpose. `"z"` remains right for the bindings and
+the glue, which are cold and mostly size; it is wrong for a codec whose loops
+unroll and vectorise. A crate *written* for `"z"` behaves the other way and
+gets slower as the level rises, so nothing here transfers by assumption --
+`[profile.release.package.<crate>]` plus a measurement is the pattern, not the
+particular level.
 
 ## See also
 

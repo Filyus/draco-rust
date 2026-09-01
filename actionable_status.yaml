@@ -45,11 +45,11 @@ items:
       - path: "PGO.md"
         note: "The two-pass build, the training-corpus guidance, and why a source library cannot enable PGO for anyone: it is a flag on whoever compiles the final binary, and nothing is done inside the crates."
       - path: "web/Cargo.toml"
-        note: "The seven *-wasm modules are the only binaries this repository ships, and they consume draco-core, draco-io and draco-gltf directly. Release there is opt-level = \"z\", panic = abort, strip -- a size build, where the 9-12% measured at -Copt-level=3 has neither its baseline nor its whole mechanism, cold-path outlining being part of what \"z\" already does."
-    impact: "Not a code change in any crate, and not draco-io's: a downstream consumer's native binary would gain the documented amount, and giving it to them is what PGO.md already does. What is undone is only the in-repo half, which is the WASM half."
+        note: "The seven *-wasm modules are the only binaries this repository ships, and they consume draco-core, draco-io and draco-gltf directly. Release there is a size build -- panic = abort, strip, opt-level \"z\" for everything but draco-core -- where the 9-12% measured at -Copt-level=3 has neither its baseline nor its whole mechanism, cold-path outlining being part of what \"z\" already does."
+    impact: "Not a code change in any crate, and not draco-io's: a downstream consumer's native binary would gain the documented amount, and giving it to them is what PGO.md already does. What is undone is only the in-repo half, which is the WASM half -- and the cheaper lever there was taken first: raising draco-core's own opt-level to 2 is worth 1.74-1.78x, more than PGO claims natively, for a manifest change and no profile to collect."
     next_steps:
-      - "If it is taken up at all, take it on web: an instrumented wasm build, a profile collected in a browser or a WASI runner, and a re-measurement on that target -- the native numbers do not carry to opt-level = \"z\"."
-      - "Decide the size budget first. web/README records what each module weighs, and PGO trades size for layout in the direction \"z\" was chosen to refuse."
+      - "If it is taken up at all, take it on web: an instrumented wasm build, a profile collected in a browser or a WASI runner, and a re-measurement on that target against the current profile, not against \"z\" -- the codec has already moved off it."
+      - "Decide the size budget first, and note that the opt-level round already spent 24.7% of drc-wasm's gzip. web/wasm-sizes.md records what each module weighs."
       - "Pick the training corpus before the machinery: meshes and point clouds, the attribute types actually used, a spread of speeds. A profile trained on one shape can lose on another."
     refuted:
       - "That this belongs to draco-io. PGO is a flag on the final binary, and there is no native binary here to set it on -- the only main.rs files are web/build-tool and web/dev-server, neither a codec, and the benchmark harnesses are dev tooling."
