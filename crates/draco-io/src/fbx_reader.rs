@@ -968,7 +968,7 @@ fn morph_animation_targets(
 }
 
 /// FBX object-to-object connection type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum ConnectionKind {
     /// `OO` object-to-object connection.
     Oo,
@@ -1028,6 +1028,14 @@ impl<'a> FbxObjectIndex<'a> {
         // Keyed by whichever spelling identifies objects in this document:
         // an `i64` id in 7000 and later, an interned name key before that.
         let mut names = NameInterner::default();
+        // A connection is a relation, so stating it twice states it once. The
+        // passes over this list walk it per object and nest -- a geometry's
+        // BlendShapes, their channels, their shapes -- so a repeated edge does
+        // not cost one extra target but multiplies the whole subtree under it,
+        // and a document may repeat an edge as often as it has room to spell
+        // it. Deduplicating here bounds every consumer at once.
+        let mut seen: std::collections::HashSet<(ConnectionKind, i64, i64, Option<String>)> =
+            std::collections::HashSet::new();
 
         for node in nodes {
             if node.name == "Objects" {
@@ -1064,7 +1072,15 @@ impl<'a> FbxObjectIndex<'a> {
                 index.connections.extend(
                     node.children
                         .iter()
-                        .filter_map(|child| FbxConnection::from_node(child, &mut names)),
+                        .filter_map(|child| FbxConnection::from_node(child, &mut names))
+                        .filter(|connection| {
+                            seen.insert((
+                                connection.kind,
+                                connection.child,
+                                connection.parent,
+                                connection.property.clone(),
+                            ))
+                        }),
                 );
             }
         }

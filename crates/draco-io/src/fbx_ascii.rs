@@ -645,6 +645,68 @@ mod shared_path_regressions {
         assert!(deepest <= 4, "cycle produced a chain {deepest} deep");
     }
 
+    /// Stating a connection twice states it once. Each pass over the
+    /// connection list walks it per object and the passes nest, so a repeated
+    /// edge does not add one duplicate but multiplies everything hanging under
+    /// it: a document that spells the geometry, its BlendShape, the channel
+    /// and the shape twice apiece decodes to sixteen morph targets where it
+    /// names one, and the writer then spells all sixteen. The corpus unit that
+    /// found this grew 3.6 KB of input into a 7.4 MB rewrite.
+    #[test]
+    fn a_connection_stated_twice_does_not_multiply_the_scene() {
+        let decoded = scene(
+            "FBXHeaderExtension:  {
+	FBXVersion: 7500
+}
+             Objects:  {
+             	Geometry: 100, \"Geometry::Tri\", \"Mesh\" {
+             		Vertices: *9 {
+			a: 0,0,0,1,0,0,0,1,0
+		}
+             		PolygonVertexIndex: *3 {
+			a: 0,1,-3
+		}
+	}
+             	Model: 200, \"Model::Cube\", \"Mesh\" {
+	}
+             	Deformer: 300, \"Deformer::Shapes\", \"BlendShape\" {
+	}
+             	Deformer: 400, \"SubDeformer::Wide\", \"BlendShapeChannel\" {
+             		DeformPercent: 0
+             		FullWeights: *1 {
+			a: 100
+		}
+	}
+             	Geometry: 500, \"Geometry::Wide\", \"Shape\" {
+             		Indexes: *1 {
+			a: 0
+		}
+             		Vertices: *3 {
+			a: 1,0,0
+		}
+	}
+}
+             Connections:  {
+             	C: \"OO\",100,200
+	C: \"OO\",100,200
+             	C: \"OO\",200,0
+	C: \"OO\",200,0
+             	C: \"OO\",300,100
+	C: \"OO\",300,100
+             	C: \"OO\",400,300
+	C: \"OO\",400,300
+             	C: \"OO\",500,400
+	C: \"OO\",500,400
+}
+",
+        );
+        assert_eq!(decoded.root_nodes.len(), 1);
+        let root = &decoded.root_nodes[0];
+        assert!(root.children.is_empty());
+        assert_eq!(root.mesh_instances.len(), 1);
+        assert_eq!(root.mesh_instances[0].morph_targets.len(), 1);
+    }
+
     /// The same bound stops a chain that is deep rather than circular, and it
     /// used to stop it in silence. What the caller saw instead was the
     /// consequence: a 340-bone rig came back missing its tail, and every skin
