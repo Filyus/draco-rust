@@ -5,14 +5,16 @@ run-name: "pages: deploy converter"
 # import, inspect, compress, view, export -- and until now it existed solely as
 # a local build. `Release: WASM assets` publishes the modules for consumers;
 # this publishes the app that uses them.
+#
+# Deploying is gated on the checks rather than on the push, so the site is only
+# ever built from a commit `Rust CI` and `Fuzz` have both accepted. Either of
+# them completing fires this workflow; the gate below decides whether that is
+# yet enough.
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/pages.yml"
-      - "crates/**"
-      - "web/**"
+  workflow_run:
+    workflows: ["Rust CI", "Fuzz"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -23,18 +25,132 @@ permissions:
   contents: read
   pages: write
   id-token: write
+  # The gate reads the sibling workflow's runs, and the environment's
+  # deployment history to learn what is actually published.
+  actions: read
+  deployments: read
 
 jobs:
+  # Two questions, and the second is the one that is easy to get wrong.
+  #
+  # Are both checks happy? A workflow that produced no run for this commit is
+  # not pending -- `Fuzz` filters pushes by path, so a web-only change never
+  # starts it, and waiting for it would wait forever. Absent counts as
+  # satisfied; only a run that exists and either has not finished or did not
+  # succeed holds the deploy back.
+  #
+  # Is there anything to deploy? `workflow_run` carries no path filter, so the
+  # one this workflow used to have is rebuilt here -- against the last commit
+  # actually deployed rather than against this commit's parent, so a push of
+  # several commits cannot walk past a change the way a one-commit diff would.
+  gate:
+    name: gate
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    outputs:
+      deploy: ${{ steps.decide.outputs.deploy }}
+      sha: ${{ steps.decide.outputs.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Decide whether to deploy
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          WORKFLOW: ${{ github.workflow }}
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            echo "Dispatched by hand; deploying $SHA."
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          for workflow in "Rust CI" "Fuzz"; do
+            states=$(gh run list --repo "$REPO" --commit "$SHA" --workflow "$workflow" --json status,conclusion --jq '.[] | "\(.status)/\(.conclusion // "-")"')
+            if [ -z "$states" ]; then
+              echo "$workflow: no run for this commit -- filtered out, not pending."
+              continue
+            fi
+            if echo "$states" | grep -qv '^completed/'; then
+              echo "$workflow: still running. Its completion will fire this again."
+              echo "deploy=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if echo "$states" | grep -qv '^completed/success$'; then
+              echo "$workflow: did not succeed ($states). Not deploying."
+              echo "deploy=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "$workflow: success."
+          done
+
+          # Ask what was deployed, not what ran. Now that a run can legitimately
+          # end without deploying, its own history would answer the wrong
+          # question -- the first such run would become the baseline and the
+          # site would never move again.
+          # A deployment record exists whether or not it succeeded, so take the
+          # most recent one that actually did. Otherwise a failed deploy would
+          # become the baseline and no later push would ever retry it.
+          deployed=""
+          for id in $(gh api "repos/$REPO/deployments?environment=github-pages&per_page=10" --jq '.[].id'); do
+            state=$(gh api "repos/$REPO/deployments/$id/statuses?per_page=1" --jq '.[0].state // ""')
+            if [ "$state" = "success" ]; then
+              deployed=$(gh api "repos/$REPO/deployments/$id" --jq '.sha')
+              break
+            fi
+          done
+          if [ -z "$deployed" ] || ! git cat-file -e "${deployed}^{commit}" 2>/dev/null; then
+            echo "No previous deployment to compare against; deploying."
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Out-of-order arrivals are possible -- two pushes in flight, one
+          # cancelled by the concurrency group -- and publishing an ancestor
+          # over its own descendant would quietly roll the site back.
+          if git merge-base --is-ancestor "$SHA" "$deployed"; then
+            echo "$deployed is already deployed and contains $SHA. Nothing to do."
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          changed=$(git diff --name-only "$deployed" "$SHA" -- .github/workflows/pages.yml crates web)
+          if [ -z "$changed" ]; then
+            echo "Nothing under crates/, web/ or this workflow changed since $deployed."
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Changed since $deployed:"
+          echo "$changed"
+          echo "deploy=true" >> "$GITHUB_OUTPUT"
+
   deploy:
     name: deploy
     runs-on: ubuntu-latest
+    needs: gate
+    if: needs.gate.outputs.deploy == 'true'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
+      # `workflow_run` starts this workflow from the default branch, so the
+      # commit to build has to be named rather than assumed.
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
 
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
