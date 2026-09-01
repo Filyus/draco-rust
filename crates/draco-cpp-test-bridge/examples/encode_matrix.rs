@@ -20,7 +20,11 @@
 //! table is built once per encode, so this is speed-independent and prints
 //! one row per payload). `ALLOC=1` adds allocations and bytes per encode.
 //! `SAMPLE_ALLOC=1` additionally prints a backtrace per allocation of 64 KB
-//! or more, from a single encode of the first payload.
+//! or more, from a single encode of the first payload;
+//! `SAMPLE_ALLOC_MIN`/`SAMPLE_ALLOC_MAX` move that window -- `MIN=0` reaches
+//! the small allocations a per-call cost is made of -- and
+//! `SAMPLE_ALLOC_LIMIT` raises the 64-backtrace budget, which a fixed per-call
+//! count wants above that count so the reading covers all of it.
 //!
 //! The counting allocator is always installed -- one relaxed atomic per
 //! allocation, far below this benchmark's spread -- but capturing backtraces
@@ -261,6 +265,13 @@ CornerTable array loads, one encode at speed {}
         }
         if let Ok(max) = std::env::var("SAMPLE_ALLOC_MAX") {
             counting::SAMPLE_MAX.store(max.parse().expect("SAMPLE_ALLOC_MAX"), Relaxed);
+        }
+        // The default keeps a per-element allocation from capturing one
+        // backtrace per element. A fixed per-call count is the opposite case:
+        // it is bounded and the whole of it is the question, so raise this to
+        // above that count rather than reading the first 64 of it.
+        if let Ok(limit) = std::env::var("SAMPLE_ALLOC_LIMIT") {
+            counting::SAMPLE_LIMIT.store(limit.parse().expect("SAMPLE_ALLOC_LIMIT"), Relaxed);
         }
         counting::reset();
         counting::SAMPLING.store(true, Relaxed);

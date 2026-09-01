@@ -7,9 +7,16 @@
 //! C++ side goes through `profile_cpp_encode`, which is position-only -- pass
 //! a position-only mesh when comparing sides.
 //!
+//! `REUSE_ENCODER=1` keeps one `MeshEncoder` across the loop instead of
+//! building one per iteration, which is the difference between a converter
+//! walking a glTF's primitives and a caller encoding a single mesh. On a small
+//! mesh most of the encode is per-call cost, so which of the two is being
+//! measured decides the number.
+//!
 //! ```text
 //! cargo run --release --example encode_loop -- <mesh.obj> cpp|rust <speed> <iters>
 //! SAMPLE_ALLOC=1 cargo run --release --example encode_loop -- <mesh.obj> rust 5 1
+//! REUSE_ENCODER=1 cargo run --release --example encode_loop -- <mesh.obj> rust 5 20000
 //! ```
 use draco_core::encoder_buffer::EncoderBuffer;
 use draco_core::mesh_encoder::MeshEncoder;
@@ -28,9 +35,18 @@ static ALLOC: counting::Counting<std::alloc::System> = counting::Counting(std::a
 /// a *separate* timer and times `EncodeMeshToBuffer` alone. Timing the clone
 /// with the encode would compare a Rust encode plus a 1.2 MB copy against a
 /// C++ encode without one. Returns `(bytes, setup_us, encode_us)`.
-fn rust_encode(mesh: &draco_core::mesh::Mesh, options: &EncoderOptions) -> (Vec<u8>, f64, f64) {
+///
+/// The `encoder` is passed in rather than made here so the caller decides
+/// whether each iteration gets a fresh one. Both are real callers: a converter
+/// walking a glTF's primitives can keep one encoder across all of them, and
+/// what that is worth is a property of `reset_derived_state` -- which `clear`s
+/// some buffers and drops others -- rather than something the API documents.
+fn rust_encode(
+    encoder: &mut MeshEncoder,
+    mesh: &draco_core::mesh::Mesh,
+    options: &EncoderOptions,
+) -> (Vec<u8>, f64, f64) {
     let setup_start = std::time::Instant::now();
-    let mut encoder = MeshEncoder::new();
     encoder.set_mesh(mesh.clone());
     let mut buffer = EncoderBuffer::new();
     let setup_us = setup_start.elapsed().as_secs_f64() * 1e6;
@@ -88,7 +104,7 @@ fn main() {
                 use std::sync::atomic::Ordering::Relaxed;
                 counting::reset();
                 counting::SAMPLING.store(true, Relaxed);
-                let (encoded, _, _) = rust_encode(&mesh, &options);
+                let (encoded, _, _) = rust_encode(&mut MeshEncoder::new(), &mesh, &options);
                 counting::SAMPLING.store(false, Relaxed);
                 let samples = counting::SAMPLES.lock().unwrap().clone();
                 eprintln!(
@@ -103,12 +119,26 @@ fn main() {
                 return;
             }
             use std::sync::atomic::Ordering::Relaxed;
+            // `REUSE_ENCODER=1` keeps one encoder across the loop, which is the
+            // converter walking a glTF's primitives; the default builds a fresh
+            // one per iteration, which is the caller encoding one mesh. The two
+            // differ only in what `reset_derived_state` manages to retain.
+            let reuse = std::env::var("REUSE_ENCODER").is_ok();
+            let mut kept = reuse.then(MeshEncoder::new);
             counting::reset();
             let mut size = 0;
             let mut total_setup = 0.0;
             let mut total_encode = 0.0;
             for _ in 0..iters {
-                let (bytes, setup, encode) = rust_encode(&mesh, &options);
+                let mut fresh;
+                let encoder = match kept.as_mut() {
+                    Some(kept) => kept,
+                    None => {
+                        fresh = MeshEncoder::new();
+                        &mut fresh
+                    }
+                };
+                let (bytes, setup, encode) = rust_encode(encoder, &mesh, &options);
                 size = bytes.len();
                 total_setup += setup;
                 total_encode += encode;

@@ -15,9 +15,15 @@
 //! changes -- the linked library is whatever the last build used, which is
 //! easy to get wrong when another `cargo` command relinks it in between.
 //!
+//! `REUSE_DECODE=1` decodes into one `Mesh` through one `MeshDecoder` for the
+//! whole loop instead of building both per iteration -- the caller decoding
+//! many files against the caller decoding one. The allocation counts are what
+//! say whether the second decode skips anything.
+//!
 //! ```text
 //! cargo run --release --example decode_loop -- <mesh.obj> cpp|rust <speed> <iters>
 //! SAMPLE_ALLOC=1 cargo run --release --example decode_loop -- <mesh.obj> rust 5 1
+//! REUSE_DECODE=1 cargo run --release --example decode_loop -- <mesh.obj> rust 5 2000
 //! ```
 use draco_core::decoder_buffer::DecoderBuffer;
 use draco_core::encoder_buffer::EncoderBuffer;
@@ -38,24 +44,38 @@ fn main() {
     let speed: i32 = args.next().and_then(|s| s.parse().ok()).unwrap_or(5);
     let iters: u32 = args.next().and_then(|s| s.parse().ok()).unwrap_or(200);
 
-    let bytes = std::fs::read(&path).expect("read mesh");
-    let mesh = draco_io::obj_reader::ObjReader::read_from_bytes(&bytes).expect("parse obj");
-    let mut options = EncoderOptions::new();
-    options.set_global_int("encoding_speed", speed);
-    options.set_global_int("decoding_speed", speed);
-    options.set_attribute_int(0, "quantization_bits", 11);
-    if mesh.num_attributes() > 1 {
-        options.set_attribute_int(1, "quantization_bits", 8);
-    }
-    let mut encoder = MeshEncoder::new();
-    encoder.set_mesh(mesh.clone());
-    let mut buffer = EncoderBuffer::new();
-    encoder.encode(&options, &mut buffer).expect("encode");
-    let encoded = buffer.data().to_vec();
+    // A comma-separated path list is decoded round-robin, which is what a
+    // caller decoding many files does. It matters to `REUSE_DECODE`: one
+    // payload repeated hands the reused `Mesh` buffers that are already
+    // exactly the right size, and that is the best case rather than the case.
+    let streams: Vec<(Vec<u8>, usize)> = path
+        .split(',')
+        .map(|p| {
+            let bytes = std::fs::read(p).unwrap_or_else(|e| panic!("read mesh {p}: {e}"));
+            let mesh = draco_io::obj_reader::ObjReader::read_from_bytes(&bytes).expect("parse obj");
+            let mut options = EncoderOptions::new();
+            options.set_global_int("encoding_speed", speed);
+            options.set_global_int("decoding_speed", speed);
+            options.set_attribute_int(0, "quantization_bits", 11);
+            if mesh.num_attributes() > 1 {
+                options.set_attribute_int(1, "quantization_bits", 8);
+            }
+            let mut encoder = MeshEncoder::new();
+            let faces = mesh.num_faces();
+            encoder.set_mesh(mesh);
+            let mut buffer = EncoderBuffer::new();
+            encoder.encode(&options, &mut buffer).expect("encode");
+            (buffer.data().to_vec(), faces)
+        })
+        .collect();
+    let encoded = streams[0].0.clone();
     eprintln!(
-        "payload: {} bytes, {} faces, side={side}, speed={speed}, iters={iters}",
-        encoded.len(),
-        mesh.num_faces()
+        "payload: {}, side={side}, speed={speed}, iters={iters}",
+        streams
+            .iter()
+            .map(|(s, faces)| format!("{} bytes / {faces} faces", s.len()))
+            .collect::<Vec<_>>()
+            .join(", ")
     );
 
     match side.as_str() {
@@ -88,16 +108,44 @@ fn main() {
                 }
                 return;
             }
+            // `REUSE_DECODE=1` decodes into the same `Mesh` through the same
+            // `MeshDecoder` every iteration, which is the caller decoding many
+            // files in a row; the default builds both fresh, which is the
+            // caller decoding one. `decode` takes `&mut Mesh`, so the reuse the
+            // question is about is already expressible -- what it is worth is
+            // the measurement, and the counts below are what answers it.
+            let reuse = std::env::var("REUSE_DECODE").is_ok();
+            let mut kept = reuse.then(|| (Mesh::new(), MeshDecoder::new()));
             counting::reset();
             let start = std::time::Instant::now();
             let mut points = 0;
             let mut faces = 0;
-            for _ in 0..iters {
-                let mut b = DecoderBuffer::new(&encoded);
-                let mut m = Mesh::new();
-                let mut d = MeshDecoder::new();
-                d.decode(&mut b, &mut m).expect("rust decode failed");
+            let mut attributes = 0;
+            // One point count per stream, so a reused mesh that appended
+            // instead of replacing is caught even when the streams differ.
+            let mut expected = vec![0usize; streams.len()];
+            for i in 0..iters as usize {
+                let which = i % streams.len();
+                let mut b = DecoderBuffer::new(&streams[which].0);
+                let mut fresh;
+                let (m, d) = match kept.as_mut() {
+                    Some(kept) => (&mut kept.0, &mut kept.1),
+                    None => {
+                        fresh = (Mesh::new(), MeshDecoder::new());
+                        (&mut fresh.0, &mut fresh.1)
+                    }
+                };
+                d.decode(&mut b, m).expect("rust decode failed");
+                assert!(
+                    expected[which] == 0 || expected[which] == m.num_points(),
+                    "decode {} produced {} points for stream {which} after {}",
+                    if reuse { "reusing" } else { "fresh" },
+                    m.num_points(),
+                    expected[which]
+                );
+                expected[which] = m.num_points();
                 points = m.num_points();
+                attributes = m.num_attributes();
                 faces = m.num_faces();
             }
             let us = start.elapsed().as_secs_f64() * 1e6 / f64::from(iters);
@@ -105,7 +153,9 @@ fn main() {
             let n = counting::COUNT.swap(0, Relaxed) as f64 / f64::from(iters);
             let b = counting::BYTES.swap(0, Relaxed) as f64 / f64::from(iters);
             let l = counting::LARGE.swap(0, Relaxed) as f64 / f64::from(iters);
-            eprintln!("rust: {points} points, {faces} faces, {us:.1} us/decode");
+            eprintln!(
+                "rust: {points} points, {faces} faces, {attributes} attributes, {us:.1} us/decode"
+            );
             eprintln!(
                 "alloc: {n:.0} allocations/decode, {:.2} MB/decode, {l:.0} of them >= 64 KB",
                 b / (1024.0 * 1024.0)

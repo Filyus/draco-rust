@@ -53,14 +53,21 @@ items:
     area: draco-core
     priority: low
     status: open
-    summary: "Every decode builds a fresh Mesh, CornerTable and attribute buffers, so a caller decoding many files pays the setup each time."
+    summary: "A decode re-allocates every attribute's DataBuffer even when it is handed a mesh whose buffers are the right size, because clearing the mesh drops them with it."
     evidence:
-      - path: "crates/draco-core/src/mesh_decoder.rs"
-        note: "The entry point takes a &mut Mesh but the decode allocates its own corner table, index maps and per-attribute DataBuffers per call; nothing is retained between calls."
-    impact: "Aimed at the repeated-decode caller -- a viewer or a server decoding many assets -- not at one-shot decode. A warm decode loop has to construct MeshDecoder::new() and Mesh::new() per iteration because that is the only shape the API offers, and the cold-vs-warm gap it reports (car.drc: 68 us cold against 3 us warm) is largely allocator state. It is an additive API change in the crate that owns the allocations, so draco-io and draco-gltf would benefit without owning any of it."
+      - path: "PERFORMANCE.md"
+        note: "\"The Reuse Two Items Proposed, Which Was A Correctness Bug\". Reusing the mesh saves 2-3 allocations and 0.22 MB of 1.57 on an 18k-face decode -- the faces Vec -- and the values are re-allocated either way. Seven interleaved rounds: one payload of six at 0.914x with 7/7 signs, everything else inside its spread, both round-robin mixes included."
+      - path: "crates/draco-core/src/mesh.rs"
+        note: "`Mesh::clear` keeps the face list's capacity and the attribute list's spine, and drops each PointAttribute -- and with it the DataBuffer holding the values, which is where the bytes are."
+    impact: "Aimed at the repeated-decode caller -- a viewer or a server decoding many assets -- not at one-shot decode. Measured on that caller rather than assumed: it is worth less than the spread on five of six payloads and on a round-robin over four differently-sized streams, so this is a lead and not a pending win."
     next_steps:
-      - "Measure first: profile what a second decode into an already-populated Mesh would actually skip, since the buffers are sized from each stream and may not be reusable in practice."
-      - "If the win is real, add a reuse entry point rather than changing the existing one -- draco-core is published, so this must stay additive."
+      - "Do not add a reuse entry point: the reuse it would expose is what `decode` already does, and it was measured. Any work here is inside the decoder."
+      - "The one shape that could still pay: reuse an existing PointAttribute whose layout the new stream matches, instead of dropping it in `clear`. Price it against the risk first -- it can leave a previous decode's values wherever the new one does not overwrite, which is the bug just fixed, and no count catches that class."
+      - "Whatever is tried, measure it on a round-robin of differently-sized streams. One payload repeated hands the reused mesh buffers already exactly the right size, which is the best case and not the case."
+    refuted:
+      - "That reuse is expressible today and merely unexposed. It was expressible and it was wrong: `decode` never cleared the mesh it was given, so a second decode left it carrying both streams' attributes -- six after two decodes of a position/normal/texcoord stream, sixty after twenty -- with the point and face counts right the whole way. Fixed, and pinned by `a_reused_decoder_and_mesh_decode_what_fresh_ones_do`."
+      - "That reuse is worth 21-28% on large meshes. That was the first reading and it was the bug: the reused arm never freed the previous decode. Against the fixed decoder the same payload reads 1.021x."
+      - "That the cost is per-call setup. Decode allocates 42 times for 8 faces and 45 for 19,602 -- a per-call floor, as encode has -- but the floor is not what reuse reaches, and it is not where the decode's time is on anything but a tiny mesh."
 
 
   - id: encode-setup-cost-on-small-meshes

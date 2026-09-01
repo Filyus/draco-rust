@@ -3791,13 +3791,102 @@ went: `10,309` allocations per encode down to `263`.
 **What is left is a floor, not a regression.** An eight-face encode costs `4.9`
 us today, of which the marginal cost of its faces is `0.75` us at the `0.093`
 us/face `test_grid` pays -- so roughly `85%` of a tiny encode is per-call cost.
-The `85` allocations behind it do not scale: the same count answers for eight
-faces and for `19,602`. Sampled at `SAMPLE_ALLOC_MIN=0`, the largest named
-blocks in one 8-face encode are the edgebreaker encoder's setup (~`23` of the
-first `64`), `encode_edgebreaker_attributes_split` (`9`), `CornerTable::init`
-(`11`) and `EncoderOptions::clone`, which `MeshEncoder::encode` makes once per
-call and which costs `6` allocations for two `HashMap`s of `String` keys that
-are string literals at every call site in the tree.
+The `84` allocations behind it do not scale: the same count answers for eight
+faces and for `19,602`.
+
+### The Per-Call Floor, Named In Full -- And Reuse Buys None Of It
+
+`SAMPLE_ALLOC_LIMIT` (new, beside `SAMPLE_ALLOC_MIN`/`MAX`) lifts the
+`64`-backtrace budget, so a bounded per-call count can be read in full rather
+than sampled. All `84` allocations of one 8-face position-only encode at speed
+`5`, grouped by the frame that made them:
+
+| n | site |
+| ---: | --- |
+| `14` | `encode_edgebreaker_attributes_split` |
+| `8` | `MeshEdgebreakerEncoder::encode_connectivity` |
+| `7` | `generate_attribute_traversal` |
+| `7` | `SequentialIntegerAttributeEncoder::encode_values` |
+| `6` | `EncoderOptions::clone` <- `MeshEncoder::encode` |
+| `8` | `symbol_encoding` and the rANS encoder below it |
+| `13` | `CornerTable::init` and its two sweeps |
+| `4` | `MeshEdgebreakerEncoder::new` |
+| `3` | the harness's own `Mesh::clone`, outside the timed region |
+| `14` | header, buffer, holes, split events, quantization parameters |
+
+`22,030` bytes in total, `16,384` of them one allocation: the raw scheme's
+frequency table in `encode_symbols`, sized by the largest *symbol value* rather
+than by the `24` symbols an 8-face mesh has -- the same shape
+`MAX_DENSE_SYMBOL` bounds in `shannon_entropy.rs`, and upstream's own design.
+
+**There is no dominant block.** The largest is `14` of `84`, and the size
+histogram is a long tail of `8`, `16` and `32`-byte allocations -- a `Vec` per
+attribute, per component, per traversal -- rather than one buffer worth
+naming. `EncoderOptions::clone` is the only entry that is pure bookkeeping: it
+copies two `HashMap`s of `String` keys that are string literals at every call
+site in this tree, and it is `7%` of the count, worth about `0.24` us on the
+8-face encode and `0.01%` on any real payload. That is below what a clock can
+resolve on anything but the tiny mesh, so it stands as a counted change if it
+is ever made, not a timed one.
+
+### The Reuse Two Items Proposed, Which Was A Correctness Bug
+
+Both status items put their win at the API: an "additive reuse entry point" so
+a caller decoding or encoding many files does not pay the setup each time. The
+API already allows it -- `MeshEncoder::encode` takes `&mut self` and
+`MeshDecoder::decode` takes `&mut Mesh` -- so `REUSE_ENCODER=1` and
+`REUSE_DECODE=1` (both new, an env switch read outside the timed loop, so both
+arms are the same binary) measure it directly.
+
+**Encode: nothing, deterministically.** `reset_derived_state` `clear`s a few
+`Vec`s and sets the corner table, the edgebreaker encoder and the attribute
+traversal to `None`, which drops everything that costs anything. A reused
+encoder saves `2-3` allocations of `85`, and seven interleaved rounds put every
+payload inside its own spread (`1.008x` to `1.061x`, signs `1/7` to `3/7`).
+
+**Decode: the first reading was `0.72x` on the 18k mesh, and it was an
+artefact.** Before believing it, the reuse was pinned by a test -- and the test
+failed. `decode` never cleared the mesh it was given, and every stage below it
+appends: a position/normal/texcoord stream decoded twice into one mesh came out
+with six attributes, twenty times with sixty, the first of each set stale. The
+point and face counts stayed right the whole way, which is why no existing test
+saw it, and why the benchmark did not either: the "reused" arm was never
+freeing the previous decode, and *that* is what made it look faster.
+
+The fix is `Mesh::clear`/`PointCloud::clear` and a clear on entry to both
+public `decode`s. Re-measured against it, seven rounds, same protocol:
+
+| payload | faces | fresh | reused | reuse/fresh | signs |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| annulus | 8 | `2.2` us | `2.1` us | `0.952x` | `6/7` |
+| cube_att | 12 | `6.2` us | `6.1` us | `0.983x` | `6/7` |
+| test_nm | 170 | `16.1` us | `16.0` us | `0.958x` | `4/7` |
+| sphere | 224 | `18.8` us | `17.8` us | `0.960x` | `5/7` |
+| cube_subd | 3,072 | `104.8` us | `90.6` us | `0.914x` | `7/7` |
+| test_grid | 19,602 | `773.2` us | `784.0` us | `1.021x` | `2/6` |
+| mix-large | round robin | `238.9` us | `231.1` us | `0.975x` | `6/7` |
+| mix-small | round robin | `11.4` us | `11.3` us | `0.983x` | `4/7` |
+
+`mix-large` and `mix-small` decode four differently-sized streams round-robin,
+which is the caller both items describe -- one payload repeated hands the
+reused mesh buffers already exactly the right size, and that is the best case
+rather than the case. The `0.72x` is gone. What is left is one cell at
+`0.914x` with `7/7` signs and nothing resolvable anywhere else, including on
+the largest payload and on both mixes.
+
+Deterministically, reuse now saves `2-3` allocations and the faces `Vec`:
+`0.22` MB of `1.57` on `test_grid`, `0.07` of `0.50` on the mix. `clear` keeps
+the face list's capacity and the attribute list's spine but drops each
+attribute's `DataBuffer` with it, so the values -- which are the bytes -- are
+re-allocated either way.
+
+So the entry point neither item asked the price of would not have paid, and
+what the exercise produced instead is the correctness fix. Retaining the
+attribute buffers across decodes is the version that could still pay, and it is
+a different change: the decoder would have to reuse an existing
+`PointAttribute` whose layout matches, which risks leaving a previous decode's
+values behind wherever the new one does not overwrite -- the same class of bug
+as the one just fixed, with no count to catch it.
 
 ## Unexplored
 
