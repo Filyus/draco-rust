@@ -938,7 +938,7 @@ test('converter resolves glTF companions and reports decoded geometry', async ({
   await expect(animationTrigger).toContainText('Survey');
   await animationTrigger.click();
   await expect(page.locator('#anim-clip-menu')).toBeVisible();
-  await page.locator('.menu-picker-option[data-value="1"]').click();
+  await page.locator('#anim-clip-menu .menu-picker-option[data-value="1"]').click();
   await expect(page.locator('#anim-clip')).toHaveValue('1');
   await expect(animationTrigger).toContainText('Walk');
   await expect(animationTrigger).toHaveAttribute('aria-expanded', 'false');
@@ -948,9 +948,9 @@ test('converter resolves glTF companions and reports decoded geometry', async ({
   await animationTrigger.press('ArrowUp');
   await expect(page.locator('#anim-clip')).toHaveValue('1');
   await animationTrigger.click();
-  const selectedClip = page.locator('.menu-picker-option.selected');
+  const selectedClip = page.locator('#anim-clip-menu .menu-picker-option.selected');
   await selectedClip.press('ArrowDown');
-  const runClip = page.locator('.menu-picker-option[data-value="2"]');
+  const runClip = page.locator('#anim-clip-menu .menu-picker-option[data-value="2"]');
   await expect(runClip).toBeFocused();
   await runClip.press('Enter');
   await expect(page.locator('#anim-clip')).toHaveValue('2');
@@ -3413,6 +3413,10 @@ test('a mirrored node keeps the face that points at the camera', async ({ page }
     const { state } = await import('/app/state.js' as string);
     const viewer = state.viewer;
     viewer.showGrid = false;
+    // Glare spreads a bright wall onto whatever stands in front of it, which
+    // is a property of the output pass and not of the lighting this test is
+    // about: with it on, moving the backdrop moves the model too.
+    viewer.bloomStrength = 0;
     viewer.camera.target.set([0, 0, 0]);
     viewer.camera.distance = 6;
     viewer.camera.azimuth = 0;
@@ -3669,6 +3673,12 @@ test('KHR_materials_transmission shows what is behind the surface', async ({ pag
     // and the finest sampling available is what keeps the margins about the
     // material rather than about how coarsely it was sampled.
     viewer.supersample = true;
+      // What is behind the glass here emits its own light, and what is in
+      // front of it reflects the room. Turning the room down is what leaves
+      // the measurement to the first of those: at full strength the white
+      // pane's own reflection sits over the green it transmits, and how far a
+      // dispersed channel moved stops being legible in the row.
+      viewer.iblIntensity = 0.25;
       viewer.setScene(buildViewerSceneFromDocument(document_(front, emissiveStrength)));
       viewer.camera.target.set([0, 0, 0]);
       viewer.camera.distance = 4;
@@ -3949,6 +3959,120 @@ test('KHR_materials_sheen shows on the surface it is set on', async ({ page }) =
     .toBeGreaterThan(observed.sheened[0] * 0.05);
 });
 
+test('the display panel changes the viewing conditions and nothing else', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  // The three settings the reference viewer's Display panel opens with, and the
+  // three this one carries: which curve maps light, how much of it is let in,
+  // and how strongly the environment shines. None of them touches the file, so
+  // the summary must read the same before and after.
+  await page.locator('#file-input').setInputFiles(
+    path.join(repoRoot, 'testdata', 'MirroredQuads.gltf'),
+  );
+  await expect(page.locator('#console')).toContainText('Preview ready');
+
+  const panel = page.locator('#viewer-display-panel');
+  await expect(panel).toBeHidden();
+  await page.locator('#viewer-display').click();
+  await expect(panel).toBeVisible();
+
+  const sample = () => page.evaluate(async () => {
+    const { state } = await import('/app/state.js' as string);
+    const viewer = state.viewer;
+    viewer.showGrid = false;
+    viewer.camera.target.set([0, 0, 0]);
+    viewer.camera.distance = 6;
+    viewer.camera.azimuth = 0;
+    viewer.camera.elevation = 0;
+    viewer._render();
+    const gl = viewer.gl;
+    // The quad is found rather than guessed at: where it lands across the
+    // frame depends on the canvas's aspect, and a fixed fraction that misses
+    // it would sample the wall and call it the model.
+    const width = gl.drawingBufferWidth;
+    const row = new Uint8Array(width * 4);
+    gl.readPixels(0, gl.drawingBufferHeight >> 1, width, 1, gl.RGBA, gl.UNSIGNED_BYTE, row);
+    const covered = [];
+    for (let x = 0; x < width; x += 1) if (row[x * 4 + 1] > row[x * 4] + 20) covered.push(x);
+    // The middle half of the run, averaged: which pixels count as covered
+    // shifts by one as the wall behind them changes, and a single pixel taken
+    // from the end of that list can land on an antialiased edge.
+    const inner = covered.slice(covered.length >> 2, covered.length - (covered.length >> 2));
+    const pixel = [0, 1, 2].map((channel) => Math.round(
+      inner.reduce((sum, x) => sum + row[x * 4 + channel], 0) / Math.max(inner.length, 1)));
+    // A corner, where the fixture puts no geometry: that is the room itself.
+    const backdrop = new Uint8Array(4);
+    gl.readPixels(2, gl.drawingBufferHeight - 3, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, backdrop);
+    return {
+      covered: covered.length,
+      pixel,
+      backdrop: [...backdrop].slice(0, 3),
+      toneMap: viewer.toneMap,
+      exposure: viewer.exposure,
+      iblIntensity: viewer.iblIntensity,
+      backdropLevel: viewer.backdropLevel,
+    };
+  });
+
+  const neutral = await sample();
+  expect(neutral.covered).toBeGreaterThan(0);
+  expect(neutral.exposure).toBe(1);
+  expect(neutral.iblIntensity).toBe(1);
+
+  // The environment's own strength: twice the light on a surface that is lit
+  // by nothing else.
+  await page.locator('#display-ibl').fill('0.3');
+  await page.locator('#display-ibl').dispatchEvent('input');
+  const lit = await sample();
+  expect(lit.iblIntensity).toBeCloseTo(2, 1);
+  expect(lit.pixel[0]).toBeGreaterThan(neutral.pixel[0] + 4);
+  await page.locator('#display-ibl').fill('0');
+  await page.locator('#display-ibl').dispatchEvent('input');
+
+  // A stop of exposure is a factor of two in the light, which cannot leave the
+  // frame where it was. Measured on the red channel: green is the emitter's
+  // own and sits near white already, where another stop has nowhere to go.
+  await page.locator('#display-exposure').fill('1');
+  await page.locator('#display-exposure').dispatchEvent('input');
+  const brighter = await sample();
+  expect(brighter.exposure).toBeCloseTo(2, 5);
+  await expect(page.locator('#display-exposure-value')).toContainText('2.00');
+  expect(brighter.pixel[0]).toBeGreaterThan(neutral.pixel[0] + 4);
+
+  // The curve is a choice, and choosing another one shows another picture.
+  await page.locator('#display-tone-map-trigger').click();
+  await page.locator('#display-tone-map-menu .menu-picker-option[data-value="1"]').click();
+  const filmic = await sample();
+  expect(filmic.toneMap).toBe(1);
+  await expect(page.locator('#display-tone-map-label')).toContainText('ACES');
+  expect(filmic.pixel).not.toEqual(lit.pixel);
+
+  // The backdrop is the room a fraction down, and moving it leaves what the
+  // room lights alone: the quad keeps the colour it had, the wall does not.
+  await page.locator('#display-backdrop').fill('1');
+  await page.locator('#display-backdrop').dispatchEvent('input');
+  const wall = await sample();
+  expect(wall.backdropLevel).toBeCloseTo(1, 5);
+  await expect(page.locator('#display-backdrop-value')).toContainText('100%');
+  expect(wall.backdrop[1]).toBeGreaterThan(filmic.backdrop[1] + 8);
+  // The model does not follow the wall: what is left is a level or two, which
+  // is where the multisampled edge of the quad falls inside the averaged span.
+  for (let channel = 0; channel < 3; channel += 1) {
+    expect(Math.abs(wall.pixel[channel] - filmic.pixel[channel])).toBeLessThanOrEqual(4);
+  }
+
+  // And Reset puts all four back where they started, frame included.
+  await page.locator('#display-reset').click();
+  const reset = await sample();
+  expect(reset.toneMap).toBe(neutral.toneMap);
+  expect(reset.exposure).toBe(neutral.exposure);
+  expect(reset.iblIntensity).toBe(neutral.iblIntensity);
+  expect(reset.backdropLevel).toBe(neutral.backdropLevel);
+  for (let channel = 0; channel < 3; channel += 1) {
+    expect(Math.abs(reset.pixel[channel] - neutral.pixel[channel])).toBeLessThanOrEqual(4);
+  }
+});
+
 test('the frame stays light until the output pass, which spreads glare and maps tones', async ({ page }) => {
   await page.goto('/index.html');
   // Everything is drawn into one linear frame and turned into a picture once,
@@ -3957,10 +4081,11 @@ test('the frame stays light until the output pass, which spreads glare and maps 
   // pyramid. A surface that tone mapped its own output would poison all three,
   // and a transmissive one reading such a frame would refract it twice over.
   const observed = await page.evaluate(async () => {
-    const [{ Viewer }, { createSceneDocument }, { buildViewerSceneFromDocument }] = await Promise.all([
+    const [{ Viewer }, { createSceneDocument }, { buildViewerSceneFromDocument }, { TONE_MAP_ACES }] = await Promise.all([
       import('/viewer.js' as string),
       import('/scene-document.js' as string),
       import('/scene-document-viewer.js' as string),
+      import('/viewer/shaders.js' as string),
     ]);
 
     const bytes = (values: Float32Array | Uint16Array | Uint8Array) => new Uint8Array(
@@ -4020,6 +4145,11 @@ test('the frame stays light until the output pass, which spreads glare and maps 
     // and the finest sampling available is what keeps the margins about the
     // material rather than about how coarsely it was sampled.
     viewer.supersample = true;
+    // The curve modelled at the bottom of this test is the filmic one, so that
+    // is the one the frame is drawn through. Which curve is shown is a viewing
+    // choice; what is asserted here is that no curve acts before the output
+    // pass, and that one is what it does.
+    viewer.toneMap = TONE_MAP_ACES;
     // Glare is measured on its own below; everything in between is compared
     // against the tone curve, which has to be the only thing acting.
     viewer.bloomStrength = 0;

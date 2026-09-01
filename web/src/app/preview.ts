@@ -8,6 +8,7 @@ import { chooseCompressedTarget } from '../viewer/compressed-formats.ts';
 import type { SceneDocument } from '../scene-document.ts';
 import { errorMessage, log } from './log.ts';
 import { loadKtx2Module } from './modules.ts';
+import { applyDisplaySettings, closeDisplayPanel } from './display-controls.ts';
 import { modules, state } from './state.ts';
 import { renderSceneDocumentSummary } from './scene-report.ts';
 import { setWarningSource } from './warnings.ts';
@@ -34,6 +35,9 @@ export function ensureViewer() {
       onAutoRotateChange: syncAutoRotateButton,
     });
     syncViewerToolbar();
+    // A viewer built after the panel was touched has to start where the panel
+    // stands: the settings are viewing conditions, not properties of a file.
+    applyDisplaySettings();
   } catch (error) {
     log(`Preview unavailable: ${errorMessage(error)}`, 'error');
     state.viewer = null;
@@ -172,6 +176,7 @@ async function previewFromLoader(): Promise<ViewerScene> {
 
 export function setViewerControlsEnabled(enabled: boolean) {
   for (const control of viewerControls) control.disabled = !enabled;
+  if (!enabled) closeDisplayPanel();
 }
 
 /** Which viewport button drives which viewer display flag. */

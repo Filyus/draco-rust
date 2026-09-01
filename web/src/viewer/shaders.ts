@@ -19,6 +19,15 @@ export const MAX_ACTIVE_MORPH_TARGETS = 32;
 export const MAX_PUNCTUAL_LIGHTS = 8;
 
 /**
+ * The curves the output pass can map light through, as the reference viewer
+ * offers them. `NONE` is not a curve but the absence of one: light above white
+ * is clipped, which is what an inspection view wants and a photograph does not.
+ */
+export const TONE_MAP_NONE = 0;
+export const TONE_MAP_ACES = 1;
+export const TONE_MAP_NEUTRAL = 2;
+
+/**
  * Every material texture slot the surface shader knows how to sample.
  *
  * This is the vocabulary, not the layout: a given program declares only the
@@ -340,6 +349,10 @@ uniform samplerCube uIrradianceMap;
 uniform samplerCube uPrefilteredMap;
 uniform sampler2D uBrdfLut;
 uniform float uEnvironmentMaxLod;
+// How much light the environment gives, with 1 the radiance it was built at.
+// It scales what the environment lights the surface with and not the backdrop
+// behind it, which is the same split the reference viewer makes.
+uniform float uIblIntensity;
 uniform vec3 uCameraPos;
 // KHR_lights_punctual, resolved to world space by the renderer. Type 0 is
 // directional, 1 point, 2 spot; a range of zero never falls off.
@@ -365,6 +378,22 @@ vec2 selectUv(int texCoord) {
 ${slotDeclarations(slots)}
 
 ${spectralTable()}
+
+/**
+ * The environment, read through the one place its strength is applied.
+ *
+ * Every lobe reads it -- diffuse, specular, sheen, clearcoat, and the mirror a
+ * transmissive surface becomes past the critical angle -- so the intensity is
+ * folded in here rather than at six call sites, where one of them would sooner
+ * or later be forgotten and light a material by a different sun.
+ */
+vec3 irradianceAt(vec3 normal) {
+    return texture(uIrradianceMap, normal).rgb * uIblIntensity;
+}
+
+vec3 prefilteredAt(vec3 direction, float lod) {
+    return textureLod(uPrefilteredMap, direction, lod).rgb * uIblIntensity;
+}
 
 vec3 fresnelSchlickRoughness(float cosTheta, vec3 f0, float roughness) {
     return f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(1.0 - cosTheta, 5.0);
@@ -857,9 +886,18 @@ void main() {
         float thickness = mix(uIridescenceThicknessMinimum, uIridescenceThicknessMaximum, thicknessMix);
         f0 = mix(f0, clamp(iridescentFresnel(uIridescenceIor, nDotV, thickness, f0), 0.0, 1.0), iridescence);
     }
-    vec3 iblFresnel = fresnelSchlickRoughness(nDotV, f0, roughness);
-    vec3 diffuseWeight = (1.0 - iblFresnel) * (1.0 - metallic);
-    vec3 irradiance = texture(uIrradianceMap, N).rgb;
+    // What the specular lobe takes from the environment: the split-sum terms
+    // the LUT integrates over the whole lobe, not a Fresnel evaluated at one
+    // angle. The difference is the whole look of a smooth dielectric seen
+    // edge-on -- Schlick at grazing incidence returns almost one, which would
+    // leave the diffuse nothing, and a face then goes grey wherever it turns
+    // away from the camera while the lit half stays its own colour. What the
+    // surface reflects is what the diffuse does not get, and no more.
+    vec2 brdf = texture(uBrdfLut, vec2(nDotV, roughness)).rg;
+    vec3 specularEnergy = (f0 * brdf.x + brdf.y) * mix(specularWeight, 1.0, metallic);
+    float reflected_fraction = max(max(specularEnergy.r, specularEnergy.g), specularEnergy.b);
+    vec3 diffuseWeight = vec3(1.0 - reflected_fraction) * (1.0 - metallic);
+    vec3 irradiance = irradianceAt(N);
     vec3 diffuseIbl = irradiance * baseColor / PI;
     vec3 reflected = reflect(-V, N);
     vec3 prefiltered;
@@ -889,15 +927,12 @@ void main() {
         // the highlight runs the length of it.
         vec3 bentNormal = normalize(mix(N, bitangent * dot(V, bitangent) + N, abs(anisotropy)));
         reflected = reflect(-V, bentNormal);
-        prefiltered = textureLod(
-            uPrefilteredMap, reflected,
-            mix(roughness, 1.0, abs(anisotropy) * 0.5) * uEnvironmentMaxLod
-        ).rgb;
+        prefiltered = prefilteredAt(
+            reflected, mix(roughness, 1.0, abs(anisotropy) * 0.5) * uEnvironmentMaxLod);
     } else {
-        prefiltered = textureLod(uPrefilteredMap, reflected, roughness * uEnvironmentMaxLod).rgb;
+        prefiltered = prefilteredAt(reflected, roughness * uEnvironmentMaxLod);
     }
-    vec2 brdf = texture(uBrdfLut, vec2(nDotV, roughness)).rg;
-    vec3 specularIbl = prefiltered * (f0 * brdf.x + brdf.y) * mix(specularWeight, 1.0, metallic);
+    vec3 specularIbl = prefiltered * specularEnergy;
 
     // KHR_materials_transmission: what the surface lets through replaces what
     // it would have scattered, rather than adding to it. The specular lobe
@@ -918,8 +953,7 @@ void main() {
         // Past the critical angle nothing crosses the interface; the surface
         // becomes a mirror, and what it shows is the environment it reflects.
         if (volumeTransmissionRay(N, V, uIor, 1.0) == vec3(0.0)) {
-            transmitted = textureLod(
-                uPrefilteredMap, reflect(-V, N), materialRoughness * uEnvironmentMaxLod).rgb;
+            transmitted = prefilteredAt(reflect(-V, N), materialRoughness * uEnvironmentMaxLod);
             rayLength = 0.0;
         }
         // Tinted by the base colour, like the diffuse term it replaces: the
@@ -972,7 +1006,7 @@ void main() {
         // Sheen is a wide lobe, so it gathers the environment far off the
         // mirror direction: the surface normal at a roughness-driven level is
         // closer to what it integrates than the reflection is.
-        vec3 sheenIbl = textureLod(uPrefilteredMap, N, sheenRoughness * uEnvironmentMaxLod).rgb;
+        vec3 sheenIbl = prefilteredAt(N, sheenRoughness * uEnvironmentMaxLod);
         color *= 1.0 - max(max(sheenColor.r, sheenColor.g), sheenColor.b) * sheenAlbedo;
         color += sheenIbl * sheenColor * sheenAlbedo * occlusion;
     }
@@ -997,8 +1031,8 @@ void main() {
         coatN = applyTangentNormal(coatN, uv, tangentNormal);
         #endif
         float coatNdotV = max(dot(coatN, V), 0.0);
-        vec3 coatPrefiltered = textureLod(
-            uPrefilteredMap, reflect(-V, coatN), coatRoughness * uEnvironmentMaxLod).rgb;
+        vec3 coatPrefiltered = prefilteredAt(
+            reflect(-V, coatN), coatRoughness * uEnvironmentMaxLod);
         vec2 coatBrdf = texture(uBrdfLut, vec2(coatNdotV, coatRoughness)).rg;
         vec3 coatSpecular = coatPrefiltered * (0.04 * coatBrdf.x + coatBrdf.y) * occlusion;
         float coatFresnel = clearcoat * fresnelSchlickRoughness(coatNdotV, vec3(0.04), coatRoughness).x;
@@ -1058,10 +1092,13 @@ uniform float uExposure;
 // The frame is drawn wider than it is shown, so what reaches the canvas is its
 // middle. The rest was drawn for the refracted rays that leave the picture.
 uniform float uSceneCrop;
-// The base-colour view is an inspection mode, not a photograph: it exists to
-// show the texel the asset stores, so the curve that makes an image out of
-// light has no business in it.
+// Which curve light is mapped through, from the constants above. The
+// base-colour view is an inspection mode, not a photograph -- it shows the
+// texel the asset stores -- so the renderer sends it TONE_MAP_NONE whatever is
+// chosen here.
 uniform int uToneMap;
+const int TONE_MAP_ACES = ${TONE_MAP_ACES};
+const int TONE_MAP_NEUTRAL = ${TONE_MAP_NEUTRAL};
 out vec4 outColor;
 
 float luminance(vec3 color) {
@@ -1095,6 +1132,35 @@ vec3 toneMap(vec3 radiance) {
     return clamp(mix(scaled, vec3(mapped), clamp(fit, 0.0, 1.0)), 0.0, 1.0);
 }
 
+/**
+ * Khronos PBR Neutral, as its reference implementation writes it.
+ *
+ * A curve for looking at an asset rather than for a photographic look: the
+ * lower two thirds are the identity, so a base colour reaches the screen as
+ * the value the file stores, and only the top rolls off -- losing saturation
+ * as it approaches white, which is what a real highlight does. The filmic
+ * curve above instead lifts and desaturates the whole range, which on skin
+ * reads as dull.
+ */
+vec3 pbrNeutralToneMap(vec3 color) {
+    const float startCompression = 0.8 - 0.04;
+    const float desaturation = 0.15;
+
+    float x = min(color.r, min(color.g, color.b));
+    float offset = x < 0.08 ? x - 6.25 * x * x : 0.04;
+    color -= offset;
+
+    float peak = max(color.r, max(color.g, color.b));
+    if (peak < startCompression) return color;
+
+    const float d = 1.0 - startCompression;
+    float newPeak = 1.0 - d * d / (peak + d - startCompression);
+    color *= newPeak / peak;
+
+    float g = 1.0 - 1.0 / (desaturation * (peak - newPeak) + 1.0);
+    return mix(color, newPeak * vec3(1.0), g);
+}
+
 void main() {
     vec2 uv = 0.5 + vNdc * 0.5 * uSceneCrop;
     // One tap at the centre of the block, which is an exact box average of the
@@ -1103,7 +1169,9 @@ void main() {
     vec3 glare = texture(uBloom, uv).rgb;
     // Mixed rather than added: glare moves light about, it does not make any.
     vec3 radiance = mix(scene, glare, uBloomStrength) * uExposure;
-    vec3 shown = uToneMap == 1 ? toneMap(radiance) : clamp(radiance, 0.0, 1.0);
+    vec3 shown = uToneMap == TONE_MAP_ACES ? toneMap(radiance)
+        : uToneMap == TONE_MAP_NEUTRAL ? pbrNeutralToneMap(radiance)
+        : clamp(radiance, 0.0, 1.0);
     outColor = vec4(pow(shown, vec3(1.0 / 2.2)), 1.0);
 }
 `;
@@ -1188,12 +1256,19 @@ in vec2 vNdc;
 uniform mat4 uInverseProjection;
 uniform mat4 uInverseView;
 uniform samplerCube uEnvironment;
+// How much of the room to show behind the model, as against how much to light
+// it with. A room bright enough to light a face well is a wall the viewer is
+// then asked to stare at for as long as they work, and the two wants pull
+// apart: the reference viewer settles it with a switch that takes the
+// environment out of the backdrop entirely. This is the softer form of the
+// same thing -- the backdrop is the room, a stop or so down.
+uniform float uBackdropLevel;
 out vec4 outColor;
 
 void main() {
     vec4 view = uInverseProjection * vec4(vNdc, 1.0, 1.0);
     view /= view.w;
     vec3 direction = normalize((uInverseView * vec4(view.xyz, 0.0)).xyz);
-    outColor = vec4(textureLod(uEnvironment, direction, 0.0).rgb, 1.0);
+    outColor = vec4(textureLod(uEnvironment, direction, 0.0).rgb * uBackdropLevel, 1.0);
 }
 `;

@@ -35,7 +35,7 @@ const SURFACE_UNIFORMS = [
   'uBaseColorFactor', 'uMetallic', 'uRoughness', 'uEmissiveFactor',
   'uNormalScale', 'uOcclusionStrength',
   'uClearcoatNormalScale',
-  'uIrradianceMap', 'uPrefilteredMap', 'uBrdfLut', 'uEnvironmentMaxLod',
+  'uIrradianceMap', 'uPrefilteredMap', 'uBrdfLut', 'uEnvironmentMaxLod', 'uIblIntensity',
   'uFrameSnapshot', 'uFrameSize', 'uFrameMaxLod',
   'uLightCount',
   'uCameraPos',
@@ -142,6 +142,7 @@ export function buildViewerPrograms(
     uInverseProjection: gl.getUniformLocation(backgroundProgram, 'uInverseProjection'),
     uInverseView: gl.getUniformLocation(backgroundProgram, 'uInverseView'),
     uEnvironment: gl.getUniformLocation(backgroundProgram, 'uEnvironment'),
+    uBackdropLevel: gl.getUniformLocation(backgroundProgram, 'uBackdropLevel'),
   };
   const outputUniforms = {
     uScene: gl.getUniformLocation(outputProgram, 'uScene'),

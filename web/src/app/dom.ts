@@ -64,6 +64,19 @@ export const viewerWireframeBtn = element<HTMLButtonElement>('viewer-wireframe')
 export const viewerBaseColorBtn = element<HTMLButtonElement>('viewer-base-color');
 export const viewerSmoothNormalsBtn = element<HTMLButtonElement>('viewer-smooth-normals');
 export const viewerGridBtn = element<HTMLButtonElement>('viewer-grid');
+export const viewerDisplayBtn = element<HTMLButtonElement>('viewer-display');
+export const viewerDisplayPanel = element('viewer-display-panel');
+export const displayToneMapSelect = element<HTMLSelectElement>('display-tone-map');
+export const displayToneMapTrigger = element<HTMLButtonElement>('display-tone-map-trigger');
+export const displayToneMapLabel = element('display-tone-map-label');
+export const displayToneMapMenu = element('display-tone-map-menu');
+export const displayExposure = element<HTMLInputElement>('display-exposure');
+export const displayExposureValue = element('display-exposure-value');
+export const displayIbl = element<HTMLInputElement>('display-ibl');
+export const displayIblValue = element('display-ibl-value');
+export const displayBackdrop = element<HTMLInputElement>('display-backdrop');
+export const displayBackdropValue = element('display-backdrop-value');
+export const displayReset = element<HTMLButtonElement>('display-reset');
 export const viewerAnimation = element('viewer-animation');
 export const animPlayBtn = element<HTMLButtonElement>('anim-play');
 export const animClipSelect = element<HTMLSelectElement>('anim-clip');
@@ -94,6 +107,7 @@ export const viewerControls = [
   viewerBaseColorBtn,
   viewerSmoothNormalsBtn,
   viewerGridBtn,
+  viewerDisplayBtn,
 ];
 export const scenePanel = element('scene-panel');
 export const sceneSection = element('scene-section');

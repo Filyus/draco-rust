@@ -99,6 +99,7 @@ import {
   syncAutoRotateButton,
   syncViewerToolbar,
 } from './app/preview.ts';
+import { installDisplayControls } from './app/display-controls.ts';
 import { installVariantPicker } from './app/variant-picker.ts';
 import { entriesFromDataTransfer } from './app/dropped-entries.ts';
 import { findModels, readModel } from './app/model-intake.ts';
@@ -397,6 +398,7 @@ function setupEventListeners() {
     state.viewer.setAutoRotate(!state.viewer.autoRotate);
   });
   installViewerToggles();
+  installDisplayControls();
   installVariantPicker();
   installModelPicker((path) => {
     const model = state.currentSelection.find((entry) => entry.path === path);

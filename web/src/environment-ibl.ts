@@ -57,21 +57,46 @@ uniform int uFace;
 out vec4 outColor;
 ${CUBE_DIRECTION}
 
-vec3 environmentRadiance(vec3 direction) {
-    // Neutral cyclorama: the upper hemisphere is a studio wall, not a sky.
-    float wall = smoothstep(-0.08, 0.10, direction.y);
-    float height = pow(max(direction.y, 0.0), 0.45);
-    vec3 floorRadiance = vec3(0.035, 0.037, 0.040);
-    vec3 wallRadiance = mix(vec3(0.14, 0.145, 0.15), vec3(0.32, 0.33, 0.35), height);
-    vec3 radiance = mix(floorRadiance, wallRadiance, wall);
+/**
+ * What the studio is worth, over the field the constants below spell.
+ *
+ * The field states the studio's shape -- where the light comes from and in what
+ * proportion -- and this states how much of it there is. It is set so that a
+ * white rough surface standing in this studio comes out in the middle of the
+ * display range through the tone curve the viewer shows by default: a curve
+ * that leaves the low range alone renders a scene as bright as it is, so how
+ * bright the environment is stops being a matter of taste and starts being a
+ * calibration.
+ */
+const float STUDIO_RADIANCE = 1.05;
 
-    // Broad softboxes represented directly in the radiance field. Their wide
-    // lobes read as studio reflections rather than small distant suns.
+vec3 environmentRadiance(vec3 direction) {
+    // Neutral cyclorama: the upper hemisphere is a studio wall, not a sky, and
+    // the floor is a bounce card rather than a hole. What the room is for is
+    // to light a subject from every side at nearly one colour: a face turns
+    // through most of a hemisphere across a cheek, and a room whose ambient is
+    // both dim and a different colour from its key paints that turn onto the
+    // skin -- warm where it faces the light, cold and grey where it does not.
+    // Which is a photograph of a badly lit room, not a look at an asset.
+    // One gradient from the floor to the zenith, and no seam anywhere in it:
+    // a cyclorama is a wall that curves into the floor precisely so that a
+    // camera pointed at it finds no edge. A floor and a wall stated as two
+    // fields, however carefully their brightnesses are matched, leave a line
+    // across the frame at the height the two meet, and the eye finds it
+    // immediately. The ramp is soft at both ends, so the ground is darker than
+    // the sky without being a hole under the model.
+    float height = smoothstep(-0.85, 0.95, direction.y);
+    vec3 radiance = mix(vec3(0.14, 0.139, 0.138), vec3(0.62, 0.62, 0.63), height);
+
+    // Two broad softboxes over that room, shaping it rather than lighting it
+    // alone. Wide lobes and a modest peak: the shading across a face has to
+    // read as one surface turning, and a narrow, much brighter source instead
+    // splits it into a lit half and an unlit one.
     vec3 key = normalize(vec3(-0.45, 0.78, 0.42));
     vec3 fill = normalize(vec3(0.52, 0.42, -0.72));
-    radiance += vec3(4.8, 4.6, 4.3) * pow(max(dot(direction, key), 0.0), 36.0);
-    radiance += vec3(1.25, 1.35, 1.55) * pow(max(dot(direction, fill), 0.0), 24.0);
-    return radiance;
+    radiance += vec3(3.0, 2.95, 2.85) * pow(max(dot(direction, key), 0.0), 12.0);
+    radiance += vec3(1.15, 1.15, 1.18) * pow(max(dot(direction, fill), 0.0), 10.0);
+    return radiance * STUDIO_RADIANCE;
 }
 
 void main() {

@@ -25,6 +25,7 @@ import { computeJointMatrices, updateWorldMatrices } from './scene-graph.ts';
 import type { SceneGraphHost } from './scene-graph.ts';
 import {
   MAX_ACTIVE_MORPH_TARGETS, MAX_JOINTS, MAX_PUNCTUAL_LIGHTS, TEXTURE_SLOTS, TEXTURE_SLOT_SAMPLERS,
+  TONE_MAP_NEUTRAL, TONE_MAP_NONE,
 } from './shaders.ts';
 import type { TextureSlotName } from './shaders.ts';
 import type { Renderable, ViewerMaterial, ViewerNode, ViewerTextureBinding } from '../viewer-scene.ts';
@@ -42,6 +43,17 @@ import type { Renderable, ViewerMaterial, ViewerNode, ViewerTextureBinding } fro
  * image hazes over.
  */
 const DEFAULT_BLOOM_STRENGTH = 0.05;
+
+/**
+ * How much of the environment the backdrop shows.
+ *
+ * The room has to be bright enough to light a subject from every side; the
+ * wall behind that subject is then something a person looks at for as long as
+ * they are working, and a white one tires the eye. So the backdrop is the same
+ * room a stop and a half down -- what is reflected in the model stays the room
+ * as it is.
+ */
+export const DEFAULT_BACKDROP_LEVEL = 0.45;
 
 /** World up, shared by every view matrix; hoisted out of the frame. */
 const WORLD_UP = new Float32Array([0, 1, 0]);
@@ -220,6 +232,12 @@ export interface RenderHost extends CameraHost, SceneGraphHost {
   supersample?: boolean;
   /** Stops applied to the frame before the tone curve. */
   exposure?: number;
+  /** Which tone curve the output pass maps light through. */
+  toneMap?: number;
+  /** How much light the environment gives, with 1 the radiance it was built at. */
+  iblIntensity?: number;
+  /** How much of that environment the backdrop behind the model shows. */
+  backdropLevel?: number;
   lineUniforms: Record<string, WebGLUniformLocation | null>;
   backgroundUniforms: Record<string, WebGLUniformLocation | null>;
   outputProgram: WebGLProgram;
@@ -900,7 +918,10 @@ export function drawOutput(host: RenderHost) {
   );
   gl.uniform1f(host.outputUniforms.uExposure, inspecting ? 1 : host.exposure ?? 1);
   gl.uniform1f(host.outputUniforms.uSceneCrop, 1 / scene.guard);
-  gl.uniform1i(host.outputUniforms.uToneMap, inspecting ? 0 : 1);
+  gl.uniform1i(
+    host.outputUniforms.uToneMap,
+    inspecting ? TONE_MAP_NONE : host.toneMap ?? TONE_MAP_NEUTRAL,
+  );
   gl.bindVertexArray(host.backgroundVao);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   gl.bindVertexArray(null);
@@ -923,6 +944,7 @@ export function drawBackground(host: RenderHost) {
   gl.activeTexture(gl.TEXTURE5);
   gl.bindTexture(gl.TEXTURE_CUBE_MAP, host.environmentIbl.environment);
   gl.uniform1i(host.backgroundUniforms.uEnvironment, 5);
+  gl.uniform1f(host.backgroundUniforms.uBackdropLevel, host.backdropLevel ?? DEFAULT_BACKDROP_LEVEL);
   gl.bindVertexArray(host.backgroundVao);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   gl.bindVertexArray(null);
@@ -1064,6 +1086,7 @@ export function bindEnvironmentIbl(host: RenderHost) {
   gl.bindTexture(gl.TEXTURE_2D, host.environmentIbl.brdfLut);
   gl.uniform1i(host.uniforms.uBrdfLut, SHARED_TEXTURE_UNITS.brdfLut);
   gl.uniform1f(host.uniforms.uEnvironmentMaxLod, host.environmentIbl.maxLod);
+  gl.uniform1f(host.uniforms.uIblIntensity, host.iblIntensity ?? 1);
 }
 
 /** Build a grid scaled to the loaded model's AABB. */

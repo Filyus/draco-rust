@@ -60,7 +60,8 @@ import {
   updateSceneBounds,
   updateWorldMatrices,
 } from './scene-graph.ts';
-import { MAX_JOINTS } from './shaders.ts';
+import { MAX_JOINTS, TONE_MAP_NEUTRAL } from './shaders.ts';
+import { DEFAULT_BACKDROP_LEVEL } from './renderer.ts';
 import { disposeBloomChain } from './bloom.ts';
 import type { BloomChain } from './bloom.ts';
 import { disposeSceneTarget } from './scene-target.ts';
@@ -130,6 +131,18 @@ export class Viewer {
   get smoothNormals() { return this._smoothNormals; }
   set smoothNormals(value: boolean) { this._smoothNormals = value; this.invalidate(); }
 
+  get toneMap() { return this._toneMap; }
+  set toneMap(value: number) { this._toneMap = value; this.invalidate(); }
+
+  get exposure() { return this._exposure; }
+  set exposure(value: number) { this._exposure = value; this.invalidate(); }
+
+  get iblIntensity() { return this._iblIntensity; }
+  set iblIntensity(value: number) { this._iblIntensity = value; this.invalidate(); }
+
+  get backdropLevel() { return this._backdropLevel; }
+  set backdropLevel(value: number) { this._backdropLevel = value; this.invalidate(); }
+
   /** Schedule one frame. Cheap and idempotent; call it whenever in doubt. */
   invalidate() {
     this._dirty = true;
@@ -170,7 +183,10 @@ export class Viewer {
   declare _frontFaceCw?: boolean;
   declare bloomStrength?: number;
   declare supersample?: boolean;
-  declare exposure?: number;
+  declare _toneMap: number;
+  declare _exposure: number;
+  declare _iblIntensity: number;
+  declare _backdropLevel: number;
 
   declare _resizeObserver: ResizeObserver;
   declare _running: boolean;
@@ -238,6 +254,13 @@ export class Viewer {
     // the exact normals authored in the source asset.
     this.smoothNormals = false;
     this.autoRotate = false;
+    // What the frame is shown through. The neutral curve is the default the
+    // reference viewer settled on for looking at assets, and one stop of light
+    // at the strength the environment was built for.
+    this.toneMap = TONE_MAP_NEUTRAL;
+    this.exposure = 1;
+    this.iblIntensity = 1;
+    this.backdropLevel = DEFAULT_BACKDROP_LEVEL;
 
     // Matrices
     this._projection = mat4.create();

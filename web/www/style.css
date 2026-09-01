@@ -819,6 +819,66 @@ input[type="range"].zoned-range::-moz-range-progress { background: transparent; 
 .viewer-btn:disabled:hover .viewer-btn-icon { color: #647793; }
 
 
+/* The Display panel: what the frame is shown through, below the toolbar that
+   opens it and along the right edge rather than under its middle -- the middle
+   of the viewport is where the model stands. Same translucent slab as the
+   toolbar, so the two read as one control surface rather than as a dialog. */
+.viewer-display-panel {
+    position: absolute;
+    z-index: 6;
+    top: 52px;
+    right: 10px;
+    left: auto;
+    width: 236px;
+    padding: 10px 12px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    border-radius: 9px;
+    background: rgba(7, 17, 30, 0.86);
+    backdrop-filter: blur(9px);
+}
+
+.viewer-display-panel[hidden] { display: none; }
+
+.viewer-display-row {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.viewer-display-label {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    color: #afbed3;
+    font-size: var(--viewer-ui-font);
+    font-weight: 620;
+}
+
+.viewer-display-value {
+    color: #e7eefb;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+}
+
+.viewer-display-range { width: 100%; margin: 0; }
+
+.viewer-display-reset {
+    align-self: flex-start;
+    padding: 4px 9px;
+    border: 0;
+    border-radius: 6px;
+    color: #afbed3;
+    font-size: var(--viewer-ui-font);
+    font-weight: 620;
+    background: rgba(134, 163, 205, 0.13);
+    transition: color 150ms ease, background 150ms ease;
+}
+
+.viewer-display-reset:hover { color: #fff; background: rgba(134, 163, 205, 0.24); }
+
 .viewer-animation {
     position: absolute;
     z-index: 5;
