@@ -291,8 +291,9 @@ function attachMeshesAndSkins(roots: FbxJson[], state: FbxImportState, materialM
     const meshBindings = [];
     for (const sourceMesh of source.meshes || []) {
       const meshIndex = appendMesh(sourceMesh, materialMap, document, scale, space);
+      if (meshIndex < 0) continue;
       const skinIndex = appendSkin(sourceMesh, ownerState, state, document, scale, space);
-      meshBindings.push({ meshIndex, skinIndex, geometric: geometricMatrix(sourceMesh, space, scale) });
+      meshBindings.push({ source: sourceMesh, meshIndex, skinIndex, geometric: geometricMatrix(sourceMesh, space, scale) });
     }
     // A geometric offset places the geometry relative to its node and is not
     // inherited by the node's children, which no glTF-shaped document can say
@@ -302,7 +303,9 @@ function attachMeshesAndSkins(roots: FbxJson[], state: FbxImportState, materialM
     if (!needsOwnNode && meshBindings.length === 1) {
       ownerNode.mesh = meshBindings[0].meshIndex;
       if (meshBindings[0].skinIndex >= 0) ownerNode.skin = meshBindings[0].skinIndex;
-      ownerNode.weights = morphWeights(source.meshes?.[0]);
+      // The bound geometry's own weights, not the node's first: a geometry with
+      // nothing to draw is left out, so the two need not be the same one.
+      ownerNode.weights = morphWeights(meshBindings[0].source);
     } else if (meshBindings.length > 0) {
       for (const binding of meshBindings) {
         const childIndex = document.nodes.length;
@@ -340,7 +343,20 @@ function geometricMatrix(source: FbxJson, space: FbxSpace, scale: number): Float
   return rebaseMatrix(matrix, space, scale);
 }
 
+/**
+ * Append one FBX geometry as a document mesh, or -1 when it holds no polygons.
+ *
+ * FBX carries a curve as a Geometry object like any other: control points, no
+ * `PolygonVertexIndex`. Nothing renders from one, and a document mesh must have
+ * at least one primitive, so a file that contains any -- a chain along a spline,
+ * a lattice -- would otherwise fail validation as a whole and refuse to open.
+ * The node keeps its transform and its children; only the geometry is dropped.
+ */
 function appendMesh(source: FbxJson, materialMap: number[], document: SceneDocument, scale: number, space: FbxSpace) {
+  if ((source.indices?.length || 0) < 3) {
+    document.warnings.push(`FBX geometry ${source.name || 'geometry'} has no polygons and is not part of the scene`);
+    return -1;
+  }
   const vertexCount = (source.positions?.length || 0) / 3;
   const attributes: AttributeMap = {
     POSITION: appendFloatAccessor(document, rebaseVector3(source.positions || [], space, scale), 3),

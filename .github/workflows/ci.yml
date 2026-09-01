@@ -281,6 +281,7 @@ jobs:
           npm run test:gltf-build-profile
           npm run test:fbx-rotation-basis
           npm run test:fbx-material-split
+          npm run test:fbx-curve-geometry
           npm run test:viewer-joint-palette
           npm run test:viewer-shared-buffers
           npm run test:viewer-point-clouds
