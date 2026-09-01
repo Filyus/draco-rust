@@ -1853,3 +1853,20 @@ fn minified_json_forces_serialization_and_preserves_order() {
         br#"{"asset":{"version":"2.0"},"extras":{"number":1.00}}"#
     );
 }
+
+/// The Draco-only safety check walks the whole document, so it has to accept
+/// nesting as deep as the parser does.
+#[cfg(feature = "draco-encode")]
+#[test]
+fn deep_documents_survive_the_encode_safety_walk() {
+    let depth = 200_000;
+    let json = format!(
+        r#"{{"asset":{{"version":"2.0"}},"extras":{}1{}}}"#,
+        "[".repeat(depth),
+        "]".repeat(depth)
+    );
+    let import = crate::import_slice(json.as_bytes(), None).expect("deep extras import");
+    import
+        .ensure_document_binary_transform_safe()
+        .expect("no extensions, so the check passes");
+}

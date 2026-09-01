@@ -1,9 +1,23 @@
 //! Small, dependency-free JSON DOM used by the lossless glTF model.
 
+use std::fmt;
+use std::mem;
 use std::ops::{Index, IndexMut};
+use std::slice;
 
 /// Dependency-free JSON value that preserves number lexemes and object order.
-#[derive(Clone, Debug, PartialEq)]
+///
+/// The type is recursive, so every operation that walks a whole tree --
+/// parsing, serializing, cloning, comparing and dropping -- carries the input's
+/// nesting in an explicit heap stack rather than in call frames. Nesting is
+/// therefore bounded by memory proportional to the document, not by the thread
+/// stack, and no operation on a value that was parsed successfully can overflow
+/// it afterwards.
+///
+/// That holds only as far as the code that consumes a value: since no depth is
+/// refused at parse time, a walk over a parsed tree must carry its own stack
+/// too. A recursive one turns a hostile document into a stack overflow, which
+/// is the whole failure this design removes.
 pub enum Value {
     /// JSON null.
     Null,
@@ -22,11 +36,7 @@ pub enum Value {
 impl Value {
     /// Parses one complete JSON value.
     pub fn parse(input: &[u8]) -> Result<Self, String> {
-        let mut parser = Parser {
-            input,
-            pos: 0,
-            depth: 0,
-        };
+        let mut parser = Parser { input, pos: 0 };
         let value = parser.value()?;
         parser.space();
         if parser.pos != input.len() {
@@ -41,32 +51,59 @@ impl Value {
         out
     }
     fn write(&self, out: &mut Vec<u8>) {
-        match self {
-            Self::Null => out.extend_from_slice(b"null"),
-            Self::Bool(v) => out.extend_from_slice(if *v { b"true" } else { b"false" }),
-            Self::Number(v) => out.extend_from_slice(v.as_bytes()),
-            Self::String(v) => write_string(out, v),
-            Self::Array(values) => {
-                out.push(b'[');
-                for (i, v) in values.iter().enumerate() {
-                    if i != 0 {
-                        out.push(b',');
+        // A container whose opening bracket is already written: what is left to
+        // serialize, and whether a separator is owed before the next entry.
+        enum Frame<'a> {
+            Array(slice::Iter<'a, Value>, bool),
+            Object(slice::Iter<'a, (String, Value)>, bool),
+        }
+        let mut stack: Vec<Frame<'_>> = Vec::new();
+        let mut pending = Some(self);
+        loop {
+            if let Some(value) = pending.take() {
+                match value {
+                    Self::Null => out.extend_from_slice(b"null"),
+                    Self::Bool(v) => out.extend_from_slice(if *v { b"true" } else { b"false" }),
+                    Self::Number(v) => out.extend_from_slice(v.as_bytes()),
+                    Self::String(v) => write_string(out, v),
+                    Self::Array(values) => {
+                        out.push(b'[');
+                        stack.push(Frame::Array(values.iter(), false));
                     }
-                    v.write(out);
+                    Self::Object(values) => {
+                        out.push(b'{');
+                        stack.push(Frame::Object(values.iter(), false));
+                    }
                 }
-                out.push(b']');
             }
-            Self::Object(values) => {
-                out.push(b'{');
-                for (i, (k, v)) in values.iter().enumerate() {
-                    if i != 0 {
-                        out.push(b',');
+            match stack.last_mut() {
+                None => return,
+                Some(Frame::Array(rest, separate)) => match rest.next() {
+                    Some(value) => {
+                        if mem::replace(separate, true) {
+                            out.push(b',');
+                        }
+                        pending = Some(value);
                     }
-                    write_string(out, k);
-                    out.push(b':');
-                    v.write(out);
-                }
-                out.push(b'}');
+                    None => {
+                        out.push(b']');
+                        stack.pop();
+                    }
+                },
+                Some(Frame::Object(rest, separate)) => match rest.next() {
+                    Some((key, value)) => {
+                        if mem::replace(separate, true) {
+                            out.push(b',');
+                        }
+                        write_string(out, key);
+                        out.push(b':');
+                        pending = Some(value);
+                    }
+                    None => {
+                        out.push(b'}');
+                        stack.pop();
+                    }
+                },
             }
         }
     }
@@ -146,7 +183,167 @@ impl Value {
     pub fn object(entries: impl IntoIterator<Item = (impl Into<String>, Value)>) -> Self {
         Self::Object(entries.into_iter().map(|(k, v)| (k.into(), v)).collect())
     }
+    /// Takes the array entries out of this value.
+    ///
+    /// `Value` frees itself iteratively, and a type with a destructor cannot
+    /// have a variant's payload moved out of it by pattern matching, so the
+    /// three `into_` methods are how a caller takes ownership of one.
+    pub fn into_array(mut self) -> Option<Vec<Value>> {
+        self.as_array_mut().map(mem::take)
+    }
+    /// Takes the object entries out of this value.
+    pub fn into_object(mut self) -> Option<Vec<(String, Value)>> {
+        self.as_object_mut().map(mem::take)
+    }
+    /// Takes the string out of this value.
+    pub fn into_string(mut self) -> Option<String> {
+        match &mut self {
+            Self::String(v) => Some(mem::take(v)),
+            _ => None,
+        }
+    }
 }
+impl Clone for Value {
+    fn clone(&self) -> Self {
+        // A container being rebuilt: what is left to copy from the source, and
+        // what has been copied so far. Object frames also carry the key whose
+        // value is currently being cloned.
+        enum Frame<'a> {
+            Array(slice::Iter<'a, Value>, Vec<Value>),
+            Object(
+                slice::Iter<'a, (String, Value)>,
+                Vec<(String, Value)>,
+                &'a str,
+            ),
+        }
+        let mut stack: Vec<Frame<'_>> = Vec::new();
+        let mut source = Some(self);
+        // The subtree finished most recently, waiting to be stored in its parent.
+        let mut done: Option<Value> = None;
+        loop {
+            if let Some(value) = source.take() {
+                match value {
+                    Self::Null => done = Some(Self::Null),
+                    Self::Bool(v) => done = Some(Self::Bool(*v)),
+                    Self::Number(v) => done = Some(Self::Number(v.clone())),
+                    Self::String(v) => done = Some(Self::String(v.clone())),
+                    Self::Array(values) => {
+                        stack.push(Frame::Array(
+                            values.iter(),
+                            Vec::with_capacity(values.len()),
+                        ));
+                    }
+                    Self::Object(values) => {
+                        stack.push(Frame::Object(
+                            values.iter(),
+                            Vec::with_capacity(values.len()),
+                            "",
+                        ));
+                    }
+                }
+            }
+            let finished = match stack.last_mut() {
+                None => return done.expect("the root value is cloned before the stack empties"),
+                Some(Frame::Array(rest, out)) => {
+                    if let Some(value) = done.take() {
+                        out.push(value);
+                    }
+                    match rest.next() {
+                        Some(next) => {
+                            source = Some(next);
+                            false
+                        }
+                        None => true,
+                    }
+                }
+                Some(Frame::Object(rest, out, key)) => {
+                    if let Some(value) = done.take() {
+                        out.push(((*key).to_owned(), value));
+                    }
+                    match rest.next() {
+                        Some((next_key, next)) => {
+                            *key = next_key;
+                            source = Some(next);
+                            false
+                        }
+                        None => true,
+                    }
+                }
+            };
+            if finished {
+                done = Some(
+                    match stack.pop().expect("a frame was just observed on the stack") {
+                        Frame::Array(_, out) => Self::Array(out),
+                        Frame::Object(_, out, _) => Self::Object(out),
+                    },
+                );
+            }
+        }
+    }
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        let mut work = vec![(self, other)];
+        while let Some(pair) = work.pop() {
+            match pair {
+                (Self::Null, Self::Null) => {}
+                (Self::Bool(a), Self::Bool(b)) if a == b => {}
+                (Self::Number(a), Self::Number(b)) | (Self::String(a), Self::String(b))
+                    if a == b => {}
+                (Self::Array(a), Self::Array(b)) if a.len() == b.len() => {
+                    work.extend(a.iter().zip(b));
+                }
+                (Self::Object(a), Self::Object(b)) if a.len() == b.len() => {
+                    for ((key, a), (other_key, b)) in a.iter().zip(b) {
+                        if key != other_key {
+                            return false;
+                        }
+                        work.push((a, b));
+                    }
+                }
+                _ => return false,
+            }
+        }
+        true
+    }
+}
+
+impl fmt::Debug for Value {
+    /// Renders the value as JSON text. The derived form would recurse through
+    /// containers, so a deep value could only be formatted by overflowing the
+    /// stack.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&String::from_utf8_lossy(&self.to_vec()))
+    }
+}
+
+impl Drop for Value {
+    /// Frees the tree breadth-first through a worklist.
+    ///
+    /// Every value reaches its own `drop` with its children already moved onto
+    /// the worklist, so the implicit drop of each child bottoms out immediately
+    /// instead of descending another level.
+    fn drop(&mut self) {
+        let mut work = Vec::new();
+        Self::orphan_children(self, &mut work);
+        while let Some(mut value) = work.pop() {
+            Self::orphan_children(&mut value, &mut work);
+        }
+    }
+}
+
+impl Value {
+    /// Moves a container's children onto `work`, leaving the value empty.
+    fn orphan_children(value: &mut Self, work: &mut Vec<Self>) {
+        match value {
+            Self::Array(values) => work.append(values),
+            Self::Object(values) => work.extend(mem::take(values).into_iter().map(|(_, v)| v)),
+            _ => {}
+        }
+    }
+}
+
 impl From<&str> for Value {
     fn from(v: &str) -> Self {
         Self::String(v.into())
@@ -231,18 +428,18 @@ fn write_string(out: &mut Vec<u8>, value: &str) {
     }
     out.push(b'"');
 }
-/// Nesting the parser accepts before it reports an error.
+/// A container the parser has opened but not yet closed.
 ///
-/// `value` recurses through arrays and objects, so the input alone decides how
-/// deep the call stack goes. glTF documents nest a handful of levels; the limit
-/// is set far above anything an authoring tool emits and far below the point
-/// where the recursion exhausts a thread stack.
-const MAX_DEPTH: usize = 128;
+/// Object frames also hold the key whose value is being parsed, so that the key
+/// and its value only become a pair once the value is complete.
+enum Frame {
+    Array(Vec<Value>),
+    Object(Vec<(String, Value)>, String),
+}
 
 struct Parser<'a> {
     input: &'a [u8],
     pos: usize,
-    depth: usize,
 }
 impl<'a> Parser<'a> {
     fn space(&mut self) {
@@ -263,29 +460,98 @@ impl<'a> Parser<'a> {
             false
         }
     }
+    /// Parses one complete value, holding open containers on the heap.
+    ///
+    /// Nesting costs one frame per level instead of a call frame, so the only
+    /// bound on depth is the memory the document itself pays for: a level
+    /// cannot be opened without spending an input byte on its bracket. The
+    /// worst shape for this, an input that is nothing but brackets, peaks near
+    /// 90 bytes of heap per input byte, against roughly 17 for a document that
+    /// carries actual content.
     fn value(&mut self) -> Result<Value, String> {
-        self.space();
-        match self.input.get(self.pos).copied() {
-            Some(b'{') => self.nested(Self::object),
-            Some(b'[') => self.nested(Self::array),
-            Some(b'"') => Ok(Value::String(self.string()?)),
-            Some(b't') => self.literal(b"true", Value::Bool(true)),
-            Some(b'f') => self.literal(b"false", Value::Bool(false)),
-            Some(b'n') => self.literal(b"null", Value::Null),
-            Some(b'-' | b'0'..=b'9') => self.number(),
-            _ => Err("expected JSON value".into()),
+        let mut stack: Vec<Frame> = Vec::new();
+        // The value finished most recently, waiting to be stored in the
+        // container that encloses it.
+        let mut done;
+        'value: loop {
+            self.space();
+            match self.input.get(self.pos).copied() {
+                Some(b'{') => {
+                    self.pos += 1;
+                    if self.take(b'}') {
+                        done = Value::Object(Vec::new());
+                    } else {
+                        let key = self.object_key()?;
+                        stack.push(Frame::Object(Vec::new(), key));
+                        continue 'value;
+                    }
+                }
+                Some(b'[') => {
+                    self.pos += 1;
+                    if self.take(b']') {
+                        done = Value::Array(Vec::new());
+                    } else {
+                        stack.push(Frame::Array(Vec::new()));
+                        continue 'value;
+                    }
+                }
+                Some(b'"') => done = Value::String(self.string()?),
+                Some(b't') => done = self.literal(b"true", Value::Bool(true))?,
+                Some(b'f') => done = self.literal(b"false", Value::Bool(false))?,
+                Some(b'n') => done = self.literal(b"null", Value::Null)?,
+                Some(b'-' | b'0'..=b'9') => done = self.number()?,
+                _ => return Err("expected JSON value".into()),
+            }
+            // Store the finished value, then close every container that ends
+            // here; each one becomes a finished value for the level above it.
+            loop {
+                let closed = match stack.last_mut() {
+                    None => return Ok(done),
+                    Some(Frame::Array(values)) => {
+                        values.push(done);
+                        if self.take(b']') {
+                            true
+                        } else if self.take(b',') {
+                            false
+                        } else {
+                            return Err("missing array comma".into());
+                        }
+                    }
+                    Some(Frame::Object(values, key)) => {
+                        values.push((mem::take(key), done));
+                        if self.take(b'}') {
+                            true
+                        } else if self.take(b',') {
+                            false
+                        } else {
+                            return Err("missing object comma".into());
+                        }
+                    }
+                };
+                if !closed {
+                    if let Some(Frame::Object(_, key)) = stack.last_mut() {
+                        *key = self.object_key()?;
+                    }
+                    continue 'value;
+                }
+                done = match stack.pop().expect("a frame was just observed on the stack") {
+                    Frame::Array(values) => Value::Array(values),
+                    Frame::Object(values, _) => Value::Object(values),
+                };
+            }
         }
     }
-    /// Runs one container parser one level deeper, refusing to exceed
-    /// [`MAX_DEPTH`].
-    fn nested(&mut self, parse: fn(&mut Self) -> Result<Value, String>) -> Result<Value, String> {
-        if self.depth == MAX_DEPTH {
-            return Err(format!("JSON nesting exceeds {MAX_DEPTH} levels"));
+    /// Consumes one object key and the colon that must follow it.
+    fn object_key(&mut self) -> Result<String, String> {
+        self.space();
+        if self.input.get(self.pos) != Some(&b'"') {
+            return Err("object key is not a string".into());
         }
-        self.depth += 1;
-        let value = parse(self);
-        self.depth -= 1;
-        value
+        let key = self.string()?;
+        if !self.take(b':') {
+            return Err("missing object colon".into());
+        }
+        Ok(key)
     }
     fn literal(&mut self, s: &[u8], v: Value) -> Result<Value, String> {
         if self.input.get(self.pos..self.pos + s.len()) == Some(s) {
@@ -294,50 +560,6 @@ impl<'a> Parser<'a> {
         } else {
             Err("invalid JSON literal".into())
         }
-    }
-    fn object(&mut self) -> Result<Value, String> {
-        self.pos += 1;
-        let mut o = Vec::new();
-        self.space();
-        if self.take(b'}') {
-            return Ok(Value::Object(o));
-        }
-        loop {
-            self.space();
-            if self.input.get(self.pos) != Some(&b'"') {
-                return Err("object key is not a string".into());
-            }
-            let k = self.string()?;
-            if !self.take(b':') {
-                return Err("missing object colon".into());
-            }
-            let v = self.value()?;
-            o.push((k, v));
-            if self.take(b'}') {
-                break;
-            }
-            if !self.take(b',') {
-                return Err("missing object comma".into());
-            }
-        }
-        Ok(Value::Object(o))
-    }
-    fn array(&mut self) -> Result<Value, String> {
-        self.pos += 1;
-        let mut a = Vec::new();
-        if self.take(b']') {
-            return Ok(Value::Array(a));
-        }
-        loop {
-            a.push(self.value()?);
-            if self.take(b']') {
-                break;
-            }
-            if !self.take(b',') {
-                return Err("missing array comma".into());
-            }
-        }
-        Ok(Value::Array(a))
     }
     fn string(&mut self) -> Result<String, String> {
         self.pos += 1;
@@ -490,7 +712,7 @@ impl<'a> Parser<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::Value;
+    use super::{mem, Value};
 
     #[test]
     fn parses_unicode_surrogate_pairs() {
@@ -539,17 +761,178 @@ mod tests {
         }
     }
 
+    /// Deep enough that any per-level call frame would overflow the 2 MiB stack
+    /// a spawned thread gets by default.
+    const DEEP: usize = 200_000;
+
+    /// Deterministic pseudo-random byte source, so a failure is reproducible
+    /// from the seed printed with it.
+    fn random(seed: u64) -> impl FnMut() -> u64 {
+        let mut state = seed | 1;
+        move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        }
+    }
+
     #[test]
-    fn rejects_nesting_deeper_than_the_parser_limit() {
-        let accepted = "[".repeat(super::MAX_DEPTH) + &"]".repeat(super::MAX_DEPTH);
-        assert!(Value::parse(accepted.as_bytes()).is_ok());
+    fn random_documents_survive_a_parse_serialize_parse_cycle() {
+        // Token soup, mostly invalid: parse errors must stay errors.
+        let tokens = [
+            "{", "}", "[", "]", ",", ":", "\"a\"", "1", "-2.5e3", "true", "null", " ", "01", "\"",
+            "\\",
+        ];
+        // Balanced nesting, always valid: the writer sees shapes no fixture has.
+        let mut accepted = 0;
+        for seed in 0..4_000u64 {
+            let mut next = random(seed);
+            let mut soup = String::new();
+            for _ in 0..next() % 200 {
+                soup.push_str(tokens[(next() % tokens.len() as u64) as usize]);
+            }
 
-        // Unbalanced on purpose: the depth limit must reject the input before
-        // the parser ever reaches the missing brackets.
-        let too_deep = "[".repeat(100_000);
-        assert!(Value::parse(too_deep.as_bytes()).is_err());
+            let scalars = ["1", "-2.5e3", "true", "false", "null", r#""s""#, "[]", "{}"];
+            let mut structured = String::new();
+            // Each frame is the bracket that closes it and whether it already
+            // holds an entry, which is what decides the separator.
+            let mut open: Vec<(char, bool)> = Vec::new();
+            structured.push('[');
+            open.push((']', false));
+            for _ in 0..next() % 200 {
+                if open.is_empty() {
+                    break;
+                }
+                let action = next() % 4;
+                if action == 3 || open.len() >= 60 {
+                    structured.push(open.pop().expect("a container is open").0);
+                    continue;
+                }
+                let (close, filled) = open.last_mut().expect("a container is open");
+                let in_object = *close == '}';
+                if mem::replace(filled, true) {
+                    structured.push(',');
+                }
+                if in_object {
+                    structured.push_str(r#""k":"#);
+                }
+                match action {
+                    0 => {
+                        structured.push('[');
+                        open.push((']', false));
+                    }
+                    1 => {
+                        structured.push('{');
+                        open.push(('}', false));
+                    }
+                    _ => structured.push_str(scalars[(next() % scalars.len() as u64) as usize]),
+                }
+            }
+            while let Some((close, _)) = open.pop() {
+                structured.push(close);
+            }
 
-        let objects = r#"{"a":"#.repeat(100_000);
-        assert!(Value::parse(objects.as_bytes()).is_err());
+            for source in [soup, structured] {
+                let Ok(value) = Value::parse(source.as_bytes()) else {
+                    continue;
+                };
+                accepted += 1;
+                let text = value.to_vec();
+                let reparsed = Value::parse(&text)
+                    .unwrap_or_else(|e| panic!("seed {seed} serialized to unparsable JSON: {e}"));
+                assert_eq!(reparsed, value, "seed {seed} changed across a round trip");
+                assert_eq!(reparsed.to_vec(), text, "seed {seed} serializes unstably");
+                assert_eq!(value.clone(), value, "seed {seed} clones unequal");
+            }
+        }
+        // A generator that stopped producing parsable documents would make the
+        // round trip vacuous.
+        assert!(accepted > 3_000, "only {accepted} documents parsed");
+    }
+
+    #[test]
+    fn equality_distinguishes_variants_lexemes_and_member_order() {
+        let parse = |text: &str| Value::parse(text.as_bytes()).unwrap();
+        assert_eq!(
+            parse(r#"{"a":[1,{"b":null}]}"#),
+            parse(r#"{"a":[1,{"b":null}]}"#)
+        );
+        // A shared payload across two variants is not equality.
+        assert_ne!(parse("1"), parse(r#""1""#));
+        assert_ne!(parse("true"), parse(r#""true""#));
+        // Lexemes are preserved, so equal quantities can still differ.
+        assert_ne!(parse("1"), parse("1.0"));
+        // Objects are ordered pairs, not maps.
+        assert_ne!(parse(r#"{"a":1,"b":2}"#), parse(r#"{"b":2,"a":1}"#));
+        assert_ne!(parse(r#"{"a":1}"#), parse(r#"{"b":1}"#));
+        // Length is compared before the elements are.
+        assert_ne!(parse("[1,2]"), parse("[1,2,3]"));
+        assert_ne!(parse("[1,2]"), parse("[1,3]"));
+        assert_ne!(parse("[]"), parse("{}"));
+        assert_ne!(parse("null"), parse("[]"));
+    }
+
+    #[test]
+    fn owned_accessors_take_the_payload_of_their_own_variant_only() {
+        let value = Value::parse(br#"[1,"s"]"#).unwrap();
+        assert!(value.clone().into_object().is_none());
+        assert!(value.clone().into_string().is_none());
+        let items = value.into_array().expect("an array");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[1].clone().into_string().as_deref(), Some("s"));
+
+        let object = Value::parse(br#"{"a":null}"#).unwrap();
+        assert!(object.clone().into_array().is_none());
+        let entries = object.into_object().expect("an object");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, "a");
+    }
+
+    #[test]
+    fn clone_reproduces_every_variant_of_a_mixed_tree() {
+        let value = Value::parse(
+            br#"{"a":[1,-2.5e3,"s",true,false,null,[],{},[{"b":[[1]]}]],"c":{"d":{}}}"#,
+        )
+        .unwrap();
+        let copy = value.clone();
+        assert_eq!(copy, value);
+        assert_eq!(copy.to_vec(), value.to_vec());
+    }
+
+    #[test]
+    fn round_trips_nesting_far_deeper_than_any_call_stack_allows() {
+        for (open, leaf, close) in [("[", "", "]"), (r#"{"a":"#, "{}", "}")] {
+            let source = open.repeat(DEEP) + leaf + &close.repeat(DEEP);
+            let value = Value::parse(source.as_bytes()).expect("deep nesting parses");
+            assert_eq!(value.to_vec(), source.as_bytes());
+            assert!(value.clone() == value);
+            // Formatting and dropping walk the same depth.
+            assert_eq!(format!("{value:?}").len(), source.len());
+        }
+    }
+
+    #[test]
+    fn reports_unbalanced_deep_nesting_without_overflowing() {
+        assert!(Value::parse("[".repeat(DEEP).as_bytes()).is_err());
+        assert!(Value::parse(r#"{"a":"#.repeat(DEEP).as_bytes()).is_err());
+    }
+
+    #[test]
+    fn deep_values_survive_a_small_thread_stack() {
+        // The operations run where a per-level call frame has no room at all,
+        // which no assertion about the main thread's stack could establish.
+        std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(|| {
+                let source = "[".repeat(DEEP) + &"]".repeat(DEEP);
+                let value = Value::parse(source.as_bytes()).expect("deep nesting parses");
+                let copy = value.clone();
+                assert!(copy == value);
+                assert_eq!(copy.to_vec().len(), source.len());
+            })
+            .expect("spawning the test thread")
+            .join()
+            .expect("the deep value is handled without overflowing");
     }
 }
