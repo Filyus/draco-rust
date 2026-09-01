@@ -144,31 +144,32 @@ impl Import {
 
     #[cfg(feature = "draco-encode")]
     pub(crate) fn ensure_document_binary_transform_safe(&self) -> Result<()> {
-        fn visit(value: &Value, registry: &ExtensionRegistry) -> Result<()> {
-            match value {
-                Value::Array(values) => {
-                    for value in values {
-                        visit(value, registry)?;
-                    }
-                }
-                Value::Object(values) => {
-                    for (name, value) in values {
-                        if name == "extensions" {
-                            let extensions = value.as_object().ok_or_else(|| {
-                                Error::Extension("extensions is not an object".into())
-                            })?;
-                            for (extension, _) in extensions {
-                                if !registry.allows_binary_transform(extension) {
-                                    return Err(Error::Extension(format!(
-                                        "cannot produce Draco-only output with extension {extension:?}: its binary-reference semantics are not registered as transform-safe"
-                                    )));
+        // Walked with an explicit stack: the document's nesting is the input's,
+        // and `json::Value` accepts any depth the input pays for.
+        fn visit(root: &Value, registry: &ExtensionRegistry) -> Result<()> {
+            let mut stack = vec![root];
+            while let Some(value) = stack.pop() {
+                match value {
+                    Value::Array(values) => stack.extend(values.iter().rev()),
+                    Value::Object(values) => {
+                        for (name, value) in values.iter().rev() {
+                            if name == "extensions" {
+                                let extensions = value.as_object().ok_or_else(|| {
+                                    Error::Extension("extensions is not an object".into())
+                                })?;
+                                for (extension, _) in extensions {
+                                    if !registry.allows_binary_transform(extension) {
+                                        return Err(Error::Extension(format!(
+                                            "cannot produce Draco-only output with extension {extension:?}: its binary-reference semantics are not registered as transform-safe"
+                                        )));
+                                    }
                                 }
                             }
+                            stack.push(value);
                         }
-                        visit(value, registry)?;
                     }
+                    _ => {}
                 }
-                _ => {}
             }
             Ok(())
         }
