@@ -149,6 +149,36 @@ the rest of the module until it was measured, and moving that one package to
 three-line manifest change and no profile to collect. It costs `24.7%` of that
 module's gzip and between nothing and `6.9%` of the others'.
 
+### `+simd128`: the flag is not the lever, and Stockfish says the same
+
+Stockfish's WASM build turns SIMD on -- `-msimd128`, and `-mrelaxed-simd` for
+a second architecture -- and it is worth having there because its NNUE
+evaluation is *written* in vector intrinsics, which emscripten maps onto WASM
+SIMD. The flag is what admits code someone wrote; it is not itself the
+optimization. Measured here, that distinction is the whole result.
+
+`-C target-feature=+simd128` does make the autovectoriser fire now that
+`draco-core` is at `2` -- `2,596` vector instructions against **zero** without
+it, counted through `wasm-opt --print`, and `2,628` survive into the shipped
+module (`wasm-opt` needs `--enable-simd` to accept it at all). They land in
+the hot functions, not in glue: `sequential_integer_attribute_encoder` at
+`368`, `reconstruct_mesh` at `260`, `encode_raw_symbols_with_frequencies` at
+`160`, the sequential decoder at `153`.
+
+And the clock reads nothing. Eleven interleaved rounds against the same module
+without the flag: encode `1.023x` with `5/11` rounds faster, decode `0.975x`
+with `8/11`, both inside their own spread. `+0.45%` gzip, and a browser
+baseline that rises to Chrome 91 / Firefox 89 / **Safari 16.4** -- a
+compatibility cost paid for an effect this cannot resolve. Not taken.
+
+`~12` vector instructions per function is the tell: the autovectoriser found
+fixed-size copies and initialisation inside those functions, not their inner
+loops, which are rANS and pointer-chasing traversal and do not vectorise. What
+would pay is a kernel written by hand for the one stage that is genuinely
+data-parallel -- the quantization transform, which the encode stage split
+already names as where the gap is. That is the Stockfish shape, and it is work
+rather than a flag.
+
 The knob is per package on purpose. `"z"` remains right for the bindings and
 the glue, which are cold and mostly size; it is wrong for a codec whose loops
 unroll and vectorise. A crate *written* for `"z"` behaves the other way and
