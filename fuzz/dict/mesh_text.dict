@@ -1,0 +1,91 @@
+# libFuzzer dictionary for the OBJ, PLY and STL readers and writers.
+#
+# The readers are keyword-driven text parsers, and a byte-flipping mutator
+# discovers a keyword one character at a time: "end_header" is ten correct
+# bytes in a row before the PLY reader leaves the header at all. A dictionary
+# hands the mutator whole tokens, so the campaign spends its executions on what
+# follows a keyword rather than on spelling it. The tokens are the ones the
+# readers match on, taken from their own source, plus the separators and number
+# spellings that decide how a line is split.
+
+# OBJ
+"v "
+"vn "
+"vt "
+"f "
+"o "
+"g "
+"s "
+"usemtl "
+"mtllib "
+"/"
+"//"
+"\\\x0a"
+
+# PLY header
+"ply\x0a"
+"format ascii 1.0\x0a"
+"format binary_little_endian 1.0\x0a"
+"format binary_big_endian 1.0\x0a"
+"comment "
+"obj_info "
+"element vertex "
+"element face "
+"element "
+"property "
+"property list "
+"end_header\x0a"
+"char"
+"uchar"
+"short"
+"ushort"
+"int"
+"uint"
+"float"
+"double"
+"int8"
+"uint8"
+"int16"
+"uint16"
+"int32"
+"uint32"
+"float32"
+"float64"
+"x"
+"y"
+"z"
+"nx"
+"ny"
+"nz"
+"red"
+"green"
+"blue"
+"alpha"
+"s"
+"t"
+"u"
+"v"
+"texture_u"
+"texture_v"
+"vertex_indices"
+
+# STL
+"solid "
+"endsolid"
+"facet normal "
+"outer loop"
+"vertex "
+"endloop"
+"endfacet"
+
+# Numbers as the text readers parse them
+"nan"
+"inf"
+"-inf"
+"1e"
+"e+"
+"e-"
+"-0"
+"0."
+"."
+"\x0d\x0a"

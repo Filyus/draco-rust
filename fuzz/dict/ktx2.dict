@@ -1,0 +1,53 @@
+# libFuzzer dictionary for the KTX2 transcode target.
+#
+# KTX2 is a fixed binary header, so most of what the mutator needs it finds by
+# flipping bytes in a seed. What it does not find that way are the multi-byte
+# constants the reader dispatches on: the twelve-byte identifier, the
+# little-endian words that select a format or a supercompression scheme, the
+# Zstd frame magic at the start of a compressed level, and the key names the
+# key/value block is searched for. Each of those is a comparison against a
+# whole word, and a dictionary is how a whole word arrives at once.
+
+# Identifier
+"\xabKTX 20\xbb\x0d\x0a\x1a\x0a"
+
+# vkFormat, little-endian: UNDEFINED (the Basis codecs), R8G8B8A8_UNORM and
+# _SRGB, and the block-compressed formats a file may already hold.
+"\x00\x00\x00\x00"
+"\x25\x00\x00\x00"
+"\x2b\x00\x00\x00"
+"\x83\x00\x00\x00"
+"\x85\x00\x00\x00"
+"\x91\x00\x00\x00"
+"\x9f\x00\x00\x00"
+"\xa2\x00\x00\x00"
+
+# supercompressionScheme: none, BasisLZ, Zstandard, ZLIB
+"\x01\x00\x00\x00"
+"\x02\x00\x00\x00"
+"\x03\x00\x00\x00"
+
+# Level payloads
+"\x28\xb5\x2f\xfd"
+"\x50\x2a\x4d\x18"
+"\x78\x9c"
+"\x78\xda"
+
+# Key/value block
+"KTXorientation\x00"
+"KTXanimData\x00"
+"KTXwriter\x00"
+"KTXswizzle\x00"
+"rd\x00"
+"ru\x00"
+"rdi\x00"
+"rgba\x00"
+
+# Dimensions and counts that sit on the reader's limits
+"\x00\x40\x00\x00"
+"\x01\x40\x00\x00"
+"\xff\xff\x00\x00"
+"\x10\x00\x00\x00"
+"\x11\x00\x00\x00"
+"\xff\xff\xff\xff"
+"\xff\xff\xff\xff\xff\xff\xff\xff"

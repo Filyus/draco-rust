@@ -1,8 +1,8 @@
 #!/bin/bash
 set -euo pipefail
-# ClusterFuzzLite / OSS-Fuzz build script for the cargo-fuzz targets
-# (`decode_drc`, `compress_gltf`, `draco_gltf_import`). The `decode_drc` target is built with legacy
-# decode features enabled by fuzz/Cargo.toml.
+# ClusterFuzzLite / OSS-Fuzz build script for every cargo-fuzz target in
+# fuzz/Cargo.toml. The `decode_drc` target is built with legacy decode features
+# enabled there.
 #
 # This repository keeps the workspace under crates/ and has no Cargo.toml at the
 # root, so cargo-fuzz must be pointed at the fuzz project with `--fuzz-dir fuzz`.
@@ -27,7 +27,35 @@ esac
 # those archives from the same repository fixtures and committed regression
 # seeds used by the lightweight fuzz workflow, so a fresh CFL cache never
 # starts from an empty corpus.
-fuzz_targets=(decode_drc compress_gltf draco_gltf_import fbx_read_scene fbx_roundtrip ktx2_transcode encode_drc mesh_text_readers)
+#
+# Every [[bin]] in fuzz/Cargo.toml, and the list is checked against it below:
+# a target added there and not here would build and then never be fuzzed by
+# this layer, which is how `mesh_text_roundtrip` went missing once.
+fuzz_targets=(decode_drc compress_gltf draco_gltf_import fbx_read_scene fbx_roundtrip ktx2_transcode encode_drc mesh_text_readers mesh_text_roundtrip)
+declared=$(grep -E '^name = "' fuzz/Cargo.toml | grep -v draco-fuzz | sed -E 's/name = "(.*)"/\1/' | sort)
+listed=$(printf '%s\n' "${fuzz_targets[@]}" | sort)
+if [ "$declared" != "$listed" ]; then
+  echo "fuzz targets in fuzz/Cargo.toml and in this script differ:" >&2
+  diff <(echo "$declared") <(echo "$listed") >&2 || true
+  exit 1
+fi
+
+# The same libFuzzer dictionaries the in-repo workflow passes with -dict=,
+# handed over the OSS-Fuzz way: a <target>.options file next to the binary.
+declare -A dicts=(
+  [mesh_text_readers]=mesh_text
+  [mesh_text_roundtrip]=mesh_text
+  [fbx_read_scene]=fbx
+  [fbx_roundtrip]=fbx
+  [compress_gltf]=gltf
+  [draco_gltf_import]=gltf
+  [ktx2_transcode]=ktx2
+)
+cp fuzz/dict/*.dict "$OUT/"
+for target in "${!dicts[@]}"; do
+  printf '[libfuzzer]\ndict = %s.dict\n' "${dicts[$target]}" > "$OUT/$target.options"
+done
+
 for target in "${fuzz_targets[@]}"; do
   cp fuzz/target/*/release/"$target" "$OUT/"
 

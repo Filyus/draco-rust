@@ -1,13 +1,14 @@
 name: Fuzz
 
 # Coverage-guided fuzzing of every untrusted-input path in the workspace
-# (level 1: bounded smoke on PR/push, with a longer soak on manual dispatch).
-# Each corpus is persisted across runs via the GitHub Actions cache and
-# re-seeded from the committed fixtures each run, so coverage never starts from
-# zero even if the cache is evicted.
+# (level 1: bounded smoke on PR/push, and a soak every night or on manual
+# dispatch). Each corpus is persisted across runs via the GitHub Actions cache
+# and re-seeded from the committed fixtures each run, so coverage never starts
+# from zero even if the cache is evicted.
 #
-# ClusterFuzzLite (cflite_*.yml) provides the heavier continuous-fuzzing layer
-# (crash dedup, batch mode); this workflow is the lightweight in-repo gate.
+# ClusterFuzzLite (cflite_*.yml) is the heavier layer -- crash dedup, batch
+# mode -- and stays on manual dispatch; this workflow is what actually
+# accumulates campaign hours.
 
 # Fuzz what the targets actually reach. The paths filter is what makes the
 # comment below true: without it a README push starts a run, and because runs
@@ -29,24 +30,42 @@ on:
       - "crates/**"
       - "fuzz/**"
       - "testdata/**"
-  # No scheduled (nightly) run: the smoke gate fires only when code changes.
-  # Trigger a longer soak manually with `gh workflow run fuzz.yml`.
+  # A soak every night, and one on demand with `gh workflow run fuzz.yml`.
   #
-  # The README badge is pinned to `?event=push` so it reports this gate rather
-  # than the soaks: a campaign that runs for an hour per target is expected to
-  # find things, and a finding is not a broken build. Read the soak's own
-  # conclusion from the run list, not from the badge.
+  # Nightly because what a soak finds is not a function of its length. Over
+  # four soaks `compress_gltf` gained +81, +236 and +18 edges from one to the
+  # next and `fbx_roundtrip` +37, +156 and +17: the growth is between runs,
+  # not inside one, and lumpy enough that no single run predicts the next. A
+  # series from different seeds is the only thing that averages it, and a
+  # series is what a schedule produces and a person does not. The cache is the
+  # other reason: GitHub evicts an entry untouched for seven days, and the
+  # corpora live nowhere else. A nightly run keeps every entry warm.
+  #
+  # 02:00 UTC is where the runners are idle and no push is likely to land a
+  # smoke run beside it. GitHub suspends a schedule after sixty days without
+  # a commit, and attributes each run to whoever last touched this file; a
+  # failure notifies that person, so the file is the place to look when the
+  # nights go quiet.
+  #
+  # The README badge is pinned to `?event=push` so it reports the smoke gate
+  # rather than the soaks: a campaign that runs for an hour per target is
+  # expected to find things, and a finding is not a broken build. Read a
+  # soak's own conclusion from the run list, not from the badge.
+  schedule:
+    - cron: "0 2 * * *"
   workflow_dispatch:
 
 # A change-triggered smoke run supersedes the one before it: they test the same
-# thing, and the newer commit is the one worth the runner. A manual soak does
-# not belong in that group -- it is an hour per target, and a documentation push
+# thing, and the newer commit is the one worth the runner. A soak does not
+# belong in that group -- it is an hour per target, and a documentation push
 # landing in the middle of it used to cancel it and throw the whole campaign
-# away. Each soak gets a group of its own, keyed by its run id, so nothing
-# cancels it and nothing queues behind it.
+# away. Each soak, scheduled or dispatched, gets a group of its own keyed by its
+# run id, so nothing cancels it and nothing queues behind it. Spelled as "not a
+# smoke event" rather than by listing the soak events, so that a trigger added
+# later lands on the safe side.
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && format('fuzz-soak-{0}', github.run_id) || format('fuzz-smoke-{0}', github.ref) }}
-  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+  group: ${{ (github.event_name == 'push' || github.event_name == 'pull_request') && format('fuzz-smoke-{0}', github.ref) || format('fuzz-soak-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -104,7 +123,6 @@ jobs:
             name: draco decode
             targets: decode_drc
             soak_seconds: 1800
-            inherit_key: fuzz-corpus-v3-draco-
           - group: encode
             name: draco encode
             targets: encode_drc
@@ -129,12 +147,28 @@ jobs:
             # run at the grid's own 6,641 bytes and no larger mesh than the one
             # it was handed.
             extra_libfuzzer_args: "-max_len=16384 -len_control=0"
-            inherit_key: fuzz-corpus-v3-draco-
           - group: mesh_text
             name: OBJ/PLY/STL readers
             targets: mesh_text_readers
+            # `dict` names a libFuzzer dictionary under fuzz/dict/. The text
+            # and JSON parsers here dispatch on whole keywords, and a
+            # byte-flipping mutator reaches a keyword one correct byte at a
+            # time; the dictionary hands it the token whole, so the run is
+            # spent past the keyword rather than on spelling it. The bitstream
+            # targets have none: their grammar is arithmetic on bytes, and
+            # there is no token to hand over.
+            #
+            # Measured on 2026-09-02 from a freshly seeded corpus, sixty
+            # seconds, two libFuzzer seeds each, with and without the
+            # dictionary (edges, then features): the FBX reader +127 and
+            # +215 edges; these readers +108 and +5; KTX2 +10 and +63; glTF
+            # -21 and -137 edges but +171 and +221 features. A minute under
+            # ASan is under two thousand executions for glTF and KTX2, so
+            # only the FBX and text-reader gains are outside the noise, and
+            # whether the glTF dictionary earns its place is a question for
+            # the soaks that follow, not for that measurement.
+            dict: mesh_text
             soak_seconds: 1800
-            inherit_key: fuzz-corpus-v3-readers-
           - group: mesh_text_round
             name: OBJ/PLY/STL round trip
             targets: mesh_text_roundtrip
@@ -143,18 +177,18 @@ jobs:
             # replay of the readers' own corpus -- a colour attribute with one
             # component declared three channels in the header and wrote one
             # byte -- so it starts at the parser budget rather than below it.
+            dict: mesh_text
             soak_seconds: 1800
-            inherit_key: fuzz-corpus-v3-readers-
           - group: fbx_read
             name: FBX reader
             targets: fbx_read_scene
+            dict: fbx
             soak_seconds: 1800
-            inherit_key: fuzz-corpus-v3-readers-
           - group: fbx_round
             name: FBX round trip
             targets: fbx_roundtrip
+            dict: fbx
             soak_seconds: 1800
-            inherit_key: fuzz-corpus-v3-readers-
           - group: gltf_compress
             name: glTF compression
             targets: compress_gltf
@@ -166,13 +200,23 @@ jobs:
             # number suggests. Two hours prices its tail the way four priced
             # `encode_drc`'s; groups run concurrently and `encode_drc` already
             # holds the soak at two hours, so this costs no wall clock.
+            dict: gltf
             soak_seconds: 7200
-            inherit_key: fuzz-corpus-v3-gltf-
           - group: gltf_import
             name: glTF import
             targets: draco_gltf_import
+            dict: gltf
             soak_seconds: 1800
-            inherit_key: fuzz-corpus-v3-gltf-
+          - group: ktx2
+            name: KTX2 transcode
+            targets: ktx2_transcode
+            # The one target this workflow did not run: it was wired into
+            # ClusterFuzzLite only, and that layer is manual and has never
+            # been dispatched, so no campaign had ever accumulated over the
+            # KTX2 reader. Parser budget, like the other readers of formats
+            # that are not this workspace's own.
+            dict: ktx2
+            soak_seconds: 1800
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -188,35 +232,36 @@ jobs:
       - name: Pick fuzz duration
         id: dur
         run: |
-          # Manual dispatch = deep soak; change-triggered = quick smoke.
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "seconds=${{ matrix.soak_seconds }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "seconds=120" >> "$GITHUB_OUTPUT"
-          fi
+          # Change-triggered = quick smoke; anything else (the nightly schedule,
+          # a manual dispatch) = deep soak. Same split as the concurrency group.
+          case "${{ github.event_name }}" in
+            push|pull_request) echo "seconds=120" >> "$GITHUB_OUTPUT" ;;
+            *) echo "seconds=${{ matrix.soak_seconds }}" >> "$GITHUB_OUTPUT" ;;
+          esac
 
       # Keyed per group: the jobs run at the same time and each writes its own
       # entry, so a shared key would have them overwrite each other's corpus.
       - name: Restore fuzz corpus
         uses: actions/cache@v4
         with:
-          # The whole corpus directory rather than this group's one target, so
-          # that a group split off another one restores what the old entry
-          # holds. The cost is that such an entry keeps its former sibling's
-          # corpus frozen inside it; narrowing the path to
-          # `fuzz/corpus/${{ matrix.targets }}` collects that back, once every
-          # group has written an entry of its own and the fallback below is
-          # doing nothing.
-          path: fuzz/corpus
+          # This group's target only. The path used to be the whole corpus
+          # directory so that a group split off another could inherit the old
+          # entry, and every entry carried its former siblings' corpora frozen
+          # inside it. Every group has written an entry of its own since, so
+          # the inheritance is done and the path narrows to what this job
+          # actually fuzzes. An entry saved under the wide path still restores
+          # into the narrow one -- the archive holds relative paths -- so the
+          # narrowing loses nothing on its first run. What it buys matters
+          # once the run is nightly: nine entries a night against the
+          # repository's 10 GB cache, each holding one corpus rather than the
+          # largest one nine times over.
+          #
+          # A group added later starts from the seeds alone, which is the
+          # fallback below; nothing else needs to be inherited.
+          path: fuzz/corpus/${{ matrix.targets }}
           key: fuzz-corpus-v3-${{ matrix.group }}-${{ github.run_id }}
-          # The second key is what a group renamed or split off another one
-          # falls back to on its first run: the cached path is the whole corpus
-          # directory, so the entry written under the old group's name still
-          # holds this group's targets. Harmless once the group has an entry of
-          # its own, since the first key matches first.
           restore-keys: |
             fuzz-corpus-v3-${{ matrix.group }}-
-            ${{ matrix.inherit_key }}
 
       - name: Seed corpus from fixtures
         run: |
@@ -237,6 +282,13 @@ jobs:
       # Out-of-bounds indexing still panics in release and is still caught.
       - name: Fuzz
         run: |
+          # Absolute, because cargo-fuzz runs the target from the fuzz
+          # project's own directory, and a path relative to the repository
+          # would be resolved from there and not found.
+          dict_arg=""
+          if [ -n "${{ matrix.dict }}" ]; then
+            dict_arg="-dict=$GITHUB_WORKSPACE/fuzz/dict/${{ matrix.dict }}.dict"
+          fi
           failed=""
           for target in ${{ matrix.targets }}; do
             echo "::group::$target"
@@ -244,7 +296,7 @@ jobs:
               --target x86_64-unknown-linux-gnu -- \
               -max_total_time=${{ steps.dur.outputs.seconds }} \
               -rss_limit_mb=4096 -timeout=25 -print_final_stats=1 \
-              ${{ matrix.extra_libfuzzer_args }}; then
+              $dict_arg ${{ matrix.extra_libfuzzer_args }}; then
               echo "$target: ok"
             else
               echo "$target: crashed"

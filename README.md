@@ -122,8 +122,9 @@ decode limits are the caller's to set.
 - [`SECURITY.md`](SECURITY.md) — threat model, what is guaranteed, and the
   resource limits a caller should enforce.
 - [`FUZZING.md`](FUZZING.md) — how the decode paths are fuzzed. Targets cover
-  `.drc` decode, glTF import and compression, FBX read and round-trip, and KTX2
-  transcode; they run per push and through ClusterFuzzLite.
+  `.drc` decode and encode, glTF import and compression, OBJ/PLY/STL and FBX
+  read and round-trip, and KTX2 transcode; they run as a smoke gate per push
+  and as a soak every night, and through ClusterFuzzLite.
 
 ## Building the converter locally
 

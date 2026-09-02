@@ -320,6 +320,12 @@ cargo +nightly fuzz run -O encode_drc --fuzz-dir fuzz -- -max_total_time=120 -rs
 # The three text/binary mesh readers, seeded from every committed fixture
 cargo +nightly fuzz run -O mesh_text_readers --fuzz-dir fuzz -- -max_total_time=120 -rss_limit_mb=4096
 
+# The same readers through their writers and back
+cargo +nightly fuzz run -O mesh_text_roundtrip --fuzz-dir fuzz -- -max_total_time=120 -rss_limit_mb=4096
+
+# KTX2 parse and transcode into every target
+cargo +nightly fuzz run -O ktx2_transcode --fuzz-dir fuzz -- -max_total_time=120 -rss_limit_mb=4096
+
 # Longer decode soak run
 cargo +nightly fuzz run -O decode_drc --fuzz-dir fuzz -- -max_total_time=3600 -rss_limit_mb=4096
 ```
@@ -334,6 +340,25 @@ Useful libFuzzer flags (everything after `--` is passed straight to libFuzzer):
   CPU-amplification / pathological-complexity inputs as `slow-unit-*` artifacts.
 - `-jobs=<n> -workers=<n>` — parallel fuzzing.
 - `-print_final_stats=1` — coverage / corpus summary on exit.
+- `-dict=<file>` — a token dictionary; see below.
+
+### Dictionaries
+
+[`fuzz/dict/`](fuzz/dict) holds a libFuzzer dictionary per input grammar:
+`mesh_text.dict` (OBJ, PLY, STL), `fbx.dict` (both FBX containers),
+`gltf.dict` (glTF JSON keys and the GLB markers) and `ktx2.dict` (the KTX2
+identifier, format and supercompression words, and the key/value names). The
+text and JSON parsers dispatch on whole keywords, which a byte-flipping mutator
+reaches one correct byte at a time; a dictionary hands it the token whole, so
+the run is spent on what follows a keyword instead of on spelling it. The
+tokens are the ones each reader matches on, taken from its source, so a
+keyword added to a reader belongs in its dictionary too.
+
+CI passes the dictionary for every target that has one; locally, add
+`-dict=fuzz/dict/<grammar>.dict` after `--` (the path is resolved from the
+repository root, because that is where the command is run from). The Draco
+bitstream targets have no dictionary: their grammar is arithmetic on bytes,
+and there is no token to hand over.
 
 ## Minimizing the corpus
 
@@ -348,7 +373,12 @@ cargo +nightly fuzz cmin -O fbx_read_scene --fuzz-dir fuzz
 cargo +nightly fuzz cmin -O fbx_roundtrip --fuzz-dir fuzz
 cargo +nightly fuzz cmin -O encode_drc --fuzz-dir fuzz
 cargo +nightly fuzz cmin -O mesh_text_readers --fuzz-dir fuzz
+cargo +nightly fuzz cmin -O mesh_text_roundtrip --fuzz-dir fuzz
+cargo +nightly fuzz cmin -O ktx2_transcode --fuzz-dir fuzz
 ```
+
+CI does this itself at the end of every job, before the corpus is written back
+to the cache, so the cached corpora stay minimal without anyone running it.
 
 ## Reproducing and triaging a crash
 
@@ -385,14 +415,25 @@ Fuzzing runs in CI on Linux (`ubuntu-latest`), where libFuzzer and
 AddressSanitizer work out of the box — no Windows sanitizer-runtime workaround
 needed. Two layers run there:
 
-There are **no scheduled (nightly) fuzzing runs** — fuzzing fires only when code
-changes, plus deeper runs on demand. Trigger a manual run with
-`gh workflow run <workflow>.yml` (or the Actions tab).
-
-**Level 1 — lightweight in-repo gate ([`.github/workflows/fuzz.yml`](.github/workflows/fuzz.yml)):**
+**Level 1 — the in-repo campaign ([`.github/workflows/fuzz.yml`](.github/workflows/fuzz.yml)):**
 
 - Bounded smoke runs (`-max_total_time=120`) for every target on each pull
-  request and push to `main`. A manual dispatch runs a soak instead.
+  request and push to `main`.
+- **A soak every night at 02:00 UTC**, and one on demand with
+  `gh workflow run fuzz.yml` (or the Actions tab). Nightly rather than manual
+  because what a soak finds is not a function of its length: over four soaks
+  `compress_gltf` gained +81, +236 and +18 edges from one run to the next, and
+  `fbx_roundtrip` +37, +156 and +17. The growth is between runs, not inside
+  one, and lumpy enough that no run predicts the next; a series from different
+  seeds is the only thing that averages it, and a schedule is what produces a
+  series. The nightly run also keeps every corpus cache entry warm, where a
+  manual cadence let them lapse past GitHub's seven-day eviction.
+- The README badge is pinned to `?event=push`, so it reports the smoke gate and
+  not the soaks: a campaign that runs for an hour per target is expected to
+  find things, and a finding is not a broken build. Read a soak's conclusion
+  from the run list. GitHub attributes a scheduled run to whoever last touched
+  the workflow file and notifies them when it fails, and suspends the schedule
+  after sixty days without a commit.
 - **One job per target**, running concurrently, so the run costs the
   wall-clock of the longest budget rather than the sum, and no target competes
   with six others for the six-hour job limit. Budgets are set per target from
@@ -402,8 +443,10 @@ changes, plus deeper runs on demand. Trigger a manual run with
   where their coverage stops moving. A four-hour `encode_drc` run was measured
   once to price the tail -- its second half bought four edges out of 13,124 --
   so the extra time buys executions, not reach.
-- Each corpus family caches under its own key. One shared key across
-  concurrent jobs would have them overwrite each other's entry.
+- Each target caches its own corpus under its own key. One shared key across
+  concurrent jobs would have them overwrite each other's entry, and one shared
+  path would have every entry carry every corpus.
+- Every target that has a dictionary under `fuzz/dict/` runs with it.
 - The corpus is persisted across runs via the GitHub Actions cache and
   re-seeded from the committed fixtures each run, so coverage never starts from
   zero even if the cache entry is evicted.
