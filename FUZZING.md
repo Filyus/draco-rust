@@ -275,6 +275,15 @@ from any other input: over the 1,244 units the corpus held when they were
 written, not one carried a material layer or a deformer, so the passes that
 renumber a slot table and re-emit a blend shape ran over nothing.
 
+`ascii_material_layer_no_slots.fbx` is the first thing those passes found: the
+same layer on a Model with no material connected, in a document that has
+materials. The slot numbers named nothing, were read through as if they were
+scene material indices, and the writer resolved them against the material
+table, so `3, 2` came back as `2, 2`. `fbx_roundtrip` hit it inside the first
+two-minute smoke run that carried a dictionary; the reader now drops a layer it
+has no slots for, unless the document has no materials at all, and the seed
+holds that down.
+
 [`crates/draco-io/tests/fbx_seeds.rs`](crates/draco-io/tests/fbx_seeds.rs)
 asserts what each seed does — which container it routes to, and whether it
 parses under lenient and under strict options — because a seed that does nothing

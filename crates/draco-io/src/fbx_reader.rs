@@ -198,30 +198,40 @@ impl<R: Read + Seek> FbxReader<R> {
         // connected to the Model that carries it.
         let resolve_material_indices =
             |source: &FbxGeometrySource, model_mats: Option<&Vec<i32>>| -> Vec<i32> {
-                let mut indices = source.material_indices.clone();
-                if let Some(model_mats) = model_mats {
-                    if indices.is_empty() {
-                        if !model_mats.is_empty() {
-                            let first = model_mats[0];
-                            // One entry per triangulated face.
-                            indices = vec![first; source.mesh.num_faces()];
-                        }
+                let indices = source.material_indices.clone();
+                let Some(model_mats) = model_mats.filter(|mats| !mats.is_empty()) else {
+                    // The Model has no material slots, so the layer's values
+                    // name nothing. In a document with no `Material` objects
+                    // at all (Revit exports) they are kept as written: there is
+                    // nothing they could be confused with, and they still
+                    // encode which faces belong together. With materials in
+                    // the document they are dropped instead -- read through,
+                    // they look like scene material indices, and the writer
+                    // would resolve them against the material table and send
+                    // the faces to materials the file never connected.
+                    return if material_index_by_id.is_empty() {
+                        indices
                     } else {
-                        // LayerElementMaterial values address the material slots
-                        // attached to this Model. Map them back to the
-                        // document-wide material indices exposed by FbxScene.
-                        indices = indices
-                            .into_iter()
-                            .map(|slot| {
-                                usize::try_from(slot)
-                                    .ok()
-                                    .and_then(|slot| model_mats.get(slot).copied())
-                                    .unwrap_or(model_mats[0])
-                            })
-                            .collect();
-                    }
+                        Vec::new()
+                    };
+                };
+                if indices.is_empty() {
+                    // One entry per triangulated face.
+                    return vec![model_mats[0]; source.mesh.num_faces()];
                 }
+                // LayerElementMaterial values address the material slots
+                // attached to this Model. Map them back to the document-wide
+                // material indices exposed by FbxScene; a slot past the end
+                // resolves to the first, as the reference reader does.
                 indices
+                    .into_iter()
+                    .map(|slot| {
+                        usize::try_from(slot)
+                            .ok()
+                            .and_then(|slot| model_mats.get(slot).copied())
+                            .unwrap_or(model_mats[0])
+                    })
+                    .collect()
             };
         let mut geometry_ids: Vec<i64> = geometry_map.keys().copied().collect();
         geometry_ids.sort_unstable();

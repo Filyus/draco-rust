@@ -26,7 +26,7 @@ use draco_io::{FbxDecodeLimits, FbxReadOptions, FbxScene};
 ///
 /// A `bad_`/`unterminated` seed that strict mode accepts has stopped testing
 /// what it was written for.
-const SEEDS: [(&str, bool, bool, bool); 16] = [
+const SEEDS: [(&str, bool, bool, bool); 17] = [
     // name, is ASCII, lenient parses, strict parses
     ("valid_triangle.fbx", false, true, true),
     // Structurally fine, but empty: strict mode wants scene content.
@@ -45,6 +45,7 @@ const SEEDS: [(&str, bool, bool, bool); 16] = [
     ("bad_zlib_bomb.fbx", false, false, false),
     ("ascii_valid.fbx", true, true, true),
     ("ascii_material_slots.fbx", true, true, true),
+    ("ascii_material_layer_no_slots.fbx", true, true, true),
     ("ascii_blend_shape.fbx", true, true, true),
     // 24 levels against the fuzzing limit of 16.
     ("ascii_deep_nesting.fbx", true, false, false),
@@ -158,6 +159,70 @@ fn the_round_trip_seeds_carry_the_mappings_they_were_written_for() {
         vec![0, 2],
         "the deltas the shape names"
     );
+}
+
+/// A material layer on a Model with no material slots addresses nothing.
+///
+/// The layer's values are slot numbers, and a Model that has no material
+/// connected to it has no slot for any of them. They used to be read through
+/// unchanged, as if they were scene material indices, and the writer then
+/// resolved them against the material table: `3, 2` was written as one
+/// connected material and came back as `2, 2`. The round-trip fuzz target
+/// found it inside its first two-minute run with a dictionary.
+///
+/// The one case the values are kept is a document with no `Material` objects
+/// at all, which Revit exports do. There is nothing to resolve against and
+/// nothing the writer could confuse them with, and dropping them would erase
+/// the face grouping the layer encodes.
+#[test]
+#[cfg(feature = "fbx-writer")]
+fn a_material_layer_without_slots_reads_as_no_materials_and_round_trips() {
+    let lenient = FbxReadOptions::default().with_limits(FbxDecodeLimits::fuzzing());
+    let strict = FbxReadOptions::strict().with_limits(FbxDecodeLimits::permissive());
+    let indices = |scene: &FbxScene| {
+        scene.root_nodes[0].mesh_instances[0]
+            .material_indices
+            .clone()
+    };
+
+    let bytes = std::fs::read(seed("ascii_material_layer_no_slots.fbx"))
+        .expect("ascii_material_layer_no_slots.fbx");
+    let scene =
+        FbxScene::from_bytes_with_options(&bytes, lenient.clone()).expect("the seed should parse");
+    assert_eq!(scene.materials.len(), 3, "the document has materials");
+    assert_eq!(
+        indices(&scene),
+        Vec::<i32>::new(),
+        "no slot to resolve against"
+    );
+    for written in [scene.to_bytes(), scene.to_ascii_bytes()] {
+        let written = written.expect("the writer represents this scene");
+        let reread = FbxScene::from_bytes_with_options(&written, strict.clone())
+            .expect("the writer's output is strict-readable");
+        assert_eq!(
+            indices(&reread),
+            indices(&scene),
+            "unchanged across a rewrite"
+        );
+    }
+
+    // The same layer in a document with no materials at all: kept as written.
+    // Cut the three Material objects out of the seed, closing `Objects` where
+    // they stood.
+    let text = String::from_utf8(bytes).expect("the seed is ASCII");
+    let start = text
+        .find("    Material: 300")
+        .expect("the seed's first material");
+    let end = text.find("Connections:").expect("the seed's connections");
+    let without_materials = format!("{}}}\n{}", &text[..start], &text[end..]);
+    let scene = FbxScene::from_bytes_with_options(without_materials.as_bytes(), lenient)
+        .expect("the document without materials should parse");
+    assert_eq!(scene.materials.len(), 0, "no materials in the document");
+    assert_eq!(indices(&scene), vec![3, 2], "kept as written");
+    let written = scene.to_bytes().expect("the writer represents this scene");
+    let reread = FbxScene::from_bytes_with_options(&written, strict)
+        .expect("the writer's output is strict-readable");
+    assert_eq!(indices(&reread), vec![3, 2], "unchanged across a rewrite");
 }
 
 /// The one seed that comes from our own writer is still what the writer emits.

@@ -149,6 +149,90 @@ const ASCII_MATERIAL_SLOTS: &str = concat!(
 ",
 );
 
+/// The same layer on a Model that has no material connected to it, in a
+/// document that does have materials. The layer's values name slots, and this
+/// Model has none, so they address nothing; the fuzzer found them being read
+/// through as if they were scene material indices, which the writer then
+/// resolved against the material table: `3, 2` came back as `2, 2`.
+const ASCII_MATERIAL_LAYER_NO_SLOTS: &str = concat!(
+    "; FBX 7.5.0 project file
+",
+    "FBXHeaderExtension:  {
+",
+    "    FBXHeaderVersion: 1003
+",
+    "    FBXVersion: 7500
+",
+    "}
+",
+    "Objects:  {
+",
+    "    Geometry: 100, \"Geometry::seed\", \"Mesh\" {
+",
+    "        Vertices: *12 {
+",
+    "            a: 0,0,0,1,0,0,0,1,0,1,1,0
+",
+    "        }
+",
+    "        PolygonVertexIndex: *6 {
+",
+    "            a: 0,1,-3,1,3,-3
+",
+    "        }
+",
+    "        LayerElementMaterial: 0 {
+",
+    "            MappingInformationType: \"ByPolygon\"
+",
+    "            ReferenceInformationType: \"IndexToDirect\"
+",
+    "            Materials: *2 {
+",
+    "                a: 3,2
+",
+    "            }
+",
+    "        }
+",
+    "    }
+",
+    "    Model: 200, \"Model::seed\", \"Mesh\" {
+",
+    "        Version: 232
+",
+    "    }
+",
+    "    Material: 300, \"Material::a\", \"\" {
+",
+    "        Version: 102
+",
+    "    }
+",
+    "    Material: 301, \"Material::b\", \"\" {
+",
+    "        Version: 102
+",
+    "    }
+",
+    "    Material: 302, \"Material::c\", \"\" {
+",
+    "        Version: 102
+",
+    "    }
+",
+    "}
+",
+    "Connections:  {
+",
+    "    C: \"OO\",100,200
+",
+    "    C: \"OO\",200,0
+",
+    "}
+",
+);
+
 /// A document carrying a blend shape, for the same reason: the deformer chain
 /// -- geometry to `BlendShape`, to `BlendShapeChannel`, to the `Shape`
 /// geometry that holds the deltas -- was unreachable from a corpus in which
@@ -397,6 +481,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ASCII_MATERIAL_SLOTS.as_bytes().to_vec(),
     ));
     seeds.push((
+        "ascii_material_layer_no_slots.fbx",
+        ASCII_MATERIAL_LAYER_NO_SLOTS.as_bytes().to_vec(),
+    ));
+    seeds.push((
         "ascii_blend_shape.fbx",
         ASCII_BLEND_SHAPE.as_bytes().to_vec(),
     ));
@@ -461,6 +549,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "bad_property_list_len.fbx",
                 "ascii_valid.fbx",
                 "ascii_material_slots.fbx",
+                "ascii_material_layer_no_slots.fbx",
                 "ascii_blend_shape.fbx",
                 "ascii_deep_nesting.fbx",
                 "ascii_huge_array_len.fbx",
@@ -485,6 +574,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // can check. Without a scene that carries material slots or a
                 // blend shape, the passes that renumber them run over nothing.
                 "ascii_material_slots.fbx",
+                "ascii_material_layer_no_slots.fbx",
                 "ascii_blend_shape.fbx",
             ],
         ),
