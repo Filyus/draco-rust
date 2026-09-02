@@ -282,7 +282,12 @@ scene material indices, and the writer resolved them against the material
 table, so `3, 2` came back as `2, 2`. `fbx_roundtrip` hit it inside the first
 two-minute smoke run that carried a dictionary; the reader now drops a layer it
 has no slots for, unless the document has no materials at all, and the seed
-holds that down.
+holds that down. `ascii_material_layer_no_vertices.fbx` is the run after that:
+the same layer over a polygon stream with no control points. The mesh has no
+faces, the writer emits a material index per face, and the reader had counted
+one per polygon of the stream, so `0, 0` went in and nothing came back. The
+reader now keeps a material layer only when it lines up with the faces the
+mesh actually has.
 
 [`crates/draco-io/tests/fbx_seeds.rs`](crates/draco-io/tests/fbx_seeds.rs)
 asserts what each seed does — which container it routes to, and whether it

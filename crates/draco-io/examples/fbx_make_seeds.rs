@@ -233,6 +233,89 @@ const ASCII_MATERIAL_LAYER_NO_SLOTS: &str = concat!(
 ",
 );
 
+/// The slots seed with its vertices taken away: a polygon stream and a material
+/// layer over no control points. The mesh that comes out has no faces, and the
+/// writer emits a material layer only for the faces the mesh has, while the
+/// reader had counted one index per polygon of the stream: `0, 0` went in and
+/// nothing came back. Found by the same target on the run after the one
+/// above.
+const ASCII_MATERIAL_LAYER_NO_VERTICES: &str = concat!(
+    "; FBX 7.5.0 project file
+",
+    "FBXHeaderExtension:  {
+",
+    "    FBXHeaderVersion: 1003
+",
+    "    FBXVersion: 7500
+",
+    "}
+",
+    "Objects:  {
+",
+    "    Geometry: 100, \"Geometry::seed\", \"Mesh\" {
+",
+    "        Vertices: *0 {
+",
+    "            a:
+",
+    "        }
+",
+    "        PolygonVertexIndex: *6 {
+",
+    "            a: 0,1,-3,1,3,-3
+",
+    "        }
+",
+    "        LayerElementMaterial: 0 {
+",
+    "            MappingInformationType: \"ByPolygon\"
+",
+    "            ReferenceInformationType: \"IndexToDirect\"
+",
+    "            Materials: *2 {
+",
+    "                a: 1,0
+",
+    "            }
+",
+    "        }
+",
+    "    }
+",
+    "    Model: 200, \"Model::seed\", \"Mesh\" {
+",
+    "        Version: 232
+",
+    "    }
+",
+    "    Material: 300, \"Material::a\", \"\" {
+",
+    "        Version: 102
+",
+    "    }
+",
+    "    Material: 301, \"Material::b\", \"\" {
+",
+    "        Version: 102
+",
+    "    }
+",
+    "}
+",
+    "Connections:  {
+",
+    "    C: \"OO\",100,200
+",
+    "    C: \"OO\",200,0
+",
+    "    C: \"OO\",300,200
+",
+    "    C: \"OO\",301,200
+",
+    "}
+",
+);
+
 /// A document carrying a blend shape, for the same reason: the deformer chain
 /// -- geometry to `BlendShape`, to `BlendShapeChannel`, to the `Shape`
 /// geometry that holds the deltas -- was unreachable from a corpus in which
@@ -485,6 +568,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ASCII_MATERIAL_LAYER_NO_SLOTS.as_bytes().to_vec(),
     ));
     seeds.push((
+        "ascii_material_layer_no_vertices.fbx",
+        ASCII_MATERIAL_LAYER_NO_VERTICES.as_bytes().to_vec(),
+    ));
+    seeds.push((
         "ascii_blend_shape.fbx",
         ASCII_BLEND_SHAPE.as_bytes().to_vec(),
     ));
@@ -550,6 +637,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "ascii_valid.fbx",
                 "ascii_material_slots.fbx",
                 "ascii_material_layer_no_slots.fbx",
+                "ascii_material_layer_no_vertices.fbx",
                 "ascii_blend_shape.fbx",
                 "ascii_deep_nesting.fbx",
                 "ascii_huge_array_len.fbx",
@@ -575,6 +663,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // blend shape, the passes that renumber them run over nothing.
                 "ascii_material_slots.fbx",
                 "ascii_material_layer_no_slots.fbx",
+                "ascii_material_layer_no_vertices.fbx",
                 "ascii_blend_shape.fbx",
             ],
         ),

@@ -1919,6 +1919,18 @@ fn geometry_to_mesh(
     );
     let mesh = crate::fbx_render_mesh::build_draco_mesh(&render);
 
+    // One material index per face of the mesh, or none. The indices were
+    // counted over the polygon stream, and the mesh is built from the same
+    // stream, so they agree whenever the mesh is built at all -- but a stream
+    // with no control points behind it builds no mesh, and then the layer
+    // names faces that do not exist. The writer emits the layer per face and
+    // would drop it, so it is dropped here, where the scene is made.
+    let material_indices = if material_indices.len() == mesh.num_faces() {
+        material_indices
+    } else {
+        Vec::new()
+    };
+
     Ok(Some(FbxGeometrySource {
         mesh,
         material_indices,

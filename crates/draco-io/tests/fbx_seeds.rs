@@ -26,7 +26,7 @@ use draco_io::{FbxDecodeLimits, FbxReadOptions, FbxScene};
 ///
 /// A `bad_`/`unterminated` seed that strict mode accepts has stopped testing
 /// what it was written for.
-const SEEDS: [(&str, bool, bool, bool); 17] = [
+const SEEDS: [(&str, bool, bool, bool); 18] = [
     // name, is ASCII, lenient parses, strict parses
     ("valid_triangle.fbx", false, true, true),
     // Structurally fine, but empty: strict mode wants scene content.
@@ -46,6 +46,7 @@ const SEEDS: [(&str, bool, bool, bool); 17] = [
     ("ascii_valid.fbx", true, true, true),
     ("ascii_material_slots.fbx", true, true, true),
     ("ascii_material_layer_no_slots.fbx", true, true, true),
+    ("ascii_material_layer_no_vertices.fbx", true, true, true),
     ("ascii_blend_shape.fbx", true, true, true),
     // 24 levels against the fuzzing limit of 16.
     ("ascii_deep_nesting.fbx", true, false, false),
@@ -223,6 +224,43 @@ fn a_material_layer_without_slots_reads_as_no_materials_and_round_trips() {
     let reread = FbxScene::from_bytes_with_options(&written, strict)
         .expect("the writer's output is strict-readable");
     assert_eq!(indices(&reread), vec![3, 2], "unchanged across a rewrite");
+}
+
+/// A material layer over a mesh with no faces carries nothing.
+///
+/// A polygon stream with no control points builds a mesh with no faces. The
+/// reader counted one material index per polygon of the stream regardless,
+/// while the writer emits one per face the mesh has: `0, 0` went in and an
+/// empty layer came back. The same fuzz target, the run after the one above.
+#[test]
+#[cfg(feature = "fbx-writer")]
+fn a_material_layer_over_no_faces_reads_as_no_materials_and_round_trips() {
+    let bytes = std::fs::read(seed("ascii_material_layer_no_vertices.fbx"))
+        .expect("ascii_material_layer_no_vertices.fbx");
+    let scene = FbxScene::from_bytes_with_options(
+        &bytes,
+        FbxReadOptions::default().with_limits(FbxDecodeLimits::fuzzing()),
+    )
+    .expect("the seed should parse");
+    let mesh = &scene.root_nodes[0].mesh_instances[0];
+    assert_eq!(mesh.mesh.num_faces(), 0, "no control points, so no faces");
+    assert_eq!(mesh.polygon_vertex_indices.len(), 6, "the stream is kept");
+    assert_eq!(
+        mesh.material_indices,
+        Vec::<i32>::new(),
+        "no face to assign"
+    );
+    let strict = FbxReadOptions::strict().with_limits(FbxDecodeLimits::permissive());
+    for written in [scene.to_bytes(), scene.to_ascii_bytes()] {
+        let written = written.expect("the writer represents this scene");
+        let reread = FbxScene::from_bytes_with_options(&written, strict.clone())
+            .expect("the writer's output is strict-readable");
+        assert_eq!(
+            reread.root_nodes[0].mesh_instances[0].material_indices,
+            Vec::<i32>::new(),
+            "unchanged across a rewrite"
+        );
+    }
 }
 
 /// The one seed that comes from our own writer is still what the writer emits.
