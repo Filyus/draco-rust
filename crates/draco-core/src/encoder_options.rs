@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Integer option bag used to configure Draco encoding.
 ///
@@ -27,6 +28,19 @@ use std::collections::HashMap;
 /// ```
 #[derive(Debug, Clone, Default)]
 pub struct EncoderOptions {
+    inner: Arc<Inner>,
+}
+
+/// The option maps, shared until a setter needs its own copy.
+///
+/// The encoders clone the whole bag on every `encode` call and keep the copy
+/// for the duration. A deep clone paid one allocation per map and per `String`
+/// key each time -- pure bookkeeping, and on a tiny mesh a visible share of
+/// the per-call floor. Behind an `Arc` the clone is a reference count, and a
+/// setter on a bag that is shared at that moment copies the maps once for
+/// itself (`Arc::make_mut`); a bag nobody else holds is mutated in place.
+#[derive(Debug, Clone, Default)]
+struct Inner {
     global_options: HashMap<String, i32>,
     attribute_options: HashMap<i32, HashMap<String, i32>>,
 }
@@ -51,11 +65,13 @@ impl EncoderOptions {
     /// Matches C++ ExpertEncoder::GetSpeed() behavior.
     pub fn get_speed(&self) -> i32 {
         let encoding_speed = self
+            .inner
             .global_options
             .get("encoding_speed")
             .copied()
             .unwrap_or(-1);
         let decoding_speed = self
+            .inner
             .global_options
             .get("decoding_speed")
             .copied()
@@ -134,7 +150,7 @@ impl EncoderOptions {
 
     /// Returns the forced encoding method, if one was set.
     pub fn get_encoding_method(&self) -> Option<i32> {
-        self.global_options.get("encoding_method").cloned()
+        self.inner.global_options.get("encoding_method").cloned()
     }
 
     /// Forces an encoding method by numeric Draco method id.
@@ -163,17 +179,20 @@ impl EncoderOptions {
 
     /// Sets a global integer option.
     pub fn set_global_int(&mut self, key: &str, value: i32) {
-        self.global_options.insert(key.to_string(), value);
+        Arc::make_mut(&mut self.inner)
+            .global_options
+            .insert(key.to_string(), value);
     }
 
     /// Returns a global integer option or the supplied default.
     pub fn get_global_int(&self, key: &str, default_val: i32) -> i32 {
-        *self.global_options.get(key).unwrap_or(&default_val)
+        *self.inner.global_options.get(key).unwrap_or(&default_val)
     }
 
     /// Sets an integer option for one attribute id.
     pub fn set_attribute_int(&mut self, att_id: i32, key: &str, value: i32) {
-        self.attribute_options
+        Arc::make_mut(&mut self.inner)
+            .attribute_options
             .entry(att_id)
             .or_default()
             .insert(key.to_string(), value);
@@ -181,7 +200,7 @@ impl EncoderOptions {
 
     /// Returns an attribute integer option, falling back to the global value.
     pub fn get_attribute_int(&self, att_id: i32, key: &str, default_val: i32) -> i32 {
-        if let Some(opts) = self.attribute_options.get(&att_id) {
+        if let Some(opts) = self.inner.attribute_options.get(&att_id) {
             if let Some(val) = opts.get(key) {
                 return *val;
             }
@@ -223,6 +242,25 @@ mod tests {
             options.set_compression_level(level);
             assert_eq!(options.get_compression_level(), level);
         }
+    }
+
+    /// A clone shares the maps, and a setter on either side afterwards
+    /// changes only the side it was called on.
+    #[test]
+    fn a_clone_shares_the_maps_until_one_side_writes() {
+        let mut options = EncoderOptions::new();
+        options.set_global_int("quantization_bits", 14);
+        options.set_attribute_int(1, "quantization_bits", 10);
+        let mut cloned = options.clone();
+        assert!(Arc::ptr_eq(&options.inner, &cloned.inner));
+
+        cloned.set_attribute_int(1, "quantization_bits", 8);
+        options.set_global_int("quantization_bits", 12);
+        assert!(!Arc::ptr_eq(&options.inner, &cloned.inner));
+        assert_eq!(options.get_attribute_int(1, "quantization_bits", 0), 10);
+        assert_eq!(options.get_global_int("quantization_bits", 0), 12);
+        assert_eq!(cloned.get_attribute_int(1, "quantization_bits", 0), 8);
+        assert_eq!(cloned.get_global_int("quantization_bits", 0), 14);
     }
 
     #[test]

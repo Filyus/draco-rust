@@ -33,7 +33,7 @@
 # hardening_status.yaml; keep only concrete implementation actions here.
 
 version: 1
-last_reviewed: "2026-09-01"
+last_reviewed: "2026-09-04"
 
 # `pgo-two-pass-build` was here and is closed rather than fixed. It asked
 # whether the documented 9-12% should be claimed by this repository's own
@@ -42,6 +42,17 @@ last_reviewed: "2026-09-01"
 # natively, spend the profile with -Cprofile-use, which needs no runtime) and
 # on top of the opt-level the same round took it adds nothing. Nothing here
 # needs a code change, which is the bar this file keeps.
+#
+# `encode-setup-cost-on-small-meshes` was here and is closed. Its one named
+# block that was pure bookkeeping -- the `EncoderOptions` clone at the top of
+# every encode, six allocations of map tables and String keys -- is gone: the
+# maps sit behind an `Arc` and the clone is a reference count. Counted per
+# encode at speed 5: 84 -> 79 allocations on the 8-face mesh, 147 -> 144 on the
+# 12-face one, the sizes identical. The rest of the per-call floor is named in
+# full in PERFORMANCE.md ("The Per-Call Floor, Named In Full") and has no
+# dominant block -- the largest is 14 of 84, a long tail of 8-32 byte Vecs, one
+# per attribute, component or traversal -- so nothing left there is an
+# implementation gap this file's bar admits.
 
 items:
   - id: decoder-buffer-reuse-across-decodes
@@ -63,24 +74,3 @@ items:
       - "That reuse is expressible today and merely unexposed. It was expressible and it was wrong: `decode` never cleared the mesh it was given, so a second decode left it carrying both streams' attributes -- six after two decodes of a position/normal/texcoord stream, sixty after twenty -- with the point and face counts right the whole way. Fixed, and pinned by `a_reused_decoder_and_mesh_decode_what_fresh_ones_do`."
       - "That reuse is worth 21-28% on large meshes. That was the first reading and it was the bug: the reused arm never freed the previous decode. Against the fixed decoder the same payload reads 1.021x."
       - "That the cost is per-call setup. Decode allocates 42 times for 8 faces and 45 for 19,602 -- a per-call floor, as encode has -- but the floor is not what reuse reaches, and it is not where the decode's time is on anything but a tiny mesh."
-
-
-  - id: encode-setup-cost-on-small-meshes
-    area: draco-core
-    priority: medium
-    status: open
-    summary: "An encode allocates the same ~85 times whether the mesh has 8 faces or 19,602, so about 85% of a tiny encode is per-call cost that no per-face work can reach."
-    evidence:
-      - path: "PERFORMANCE.md"
-        note: "\"The Small-Mesh Encode Cost, Reproduced Against Its Own Hypothesis\". Allocations per encode at speed 5: 85 on an 8-face mesh, 86 on a 19,602-face one. An 8-face encode costs 4.9 us against the 0.093 us/face the large mesh pays, so 0.75 us of it is its faces."
-      - path: "crates/draco-core/src/mesh_encoder.rs"
-        note: "`encode` opens with `self.options = options.clone()`, which copies two HashMaps of String keys -- 6 allocations for keys that are string literals at every call site here. The rest of the fixed count is edgebreaker-encoder setup (~23 of the first 64 sampled), encode_edgebreaker_attributes_split (9) and CornerTable::init (11)."
-    impact: "Encode only; decode has its own item. It matters for the caller encoding many small meshes -- a glTF with hundreds of tiny primitives pays this per primitive -- and not at all for one large mesh."
-    next_steps:
-      - "Name the whole fixed count, not the first 64: encode_matrix's SAMPLE_LIMIT is not env-controlled, so raise it alongside SAMPLE_ALLOC_MIN/MAX before sampling a payload that allocates more than that."
-      - "Take the cheapest block first and measure it alone: the options clone is 6 allocations of pure bookkeeping, and interning the keys keeps EncoderOptions' fields private and the API additive."
-      - "Measure on a mesh small enough for the floor to show -- an 18k-face payload dilutes a 4 us effect to 0.2%, and the seeded sweep is the control the change must not cost anything on."
-    refuted:
-      - "That the 2.0 series (7a277ff..f18f3e1) left small-mesh encode 3-13% slower. Measured payload by payload with the release profile matched across revisions: 3.6% at 8 faces at speed 5 (7/7 rounds) and nothing resolvable at 12 faces or above, with the series a 14-15% win at speed 1 from 170 faces up."
-      - "That the memoisation commits are the cause. The series changed the allocation count by zero on every speed-5 cell measured; the entropy cache grows lazily from empty and the geometric-normal caches need a normal attribute the 8-face payload does not have. A face-count gate would have had no setup to skip."
-      - "That any of it stands today. 4353e7a is faster than 7a277ff on every payload and speed measured, 0/7 signs throughout -- 0.85x on the 8-face mesh, 0.68-0.72x on the 18k one."

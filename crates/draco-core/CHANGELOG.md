@@ -142,6 +142,16 @@ premise holds, and the encoder reports the choices it makes for itself.
 
 ### Changed
 
+- Cloning `EncoderOptions` no longer copies its maps. `MeshEncoder::encode`
+  and `PointCloudEncoder::encode` clone the bag they are given and keep the
+  copy for the call, and that clone used to cost one allocation per map and
+  per key -- six on a typical bag, seven percent of everything an eight-face
+  encode allocates, and pure bookkeeping. The maps now sit behind an `Arc`,
+  so the clone is a reference count; a setter on a bag that is shared at that
+  moment copies the maps once for itself and a bag nobody else holds is
+  written in place. Reads and writes behave as before, and the type keeps
+  `Send` and `Sync`.
+
 - The crate's freedom from `unsafe` is now enforced by the compiler rather than
   asserted in a document. `SECURITY.md` has long promised it and nothing
   checked it; the manifest carries `[lints.rust] unsafe_code = "forbid"`, so an

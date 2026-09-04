@@ -593,7 +593,7 @@ files:
       - name: "EncoderOptions"
         type: "struct"
         progress: "fully implemented"
-        note: "Matches C++ implementation exactly."
+        note: "Matches C++ implementation exactly. The maps sit behind an Arc so the per-encode clone the encoders make is a reference count; setters copy on write."
     functions:
       - name: "get_attribute_int"
         progress: "fully implemented"

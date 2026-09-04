@@ -3829,6 +3829,27 @@ site in this tree, and it is `7%` of the count, worth about `0.24` us on the
 resolve on anything but the tiny mesh, so it stands as a counted change if it
 is ever made, not a timed one.
 
+### The Options Clone, Made -- As A Counted Change
+
+Made, and counted rather than timed, as the paragraph above said it would be.
+`EncoderOptions` now keeps its two maps behind an `Arc`; the clone at the top
+of `MeshEncoder::encode` and `PointCloudEncoder::encode` is a reference count,
+and a setter on a shared bag copies the maps once for itself (`Arc::make_mut`)
+rather than every encode paying for a copy nobody writes to. Same harness,
+`ALLOC=1`, one round, speed `5`:
+
+| payload | faces | before | after | bytes |
+| --- | ---: | ---: | ---: | ---: |
+| annulus | 8 | `84` | `79` | `111`, unchanged |
+| cube_att | 12 | `147` | `144` | `91`, unchanged |
+
+The bag the harness builds has two global keys and one or two attribute
+entries, so the five and three are the map tables and the `String` keys the
+deep clone used to copy. The floor is now `79` on the eight-face mesh, and the
+table above it names every one of them: no block larger than `14`, nothing
+that is bookkeeping rather than an encode's own state. The status item that
+asked for this is closed on that reading, not on a clock.
+
 ### The Reuse Two Items Proposed, Which Was A Correctness Bug
 
 Both status items put their win at the API: an "additive reuse entry point" so
