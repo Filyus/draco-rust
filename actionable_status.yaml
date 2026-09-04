@@ -25,7 +25,7 @@
 # `refuted` is optional and exists so an item that survives a measurement does
 # not silently re-acquire the reading that measurement disproved. Put a claim
 # there when the item stays open but its evidence, cause or size has changed;
-# the numbers behind it belong in PERFORMANCE.md, and only the verdict here.
+# the numbers behind it belong in PERFORMANCE-LOG.md, and only the verdict here.
 #
 # An empty items list means there are currently no known actionable implementation
 # gaps. Completed behavior and policy decisions belong in implementation_state.yaml.
@@ -49,7 +49,7 @@ last_reviewed: "2026-09-04"
 # maps sit behind an `Arc` and the clone is a reference count. Counted per
 # encode at speed 5: 84 -> 79 allocations on the 8-face mesh, 147 -> 144 on the
 # 12-face one, the sizes identical. The rest of the per-call floor is named in
-# full in PERFORMANCE.md ("The Per-Call Floor, Named In Full") and has no
+# full in PERFORMANCE-LOG.md ("The Per-Call Floor, Named In Full") and has no
 # dominant block -- the largest is 14 of 84, a long tail of 8-32 byte Vecs, one
 # per attribute, component or traversal -- so nothing left there is an
 # implementation gap this file's bar admits.
@@ -58,7 +58,7 @@ last_reviewed: "2026-09-04"
 # named as the one shape that could pay: `PointCloud::clear` now keeps the
 # dropped attributes' value storage and explicit maps, emptied, and hands them
 # to the attributes the next decode adds. Clocked against reuse without it in
-# one binary, seven interleaved rounds (PERFORMANCE.md, "The Attribute
+# one binary, seven interleaved rounds (PERFORMANCE-LOG.md, "The Attribute
 # Storage, Kept -- And It Pays"): 0.955x on the 8-face mesh, 0.961x at 12,
 # 0.953x on the 18k-face grid and 0.979x on the small round-robin mix, each
 # 7/7 signs, and every other cell leaning the same way. The staleness risk the

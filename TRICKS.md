@@ -7,8 +7,12 @@ diff (or, where the comparison is against upstream, the real C++ next to the
 real Rust) -- prose alone hides which line actually did the work.
 
 This is a technique reference, not a changelog: [`PERFORMANCE.md`](PERFORMANCE.md)
-has the current speed snapshot, [`CHANGELOG.md`](CHANGELOG.md) has release
-notes, and the crate `CHANGELOG.md`s have per-release detail. A trick here may
+has the current speed snapshot and the benchmarks,
+[`PERFORMANCE-LOG.md`](PERFORMANCE-LOG.md) has the round-by-round record each
+technique came out of, [`CHANGELOG.md`](CHANGELOG.md) has release notes, and
+the crate `CHANGELOG.md`s have per-release detail. The division against the log
+is by generality: a pattern that transfers to another codebase belongs here, the
+specific attempt with its numbers and verdict belongs there. A trick here may
 span several commits (the KD-tree section is one five-commit sequence) or be
 a single line that has held since 2026-04-26's `feat: add initial draco rust
 implementation` with no later commit to point to -- those are dated

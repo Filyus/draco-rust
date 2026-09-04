@@ -147,7 +147,7 @@ pub(crate) fn ensure_allocation_is_backed(requested_bytes: usize, stream_bytes: 
 ///
 /// Sub-bit symbols are not just theoretically possible, they are measured:
 /// the seeded ribbon's attribute corrections entropy-code at 2.7 symbols per
-/// bit of their own stream (PERFORMANCE.md, the dhat round). This gate
+/// bit of their own stream (PERFORMANCE-LOG.md, the dhat round). This gate
 /// survives that fact only because of its denominator -- it is applied once,
 /// on the sequential-connectivity path, against the *whole* stream, which
 /// also carries every attribute. Do not reuse it against the narrow

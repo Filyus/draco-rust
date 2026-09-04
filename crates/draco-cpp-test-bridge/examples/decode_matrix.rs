@@ -1,7 +1,7 @@
 //! The decode side of `encode_matrix`: every payload, every speed, both
 //! sides, one process.
 //!
-//! Decode's stage attribution in `PERFORMANCE.md` predates three landed
+//! Decode's stage attribution in `PERFORMANCE-LOG.md` predates three landed
 //! rounds -- the corner-table access refactor, the dead traversal, the doubled
 //! consistency scan -- and has been marked history ever since, because
 //! re-taking it meant a process per cell. It does not any more.

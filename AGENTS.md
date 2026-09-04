@@ -103,6 +103,13 @@ cargo package --manifest-path crates/draco-core/Cargo.toml
 [`TESTING.md`](TESTING.md) maps the parity/compatibility test targets, and
 [`PERFORMANCE.md`](PERFORMANCE.md) the benchmark and profiling targets.
 
+A profiling or optimization round is written up in
+[`PERFORMANCE-LOG.md`](PERFORMANCE-LOG.md), not in `PERFORMANCE.md` -- including
+one that measured to nothing, which is the case most worth recording. Read that
+log's index before starting a round: an idea already sitting there as `null` or
+`rejected` has been paid for once. `PERFORMANCE.md` carries only what is
+currently true, and a round updates it only when it moves a headline figure.
+
 `draco-io` depends on a published `draco-core`, and `draco-gltf` on published
 `draco-core` + `draco-io`, so `cargo package`/`cargo publish` for a dependent
 crate can fail before its dependencies are published at the pinned versions.
