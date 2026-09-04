@@ -600,6 +600,32 @@ impl PointAttribute {
         self.identity_mapping
     }
 
+    /// Takes the value storage and the explicit map out, leaving both empty.
+    pub(crate) fn take_storage(&mut self) -> (Vec<u8>, Vec<AttributeValueIndex>) {
+        (
+            self.buffer.take_storage(),
+            std::mem::take(&mut self.indices_map),
+        )
+    }
+
+    /// Adopts storage taken from another attribute, emptied, when this one
+    /// holds none of its own yet.
+    ///
+    /// The map is emptied rather than kept, so whether the attribute maps
+    /// points by identity or explicitly is decided exactly as it was before:
+    /// `set_explicit_mapping` grows the map to its size, filled with the
+    /// invalid index, as it does on a fresh attribute.
+    pub(crate) fn adopt_storage(&mut self, storage: (Vec<u8>, Vec<AttributeValueIndex>)) {
+        let (bytes, mut map) = storage;
+        if !self.buffer.has_storage() {
+            self.buffer.adopt_storage(bytes);
+        }
+        if self.indices_map.capacity() == 0 {
+            map.clear();
+            self.indices_map = map;
+        }
+    }
+
     /// Uses point ids directly as attribute value ids.
     pub fn set_identity_mapping(&mut self) {
         self.identity_mapping = true;

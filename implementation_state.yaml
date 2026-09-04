@@ -954,7 +954,7 @@ files:
       - name: "PointCloud"
         type: "struct"
         progress: "fully implemented"
-        note: "Matches C++ implementation exactly."
+        note: "Matches C++ implementation exactly. `clear` keeps the dropped attributes' value storage and explicit maps, emptied, for the attributes added next, so a decode into a cloud that has decoded before grows into the previous decode's allocations; `release_spare_storage` frees them."
     functions:
       - name: "add_attribute"
         progress: "fully implemented"

@@ -25,6 +25,11 @@
 //! SAMPLE_ALLOC=1 cargo run --release --example decode_loop -- <mesh.obj> rust 5 1
 //! REUSE_DECODE=1 cargo run --release --example decode_loop -- <mesh.obj> rust 5 2000
 //! ```
+//!
+//! `DROP_SPARE=1` alongside `REUSE_DECODE=1` clears the mesh and releases the
+//! storage it retained from the previous decode before every decode -- what a
+//! `clear` before this retention existed did -- so the same binary measures
+//! reuse with and without it.
 use draco_core::decoder_buffer::DecoderBuffer;
 use draco_core::encoder_buffer::EncoderBuffer;
 use draco_core::mesh::Mesh;
@@ -115,6 +120,7 @@ fn main() {
             // question is about is already expressible -- what it is worth is
             // the measurement, and the counts below are what answers it.
             let reuse = std::env::var("REUSE_DECODE").is_ok();
+            let drop_spare = std::env::var("DROP_SPARE").is_ok();
             let mut kept = reuse.then(|| (Mesh::new(), MeshDecoder::new()));
             counting::reset();
             let start = std::time::Instant::now();
@@ -135,6 +141,10 @@ fn main() {
                         (&mut fresh.0, &mut fresh.1)
                     }
                 };
+                if drop_spare {
+                    m.clear();
+                    m.release_spare_storage();
+                }
                 d.decode(&mut b, m).expect("rust decode failed");
                 assert!(
                     expected[which] == 0 || expected[which] == m.num_points(),
@@ -154,7 +164,7 @@ fn main() {
             let b = counting::BYTES.swap(0, Relaxed) as f64 / f64::from(iters);
             let l = counting::LARGE.swap(0, Relaxed) as f64 / f64::from(iters);
             eprintln!(
-                "rust: {points} points, {faces} faces, {attributes} attributes, {us:.1} us/decode"
+                "rust: {points} points, {faces} faces, {attributes} attributes, {us:.3} us/decode"
             );
             eprintln!(
                 "alloc: {n:.0} allocations/decode, {:.2} MB/decode, {l:.0} of them >= 64 KB",

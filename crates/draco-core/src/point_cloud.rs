@@ -11,6 +11,11 @@ pub struct PointCloud {
     attributes: Vec<PointAttribute>,
     num_points: usize,
     metadata: Option<GeometryMetadata>,
+    /// The value storage and explicit maps of attributes a `clear` dropped,
+    /// handed to the next attributes added so a decode into a cloud that has
+    /// already decoded grows into the last decode's allocations rather than
+    /// making new ones. Empty on a cloud that has never been cleared.
+    spare_storage: Vec<(Vec<u8>, Vec<AttributeValueIndex>)>,
 }
 
 impl PointCloud {
@@ -20,14 +25,40 @@ impl PointCloud {
     }
 
     /// Drops every attribute, point and the metadata, keeping the allocated
-    /// capacity of the attribute list.
+    /// capacity of the attribute list and the attributes' own storage.
     ///
     /// What a decode does to the cloud it is given, so that decoding into one
-    /// that already holds geometry replaces it rather than adding to it.
+    /// that already holds geometry replaces it rather than adding to it. The
+    /// values and the explicit maps of the dropped attributes are kept empty
+    /// and handed to the next attributes added, so the caller decoding many
+    /// files into one cloud reuses the allocations of the last one; the cloud
+    /// therefore holds the memory of the largest geometry it has decoded until
+    /// [`release_spare_storage`](Self::release_spare_storage) or drop.
     pub fn clear(&mut self) {
-        self.attributes.clear();
+        for mut attribute in self.attributes.drain(..) {
+            let storage = attribute.take_storage();
+            if storage.0.capacity() > 0 || storage.1.capacity() > 0 {
+                self.spare_storage.push(storage);
+            }
+        }
         self.num_points = 0;
         self.metadata = None;
+    }
+
+    /// Frees the storage [`clear`](Self::clear) retained from earlier
+    /// attributes.
+    pub fn release_spare_storage(&mut self) {
+        self.spare_storage = Vec::new();
+    }
+
+    /// Hands a spare storage to an attribute that has none of its own.
+    fn adopt_spare_storage(&mut self, attribute: &mut PointAttribute) {
+        if attribute.buffer().has_storage() {
+            return;
+        }
+        if let Some(storage) = self.spare_storage.pop() {
+            attribute.adopt_storage(storage);
+        }
     }
 
     /// Sets the number of logical points.
@@ -42,16 +73,18 @@ impl PointCloud {
         }
         let id = self.attributes.len() as i32;
         attribute.set_unique_id(id as u32);
+        self.adopt_spare_storage(&mut attribute);
         self.attributes.push(attribute);
         id
     }
 
     /// Adds an attribute while preserving its existing unique id.
-    pub fn add_attribute_preserve_unique_id(&mut self, attribute: PointAttribute) -> i32 {
+    pub fn add_attribute_preserve_unique_id(&mut self, mut attribute: PointAttribute) -> i32 {
         if self.num_points == 0 && attribute.size() > 0 {
             self.num_points = attribute.size();
         }
         let id = self.attributes.len() as i32;
+        self.adopt_spare_storage(&mut attribute);
         self.attributes.push(attribute);
         id
     }
@@ -303,6 +336,80 @@ impl PointCloud {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::draco_types::DataType;
+    use crate::geometry_indices::INVALID_ATTRIBUTE_VALUE_INDEX;
+
+    fn attribute_with_values(num_values: usize, fill: u8) -> PointAttribute {
+        let mut attribute = PointAttribute::new();
+        attribute.init(
+            GeometryAttributeType::Position,
+            3,
+            DataType::Float32,
+            false,
+            num_values,
+        );
+        attribute.buffer_mut().data_mut().fill(fill);
+        attribute.set_explicit_mapping(num_values);
+        attribute
+    }
+
+    /// A cloud that has been cleared hands the dropped attributes' storage to
+    /// the next attributes added, and what they read from it is what a fresh
+    /// attribute reads: zeros where nothing was written, the invalid index
+    /// where no mapping was set.
+    #[test]
+    fn clear_keeps_attribute_storage_for_the_next_attributes_and_hands_it_over_empty() {
+        let mut point_cloud = PointCloud::new();
+        point_cloud.add_attribute(attribute_with_values(100, 0xAB));
+        point_cloud.clear();
+        assert_eq!(point_cloud.num_attributes(), 0);
+        assert_eq!(point_cloud.spare_storage.len(), 1);
+
+        let mut next = PointAttribute::new();
+        next.init_deferred(
+            GeometryAttributeType::Position,
+            3,
+            DataType::Float32,
+            false,
+            10,
+        )
+        .unwrap();
+        let id = point_cloud.add_attribute(next);
+        assert!(point_cloud.spare_storage.is_empty());
+        let next = point_cloud.attribute_mut(id);
+        assert!(next.buffer().has_storage(), "the storage was handed over");
+        assert_eq!(next.buffer().data_size(), 0);
+        next.resize_unique_entries(10).unwrap();
+        assert!(next.buffer().data().iter().all(|&b| b == 0));
+        next.set_explicit_mapping(10);
+        assert!((0..10).all(|p| next.mapped_index(PointIndex(p)) == INVALID_ATTRIBUTE_VALUE_INDEX));
+    }
+
+    /// An attribute that already owns storage keeps it; the spare stays for
+    /// one that does not.
+    #[test]
+    fn an_attribute_with_its_own_storage_does_not_take_a_spare() {
+        let mut point_cloud = PointCloud::new();
+        point_cloud.add_attribute(attribute_with_values(100, 0xAB));
+        point_cloud.clear();
+        point_cloud.add_attribute(attribute_with_values(5, 0xCD));
+        assert_eq!(point_cloud.spare_storage.len(), 1);
+        assert!(point_cloud
+            .attribute(0)
+            .buffer()
+            .data()
+            .iter()
+            .all(|&b| b == 0xCD));
+    }
+
+    #[test]
+    fn release_spare_storage_drops_what_clear_kept() {
+        let mut point_cloud = PointCloud::new();
+        point_cloud.add_attribute(attribute_with_values(100, 0xAB));
+        point_cloud.clear();
+        point_cloud.release_spare_storage();
+        assert!(point_cloud.spare_storage.is_empty());
+    }
 
     #[test]
     fn try_attribute_rejects_out_of_range_ids() {

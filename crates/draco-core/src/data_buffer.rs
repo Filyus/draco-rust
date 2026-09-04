@@ -40,6 +40,31 @@ impl DataBuffer {
         self.data.resize(new_size, 0);
     }
 
+    /// Takes the byte storage out, leaving the buffer empty.
+    ///
+    /// The bytes are the allocation an attribute's values live in, and the
+    /// point cloud keeps them across a `clear` so the next decode can grow
+    /// into them instead of allocating.
+    pub(crate) fn take_storage(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.data)
+    }
+
+    /// Whether the buffer owns an allocation, empty or not.
+    pub(crate) fn has_storage(&self) -> bool {
+        self.data.capacity() > 0
+    }
+
+    /// Adopts a previously taken storage, emptied, as this buffer's own.
+    ///
+    /// Only an empty buffer adopts, and the storage is emptied first, so what
+    /// the buffer reads afterwards is exactly what it would read from a fresh
+    /// one: every `resize` zero-fills what it grows into.
+    pub(crate) fn adopt_storage(&mut self, mut storage: Vec<u8>) {
+        debug_assert!(self.data.is_empty());
+        storage.clear();
+        self.data = storage;
+    }
+
     pub fn try_resize(&mut self, new_size: usize) -> Result<(), std::collections::TryReserveError> {
         if new_size > self.data.len() {
             self.data.try_reserve_exact(new_size - self.data.len())?;

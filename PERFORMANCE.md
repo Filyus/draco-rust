@@ -3909,6 +3909,81 @@ a different change: the decoder would have to reuse an existing
 values behind wherever the new one does not overwrite -- the same class of bug
 as the one just fixed, with no count to catch it.
 
+### The Attribute Storage, Kept -- And It Pays
+
+The item's one remaining shape, built and clocked. `PointCloud::clear` now
+takes each dropped attribute's value bytes and explicit map, empties them, and
+keeps them; `add_attribute` hands one pair to the next attribute that arrives
+with no storage of its own -- which is every attribute a decode creates, since
+they are `init_deferred` and sized by whichever stage writes their values. A
+`release_spare_storage` frees the pool for the caller who does not want a
+cleared mesh to hold its largest decode's memory.
+
+**The staleness risk the item priced is absent by construction, not by
+testing.** The storage arrives with length zero and only capacity, and every
+path that grows a `DataBuffer` -- `resize`, `try_resize`, `update` -- zero-fills
+what it grows into, so a reused attribute reads exactly what a fresh one
+reads. The test that pins reuse across differing streams
+(`a_reused_decoder_and_mesh_decode_what_fresh_ones_do`) passes unchanged, and
+`point_cloud.rs` pins the handover itself: storage kept, handed over empty,
+zeros and invalid indices where nothing was written.
+
+**Counted first.** `decode_loop` grew a third arm: `DROP_SPARE=1` alongside
+`REUSE_DECODE=1` clears the mesh and releases the pool *before* each decode,
+which is exactly the `clear` of the previous round. (The first cut released
+*after* each decode and measured nothing -- by then the pool is already empty,
+because the decode's own `clear` had filled it and its attributes had drained
+it. A switch that does not change the count is not a switch.) Allocations and
+MB per decode at speed 5, 40 iterations, deterministic:
+
+| payload | faces | fresh | reuse, released | reuse, kept |
+| --- | ---: | ---: | ---: | ---: |
+| annulus | 8 | `42` / `0.02` | `41` / `0.02` | `38` / `0.02` |
+| cube_subd | 3,072 | `43` / `0.26` | `42` / `0.22` | `39` / `0.20` |
+| test_grid | 19,602 | `45` / `1.57` | `44` / `1.36` | `41` / `1.21` |
+| mix-small | round robin | `75` / `0.06` | `73` / `0.06` | `68` / `0.05` |
+| mix-large | round robin | `60` / `0.50` | `58` / `0.44` | `55` / `0.40` |
+
+`mix-small` is annulus, cube_att, test_nm, sphere; `mix-large` is test_nm,
+sphere, cube_subd, test_grid -- both round-robin, the composition recorded
+here because the previous round did not. The pool saves the values and the
+map: on `test_grid` `120,000` bytes of positions and `10,000` map entries,
+`0.15` MB of the `1.36`. What is left at `1.21` MB is the decoder's own --
+corner table, portable attribute, traversal -- and no mesh-side retention
+reaches it.
+
+**Then clocked, because the arithmetic said it could resolve.** Three small
+allocations against a `1.9` us decode is several percent, not the `0.01%` the
+encode-side item was. One binary, three arms per payload rotated within each
+round, one core, high priority, seven rounds, `us/decode` printed to three
+places; the table is the median of per-round ratios with the signs beside it:
+
+| payload | faces | released | kept | kept/released | spread | signs | kept/fresh | signs |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| annulus | 8 | `1.932` | `1.840` | **`0.955x`** | `[0.950..0.975]` | **`7/7`** | `0.947x` | `7/7` |
+| cube_att | 12 | `5.731` | `5.518` | **`0.961x`** | `[0.954..0.979]` | **`7/7`** | `0.943x` | `7/7` |
+| test_nm | 170 | `14.98` | `14.71` | `0.987x` | `[0.930..1.111]` | `5/7` | `0.987x` | `5/7` |
+| sphere | 224 | `16.61` | `16.61` | `0.991x` | `[0.981..1.071]` | `5/7` | `0.953x` | `6/7` |
+| cube_subd | 3,072 | `79.9` | `78.9` | `0.990x` | `[0.950..1.015]` | `4/7` | `0.930x` | `7/7` |
+| test_grid | 19,602 | `784.1` | `727.9` | **`0.953x`** | `[0.909..0.965]` | **`7/7`** | `0.954x` | `5/7` |
+| mix-small | round robin | `9.999` | `9.835` | **`0.979x`** | `[0.911..0.995]` | **`7/7`** | `0.935x` | `7/7` |
+| mix-large | round robin | `204.5` | `196.8` | `0.975x` | `[0.952..1.027]` | `5/7` | `0.952x` | `6/7` |
+
+Four cells resolve at `7/7` -- the two tiniest meshes, the largest, and the
+small mix -- and all eight medians lean the same way with nothing in the
+matrix leaning back, which is the pattern that means direction rather than
+drift. The 18k-face cell is the one the arithmetic did not predict: `0.15` MB
+is not a malloc's worth of `770` us, and what the clock is seeing there is the
+page-level cost of a `120` KB block cycling through the heap -- decommit on
+free, faults on first touch -- which the kept block never pays. The
+mid-sized meshes sit inside their spread, as three allocations against `15-80`
+us should.
+
+So the item that opened at "`21-28%`", was refuted to a bug, then re-measured
+to nothing, closes on `4-5%` for the callers it named: the small-mesh one and
+the reuse one. The retention is the cost -- a cleared mesh keeps its largest
+decode's storage -- and `release_spare_storage` is the way out of it.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of

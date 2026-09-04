@@ -53,6 +53,10 @@ premise holds, and the encoder reports the choices it makes for itself.
 
 ### Added
 
+- `PointCloud::release_spare_storage` frees the attribute storage `clear`
+  now retains (see *Changed*), for a caller that decoded one large geometry
+  into a mesh it will go on reusing for small ones and wants the memory back.
+
 - `Mesh::remove_points_unused_by_faces` drops the points no face names and the
   attribute values no point names. Neither reaches a decoder in any case --
   both this encoder and upstream's write the geometry the connectivity reaches
@@ -141,6 +145,20 @@ premise holds, and the encoder reports the choices it makes for itself.
   to do it deliberately rather than by luck.
 
 ### Changed
+
+- `PointCloud::clear`, and so `Mesh::clear` and every decode into a geometry
+  that has decoded before, keeps the dropped attributes' value storage and
+  explicit point maps and hands them, emptied, to the attributes the next
+  decode adds. A caller decoding many files into one mesh -- a viewer, a
+  server -- no longer pays a fresh allocation per attribute per file: the
+  next decode grows into the last one's allocations. Measured against the
+  same reuse without the retention, in one binary over seven interleaved
+  rounds, it is 4-5% off a small mesh's decode and off an 18k-face one, and
+  2% off a round-robin of four small meshes. What a reused attribute reads is
+  what a fresh one reads -- the storage arrives empty and every resize
+  zero-fills -- so no decode sees another's values. The cost is that a cleared
+  cloud holds the storage of the largest geometry it has decoded until it is
+  dropped or `release_spare_storage` is called.
 
 - Cloning `EncoderOptions` no longer copies its maps. `MeshEncoder::encode`
   and `PointCloudEncoder::encode` clone the bag they are given and keep the
