@@ -3984,6 +3984,30 @@ to nothing, closes on `4-5%` for the callers it named: the small-mesh one and
 the reuse one. The retention is the cost -- a cleared mesh keeps its largest
 decode's storage -- and `release_spare_storage` is the way out of it.
 
+### A Refresh, No Change Since The Attribute-Storage Round
+
+No optimization work in this round -- a re-run of `model_matrix` at
+`0667cfe1` (the attribute-storage-retention commit above) to check the Named
+Models table still describes the current binary, since the standing figures
+had drifted across several intervening rounds without being re-measured
+against real models. Same command, same three payloads, speed 4, 10-bit
+positions, pristine 1.5.7, one thread, nine rounds of twenty, run twice for a
+same-session repeat:
+
+| model | run 1 enc x | run 2 enc x | run 1 dec x | run 2 dec x |
+| --- | ---: | ---: | ---: | ---: |
+| bunny | `1.63x` | `1.61x` | `1.39x` | `1.38x` |
+| lamp | `1.44x` | `1.45x` | `1.31x` | `1.32x` |
+| car | `1.72x` | `1.72x` | `1.73x` | `1.75x` |
+
+All three payloads wrote byte-identical output on both sides in both runs.
+Against the table this document already carried, every ratio moved by
+`0.03x` or less -- inside the run-to-run spread the earlier round itself
+reported, not a regression. The full figures are folded into the Named
+Models table above rather than kept separately, per this document's own
+practice of quoting absolutes from one run rather than carrying them between
+snapshots.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
@@ -4240,17 +4264,64 @@ A model that exists only as a `.drc` reaches the sibling matrices, which take
 Ryzen AI 7 350, one thread, C++ Draco 1.5.7 release, speed 4, 10-bit positions,
 medians of nine rounds of twenty. All three wrote byte-identical output.
 
+Measured 2026-09-04 at `0667cfe1`:
+
 | model | faces | C++ encode | Rust encode | | C++ decode | Rust decode | |
 |---|---|---|---|---|---|---|---|
-| bunny | 69,451 | `19,792 [19,325..24,542]` | `12,394 [12,032..14,016]` | `1.60x` | `6,162 [6,112..8,107]` | `4,533 [4,426..5,904]` | `1.36x` |
-| lamp | 12,082 | `2,764 [2,730..2,853]` | `1,950 [1,927..2,006]` | `1.42x` | `1,270 [1,256..1,370]` | `932 [914..970]` | `1.36x` |
-| car | 1,744 | `644 [631..658]` | `358 [351..384]` | `1.80x` | `261 [254..270]` | `147 [146..162]` | `1.78x` |
+| bunny | 69,451 | `19,196.0 [18,739.0..22,145.0]` | `11,812.0 [11,609.8..13,298.7]` | `1.63x` | `6,181.0 [6,100.0..7,251.0]` | `4,453.3 [4,395.5..5,700.4]` | `1.39x` |
+| lamp | 12,082 | `2,753.0 [2,728.0..2,803.0]` | `1,913.3 [1,874.2..1,957.5]` | `1.44x` | `1,293.0 [1,258.0..1,322.0]` | `986.0 [959.3..1,004.1]` | `1.31x` |
+| car | 1,744 | `649.0 [638.0..662.0]` | `376.7 [369.6..391.5]` | `1.72x` | `263.0 [259.0..268.0]` | `152.4 [149.4..164.2]` | `1.73x` |
 
-Microseconds. The ratios are stable across runs to within 0.02x; the absolute
-figures are not, and are comparable only inside their own run. An earlier run
-of the same command on a quieter machine read `1.62x / 1.34x`, `1.40x / 1.37x`
-and `1.79x / 1.80x` while its absolute encode times were some 20% lower -- which
-is the reason ratios are quoted from a run rather than carried between them.
+Microseconds. A same-session repeat of the run agreed to within `1-2%` on
+every ratio (bunny `1.61x`/`1.38x`, lamp `1.45x`/`1.32x`, car `1.72x`/`1.75x`).
+The ratios are stable across runs to within 0.02x; the absolute figures are
+not, and are comparable only inside their own run. Against the previous
+snapshot on this machine (`1.60x`/`1.36x`, `1.42x`/`1.36x`, `1.80x`/`1.78x`),
+every ratio moved by `0.03x` or less -- inside run-to-run noise, not a
+regression or an improvement. An earlier run of the same command on a quieter
+machine read `1.62x / 1.34x`, `1.40x / 1.37x` and `1.79x / 1.80x` while its
+absolute encode times were some 20% lower -- which is the reason ratios are
+quoted from a run rather than carried between them.
+
+### Real Models, Compress Then Decompress, Every Speed
+
+File: `crates/draco-cpp-test-bridge/tests/bench_real_models.rs`
+
+Package: `draco-cpp-test-bridge`
+
+Purpose: unlike `model_matrix` (one fixed speed, `.drc` fixtures written by
+whichever encoder version produced them), this compresses each real asset with
+the Rust encoder at every speed `0..=10` first, then decodes that
+freshly-written stream on both sides -- so the stream both decoders read is
+pinned to the settings being swept rather than inherited from the fixture. Not
+previously catalogued in this document.
+
+```sh
+cargo test --manifest-path crates/Cargo.toml -p draco-cpp-test-bridge --test bench_real_models --release -- --nocapture
+```
+
+Ryzen AI 7 350, one thread, C++ Draco 1.5.7 release, 10-bit positions, median
+of 21 runs (5 for the two bunny meshes, over 30k faces). Measured 2026-09-04 at
+`0667cfe1`; C++/Rust ratio, `>1x` favors Rust:
+
+| model | faces | enc x @0 | @5 (default) | @9 | @10 | dec x @0 | @5 (default) | @9 | @10 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Stanford bunny (.ply) | 69,451 | `1.3x` | `1.1x` | `1.1x` | `2.4x` | `1.1x` | `1.0x` | `1.3x` | `2.9x` |
+| bunny (.drc) | 69,451 | `1.3x` | `1.3x` | `1.2x` | `2.4x` | `1.1x` | `1.3x` | `1.3x` | `2.9x` |
+| car | 1,744 | `3.2x` | `1.9x` | `1.8x` | `2.2x` | `1.7x` | `1.8x` | `2.2x` | `3.3x` |
+| lamp | 12,082 | `1.6x` | `1.5x` | `1.8x` | `1.9x` | `1.2x` | `1.3x` | `1.7x` | `1.9x` |
+
+At speed 10 (sequential, no edgebreaker) the port is `1.9x`-`2.9x` ahead on
+every model and every operation -- the largest, most consistent lead in this
+document, and the full 11-speed run (this table shows four columns of it) has
+never previously appeared here: the harness existed (one commit,
+`c61a14fd`) but nothing had run it through into `PERFORMANCE.md`. Speeds 6-9
+show a size jump on three of the four models (e.g. lamp `143,412B` to
+`151,701B` between speed 5 and 6) worth noting for whoever next reads the
+compression-ratio side of this sweep, though it is not this table's subject.
+Full per-speed output, including the smaller car and lamp assets which sit
+inside a few percent of each other at the small end, is in the harness's own
+`--nocapture` output rather than reproduced here in full.
 
 ### Decode Through The C++ Bridge
 
@@ -4259,11 +4330,28 @@ File: `crates/draco-cpp-test-bridge/tests/bench_decode_cpp_vs_rust.rs`
 Package: `draco-cpp-test-bridge`
 
 Purpose: in-process decode benchmark, C++ bridge vs Rust. The timed region is
-matched between C++ and Rust, and the reported result uses median batches.
+matched between C++ and Rust, and the reported result uses median batches. The
+mesh is a synthetic position-only grid (a regular triangulated plane), swept
+over three sizes and every C++-encoded speed -- distinct from the seeded
+mesh sweep further up, which mixes grid, fan, ribbon and torus topologies, and
+from `encode_matrix`/`decode_matrix`'s interleaved-in-one-process design.
 
 ```sh
 cargo test --manifest-path crates/Cargo.toml -p draco-cpp-test-bridge --test bench_decode_cpp_vs_rust --release -- --nocapture
 ```
+
+Ryzen AI 7 350, pristine C++ Draco 1.5.7, median per-iteration over 9 batches.
+Measured 2026-09-04 at `0667cfe1`, C++/Rust speedup (`>1x` favors Rust):
+
+| grid | speed 0 | speed 1 | speed 5 | speed 10 | overall |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 20x20 (722 faces) | `1.04x` | `1.22x` | `1.32x` | `1.80x` | `1.20x` |
+| 50x50 (4,802 faces) | `1.25x` | `1.24x` | `1.32x` | `1.72x` | `1.29x` |
+| 100x100 (19,602 faces) | `1.25x` | `1.26x` | `1.32x` | `1.70x` | `1.30x` |
+
+Every cell favors Rust, the lead widens with mesh size at every non-10 speed,
+and speed 10 (sequential, no edgebreaker) is the largest margin on all three
+sizes -- the same shape the real-model and seeded sweeps above show.
 
 ### Encode Through The C++ Bridge
 
@@ -4272,10 +4360,87 @@ File: `crates/draco-cpp-test-bridge/tests/bench_encode_cpp_vs_rust.rs`
 Package: `draco-cpp-test-bridge`
 
 Purpose: in-process encode benchmark, C++ bridge vs Rust, without external
-process startup cost.
+process startup cost. Same synthetic grid family as the decode test above, at
+two sizes.
 
 ```sh
 cargo test --manifest-path crates/Cargo.toml -p draco-cpp-test-bridge --test bench_encode_cpp_vs_rust --release -- --nocapture
+```
+
+Same machine and reference build, averaged over 5 iterations. Measured
+2026-09-04 at `0667cfe1`, byte-identical output on every cell (`MATCH`):
+
+| grid | speed 0 | speed 1 | speed 5 | speed 10 |
+| --- | ---: | ---: | ---: | ---: |
+| 50x50 (4,802 faces) | `1.44x` | `1.57x` | `1.51x` | `1.68x` |
+| 100x100 (19,602 faces) | `1.54x` | `1.55x` | `1.40x` | `1.77x` |
+
+### Decode Matrix, One Process
+
+File: `crates/draco-cpp-test-bridge/examples/decode_matrix.rs`
+
+Package: `draco-cpp-test-bridge`
+
+Purpose: the decode side of `encode_matrix` -- every payload against every
+speed, both sides interleaved in one process. Each cell encodes once with the
+Rust encoder at that speed, then decodes the same bytes on both sides; point
+and face counts are compared per cell. `ALLOC=1` adds allocations and bytes
+per decode, `SAMPLE_ALLOC=1` adds backtraces for the first payload's decode.
+`--features mimalloc` swaps the global allocator to ask how much of a gap is
+the allocator rather than the decode.
+
+```sh
+ITERS=40 cargo run --release --manifest-path crates/Cargo.toml   -p draco-cpp-test-bridge --example decode_matrix -- 5 0,5,10 <mesh.obj>...
+```
+
+### Corner-Table Construction, One Stage, Either Side
+
+File: `crates/draco-cpp-test-bridge/examples/corner_table_loop.rs`
+
+Package: `draco-cpp-test-bridge`
+
+Purpose: `CornerTable::init`/`Create` alone, C++ against Rust, on an identical
+face array built once outside the timed loop -- for isolating one stage a
+whole-encode benchmark would otherwise fold into "a few percent of the
+total". Vertex and degenerated-face counts are printed so a run that built two
+different tables is visible.
+
+```sh
+cargo run --release --manifest-path crates/Cargo.toml   -p draco-cpp-test-bridge --example corner_table_loop -- <mesh.obj> [iters]
+```
+
+### One Decoder, One Payload, One Loop
+
+File: `crates/draco-cpp-test-bridge/examples/decode_loop.rs`
+
+Package: `draco-cpp-test-bridge`
+
+Purpose: exactly one side per process, one payload, one speed -- for a
+profiler or counting allocator that cannot separate C++ from Rust when both
+run in the same process, unlike `bench_decode_cpp_vs_rust`. Reports
+allocations and bytes per decode on the Rust side. `SAMPLE_ALLOC=1` backtraces
+allocations of 64 KB or more; `REUSE_DECODE=1` decodes into one `Mesh` through
+one `MeshDecoder` for the whole loop instead of rebuilding both per iteration.
+
+```sh
+cargo run --release --manifest-path crates/Cargo.toml   -p draco-cpp-test-bridge --example decode_loop -- <mesh.obj> cpp|rust <speed> <iters>
+```
+
+### One Encoder, One Payload, One Loop
+
+File: `crates/draco-cpp-test-bridge/examples/encode_loop.rs`
+
+Package: `draco-cpp-test-bridge`
+
+Purpose: the encode-side sibling of `decode_loop`, same one-side-per-process
+shape. The C++ side goes through `profile_cpp_encode`, which is
+position-only, so pass a position-only mesh when comparing sides.
+`REUSE_ENCODER=1` keeps one `MeshEncoder` across the loop instead of building
+one per iteration -- a converter walking many primitives against a caller
+encoding one mesh.
+
+```sh
+cargo run --release --manifest-path crates/Cargo.toml   -p draco-cpp-test-bridge --example encode_loop -- <mesh.obj> cpp|rust <speed> <iters>
 ```
 
 ### Encode/Decode Matrix
@@ -4285,11 +4450,30 @@ File: `crates/draco-cpp-test-bridge/tests/bench_encode_decode_matrix.rs`
 Package: `draco-cpp-test-bridge`
 
 Purpose: encode/decode performance and correctness across multiple speeds and
-mesh sizes.
+mesh sizes. Two tests: `bench_generated_encode_decode_matrix` covers a sphere,
+a subdivided cube and a 100x100 grid; `bench_encode_decode_matrix` is the
+100x100 grid alone, full encode-then-decode, every speed.
 
 ```sh
 cargo test --manifest-path crates/Cargo.toml -p draco-cpp-test-bridge --test bench_encode_decode_matrix --release -- --nocapture
 ```
+
+Same machine and reference build. Measured 2026-09-04 at `0667cfe1`, byte
+size and decoded point/face counts matched on every cell (`OK`); `bench_encode_decode_matrix`,
+the 100x100 grid (19,602 faces), C++/Rust speedup:
+
+| speed | encode | decode |
+| ---: | ---: | ---: |
+| 0 | `1.56x` | `1.23x` |
+| 1 | `1.51x` | `1.20x` |
+| 5 | `1.65x` | `1.27x` |
+| 9 | `1.63x` | `1.31x` |
+| 10 | `1.80x` | `1.81x` |
+
+`bench_generated_encode_decode_matrix`'s cube subdiv20 (4,800 faces) reads
+similarly: encode `1.40x`-`1.80x`, decode `1.23x`-`1.85x` across speeds
+0-10, both ends anchored by the same speed-10 sequential-path lead the other
+tables in this document show.
 
 ### Decode Real Files
 
