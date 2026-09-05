@@ -40,7 +40,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 undocumented_unsafe_blocks = "warn"
 
 [dependencies]
-draco-core = { version = "1.0.4", path = "../draco-core", default-features = false }
+draco-core = { version = "2.0", path = "../draco-core", default-features = false }
 thiserror = "2.0.17"
 byteorder = { version = "1.5.0", optional = true }
 miniz_oxide = { version = "0.9.1", optional = true }
@@ -92,7 +92,7 @@ test = []
 tempfile = "3.24.0"
 # `ply_bunny_test` encodes a mesh to verify the reader's output round-trips.
 # The library itself never needs the Draco encoder, so it stays test-only.
-draco-core = { version = "1.0.4", path = "../draco-core", features = ["encoder"] }
+draco-core = { version = "2.0", path = "../draco-core", features = ["encoder"] }
 
 [[example]]
 name = "decode_drc"

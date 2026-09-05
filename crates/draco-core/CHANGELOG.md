@@ -6,7 +6,7 @@ independently; its release tags are `draco-core-vX.Y.Z`.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and
 the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.0.0](https://github.com/Filyus/draco-rust/compare/draco-core-v1.2.0...draco-core-v2.0.0) - 2026-08-02
+## [2.0.0](https://github.com/Filyus/draco-rust/compare/draco-core-v1.2.0...draco-core-v2.0.0) - 2026-09-05
 
 A breaking release. Its through-line is that a refusal should say what it
 refused. Ninety-odd functions across the decode and encode paths returned a
