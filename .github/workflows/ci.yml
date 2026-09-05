@@ -14,7 +14,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
@@ -203,7 +203,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust 1.88.0
         uses: dtolnay/rust-toolchain@1.88.0
@@ -217,7 +217,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
@@ -233,7 +233,7 @@ jobs:
           sudo apt-get install -y binaryen
 
       - name: Install Node dependencies
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
@@ -385,13 +385,13 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install Node dependencies
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
@@ -440,7 +440,7 @@ jobs:
     # which is what this repository implements.
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
@@ -466,13 +466,13 @@ jobs:
     # indistinguishable from a comparison that ran and agreed.
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Check out upstream Draco at the version this port targets
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: google/draco
           ref: '1.5.7'
