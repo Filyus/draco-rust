@@ -7,7 +7,7 @@ independently; its release tags are `draco-io-vX.Y.Z`. It depends on a published
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and
 the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## [0.4.0](https://github.com/Filyus/draco-rust/compare/draco-io-v0.3.2...draco-io-v0.4.0) - 2026-09-05
 
 ### Added
 

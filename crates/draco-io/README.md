@@ -19,7 +19,7 @@ not live in this crate.
 
 ```toml
 [dependencies]
-draco-io = "0.3"
+draco-io = "0.4"
 ```
 
 To keep a binary small, disable the default format readers and writers and
@@ -27,7 +27,7 @@ enable only the features required by the application:
 
 ```toml
 [dependencies]
-draco-io = { version = "0.3", default-features = false, features = ["obj-reader", "obj-writer"] }
+draco-io = { version = "0.4", default-features = false, features = ["obj-reader", "obj-writer"] }
 ```
 
 ## Supported formats

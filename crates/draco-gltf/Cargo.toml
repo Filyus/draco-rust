@@ -29,7 +29,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs)'] }
 undocumented_unsafe_blocks = "warn"
 
 [dependencies]
-draco-core = { version = "2.0", path = "../draco-core", default-features = false }
+draco-core = { version = "2.0.0", path = "../draco-core", default-features = false }
 # The shared container/resource layer lives in draco-io; this crate owns the
 # full scene model and document-preserving transforms.
 #
@@ -40,7 +40,7 @@ draco-core = { version = "2.0", path = "../draco-core", default-features = false
 # less, it does not compile at all -- which is what `--no-default-features`
 # used to do. `document` still names it, so the feature graph still reads
 # correctly for a caller enabling features one at a time.
-draco-io = { version = "0.3.0", path = "../draco-io", default-features = false, features = [
+draco-io = { version = "0.4.0", path = "../draco-io", default-features = false, features = [
     "gltf-container",
 ] }
 thiserror = "2.0"

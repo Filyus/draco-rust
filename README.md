@@ -85,7 +85,7 @@ Or stay at the format layer and convert geometry between files:
 
 ```toml
 [dependencies]
-draco-io = { version = "0.3", default-features = false, features = ["ply-reader", "obj-writer"] }
+draco-io = { version = "0.4", default-features = false, features = ["ply-reader", "obj-writer"] }
 ```
 
 Every crate is feature-gated down to what an application actually calls, which
