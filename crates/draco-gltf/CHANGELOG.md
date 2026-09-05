@@ -7,7 +7,7 @@ independently; its release tags are `draco-gltf-vX.Y.Z`. It depends on published
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and
 the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.2.0...draco-gltf-v0.3.0) - 2026-09-05
 
 ### Added
 

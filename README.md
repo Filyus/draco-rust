@@ -67,7 +67,7 @@ ship as assets on each `draco-io` and `draco-gltf` release.
 
 ```toml
 [dependencies]
-draco-gltf = "0.2"
+draco-gltf = "0.3"
 ```
 
 Read a primitive, whether or not it arrived Draco-compressed:
