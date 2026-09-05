@@ -1,6 +1,6 @@
 //! Caller-set ceilings on what one decode may produce.
 //!
-//! [`decode_budget`](crate::decode_budget) and this module answer different
+//! `decode_budget` and this module answer different
 //! questions and both are needed. The budget is a backstop against a
 //! *reservation nothing backs* -- a header naming gigabytes over a stream that
 //! carries none of them -- and it is always on. These are the caller's policy

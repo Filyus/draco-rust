@@ -14,13 +14,13 @@
 //! types said a predictor may not do this.
 //!
 //! The invariant is structural here: a predictor never holds a
-//! [`PointAttribute`]. It holds a [`PredictionParent`], which exposes no
+//! [`PointAttribute`]. It holds a `PredictionParent`, which exposes no
 //! buffer, no byte stride and no data type -- only the point-to-entry lookup
 //! and the two canonical widening reads. Obtaining any other value out of the
 //! parent is unrepresentable. Constructing one is the privilege of the sites
-//! that own the portable copy: [`PredictionParent::portable`] validates the
+//! that own the portable copy: `PredictionParent::portable` validates the
 //! declared type against the set the portable pass writes, and
-//! [`PredictionParent::legacy`] is the pre-2.0 backwards-compatibility binding
+//! `PredictionParent::legacy` is the pre-2.0 backwards-compatibility binding
 //! where upstream hands the attribute itself.
 
 use crate::draco_types::DataType;

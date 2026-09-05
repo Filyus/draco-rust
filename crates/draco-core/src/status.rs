@@ -38,7 +38,7 @@ pub enum ErrorKind {
     /// `decode_budget`. A stream that trips it is malformed or adversarial; a
     /// large but genuine mesh scales its own budget with it.
     AllocationExceedsInput,
-    /// A decode would produce more than the caller's [`DecodeLimits`] allow.
+    /// A decode would produce more than the caller's [`DecodeLimits`](crate::DecodeLimits) allow.
     ///
     /// Distinct from [`AllocationExceedsInput`](Self::AllocationExceedsInput)
     /// on purpose: that one says the file is malformed, this one says the file

@@ -8,7 +8,7 @@
 //! Upstream keeps the prediction itself in one place --
 //! `mesh_prediction_scheme_tex_coords_portable_predictor.h`, included by both
 //! its encoder and decoder -- and so does this file now:
-//! [`MeshPredictionSchemeTexCoordsPortablePredictor`] carries the whole
+//! `MeshPredictionSchemeTexCoordsPortablePredictor` carries the whole
 //! computation and both schemes call it, with `is_encoder` selecting only the
 //! orientation handling. What is genuinely encoder-only -- trying both
 //! orientations and keeping the closer one -- lives behind that flag; the
