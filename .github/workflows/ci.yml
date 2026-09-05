@@ -193,6 +193,24 @@ jobs:
         shell: pwsh
         run: ./.github/scripts/test-packaged-crates.ps1
 
+  # The rust-version declared in each crates/*/Cargo.toml is a promise; this
+  # job is what holds it. Dependency updates can raise the real minimum above
+  # the declared one (getrandom alone sets a 1.85 floor); better to see that
+  # here than in a user's ticket.
+  msrv:
+    name: MSRV (1.88)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.88.0
+        uses: dtolnay/rust-toolchain@1.88.0
+
+      - name: Check crates workspace on the MSRV toolchain
+        run: cargo check --manifest-path crates/Cargo.toml --workspace --all-targets
+
   web-runtime:
     name: WASM runtime and browser smoke
     runs-on: ubuntu-latest
