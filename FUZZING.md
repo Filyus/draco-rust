@@ -403,12 +403,30 @@ deterministically and minimize it by substituting the affected target below:
 $Target = "draco_gltf_import" # or decode_drc, compress_gltf, fbx_read_scene, fbx_roundtrip, encode_drc
 $Crash = "fuzz/artifacts/$Target/crash-<hash>"
 
-# Replay a specific crashing input (use -O to match the CI gate's build)
-cargo +nightly fuzz run -O $Target --fuzz-dir fuzz $Crash
+# Replay a specific crashing input (-O -a is the CI gate's build)
+cargo +nightly fuzz run -O -a $Target --fuzz-dir fuzz $Crash
 
 # Minimize the crashing input to the smallest reproducer
-cargo +nightly fuzz tmin -O $Target --fuzz-dir fuzz $Crash
+cargo +nightly fuzz tmin -O -a $Target --fuzz-dir fuzz $Crash
 ```
+
+`-a` is not optional when reproducing what the replay step found: an arithmetic
+overflow is a panic only where debug assertions are on, so the same input
+decodes quietly under `-O` alone and the crash looks unreproducible.
+
+On Windows two things stop this before it runs:
+
+- `STATUS_DLL_NOT_FOUND` (`0xc0000135`) is the AddressSanitizer runtime, which
+  the linker records by name and no toolchain directory puts on the path.
+  Prepend the MSVC one holding `clang_rt.asan_dynamic-x86_64.dll` — under
+  `VC/Tools/MSVC/<version>/bin/Hostx64/x64`. Dropping the sanitizer with
+  `-s none` is not the way out: the coverage instrumentation stays, and the
+  link then fails on `__start___sancov_cntrs` instead.
+- `tmin` that shrinks nothing reports `No such directory:
+  fuzz\artifacts\<target>\minimized-from-<hash>` and a non-zero exit — it is
+  naming the file its internal step never wrote. That is a minimization which
+  found nothing smaller, not a broken setup, and the input at hand stays the
+  reproducer.
 
 When a crash is confirmed, keep the minimized input under
 `fuzz/seeds/<target>/` and add a deterministic regression to the crate that owns
