@@ -18,39 +18,6 @@ that, the bitstream versions an encode accepts are now an enumeration of
 combinations that have a round-trip test, the header count guard is replaced by one whose
 premise holds, and the encoder reports the choices it makes for itself.
 
-### Changed
-
-- `Mesh::deduplicate_point_ids` is now upstream's operation, and what used to
-  carry that name is `Mesh::renumber_points_in_face_order`. The old name was
-  wrong in a way that hid a divergence: it renumbers points into face order and
-  drops the unreferenced, merging nothing, which reproduces the *numbering*
-  upstream's OBJ reader arrives at and none of its deduplication.
-- `DracoError::context` adds context to an error while keeping its kind, and
-  the twelve decode and encode sites that rebuilt an error as
-  `DracoError::general` to add a prefix now use it. Those sites flattened every
-  refusal underneath them into one kind, which made a caller's own
-  `LimitExceeded` ceiling indistinguishable from a corrupt file.
-- `PredictionSchemeDecodingTransform::init` returns a `Status`. It is the point
-  where a transform learns the component count it will be handed, and the
-  octahedral transforms have no meaning at any width but two: they read and
-  write a coordinate pair. Refusing there covers every pairing of scheme and
-  transform a stream can name, where guarding a scheme at a time left the next
-  pairing open -- the same one-component transform was reached first through
-  geometric-normal prediction and then through delta.
-
-### Removed
-
-- `GeometryDecoder`, the trait a decoder was to present to attribute decoders,
-  and its one implementation. Nothing in the workspace ever called it through
-  the trait, and it could not usefully answer: a decoder never owns the
-  geometry, so `point_cloud`, `mesh` and `corner_table` all returned `None`
-  while attribute decoders took the geometry as an argument. `PointCloudDecoder`
-  keeps its inherent `get_geometry_type`, which is the one method that had an
-  answer.
-- `PredictionSchemeNormalOctahedronCanonicalizedTransformBase::rotate_point_reverse`,
-  which nothing called. Upstream has no counterpart: it rotates by the
-  complement at the call site, and `rotate_point` does that here too.
-
 ### Added
 
 - `PointCloud::release_spare_storage` frees the attribute storage `clear`
@@ -145,6 +112,24 @@ premise holds, and the encoder reports the choices it makes for itself.
   to do it deliberately rather than by luck.
 
 ### Changed
+
+- `Mesh::deduplicate_point_ids` is now upstream's operation, and what used to
+  carry that name is `Mesh::renumber_points_in_face_order`. The old name was
+  wrong in a way that hid a divergence: it renumbers points into face order and
+  drops the unreferenced, merging nothing, which reproduces the *numbering*
+  upstream's OBJ reader arrives at and none of its deduplication.
+- `DracoError::context` adds context to an error while keeping its kind, and
+  the twelve decode and encode sites that rebuilt an error as
+  `DracoError::general` to add a prefix now use it. Those sites flattened every
+  refusal underneath them into one kind, which made a caller's own
+  `LimitExceeded` ceiling indistinguishable from a corrupt file.
+- `PredictionSchemeDecodingTransform::init` returns a `Status`. It is the point
+  where a transform learns the component count it will be handed, and the
+  octahedral transforms have no meaning at any width but two: they read and
+  write a coordinate pair. Refusing there covers every pairing of scheme and
+  transform a stream can name, where guarding a scheme at a time left the next
+  pairing open -- the same one-component transform was reached first through
+  geometric-normal prediction and then through delta.
 
 - `PointCloud::clear`, and so `Mesh::clear` and every decode into a geometry
   that has decoded before, keeps the dropped attributes' value storage and
@@ -427,6 +412,19 @@ premise holds, and the encoder reports the choices it makes for itself.
   a consumer gets: a dependency is built under the consuming workspace's own
   profile. It is recorded because every performance figure in `PERFORMANCE.md`
   is now taken under it.
+
+### Removed
+
+- `GeometryDecoder`, the trait a decoder was to present to attribute decoders,
+  and its one implementation. Nothing in the workspace ever called it through
+  the trait, and it could not usefully answer: a decoder never owns the
+  geometry, so `point_cloud`, `mesh` and `corner_table` all returned `None`
+  while attribute decoders took the geometry as an argument. `PointCloudDecoder`
+  keeps its inherent `get_geometry_type`, which is the one method that had an
+  answer.
+- `PredictionSchemeNormalOctahedronCanonicalizedTransformBase::rotate_point_reverse`,
+  which nothing called. Upstream has no counterpart: it rotates by the
+  complement at the call site, and `rotate_point` does that here too.
 
 ### Fixed
 

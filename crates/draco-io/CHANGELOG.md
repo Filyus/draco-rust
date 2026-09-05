@@ -9,6 +9,33 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Added
+
+- `gltf_geometry::decode_geometry` accepts `TRIANGLE_STRIP` (mode 5) and
+  `TRIANGLE_FAN` (mode 6) primitives, not only `TRIANGLES`. Draco's
+  connectivity has no notion of either, so both are unwound into an ordinary
+  triangle list before the mesh is built -- the same algorithm the web
+  preview already used to render these two modes (`triangleIndices` in
+  `web/src/gltf-loader.ts`), so preview and Draco-compressed output now agree
+  on what geometry a strip or fan means. Previously any primitive mode other
+  than `TRIANGLES`/`POINTS` was refused outright.
+- FBX 6100 documents are read in either container: the name-keyed object model
+  (`"Name\0\x01Class"` keys, `Connect` records, geometry on the `Model`,
+  `Properties60`, repeated-scalar arrays) is normalized into the same scene the
+  7.x layout produces, including `Takes` animation with its heterogeneous `Key`
+  payloads. Previously such a document decoded to a structurally valid but
+  empty scene with a `name-keyed-object-model` warning; that warning code is
+  removed now that the layout is read.
+- Writing the 6100 object model: `FbxWriter::with_legacy_object_model()`, or
+  `FbxScene::to_legacy_bytes` / `to_legacy_ascii_bytes`, spell the document as
+  FBX 6100 in either container so a pre-7000 source round-trips inside its own
+  version. The 6100 writer carries meshes, transforms, materials, textures and
+  Takes animation; a skin or blend shape is refused with an error rather than
+  silently dropped.
+- A binary `C`-typed property whose byte is neither 0 nor 1 reads as `U8`
+  rather than `Bool(true)`: `C` is a raw byte, and the pre-7000 animation
+  format packs its mode letters into them.
+
 ### Changed
 
 - An FBX `Model` hierarchy deeper than the 256 levels the reader descends is
@@ -49,42 +76,6 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   no face names among its 35,947, all of them setting the quantization range
   until now.
 
-### Fixed
-
-- The crate builds again with `fbx-writer` selected and no reader. The FBX
-  corner expansion serves both directions and welds through the shared
-  mesh-finalize pass, which was gated on the readers alone, so the combination
-  failed to compile rather than failing a test.
-
-### Added
-
-- `gltf_geometry::decode_geometry` accepts `TRIANGLE_STRIP` (mode 5) and
-  `TRIANGLE_FAN` (mode 6) primitives, not only `TRIANGLES`. Draco's
-  connectivity has no notion of either, so both are unwound into an ordinary
-  triangle list before the mesh is built -- the same algorithm the web
-  preview already used to render these two modes (`triangleIndices` in
-  `web/src/gltf-loader.ts`), so preview and Draco-compressed output now agree
-  on what geometry a strip or fan means. Previously any primitive mode other
-  than `TRIANGLES`/`POINTS` was refused outright.
-- FBX 6100 documents are read in either container: the name-keyed object model
-  (`"Name\0\x01Class"` keys, `Connect` records, geometry on the `Model`,
-  `Properties60`, repeated-scalar arrays) is normalized into the same scene the
-  7.x layout produces, including `Takes` animation with its heterogeneous `Key`
-  payloads. Previously such a document decoded to a structurally valid but
-  empty scene with a `name-keyed-object-model` warning; that warning code is
-  removed now that the layout is read.
-- Writing the 6100 object model: `FbxWriter::with_legacy_object_model()`, or
-  `FbxScene::to_legacy_bytes` / `to_legacy_ascii_bytes`, spell the document as
-  FBX 6100 in either container so a pre-7000 source round-trips inside its own
-  version. The 6100 writer carries meshes, transforms, materials, textures and
-  Takes animation; a skin or blend shape is refused with an error rather than
-  silently dropped.
-- A binary `C`-typed property whose byte is neither 0 nor 1 reads as `U8`
-  rather than `Bool(true)`: `C` is a raw byte, and the pre-7000 animation
-  format packs its mode letters into them.
-
-### Changed
-
 - The ASCII container accepts version 6100 (the name-keyed object model);
   pre-6100 text is refused as before.
 - ASCII FBX and ASCII STL spell floats through a Schubfach formatter instead of
@@ -95,7 +86,59 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   them positionally. Any `strtod`-family reader takes both; a hand-rolled STL
   parser that only scans positional decimals may not.
 
+- This crate permits `unsafe` in narrow, audited paths, where `SECURITY.md`
+  previously ruled it out for the whole workspace at once. Every block must
+  carry a `// SAFETY:` comment naming its invariant **and where that invariant
+  was established**; `undocumented_unsafe_blocks` is on and CI runs clippy with
+  `-D warnings`, so an unjustified block does not build. **No path in the
+  library uses `unsafe` today** and nothing that ships changes; what changes is
+  that a measured optimisation in the byte-shuffling, endian-swapping,
+  fixed-stride part of a file-format layer no longer has to relitigate the
+  policy to land. `draco-core` keeps the rule absolute and now has the compiler
+  holding it — a bitstream decoder running on attacker-controlled indices and a
+  container parser are not the same risk, and one rule for both was too strict
+  for one of them. `SECURITY.md` carries the requirements, including that the
+  invariant must come from the code and never from the file, and the table of
+  such paths.
+- The four mesh writers refuse a mesh whose attributes do not cover its points,
+  at their entry points, instead of reading `point * byte_stride` through the
+  panicking `DataBuffer::read` at nine call sites. Those reads are sound exactly
+  when each attribute holds at least `num_points` values, and nothing between a
+  decoder and a writer re-checked it — the counts come from a `.drc` header. One
+  precondition per writer is what makes the nine provably in range; guarding at
+  the reads instead would mean deciding, nine times, what to emit for a value
+  that is not there.
+
 ### Fixed
+
+- An FBX document that states the same object connection more than once now
+  reads it once. The passes over the connection list walk it per object and
+  nest -- a geometry's blend shapes, their channels, their shapes -- so a
+  repeated edge did not add one duplicate but multiplied the whole subtree
+  under it. ZBrush connects a blend shape to its geometry twice in an ordinary
+  export, and each of its two morph targets was read twice over; a 3.6 KB
+  crafted document naming 3 nodes and 10 targets read as 17 and 11,025.
+
+- A `Model`'s material slots are taken from the connection list before that
+  deduplication. `LayerElementMaterial` names a slot by position rather than a
+  material, so a mesh using one material in two slots is spelled by connecting
+  it twice, and collapsing the repeat renumbered every slot after it: `a, b, a,
+  c` became `a, b, c`, and a face asking for the fourth slot landed on the third
+  or fell off the end.
+
+- A material layer is dropped when it can only address slots the `Model` does
+  not have: when the document carries materials and none is connected to the
+  Model, and when the layer's index count is not the mesh's face count. Read
+  through unchanged, those indices were taken for scene material indices and
+  resolved against the material table, so a re-save sent faces to the wrong
+  material. A document with no `Material` objects at all -- what Revit exports
+  -- keeps its indices as before: nothing can be confused with them, and they
+  still say which faces belong together.
+
+- The crate builds again with `fbx-writer` selected and no reader. The FBX
+  corner expansion serves both directions and welds through the shared
+  mesh-finalize pass, which was gated on the readers alone, so the combination
+  failed to compile rather than failing a test.
 
 - A `Model` that reaches neither the document root nor a parent `Model` by
   object connection is no longer rooted by absence. Such a Model is not part
@@ -122,33 +165,6 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   whether or not a cluster names it. Skinned files that decoded before are
   unchanged: cluster membership still marks a joint where the source class
   did not.
-
-### Changed
-
-- This crate permits `unsafe` in narrow, audited paths, where `SECURITY.md`
-  previously ruled it out for the whole workspace at once. Every block must
-  carry a `// SAFETY:` comment naming its invariant **and where that invariant
-  was established**; `undocumented_unsafe_blocks` is on and CI runs clippy with
-  `-D warnings`, so an unjustified block does not build. **No path in the
-  library uses `unsafe` today** and nothing that ships changes; what changes is
-  that a measured optimisation in the byte-shuffling, endian-swapping,
-  fixed-stride part of a file-format layer no longer has to relitigate the
-  policy to land. `draco-core` keeps the rule absolute and now has the compiler
-  holding it — a bitstream decoder running on attacker-controlled indices and a
-  container parser are not the same risk, and one rule for both was too strict
-  for one of them. `SECURITY.md` carries the requirements, including that the
-  invariant must come from the code and never from the file, and the table of
-  such paths.
-- The four mesh writers refuse a mesh whose attributes do not cover its points,
-  at their entry points, instead of reading `point * byte_stride` through the
-  panicking `DataBuffer::read` at nine call sites. Those reads are sound exactly
-  when each attribute holds at least `num_points` values, and nothing between a
-  decoder and a writer re-checked it — the counts come from a `.drc` header. One
-  precondition per writer is what makes the nine provably in range; guarding at
-  the reads instead would mean deciding, nine times, what to emit for a value
-  that is not there.
-
-### Fixed
 
 - A build with FBX writing but without `compression` no longer warns that
   `WriterOptions::compression_level` is never read. The field arrived with the

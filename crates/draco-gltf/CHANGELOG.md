@@ -9,7 +9,45 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `CompressionOptions::quantization` and `QuantizationBits`, which set Draco's
+  per-attribute-type quantization for a compressed primitive. `QuantizationBits`
+  carries `position`, `normal`, `tex_coord`, `color` and `generic`, each
+  `Option<u8>`; `QuantizationBits::GLTF` is Blender's 14/10/12/10/12 and
+  `QuantizationBits::NONE` is the default, so existing callers keep the bytes
+  they already produce.
+
+  Nothing here quantized before, which cost more than size. An unquantized
+  attribute never reaches Draco's integer coder, so no prediction scheme runs on
+  it and the entropy stage has nothing to work with: on a 3042-face grid the
+  payload was 20,017 bytes with no quantization and 2,334 with these defaults,
+  and the encoding speed made no difference to the output at all across 0–9.
+
+- `Import::compress_primitive` accepts `TRIANGLE_STRIP` and `TRIANGLE_FAN`
+  source primitives, not only `TRIANGLES`. Draco's connectivity has no
+  notion of a strip or a fan, so either is unwound into an ordinary triangle
+  list before encoding (`draco_io::decode_geometry`), and the output
+  primitive's `mode` is rewritten to `TRIANGLES` to describe the Draco
+  stream truthfully -- left untouched when the source was already
+  `TRIANGLES`. Previously any mode other than `TRIANGLES` was refused.
+
 ### Changed
+
+- The JSON parser no longer recurses, and no longer caps how deeply a document
+  may nest. Parsing, serializing, cloning, comparing and dropping a value each
+  carry the nesting on an explicit heap stack, so depth is bounded by what the
+  document pays for -- a level cannot be opened without spending an input byte
+  on its bracket -- rather than by the call stack a ceiling had to protect. The
+  Draco-only safety walk over the document is iterative for the same reason.
+  Documents an authoring tool nests past the old 128-level limit are accepted;
+  everything the parser accepted before parses identically, with the same error
+  text where it does not.
+
+  `JsonValue` now implements `Drop`, so a payload can no longer be moved out of
+  it by pattern matching (E0509) -- a breaking change for code that destructured
+  a value by value. Use the new `into_array`, `into_object` and `into_string`
+  instead.
 
 - `ImportOptions` carries `draco_decode_limits`
   (`#[cfg(feature = "draco-decode")]`): the caller's
@@ -38,39 +76,12 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the read rather than carried through a decoder's state. `draco-core` keeps the
   rule absolute, with the compiler holding it.
 
-### Added
-
-- `CompressionOptions::quantization` and `QuantizationBits`, which set Draco's
-  per-attribute-type quantization for a compressed primitive. `QuantizationBits`
-  carries `position`, `normal`, `tex_coord`, `color` and `generic`, each
-  `Option<u8>`; `QuantizationBits::GLTF` is Blender's 14/10/12/10/12 and
-  `QuantizationBits::NONE` is the default, so existing callers keep the bytes
-  they already produce.
-
-  Nothing here quantized before, which cost more than size. An unquantized
-  attribute never reaches Draco's integer coder, so no prediction scheme runs on
-  it and the entropy stage has nothing to work with: on a 3042-face grid the
-  payload was 20,017 bytes with no quantization and 2,334 with these defaults,
-  and the encoding speed made no difference to the output at all across 0–9.
-
-### Changed
-
 - `draco-encode` now enables `draco-core/edgebreaker_valence_encode`, matching
   the `edgebreaker_valence_decode` the decode side already had. Without the
   encoder half `select_edgebreaker_traversal` can only answer "standard", so
   every encoding speed below 5 — the whole range where Draco asks for the
   valence traversal — wrote the same stream as speed 5. On the grid above it is
   worth 23% at the default speed, against 1.1 KiB of gzipped WASM.
-
-### Added
-
-- `Import::compress_primitive` accepts `TRIANGLE_STRIP` and `TRIANGLE_FAN`
-  source primitives, not only `TRIANGLES`. Draco's connectivity has no
-  notion of a strip or a fan, so either is unwound into an ordinary triangle
-  list before encoding (`draco_io::decode_geometry`), and the output
-  primitive's `mode` is rewritten to `TRIANGLES` to describe the Draco
-  stream truthfully -- left untouched when the source was already
-  `TRIANGLES`. Previously any mode other than `TRIANGLES` was refused.
 
 ### Fixed
 
