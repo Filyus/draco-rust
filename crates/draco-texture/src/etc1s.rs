@@ -750,9 +750,16 @@ impl Etc1sDecoder {
                         } else {
                             pred_bits = reader.decode(&self.endpoint_pred_model)?;
                             if pred_bits == ENDPOINT_PRED_REPEAT_LAST_SYMBOL {
-                                pred_repeat_count = reader.decode_vlc(ENDPOINT_PRED_COUNT_VLC_BITS)
-                                    + ENDPOINT_PRED_MIN_REPEAT_COUNT
-                                    - 1;
+                                // The run length is a chunked VLC, so a damaged
+                                // stream can name nearly 2^32 of them. Basis
+                                // adds the minimum in wrapping unsigned
+                                // arithmetic, and the count only feeds a
+                                // per-group countdown that the block loops
+                                // bound anyway, so wrapping keeps the malformed
+                                // case identical rather than diverging on it.
+                                pred_repeat_count = reader
+                                    .decode_vlc(ENDPOINT_PRED_COUNT_VLC_BITS)
+                                    .wrapping_add(ENDPOINT_PRED_MIN_REPEAT_COUNT - 1);
                                 pred_bits = previous_pred_symbol;
                             } else {
                                 previous_pred_symbol = pred_bits;
@@ -822,7 +829,11 @@ impl Etc1sDecoder {
                     if symbol == history_rle_symbol {
                         let run = reader.decode(&self.selector_history_rle_model)?;
                         selector_rle_count = if run == SELECTOR_HISTORY_BUF_RLE_COUNT_TOTAL - 1 {
-                            reader.decode_vlc(7) + SELECTOR_HISTORY_BUF_RLE_COUNT_THRESH
+                            // Same VLC, same wrap: the length check below is
+                            // what rejects a run the image cannot hold.
+                            reader
+                                .decode_vlc(7)
+                                .wrapping_add(SELECTOR_HISTORY_BUF_RLE_COUNT_THRESH)
                         } else {
                             run + SELECTOR_HISTORY_BUF_RLE_COUNT_THRESH
                         };

@@ -224,3 +224,17 @@ fn every_refusal_says_what_was_wrong() {
         "the sweep should have been refused far more often than {refusals} times"
     );
 }
+
+#[test]
+fn survives_an_endpoint_predictor_run_that_wraps_its_counter() {
+    // Straight out of the `ktx2_transcode` campaign. The endpoint predictor's
+    // repeat length is a chunked VLC, so a damaged slice can name a run of
+    // nearly 2^32 and the minimum added to it carries past the end of a u32.
+    // Basis wraps there and so does this, but only a build with overflow
+    // checks says whether that is deliberate -- which is why the case lives
+    // here rather than in the campaign alone.
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fuzz/seeds/ktx2_transcode/etc1s_endpoint_pred_repeat.ktx2");
+    let bytes = std::fs::read(&path).unwrap_or_else(|error| panic!("reading {path:?}: {error}"));
+    exercise(&bytes, &EVERY_TARGET, u32::MAX);
+}
