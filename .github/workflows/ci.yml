@@ -205,6 +205,68 @@ jobs:
         shell: pwsh
         run: ./.github/scripts/test-packaged-crates.ps1
 
+  # DRAFT -- not wired into anything yet. See the branch that carries it.
+  #
+  # Every other job here runs on Linux, while the project is developed on
+  # Windows, so no CI has ever exercised the platform the code is written on.
+  # What differs is the platform *family*, not the OS version: path separators
+  # and drive letters, a case-insensitive filesystem, CRLF, console encoding
+  # for non-ASCII, and a file held open against its own rewrite. One runner per
+  # family catches those; a second Windows version would catch almost nothing
+  # more, because Rust links its own runtime and this code calls no system API.
+  #
+  # Deliberately not a matrix over the `rust` job: that one is twenty-odd steps
+  # of feature powersets, docs and clippy, and none of it is platform-shaped.
+  # What is worth running three times is the tests that open files.
+  #
+  # Costs nothing in money -- standard runners are free for public repos -- and
+  # the real price is owning failures on machines nobody here has.
+  os-matrix:
+    name: tests on ${{ matrix.os }}
+    strategy:
+      # Both arms report. Otherwise the first failure hides whether the other
+      # platform shares the bug, which is the one thing this job exists to say.
+      fail-fast: false
+      matrix:
+        # `-latest` on purpose, though the labels move under you --
+        # `macos-latest` has already changed architecture once. Pinning an
+        # image buys reproducibility this job does not need, and costs a shelf
+        # life: GitHub retires old images (windows-2019, macos-11 and macos-12
+        # are gone), so a pin eventually fails for a reason that is not the
+        # code. This job asks whether the code works on what people run, and
+        # the answer should move when that does.
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # Same skip list as the Linux `rust` job: these call `find_cpp_tool` and
+      # panic rather than skip when the reference binary is absent, and no
+      # runner here has one built.
+      - name: Test draco-core
+        run: >-
+          cargo test --manifest-path crates/Cargo.toml -p draco-core --
+          --skip compare_rust_vs_cpp_decode
+          --skip rust_encode_cpp_decode_small_matrix
+          --skip cpp_decodes_the_legacy_streams_this_crate_writes
+          --skip cpp_decodes_legacy_normal_and_tex_coord_encodings
+          --skip cpp_decodes_the_predictive_traversal_this_crate_writes
+
+      # The point of the job. These readers and writers take paths from the
+      # caller, open files, and spell floats into text; `--features test` adds
+      # the repository fixtures, so the suite reads real files from disk rather
+      # than byte slices built in memory.
+      - name: Test draco-io
+        run: cargo test --manifest-path crates/Cargo.toml -p draco-io --features test
+
+      - name: Test draco-gltf
+        run: cargo test --manifest-path crates/Cargo.toml -p draco-gltf --features test
+
   # The rust-version declared in each crates/*/Cargo.toml is a promise; this
   # job is what holds it. Dependency updates can raise the real minimum above
   # the declared one (getrandom alone sets a 1.85 floor); better to see that
