@@ -2,10 +2,47 @@
 
 Notable changes to the `draco-gltf` crate. This crate is versioned and released
 independently; its release tags are `draco-gltf-vX.Y.Z`. It depends on published
-`draco-core` and `draco-io`.
+`draco-core`.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and
 the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+A breaking release that takes ownership of glTF whole. The container parser,
+resource resolution, accessor materialization and the `EXT_meshopt_compression`
+decoders lived in `draco-io` and this crate wrapped them; they are here now, and
+the dependency on `draco-io` is gone.
+
+glTF is the one format in the workspace that embeds a Draco bitstream, which is
+what made this the right side of the line: everything from the GLB header up to
+the scene document is one format's concern, and `draco-io` covers the formats
+that never meet the codec. The two crates no longer constrain each other's
+versions, so an FBX change cannot force a release here.
+
+### Added
+
+- `container`, `geometry` and `meshopt` modules, and the `GltfError` they
+  share, moved from `draco-io` unchanged. Every name is re-exported from the
+  crate root under the spelling it had there, so a caller changes the crate in
+  the path and nothing else: `draco_io::parse_gltf_container` becomes
+  `draco_gltf::parse_gltf_container`, `draco_io::decode_geometry` becomes
+  `draco_gltf::decode_geometry`, and so on. `GlbRangeReader`, `ResourceLimits`,
+  `ResourceResolver`, `ExternalFilePolicy`, `FileResourceResolver`,
+  `GltfContainerFormat` and `GltfError` were already re-exported here and keep
+  their paths exactly.
+- `legacy-bitstream-decode`, which was reached through `draco-io` before.
+
+### Changed
+
+- **Breaking.** `Error::DracoIo` is `Error::Container`, and its message reads
+  `container error:` rather than `draco-io error:`. The crate it named is no
+  longer a dependency.
+- `document` no longer enables anything. It named `draco-io/gltf-container`,
+  which was never optional in practice -- the document, JSON, extension and
+  import modules are unconditional and all name types from it. The feature
+  stays so the graph reads correctly for a caller enabling features one at a
+  time, but turning it off compiles no less than leaving it on.
 
 ## [0.3.0](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.2.0...draco-gltf-v0.3.0) - 2026-09-05
 

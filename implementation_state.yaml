@@ -2001,7 +2001,7 @@ files:
         progress: "fully implemented"
         note: "Writes Mesh to FBX 7.5 with zlib compression support in default draco-io builds via the compression feature, with opt-out available through default-features = false."
 
-  - path: "crates/draco-io/src/gltf_container.rs"
+  - path: "crates/draco-gltf/src/container.rs"
     structures:
       - name: "GltfContainer / GltfContainerFormat"
         type: "struct / enum"
@@ -2012,7 +2012,7 @@ files:
         progress: "fully implemented"
         note: "Explicit URI resolution with per-resource, aggregate-buffer, and nested-asset-chain limits."
 
-  - path: "crates/draco-io/src/gltf_geometry.rs"
+  - path: "crates/draco-gltf/src/geometry.rs"
     structures:
       - name: "AccessorSource / decode_geometry"
         type: "trait / function"

@@ -3,15 +3,14 @@ name = "draco-io"
 version = "0.4.0"
 edition = "2021"
 rust-version = "1.88.0"
-description = "Rust IO helpers for Draco geometry compression formats"
+description = "OBJ, PLY, STL and FBX mesh readers and writers for the Draco geometry model"
 license = "Apache-2.0"
 repository = "https://github.com/Filyus/draco-rust"
 readme = "README.md"
-# Five is the crates.io maximum, so this is the family plus the four mesh
-# formats read and written end to end. `gltf` came off rather than STL being
-# left out: `draco-gltf` is the crate that owns glTF documents, and what this
-# one does there is containers and accessors, so a search for glTF is better
-# answered by that crate than by this.
+# Five is the crates.io maximum, and this crate reads and writes exactly four
+# formats, so the family name plus one keyword per format fits with nothing
+# left out. glTF is not among them and no longer could be: `draco-gltf` owns
+# that format whole, containers and accessors included.
 keywords = ["draco", "obj", "ply", "stl", "fbx"]
 categories = ["compression", "encoding", "graphics", "parser-implementations"]
 exclude = [
@@ -61,39 +60,42 @@ default = [
     "all-writers",
     "all-readers",
     "compression",
-    "point_cloud_decode",
 ]
 all-readers = ["fbx-reader", "obj-reader", "ply-reader", "stl-reader"]
 all-writers = ["fbx-writer", "obj-writer", "ply-writer", "stl-writer"]
-# Plain mesh formats (OBJ/PLY/FBX) only touch the geometry data model in
-# draco-core, never the Draco codec, so they do not enable encoder/decoder.
-# Only glTF uses KHR_draco_mesh_compression and thus pulls the codec.
+# Every format here carries geometry in its own encoding, so a reader ends at a
+# `draco_core::Mesh` and a writer starts from one, and none of them enables the
+# codec. glTF was the one format that embedded a Draco bitstream, and it lives
+# in `draco-gltf` now together with the decoder features it needs.
 fbx-reader = ["dep:foldhash"]
 fbx-writer = ["dep:zmij", "dep:foldhash"]
-gltf-container = []
-gltf-geometry = ["gltf-container"]
-# Decoder support is separate from the container/accessor contracts, so a
-# compact glTF frontend can choose it without also enabling any encoder path.
-draco-decode = ["gltf-geometry", "draco-core/decoder"]
-# Optional compatibility mode for reading older Draco bitstreams embedded in
-# KHR_draco_mesh_compression payloads. Writers still emit the current bitstream.
-legacy-bitstream-decode = ["draco-core/legacy_bitstream_decode"]
 obj-reader = ["dep:foldhash"]
 obj-writer = []
 ply-reader = ["dep:byteorder"]
 ply-writer = []
 stl-reader = []
 stl-writer = ["dep:zmij"]
-point_cloud_decode = ["draco-core/point_cloud_decode"]
 compression = ["miniz_oxide"]
 # Repository-only fixtures and local external-tool tests.
 test = []
 
 [dev-dependencies]
 tempfile = "3.24.0"
-# `ply_bunny_test` encodes a mesh to verify the reader's output round-trips.
-# The library itself never needs the Draco encoder, so it stays test-only.
-draco-core = { version = "2.0.0", path = "../draco-core", features = ["encoder"] }
+# The library never touches the Draco codec. Three test files do, and that is
+# the whole reason this is a dev-dependency rather than a feature of the crate.
+#
+# `ply_bunny_test` encodes a mesh to check the reader's output round-trips.
+# `cpp_decode_test` and `draco_decode_allocation_test` decode instead, the
+# latter asserting on what a decode *reserves* for a header that lies about
+# its size. Measuring that needs a `#[global_allocator]`, so it cannot sit in
+# `draco-core`, which forbids `unsafe`; this crate allows the `unsafe` a
+# counting allocator needs and already pins the readers that way in
+# `reader_hardening_test.rs`.
+draco-core = { version = "2.0.0", path = "../draco-core", features = [
+    "encoder",
+    "decoder",
+    "point_cloud_decode",
+] }
 
 [[example]]
 name = "decode_drc"
@@ -130,7 +132,7 @@ required-features = ["test", "fbx-reader", "compression"]
 [[test]]
 name = "cpp_decode_test"
 path = "tests/cpp_decode_test.rs"
-required-features = ["test", "point_cloud_decode"]
+required-features = ["test"]
 
 [[test]]
 name = "reader_hardening_test"
@@ -155,7 +157,6 @@ required-features = ["fbx-reader", "fbx-writer", "compression"]
 [[test]]
 name = "draco_decode_allocation_test"
 path = "tests/draco_decode_allocation_test.rs"
-required-features = ["draco-decode", "point_cloud_decode"]
 
 
 [[example]]

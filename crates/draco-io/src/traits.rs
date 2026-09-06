@@ -263,3 +263,18 @@ pub(crate) fn value_offset(attribute: &draco_core::PointAttribute, point: usize)
     };
     value.saturating_mul(attribute.byte_stride() as usize)
 }
+
+/// Ends mesh construction with [`draco_core::mesh::Mesh::finalize`], reporting
+/// its refusal as the [`std::io::Error`] every reader in this crate returns.
+///
+/// The only way that pass fails is an attribute whose type its value
+/// deduplication does not cover, which is a property of the file just read --
+/// so `InvalidData` is the kind, not `Other`.
+///
+/// STL is absent from the gate and from the callers alike: the format carries
+/// no vertex identity, so welding would be that reader inventing one.
+#[cfg(any(feature = "obj-reader", feature = "ply-reader"))]
+pub(crate) fn finalize_mesh(mesh: &mut draco_core::mesh::Mesh) -> std::io::Result<()> {
+    mesh.finalize()
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))
+}

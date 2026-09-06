@@ -25,7 +25,6 @@ function Invoke-Cargo([string[]]$Arguments) {
 }
 
 $corePath = (Join-Path $repoRoot 'crates/draco-core').Replace('\', '/')
-$ioSourcePath = (Join-Path $repoRoot 'crates/draco-io').Replace('\', '/')
 
 # Build both archives without Cargo's per-crate verification, then test their
 # exact unpacked contents together through a temporary crates.io patch.
@@ -44,12 +43,14 @@ $ioPackageArgs = @(
 if ($AllowDirty) { $ioPackageArgs += '--allow-dirty' }
 Invoke-Cargo $ioPackageArgs
 
+# draco-gltf owns glTF whole and depends on draco-core alone, so only that one
+# is patched. Patching draco-io as well drew a "patch was not used in the crate
+# graph" warning on every run.
 $gltfPackageArgs = @(
     'package',
     '--manifest-path', (Join-Path $repoRoot 'crates/draco-gltf/Cargo.toml'),
     '--no-verify',
-    '--config', "patch.crates-io.draco-core.path='$corePath'",
-    '--config', "patch.crates-io.draco-io.path='$ioSourcePath'"
+    '--config', "patch.crates-io.draco-core.path='$corePath'"
 )
 if ($AllowDirty) { $gltfPackageArgs += '--allow-dirty' }
 Invoke-Cargo $gltfPackageArgs
@@ -77,11 +78,9 @@ if (-not $ioDir -or -not $gltfDir) {
 
 $cargoDir = Join-Path $workDir '.cargo'
 New-Item -ItemType Directory -Path $cargoDir | Out-Null
-$ioPath = $ioDir.FullName.Replace('\', '/')
 @"
 [patch.crates-io]
 draco-core = { path = '$corePath' }
-draco-io = { path = '$ioPath' }
 "@ | Set-Content -LiteralPath (Join-Path $cargoDir 'config.toml') -Encoding utf8
 
 Push-Location $workDir

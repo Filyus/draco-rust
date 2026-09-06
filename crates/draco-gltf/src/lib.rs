@@ -53,10 +53,25 @@ pub use import::{
     parse, parse_with_options, GltfOutput, GltfResource, Import, DEFAULT_EXTERNAL_ASSET_DEPTH,
 };
 
-pub use draco_io::{
-    ExternalFilePolicy, FileResourceResolver, GlbRangeReader, GltfContainerFormat, GltfError,
-    ResourceLimits, ResourceResolver,
+/// glTF/GLB containers and resource resolution.
+pub mod container;
+#[cfg(feature = "geometry")]
+/// Reader-agnostic accessor and Draco geometry contracts.
+pub mod geometry;
+mod gltf_error;
+/// `EXT_meshopt_compression` bitstream decoders.
+pub mod meshopt;
+
+pub use container::{
+    decode_data_uri, inspect_glb, parse_glb_json_and_bin, parse_gltf_container,
+    resolve_gltf_buffers, resolve_resource_uri, ExternalFilePolicy, FileResourceResolver,
+    GlbChunkDescriptor, GlbLayout, GlbRangeReader, GltfBufferReference, GltfContainer,
+    GltfContainerFormat, ResourceLimits, ResourceResolver,
 };
+#[cfg(feature = "geometry")]
+pub use geometry::{decode_geometry, AccessorSource, DecodedAccessor};
+pub use gltf_error::GltfError;
+pub use meshopt::{MeshoptFilter, MeshoptMode};
 
 /// Container representation selected when serializing an import.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,9 +98,9 @@ pub enum Error {
     /// Draco bitstream decoding failed.
     #[error("Draco decode error: {0}")]
     Decode(#[from] draco_core::DracoError),
-    /// A low-level container or resource operation failed.
-    #[error("draco-io error: {0}")]
-    DracoIo(#[from] GltfError),
+    /// A low-level container, resource, or accessor operation failed.
+    #[error("container error: {0}")]
+    Container(#[from] GltfError),
     /// Materialized primitive geometry is invalid or unsupported.
     #[cfg(feature = "geometry")]
     #[error("geometry error: {0}")]

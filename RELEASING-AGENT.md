@@ -30,7 +30,8 @@ and GitHub release.
 
 ## Dependency order
 
-`draco-core` <- `draco-io` <- `draco-gltf`. A dependent can only be released
+`draco-core` <- `draco-io` and `draco-core` <- `draco-gltf`; the two format
+crates are siblings and neither depends on the other. A dependent can only be released
 after the dependency version it pins is published on crates.io. If a release
 bumps `draco-core`, releasing the dependents that should pick it up is a
 **separate** release for each (bump the pin, then its own changelog/commit/tag).
@@ -235,8 +236,8 @@ whichever crate the commit actually touched (`git show --stat`).
 | 01 | Safety and Hardening | the touched crate | `safety`, `security`, `hardening`, `fuzz`, `unsafe` | keep |
 | 02 | Core codec | draco-core | `core`, `decoder`, `encoder`, `bitstream`, `edgebreaker`, `sequential`, `kd-tree`, `rans`, `ans`, `symbol` | keep |
 | 03 | Geometry model | draco-core | `mesh`, `point-cloud`, `attribute`, `quantization`, `prediction`, `normal`, `metadata` | keep |
-| 04 | Format I/O | draco-io | `io`, `obj`, `ply`, `fbx`, `gltf`, `glb`, `scene`, `compress` | keep |
-| 05 | glTF scene bridge | draco-gltf | `draco-gltf`, `bridge` | keep |
+| 04 | Format I/O | draco-io | `io`, `obj`, `ply`, `fbx`, `compress` | keep |
+| 05 | glTF | draco-gltf | `gltf`, `glb`, `scene`, `draco-gltf`, `bridge` | keep |
 | 06 | Compatibility | the touched crate | `compat`, `interop`, `legacy`, `cpp`, `parity` | keep if user-facing |
 | 07 | Performance | the touched crate | `perf`, `speed`, `memory` | keep if measured and user-facing |
 | 08 | WASM and release assets | web / the touched crate | `wasm`, `web`, `demo` | depends |
@@ -249,8 +250,8 @@ whichever crate the commit actually touched (`git show --stat`).
 | — | (skipped) | — | `release`, `repo`, `changelog` | drop (never in notes) |
 
 Rules of thumb:
-- `gltf:` is `draco-io`'s glTF format support (KHR_draco in glTF/GLB). The
-  full-scene bridge crate uses the `draco-gltf:` prefix.
+- `gltf:`, `glb:` and `scene:` are all `draco-gltf`, which owns the format from
+  the container up to the document. No glTF commit belongs to `draco-io`.
 - "keep" groups are crate-user-facing; write a clear bullet per change.
 - Mention WASM only when published release assets or a crate's WASM API change;
   omit browser-demo-only polish.

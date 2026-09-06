@@ -306,6 +306,52 @@ impl Mesh {
         }
     }
 
+    /// How a reader finishes a mesh it built from scratch, before anything
+    /// encodes it: merges bit-identical attribute values, then merges the
+    /// points those values made identical, then drops what no face names.
+    ///
+    /// The first two steps are upstream's `TriangleSoupMeshBuilder::Finalize`,
+    /// and their order is load-bearing: two vertices carrying equal bytes hold
+    /// distinct value indices until the values merge, so a point merge run
+    /// first would find nothing to do.
+    ///
+    /// Doing this is not tidying. Until the points merge, the triangles around
+    /// two vertices at one position share a vertex rather than an edge, so the
+    /// encoder sees two connected components where upstream sees one and
+    /// writes a larger stream that decodes to more points than it was given.
+    ///
+    /// The third step goes past upstream, which stops after the merge. See
+    /// [`remove_points_unused_by_faces`](Self::remove_points_unused_by_faces)
+    /// for why an unreferenced point still costs precision, and
+    /// `COMPATIBILITY.md` for the departure it records.
+    pub fn finalize(&mut self) -> Status {
+        self.deduplicate_attribute_values()?;
+        self.deduplicate_point_ids();
+        self.remove_points_unused_by_faces();
+        Ok(())
+    }
+
+    /// [`finalize`](Self::finalize), additionally handing back the point-merge
+    /// map -- what a caller that built one point per polygon corner needs, and
+    /// the readers that build a vertex list do not.
+    ///
+    /// An FBX corner carries its own skin weight and morph delta, so such a
+    /// caller has to move that data onto whichever point now stands in for the
+    /// corner. The unused-point drop cannot disturb the map: a mesh built one
+    /// point per corner has, by construction, no point that starts out unused.
+    pub fn finalize_returning_corner_map(&mut self) -> Result<Vec<u32>, DracoError> {
+        self.deduplicate_attribute_values()?;
+        let corner_to_point = self.deduplicate_point_ids_returning_map();
+        let before = self.num_points();
+        self.remove_points_unused_by_faces();
+        debug_assert_eq!(
+            self.num_points(),
+            before,
+            "a mesh built one point per corner should have no point left unused by a face"
+        );
+        Ok(corner_to_point)
+    }
+
     /// Renumbers points into the order the faces first name them, dropping any
     /// point no face names at all.
     ///

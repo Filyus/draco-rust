@@ -7,6 +7,41 @@ independently; its release tags are `draco-io-vX.Y.Z`. It depends on a published
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and
 the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+A breaking release that moves glTF out. What is left is the set of formats that
+carry geometry in their own encoding -- OBJ, PLY, STL and FBX -- and this crate
+no longer enables any part of the Draco codec.
+
+The split is by format rather than by level. glTF is the one format in the
+workspace that embeds a Draco bitstream, so its containers and accessors were
+never really the layer below a scene model; they were the bottom of glTF, and
+they belong with the rest of it. Keeping them here also pinned `draco-gltf` to
+this crate's version, which meant an FBX change -- most of the traffic here --
+forced a `draco-gltf` release that carried nothing for its users.
+
+### Removed
+
+- **Breaking.** `gltf_container`, `gltf_geometry` and `meshopt`, with the
+  `GltfError` they share, moved to `draco-gltf` unchanged. Every name they
+  exported is re-exported from that crate's root under the same spelling, so a
+  caller changes the crate in the path and nothing else: `draco_io::GltfError`
+  becomes `draco_gltf::GltfError`, `draco_io::parse_gltf_container` becomes
+  `draco_gltf::parse_gltf_container`, and so on.
+- **Breaking.** The features that named them: `gltf-container`,
+  `gltf-geometry`, `draco-decode` and `legacy-bitstream-decode`. The last two
+  exist on `draco-gltf` under the same names.
+- **Breaking.** `point_cloud_decode`, which forwarded to `draco-core` and had
+  no library code behind it here. A caller that wants it asks `draco-core`
+  directly.
+
+### Changed
+
+- Mesh construction ends through `draco_core::mesh::Mesh::finalize` rather than
+  a private pass of this crate's. Same three steps in the same order, and the
+  FBX corner path keeps its merge map through
+  `finalize_returning_corner_map`. Reader output is unchanged.
+
 ## [0.4.0](https://github.com/Filyus/draco-rust/compare/draco-io-v0.3.2...draco-io-v0.4.0) - 2026-09-05
 
 ### Added

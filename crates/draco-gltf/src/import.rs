@@ -5,15 +5,15 @@ use crate::json::Value;
 use crate::extensions::{meshopt_extension, meshopt_extension_mut};
 #[cfg(feature = "draco-decode")]
 use crate::PrimitiveRef;
-use crate::{Document, Error, ExtensionRegistry, ResourceStore, Result, ValidationProfile};
-#[cfg(feature = "resources")]
-use crate::{ExternalAssetIndex, FileIndex};
-use draco_io::{
+use crate::{
     meshopt, parse_gltf_container, resolve_gltf_buffers, GltfBufferReference, GltfContainerFormat,
     MeshoptFilter, MeshoptMode, ResourceLimits, ResourceResolver,
 };
+use crate::{Document, Error, ExtensionRegistry, ResourceStore, Result, ValidationProfile};
+#[cfg(feature = "resources")]
+use crate::{ExternalAssetIndex, FileIndex};
 #[cfg(not(target_arch = "wasm32"))]
-use draco_io::{ExternalFilePolicy, FileResourceResolver};
+use crate::{ExternalFilePolicy, FileResourceResolver};
 
 /// Lossless glTF document plus its resolved resources.
 #[derive(Clone)]
@@ -75,7 +75,7 @@ struct PackagedResolver<'a> {
 
 #[cfg(feature = "resources")]
 impl ResourceResolver for PackagedResolver<'_> {
-    fn resolve(&self, uri: &str) -> std::result::Result<Vec<u8>, draco_io::GltfError> {
+    fn resolve(&self, uri: &str) -> std::result::Result<Vec<u8>, crate::GltfError> {
         let Some(file) = self
             .import
             .document
@@ -89,12 +89,12 @@ impl ResourceResolver for PackagedResolver<'_> {
             return self
                 .import
                 .embedded_file_bytes(file.value())
-                .map_err(|error| draco_io::GltfError::InvalidGltf(error.to_string()));
+                .map_err(|error| crate::GltfError::InvalidGltf(error.to_string()));
         }
         if let Some(source) = file.value().get("uri").and_then(Value::as_str) {
-            return draco_io::resolve_resource_uri(source, Some(self.fallback), None);
+            return crate::resolve_resource_uri(source, Some(self.fallback), None);
         }
-        Err(draco_io::GltfError::InvalidGltf(format!(
+        Err(crate::GltfError::InvalidGltf(format!(
             "packaged file {uri:?} has no source"
         )))
     }
@@ -422,12 +422,7 @@ impl Import {
             .and_then(|value| usize::try_from(value).ok());
         let mode = value.get("mode").and_then(Value::as_u64).unwrap_or(4) as u32;
         let source = crate::DocumentAccessorSource::new(&self.document, &self.resources);
-        Ok(draco_io::decode_geometry(
-            &source,
-            mode,
-            &attributes,
-            indices,
-        )?)
+        Ok(crate::decode_geometry(&source, mode, &attributes, indices)?)
     }
 
     /// Serializes this import into the requested container format.
@@ -465,14 +460,12 @@ impl Import {
                 return self.document.to_json_bytes();
             }
             crate::OutputFormat::SameAsInput => self.input_format,
-            crate::OutputFormat::GlbV2 => draco_io::GltfContainerFormat::GlbV2,
-            crate::OutputFormat::GlbV3 => draco_io::GltfContainerFormat::GlbV3,
+            crate::OutputFormat::GlbV2 => crate::GltfContainerFormat::GlbV2,
+            crate::OutputFormat::GlbV3 => crate::GltfContainerFormat::GlbV3,
         };
         if format.is_glb() {
             let (json, bin) = self.consolidated_glb_payload()?;
-            return Ok(draco_io::gltf_container::build_glb_from_json(
-                &json, &bin, format,
-            )?);
+            return Ok(crate::container::build_glb_from_json(&json, &bin, format)?);
         }
         self.document.to_json_bytes()
     }
@@ -707,7 +700,7 @@ impl Import {
             )));
         }
         let bytes = if let Some(uri) = entry.uri() {
-            draco_io::resolve_resource_uri(uri, Some(resolver), limits.max_resource_bytes)?
+            crate::resolve_resource_uri(uri, Some(resolver), limits.max_resource_bytes)?
         } else {
             self.embedded_file_bytes(entry.value())?
         };
@@ -976,7 +969,7 @@ pub fn parse_with_options(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use draco_io::gltf_container::build_glb_from_json;
+    use crate::container::build_glb_from_json;
 
     /// One vertex of four zero deltas, so the decoded value is the tail
     /// baseline `[1, 2, 3, 4]`. Every byte group uses the literal encoding.

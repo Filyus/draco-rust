@@ -34,9 +34,11 @@ pushes tags, or creates GitHub Releases outside the gated publish workflow.
 
 ## Dependency order
 
-`draco-core` <- `draco-io` <- `draco-gltf`. A dependent can only be released once
-the dependency version it pins is published. Release in dependency order, and
-treat each crate as its own release (its own commit, changelog, and tag).
+`draco-core` <- `draco-io` and `draco-core` <- `draco-gltf`. The two format
+crates are siblings: neither depends on the other, so once `draco-core` is out
+they can be released in either order, or only one of them. A dependent can only
+be released once the dependency version it pins is published. Treat each crate
+as its own release (its own commit, changelog, and tag).
 
 ## Normal Release
 

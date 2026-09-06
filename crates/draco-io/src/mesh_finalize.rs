@@ -1,77 +1,12 @@
-//! How a reader finishes a mesh before anything encodes it.
+//! Reader-level regression tests for [`draco_core::mesh::Mesh::finalize`].
 //!
-//! The three readers that build a mesh from scratch -- OBJ, PLY and the glTF
-//! geometry path -- all end the same way, and upstream ends the same way too:
-//! `TriangleSoupMeshBuilder::Finalize` merges bit-identical attribute values,
-//! then merges the points those values made identical. Its OBJ and PLY readers
-//! call the same pair directly.
-//!
-//! It then goes one step further than upstream, which stops there: a point no
-//! face names, and a value no point names, are dropped. Neither reaches a
-//! decoder in either implementation -- both encoders write what the
-//! connectivity reaches -- but upstream's quantization range is computed over
-//! the values an attribute holds, so carrying them spends precision on
-//! geometry that is not there. `COMPATIBILITY.md` records that departure.
-//!
-//! Doing this is not tidying. Two vertices carrying the same position arrive as
-//! two values, and until they are merged the triangles around them share a
-//! vertex rather than an edge -- so the encoder sees two connected components
-//! where upstream sees one, and writes a larger stream that decodes to more
-//! points than it was given.
+//! The pass itself lives in `draco-core`, which owns the three steps it
+//! composes and the reason their order is load-bearing. What it buys, though,
+//! is only observable through a reader that builds a mesh from scratch: a
+//! merge that does not happen shows up as a face pair sharing a corner instead
+//! of an edge, and as a wider quantization range. So the tests that pin it
+//! sit next to the readers rather than next to the operation.
 
-use std::io;
-
-use draco_core::mesh::Mesh;
-
-/// Merges duplicate attribute values, then duplicate points, rewriting the
-/// faces that named them.
-///
-/// The order is upstream's and is load-bearing: two vertices with equal bytes
-/// hold distinct value indices until the values merge, so a point merge run
-/// first would find nothing to do.
-#[cfg(any(
-    feature = "obj-reader",
-    feature = "ply-reader",
-    feature = "gltf-geometry"
-))]
-pub(crate) fn finalize_mesh(mesh: &mut Mesh) -> io::Result<()> {
-    mesh.deduplicate_attribute_values()
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
-    mesh.deduplicate_point_ids();
-    // Past upstream, deliberately: it stops here and carries whatever the
-    // vertex list held. A point no face names reaches no decoder either way --
-    // both encoders write what the connectivity reaches -- but it does reach
-    // the quantization range, so keeping it spends precision on geometry that
-    // is not there. See the section on it in COMPATIBILITY.md.
-    mesh.remove_points_unused_by_faces();
-    Ok(())
-}
-
-/// [`finalize_mesh`], additionally returning the point-merge map -- what a
-/// caller that built one point per polygon corner (FBX, which has to carry a
-/// per-corner skin weight or morph delta onto whichever point now stands in
-/// for that corner) needs, and the other readers that call [`finalize_mesh`]
-/// do not.
-///
-/// The unused-point drop [`finalize_mesh`] ends with cannot apply to such a
-/// caller: a mesh built one point per corner has, by construction, no point
-/// that starts out unused, so the map handed back stays valid.
-#[cfg(any(feature = "fbx-reader", feature = "fbx-writer"))]
-pub(crate) fn finalize_mesh_returning_corner_map(mesh: &mut Mesh) -> io::Result<Vec<u32>> {
-    mesh.deduplicate_attribute_values()
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
-    let corner_to_point = mesh.deduplicate_point_ids_returning_map();
-    let before = mesh.num_points();
-    mesh.remove_points_unused_by_faces();
-    debug_assert_eq!(
-        mesh.num_points(),
-        before,
-        "a mesh built one point per corner should have no point left unused by a face"
-    );
-    Ok(corner_to_point)
-}
-
-#[cfg(test)]
 mod tests {
     #[cfg(feature = "obj-reader")]
     use draco_core::geometry_indices::FaceIndex;

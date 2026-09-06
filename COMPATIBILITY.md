@@ -277,10 +277,10 @@ entries the faces use, and no later step revisits the question: its
 alone and no reader calls it.
 
 Every reader here that builds a mesh from scratch ends through
-[`mesh_finalize`](crates/draco-io/src/mesh_finalize.rs), which does what
-upstream's `TriangleSoupMeshBuilder::Finalize` does -- merge bit-identical
-attribute values, then merge the points those values made identical -- and then
-one step further: drop the points no face names, and the values no point names.
+[`Mesh::finalize`](crates/draco-core/src/mesh.rs), which does what upstream's
+`TriangleSoupMeshBuilder::Finalize` does -- merge bit-identical attribute
+values, then merge the points those values made identical -- and then one step
+further: drop the points no face names, and the values no point names.
 That last step is this divergence, and it is the same in OBJ, PLY and glTF,
 where before it the readers disagreed with each other as well as with upstream.
 

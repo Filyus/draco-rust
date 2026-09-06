@@ -23,38 +23,33 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs)'] }
 # "Memory safety" -- and every block must carry a `// SAFETY:` justification. CI
 # runs clippy with `-D warnings`, so `warn` is enforced rather than advisory.
 #
-# This crate sits on `draco-io`'s side of the split rather than `draco-core`'s:
-# it owns the document model and the container/accessor work, so what is hot
-# here is buffer views, accessor strides and JSON, not a bitstream decoder
-# running on attacker-controlled indices.
+# `draco-core` forbids `unsafe` outright instead. What is hot here is buffer
+# views, accessor strides, meshopt filters and JSON, which is byte shuffling of
+# a shape that unchecked indexing actually helps, and each site is small enough
+# to audit on its own. That is a different risk profile from a bitstream
+# decoder running on attacker-controlled indices, not a lower standard.
 undocumented_unsafe_blocks = "warn"
 
 [dependencies]
 draco-core = { version = "2.0.0", path = "../draco-core", default-features = false }
-# The shared container/resource layer lives in draco-io; this crate owns the
-# full scene model and document-preserving transforms.
-#
-# gltf-container is enabled here rather than left to the `document` feature
-# because it is not optional in practice: document, json, extensions and import
-# are unconditional in this crate, and Error, ImportOptions and the draco_io
-# re-exports all name types from it. Without it the crate does not compile to
-# less, it does not compile at all -- which is what `--no-default-features`
-# used to do. `document` still names it, so the feature graph still reads
-# correctly for a caller enabling features one at a time.
-draco-io = { version = "0.4.0", path = "../draco-io", default-features = false, features = [
-    "gltf-container",
-] }
 thiserror = "2.0"
 
 [features]
 default = ["full"]
 # Lossless JSON DOM, typed root views, GLB and resource contracts. This is the
-# common base for scene and geometry consumers.
-document = ["draco-io/gltf-container"]
+# common base for scene and geometry consumers, and it is not optional in
+# practice: document, json, extensions, container, meshopt and import are all
+# unconditional, and Error and the crate-root re-exports name types from them.
+# The feature is kept so the graph still reads correctly for a caller enabling
+# features one at a time, but turning it off compiles no less.
+document = []
 # Accessor materialization and PackedGeometry contracts.
-geometry = ["document", "draco-io/gltf-geometry"]
+geometry = ["document"]
 # KHR_draco_mesh_compression decoding and Draco-backed packed geometry.
-draco-decode = ["geometry", "draco-io/draco-decode", "draco-core/decoder", "draco-core/point_cloud_decode", "draco-core/edgebreaker_valence_decode"]
+draco-decode = ["geometry", "draco-core/decoder", "draco-core/point_cloud_decode", "draco-core/edgebreaker_valence_decode"]
+# Optional compatibility mode for reading older Draco bitstreams embedded in
+# KHR_draco_mesh_compression payloads. Writers still emit the current bitstream.
+legacy-bitstream-decode = ["draco-core/legacy_bitstream_decode"]
 # Explicit `files` loading and resolver/provenance controls.
 resources = ["document"]
 # Strict cross-reference, node-tree, and POSITION-bounds validation. The DOM

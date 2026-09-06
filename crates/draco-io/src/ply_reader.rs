@@ -4,8 +4,8 @@
 //! texture coordinates from ASCII and binary PLY files. Polygon faces are
 //! triangulated with a fan.
 
-use crate::mesh_finalize::finalize_mesh;
 use crate::raw_attribute::{make_f32x2_attribute, make_f32x3_attribute};
+use crate::traits::finalize_mesh;
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use std::fs;
 use std::io::{self, Cursor, Write};

@@ -6,6 +6,23 @@ independently; its release tags are `draco-core-vX.Y.Z`.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and
 the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `Mesh::finalize` and `Mesh::finalize_returning_corner_map`: the pass a reader
+  runs once it has built a mesh from scratch, merging bit-identical attribute
+  values, then the points those values made identical, then dropping what no
+  face names. The first two steps are upstream's
+  `TriangleSoupMeshBuilder::Finalize` and their order is load-bearing, which is
+  the reason to have the composition rather than three call sites.
+
+  Every reader in the workspace already ended this way, each spelling it out
+  itself; the spelling lived in `draco-io` and could not be reached from
+  `draco-gltf` once the two crates stopped depending on each other. It composes
+  only methods this crate already exposed, so nothing new is possible that was
+  not before.
+
 ## [2.0.0](https://github.com/Filyus/draco-rust/compare/draco-core-v1.2.0...draco-core-v2.0.0) - 2026-09-05
 
 A breaking release. Its through-line is that a refusal should say what it

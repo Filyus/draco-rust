@@ -21,10 +21,15 @@ To format the workspaces, run the same commands without `-- --check`.
 ## Workspace layout
 
 - `crates/draco-core` is the publishable core Draco bitstream crate.
-- `crates/draco-io` is the publishable file-format crate and depends on
-  `draco-core`.
-- `crates/draco-gltf` is the publishable full-scene glTF crate; it owns the
-  lossless document model and depends on both `draco-core` and `draco-io`.
+- `crates/draco-io` is the publishable crate for the formats that carry their
+  own geometry encoding -- OBJ, PLY, STL, FBX. It depends on `draco-core` for
+  the geometry model and enables no part of the codec.
+- `crates/draco-gltf` is the publishable glTF crate and owns that format whole:
+  GLB containers, resource resolution and accessors as well as the lossless
+  document model and document-preserving Draco compression. glTF is the one
+  format that embeds a Draco bitstream, so this is the only crate where a file
+  format meets the codec. It depends on `draco-core` alone; the two format
+  crates do not depend on each other.
 - `crates/draco-texture` reads KTX2 and transcodes Basis Universal so the web
   converter can show `KHR_texture_basisu` textures. Nothing in it is about
   Draco, so it stays out of the published crates and has `publish = false`.

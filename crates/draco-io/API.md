@@ -1,7 +1,9 @@
-# draco-io 0.3 API
+# draco-io 0.4 API
 
-`draco-io` contains low-level format I/O (OBJ, PLY, STL, FBX) and the reusable
-glTF container/resource/accessor contracts enabled by feature `gltf`.
+`draco-io` reads and writes OBJ, PLY, STL and FBX against the `draco-core`
+geometry model. None of these formats embeds a Draco bitstream, so no feature
+here enables the codec.
 
-For complete glTF documents, typed views, GLB serialization and Draco
-compression/decompression, use `draco-gltf` 0.2.
+glTF is the format that does embed one, and `draco-gltf` 0.3 owns it whole:
+GLB containers, resource resolution and accessors as well as documents, typed
+views and document-preserving Draco compression.

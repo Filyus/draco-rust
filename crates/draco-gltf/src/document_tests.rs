@@ -134,13 +134,13 @@ fn external_asset_models_load_explicitly() {
     .unwrap();
     let resolver = |uri: &str| match uri {
         "part.gltf" => Ok(br#"{"asset":{"version":"2.1"}}"#.to_vec()),
-        _ => Err(draco_io::GltfError::ExternalResourceDenied(uri.into())),
+        _ => Err(crate::GltfError::ExternalResourceDenied(uri.into())),
     };
     let loaded = root
         .load_external_asset(
             crate::ExternalAssetIndex(0),
             &resolver,
-            &draco_io::ResourceLimits::default(),
+            &crate::ResourceLimits::default(),
             ValidationProfile::Gltf21Draft,
             &crate::ExtensionRegistry::default(),
         )
@@ -162,13 +162,13 @@ fn embedded_external_assets_resolve_packaged_file_names() {
     );
     let resolver = |uri: &str| match uri {
         "package.bin" => Ok(package.clone()),
-        _ => Err(draco_io::GltfError::ExternalResourceDenied(uri.into())),
+        _ => Err(crate::GltfError::ExternalResourceDenied(uri.into())),
     };
     let root = crate::parse_with_options(
         root.as_bytes(),
         None,
         Some(&resolver),
-        &draco_io::ResourceLimits::default(),
+        &crate::ResourceLimits::default(),
         &draco_core::DecodeLimits::default(),
         ValidationProfile::Gltf21Draft,
         &crate::ExtensionRegistry::default(),
@@ -178,7 +178,7 @@ fn embedded_external_assets_resolve_packaged_file_names() {
         .load_external_asset(
             crate::ExternalAssetIndex(0),
             &resolver,
-            &draco_io::ResourceLimits::default(),
+            &crate::ResourceLimits::default(),
             ValidationProfile::Gltf21Draft,
             &crate::ExtensionRegistry::default(),
         )
@@ -388,14 +388,14 @@ fn explicit_asset_loading_tracks_provenance_and_rejects_cycles() {
         "root.gltf" => {
             Ok(br#"{"asset":{"version":"2.1"},"files":[{"uri":"child.gltf","mimeType":"model/gltf+json"}]}"#.to_vec())
         }
-        _ => Err(draco_io::GltfError::ExternalResourceDenied(uri.into())),
+        _ => Err(crate::GltfError::ExternalResourceDenied(uri.into())),
     }
     };
     let child = root
         .load_asset(
             crate::FileIndex(0),
             &resolver,
-            &draco_io::ResourceLimits::default(),
+            &crate::ResourceLimits::default(),
             ValidationProfile::Gltf21Draft,
             &crate::ExtensionRegistry::default(),
         )
@@ -405,7 +405,7 @@ fn explicit_asset_loading_tracks_provenance_and_rejects_cycles() {
         .load_asset(
             crate::FileIndex(0),
             &resolver,
-            &draco_io::ResourceLimits::default(),
+            &crate::ResourceLimits::default(),
             ValidationProfile::Gltf21Draft,
             &crate::ExtensionRegistry::default(),
         )
@@ -414,7 +414,7 @@ fn explicit_asset_loading_tracks_provenance_and_rejects_cycles() {
         .load_asset(
             crate::FileIndex(0),
             &resolver,
-            &draco_io::ResourceLimits::default(),
+            &crate::ResourceLimits::default(),
             ValidationProfile::Gltf21Draft,
             &crate::ExtensionRegistry::default(),
         )
@@ -428,14 +428,14 @@ fn explicit_asset_loading_accepts_embedded_file_buffer_view() {
         ValidationProfile::Gltf21Draft,
     )
     .unwrap();
-    let resolver = |_uri: &str| -> Result<Vec<u8>, draco_io::GltfError> {
-        Err(draco_io::GltfError::ExternalResourceDenied("unused".into()))
+    let resolver = |_uri: &str| -> Result<Vec<u8>, crate::GltfError> {
+        Err(crate::GltfError::ExternalResourceDenied("unused".into()))
     };
     let child = root
         .load_asset(
             crate::FileIndex(0),
             &resolver,
-            &draco_io::ResourceLimits::default(),
+            &crate::ResourceLimits::default(),
             ValidationProfile::Gltf21Draft,
             &crate::ExtensionRegistry::default(),
         )
@@ -460,12 +460,12 @@ fn explicit_asset_loading_honors_chain_depth_limit() {
             Ok(br#"{"asset":{"version":"2.1"},"files":[{"uri":"leaf.gltf","mimeType":"model/gltf+json"}]}"#.to_vec())
         }
         "leaf.gltf" => Ok(br#"{"asset":{"version":"2.1"}}"#.to_vec()),
-        _ => Err(draco_io::GltfError::ExternalResourceDenied(uri.into())),
+        _ => Err(crate::GltfError::ExternalResourceDenied(uri.into())),
     }
     };
-    let limits = draco_io::ResourceLimits {
+    let limits = crate::ResourceLimits {
         max_external_asset_depth: Some(1),
-        ..draco_io::ResourceLimits::default()
+        ..crate::ResourceLimits::default()
     };
     let child = root
         .load_asset(
@@ -1078,7 +1078,7 @@ mod compression_tests {
             input,
             None,
             None,
-            &draco_io::ResourceLimits::default(),
+            &crate::ResourceLimits::default(),
             &draco_core::DecodeLimits::default(),
             ValidationProfile::Gltf20,
             &registry,
@@ -1207,9 +1207,9 @@ mod compression_tests {
                     .iter()
                     .find(|resource| resource.uri == uri)
                     .map(|resource| resource.bytes.clone())
-                    .ok_or_else(|| draco_io::GltfError::ExternalResourceDenied(uri.into()))
+                    .ok_or_else(|| crate::GltfError::ExternalResourceDenied(uri.into()))
             }),
-            &draco_io::ResourceLimits::default(),
+            &crate::ResourceLimits::default(),
             &draco_core::DecodeLimits::default(),
             ValidationProfile::Gltf20,
             &crate::ExtensionRegistry::default(),
@@ -1392,13 +1392,13 @@ fn import_preserves_draft_half_float_accessors() {
     let input = br#"{"asset":{"version":"2.1"},"buffers":[{"byteLength":12,"uri":"mesh.bin"}],"bufferViews":[{"buffer":0,"byteLength":12}],"accessors":[{"bufferView":0,"componentType":5131,"count":2,"type":"VEC3","min":[0,0,0],"max":[1,1,1]}],"meshes":[{"primitives":[{"mode":0,"attributes":{"POSITION":0}}]}]}"#;
     let resolver = |uri: &str| match uri {
         "mesh.bin" => Ok(vec![0, 60, 0, 64, 0, 66, 0, 68, 0, 69, 0, 70]),
-        _ => Err(draco_io::GltfError::ExternalResourceDenied(uri.into())),
+        _ => Err(crate::GltfError::ExternalResourceDenied(uri.into())),
     };
     let import = crate::parse_with_options(
         input,
         None,
         Some(&resolver),
-        &draco_io::ResourceLimits::default(),
+        &crate::ResourceLimits::default(),
         &draco_core::DecodeLimits::default(),
         ValidationProfile::Gltf21Draft,
         &crate::ExtensionRegistry::default(),
@@ -1425,14 +1425,14 @@ fn import_materializes_sparse_accessors() {
         if uri == "mesh.bin" {
             Ok(buffer.clone())
         } else {
-            Err(draco_io::GltfError::ExternalResourceDenied(uri.into()))
+            Err(crate::GltfError::ExternalResourceDenied(uri.into()))
         }
     };
     let mut import = crate::parse_with_options(
         input,
         None,
         Some(&resolver),
-        &draco_io::ResourceLimits::default(),
+        &crate::ResourceLimits::default(),
         &draco_core::DecodeLimits::default(),
         ValidationProfile::Gltf20,
         &crate::ExtensionRegistry::default(),
@@ -1722,13 +1722,13 @@ fn standalone_raw_geometry_roundtrips_json_and_glb() {
             .iter()
             .find(|resource| resource.uri == uri)
             .map(|resource| resource.bytes.clone())
-            .ok_or_else(|| draco_io::GltfError::ExternalResourceDenied(uri.into()))
+            .ok_or_else(|| crate::GltfError::ExternalResourceDenied(uri.into()))
     };
     let reloaded = crate::parse_with_options(
         &output.json,
         None,
         Some(&resolver),
-        &draco_io::ResourceLimits::default(),
+        &crate::ResourceLimits::default(),
         &draco_core::DecodeLimits::default(),
         ValidationProfile::Gltf20,
         &crate::ExtensionRegistry::default(),

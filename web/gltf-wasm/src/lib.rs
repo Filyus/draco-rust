@@ -239,7 +239,7 @@ pub fn supported_extensions() -> Vec<String> {
 #[wasm_bindgen]
 pub fn inspect_gltf(data: &[u8]) -> JsValue {
     let json = if data.len() >= 4 && &data[..4] == b"glTF" {
-        match draco_io::parse_gltf_container(data) {
+        match draco_gltf::parse_gltf_container(data) {
             Ok(container) => container.json,
             Err(error) => {
                 return summary_to_js(AssetSummary {

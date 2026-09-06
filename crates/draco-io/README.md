@@ -5,15 +5,18 @@
 [![Rust CI](https://github.com/Filyus/draco-rust/actions/workflows/ci.yml/badge.svg)](https://github.com/Filyus/draco-rust/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/Filyus/draco-rust/blob/main/LICENSE)
 
-`draco-io` is the low-level format I/O layer for the Draco Rust workspace. It
-reads and writes OBJ, PLY, STL and FBX geometry — each in both of its containers
-where it has two — and provides strict glTF/GLB container, resource, accessor,
-and Draco-geometry contracts.
+`draco-io` reads and writes OBJ, PLY, STL and FBX geometry for the `draco-core`
+model — each format in both of its containers where it has two.
 
-For complete, lossless glTF documents, scene preservation, and
-document-preserving Draco compression, use
-[`draco-gltf`](https://crates.io/crates/draco-gltf). Those APIs deliberately do
-not live in this crate.
+None of these formats embeds a Draco bitstream: each carries geometry in its own
+encoding, so a reader here ends at a `draco_core::Mesh` and a writer starts from
+one, and this crate enables no part of the codec. Whether that mesh is ever
+Draco-compressed is the caller's business.
+
+glTF is the exception among file formats, and it lives in
+[`draco-gltf`](https://crates.io/crates/draco-gltf) whole: containers, resource
+resolution and accessors as well as documents, scenes and document-preserving
+Draco compression. The two crates do not depend on each other.
 
 ## Installation
 
@@ -38,7 +41,6 @@ draco-io = { version = "0.4", default-features = false, features = ["obj-reader"
 | PLY | Yes | Yes | ASCII and binary geometry, normals, colors, and point clouds. |
 | STL | Yes | Yes | Binary and ASCII triangles. No indices or attributes: the format stores unshared corners and a facet normal, and nothing else. |
 | FBX | Yes | Yes | Binary and ASCII FBX 7.x scene data: geometry, layers, materials, skins, morphs, cameras, lights and animation. See [FBX.md](FBX.md). |
-| glTF / GLB | Containers and geometry contracts | Containers | GLB inspection, JSON/bin extraction, resource resolution, accessors, and optional `KHR_draco_mesh_compression` geometry decode. Full-document operations belong to `draco-gltf`. |
 
 All mesh formats use the `draco-core` geometry model. `Position` is required;
 the supported optional attributes depend on the source and destination format.
@@ -111,20 +113,21 @@ For format-agnostic use, `Reader`, `Writer`, `ReadFromBytes`, and
 | `ply-reader` / `ply-writer` | Yes | Stanford PLY support. |
 | `stl-reader` / `stl-writer` | Yes | STL support, binary and ASCII. |
 | `fbx-reader` / `fbx-writer` | Yes | FBX support, binary and ASCII. |
-| `gltf-container` | No | Parse glTF/GLB and load referenced buffers; no mesh decoding. |
-| `gltf-geometry` | No | Convert ordinary glTF accessors into `draco-core` meshes. |
-| `draco-decode` | No | Add `KHR_draco_mesh_compression` primitive decoding. |
-| `legacy-bitstream-decode` | No | Decode older Draco bitstreams. |
-| `compression` | Yes | zlib compression for FBX output. |
-| `point_cloud_decode` | Yes | Point-cloud decoding in `draco-core`. |
+| `compression` | Yes | zlib compression for FBX arrays, which every real exporter emits. |
+
+There is no feature here that enables the Draco codec, and none that mentions
+glTF. Both moved to `draco-gltf`.
 
 ## Relationship to `draco-gltf`
 
-Use `draco-io` when an application needs a strict GLB/container parser,
-resource-resolution policy, or low-level accessor geometry. Use `draco-gltf`
-when it needs a full scene document, nodes, materials, animations, skins, or
-document-preserving Draco transforms. Keeping this boundary explicit prevents
-low-level tooling from accidentally promising full glTF round-tripping.
+The two crates split by format, not by level: `draco-io` covers the formats that
+carry their own geometry encoding, `draco-gltf` covers the one that embeds a
+Draco bitstream, from the GLB container up to the scene document. Neither
+depends on the other, so an FBX release cannot move the glTF crate's version and
+a glTF consumer compiles no FBX.
+
+Reach for `draco-gltf` for anything glTF at all, a GLB container parse
+included.
 
 ## License
 

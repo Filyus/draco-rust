@@ -43,8 +43,8 @@ clouds, and the geometry model everything else speaks.
 [![crates.io](https://img.shields.io/crates/v/draco-io.svg)](https://crates.io/crates/draco-io)
 [![docs.rs](https://docs.rs/draco-io/badge.svg)](https://docs.rs/draco-io)
 
-Formats: OBJ, PLY, STL, binary and ASCII FBX, plus strict glTF/GLB container,
-resource and accessor contracts.
+Formats: OBJ, PLY, STL, binary and ASCII FBX. Each carries geometry in its own
+encoding, so nothing here touches the Draco codec.
 
 ### [`draco-gltf`](crates/draco-gltf)
 
@@ -52,12 +52,14 @@ resource and accessor contracts.
 [![docs.rs](https://docs.rs/draco-gltf/badge.svg)](https://docs.rs/draco-gltf)
 
 Whole glTF 2.0 and pinned 2.1-draft documents, losslessly: typed scene views,
-packed-geometry read/write, document-preserving Draco compression, GLB v2/v3.
+packed-geometry read/write, document-preserving Draco compression, GLB v2/v3,
+plus the strict GLB/container parser, resource policy and accessor contracts
+underneath them.
 
-Full glTF applications should depend on `draco-gltf`. `draco-io` deliberately
-exposes no glTF scene API — it is the layer below, for callers that want a
-container parser, a resource policy, or accessor-level geometry without a scene
-model on top.
+Anything glTF depends on this crate alone. glTF is the one format in the
+workspace that embeds a Draco bitstream, so it is also the only place where a
+file format meets the codec; `draco-io` covers the formats that do not, and the
+two no longer depend on each other.
 
 `draco-texture` (KTX2 and Basis Universal transcoding) and the `web/` WASM
 wrappers are part of the repository but not published to crates.io; the wrappers

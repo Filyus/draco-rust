@@ -16,20 +16,32 @@ This project is independent and is not an official Google Draco release.
 
 ## Status
 
-The crate has reached 1.0.0 and its public API is covered by SemVer. The
-bitstream implementation is tested against reference fixtures and C++ interop
-paths. Remaining compatibility notes and scope boundaries are tracked in the
-support matrix.
+Parity with C++ Draco 1.5.7 is byte-exact and mostly reached. The same mesh and
+options give the same bytes, and each implementation reads what the other
+writes. The deliberate exceptions are in
+[`COMPATIBILITY.md`](https://github.com/Filyus/draco-rust/blob/main/COMPATIBILITY.md).
 
-Supported high-level paths:
+The crate encodes and decodes:
 
-| Path | Decode | Encode | Notes |
-|---|---:|---:|---|
-| Draco point cloud | yes | yes | Sequential and KD-tree attribute paths are covered. |
-| Draco triangle mesh, sequential | yes | yes | Generic mesh path. |
-| Draco triangle mesh, EdgeBreaker standard | yes | yes | Main compressed mesh path. |
-| Draco triangle mesh, EdgeBreaker valence | yes | yes | Modern EdgeBreaker valence traversal, behind valence feature flags. |
-| glTF / GLB container I/O | `draco-io` | `draco-io` | File formats and `KHR_draco_mesh_compression` live in `draco-io`, not this crate. |
+- EdgeBreaker standard meshes: speeds 5 to 9.
+- EdgeBreaker valence meshes: below speed 5 for more compression.
+- Sequential meshes: speed 10 or an explicit `set_encoding_method`.
+- Point clouds: sequential and KD-tree attribute paths.
+
+Defaults differ:
+
+| Speed | This project | Other tools |
+|---:|---|---|
+| 5 | `draco-core` | the C++ Draco library |
+| 4 | the web converter | Blender glTF export |
+| 3 | no CLI | `draco_encoder` CLI (`-cl 7`) |
+
+Speed 4 measured smallest or near-smallest on every mesh tried.
+[`API.md`](API.md) gives the exact CLI equivalence, which differs in
+quantization as well as speed.
+
+For file formats, see `draco-gltf` (glTF, GLB) and `draco-io` (OBJ, PLY, STL,
+FBX).
 
 For the detailed algorithm matrix, see
 [`SUPPORT_MATRIX.md`](SUPPORT_MATRIX.md).
@@ -152,8 +164,8 @@ same spirit by keeping legacy encode support explicit.
 
 ## Workspace Crates
 
-- `draco-io`: OBJ / PLY / STL / FBX readers and writers, plus the document-preserving glTF compressor core that `draco-gltf` reuses.
-- `draco-gltf`: load and save full glTF / GLB scenes with Draco-compressed geometry — decode via `draco-core`, document-preserving (re)compress via `draco-io`. The main glTF consumer.
+- `draco-io`: OBJ / PLY / STL / FBX readers and writers. Formats that carry geometry in their own encoding, so this crate's codec never enters.
+- `draco-gltf`: load and save full glTF / GLB scenes with Draco-compressed geometry, containers and accessors included — decode and (re)compress via `draco-core`. The only consumer of the codec that is also a file format.
 - `draco-cpp-test-bridge`: test infrastructure for C++ parity.
 
 ## Development

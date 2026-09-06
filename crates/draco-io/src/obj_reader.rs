@@ -2,7 +2,7 @@
 //!
 //! Provides both a struct-based API (`ObjReader`) and convenience functions.
 
-use crate::mesh_finalize::finalize_mesh;
+use crate::traits::finalize_mesh;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Cursor};
 use std::path::Path;

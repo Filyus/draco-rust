@@ -23,7 +23,7 @@ at a different level of abstraction.
 |---|---:|---|
 | `.drc` point-cloud / triangle-mesh / keyframe bitstream | yes | `draco-core` |
 | `.drc` geometry & attribute metadata | yes | `draco-core` |
-| glTF / GLB scenes + `KHR_draco_mesh_compression` | yes | `draco-gltf` (geometry via `draco-core`, document-preserving compress via `draco-io`) |
+| glTF / GLB scenes + `KHR_draco_mesh_compression` | yes | `draco-gltf` (containers, accessors and document-preserving compression, all geometry via `draco-core`) |
 | glTF materials / textures / nodes / animations / skins / lights / extensions | yes (transcoder) | `draco-gltf` — understood references are preserved across a Draco round-trip; opaque unknown binary references are rejected rather than guessed |
 | glTF `EXT_structural_metadata` / `EXT_mesh_features` | yes (glTF path) | `draco-gltf` — property-table buffer views are kept alive and remapped across compaction; feature IDs ride on vertex attributes the encoder returns unchanged. Richer semantic interpretation is future scene-layer work |
 | glTF extensions across a Draco transform | yes (glTF path) | `draco-gltf` — extensions with no binary references are declared, the two that own references remap them, and anything unregistered still refuses rather than being guessed at. See `GLTF_2_1_SUPPORT.md` |

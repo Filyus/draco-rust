@@ -361,7 +361,7 @@ pub fn decode_geometry<S: AccessorSource>(
     // What upstream's `TriangleSoupMeshBuilder::Finalize` does, which is how
     // its glTF reader ends. Remapping does not change attribute ids, so
     // `semantics` stays valid. (Draco-compressed meshes don't need this.)
-    crate::mesh_finalize::finalize_mesh(&mut mesh)?;
+    mesh.finalize().map_err(GltfError::DracoDecode)?;
 
     Ok((mesh, semantics))
 }

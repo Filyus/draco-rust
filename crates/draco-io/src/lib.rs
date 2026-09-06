@@ -1,8 +1,11 @@
-//! Low-level format I/O and glTF binary contracts for Draco.
+//! Mesh interchange formats for the `draco-core` geometry model: OBJ, PLY,
+//! STL and FBX, read and written end to end.
 //!
-//! Full glTF documents, scene preservation, compression and compact views live
-//! in `draco-gltf`. This crate intentionally owns only container/resource and
-//! accessor-to-geometry primitives.
+//! Nothing here touches the Draco codec. These formats carry geometry in their
+//! own encodings, so a reader ends at a [`draco_core::mesh::Mesh`] and a writer
+//! starts from one; whether that mesh is ever Draco-compressed is the caller's
+//! business. glTF is the one format that carries a Draco bitstream itself, and
+//! it lives in `draco-gltf` together with its containers and accessors.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(missing_docs)]
@@ -44,35 +47,19 @@ mod fbx_transform;
 pub mod fbx_writer;
 #[cfg(feature = "fbx-writer")]
 mod fbx_writer_6100;
-#[cfg(feature = "gltf-container")]
-/// glTF/GLB containers and resource resolution.
-pub mod gltf_container;
-#[cfg(feature = "gltf-container")]
-mod gltf_error;
-#[cfg(feature = "gltf-geometry")]
-/// Reader-agnostic accessor and Draco geometry contracts.
-pub mod gltf_geometry;
-// Every reader that builds a mesh from scratch ends through this, so its gate
-// is the union of theirs rather than any one weld's. `fbx-writer` is in that
-// union without being a reader: the FBX corner expansion welds through here as
-// well, and it serves both directions.
-#[cfg(any(
-    feature = "obj-reader",
-    feature = "ply-reader",
-    feature = "gltf-geometry",
-    feature = "fbx-reader",
-    feature = "fbx-writer"
-))]
+// Reader-level regression tests for `Mesh::finalize`, which every reader here
+// that builds a mesh from scratch ends with. The operation itself is
+// `draco-core`'s -- it composes three of that crate's own passes and the order
+// is load-bearing -- but what it buys is only visible through a reader, so the
+// tests that pin it sit on this side.
+#[cfg(test)]
 mod mesh_finalize;
 // The only remaining user of the hashable-tuple weld: OBJ interns `(v, vt,
 // vn)` index triples into points during parsing. FBX used to key one on
 // resolved attribute *values* here too, before it moved onto the same
-// mesh_finalize pass every other from-scratch reader ends with.
+// `Mesh::finalize` pass every other from-scratch reader ends with.
 #[cfg(feature = "obj-reader")]
 mod mesh_weld;
-#[cfg(feature = "gltf-container")]
-/// `EXT_meshopt_compression` bitstream decoders.
-pub mod meshopt;
 #[cfg(feature = "obj-reader")]
 /// Wavefront OBJ reader.
 pub mod obj_reader;
@@ -118,19 +105,6 @@ pub use fbx_scene::{
 };
 #[cfg(feature = "fbx-writer")]
 pub use fbx_writer::{FbxFormat, FbxWriteStats, FbxWriter};
-#[cfg(feature = "gltf-container")]
-pub use gltf_container::{
-    decode_data_uri, inspect_glb, parse_glb_json_and_bin, parse_gltf_container,
-    resolve_gltf_buffers, resolve_resource_uri, ExternalFilePolicy, FileResourceResolver,
-    GlbChunkDescriptor, GlbLayout, GlbRangeReader, GltfBufferReference, GltfContainer,
-    GltfContainerFormat, ResourceLimits, ResourceResolver,
-};
-#[cfg(feature = "gltf-container")]
-pub use gltf_error::GltfError;
-#[cfg(feature = "gltf-geometry")]
-pub use gltf_geometry::{decode_geometry, AccessorSource, DecodedAccessor};
-#[cfg(feature = "gltf-container")]
-pub use meshopt::{MeshoptFilter, MeshoptMode};
 #[cfg(feature = "obj-reader")]
 pub use obj_reader::ObjReader;
 #[cfg(feature = "obj-writer")]

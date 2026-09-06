@@ -616,8 +616,8 @@ per module to that GitHub Release.
 Every module goes on every release, and the list comes from what the build
 produced rather than from a list in the workflow. Both halves of that are
 deliberate. A module's bytes are a function of the whole tree — obj, ply, stl and
-fbx each compile `draco-core` and `draco-io`, gltf compiles `draco-gltf` and
-`draco-io` — so shipping one module per crate left the rest describing an older
+fbx each compile `draco-core` and `draco-io`, gltf compiles `draco-core` and
+`draco-gltf` — so shipping one module per crate left the rest describing an older
 tree, and `drc` shipped nowhere at all. And a hand-written list is a second place
 to update: `stl` and `drc` were built on every release and named in no list, so
 they were built seven times and shipped zero.

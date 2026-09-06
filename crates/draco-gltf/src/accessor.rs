@@ -1,6 +1,6 @@
+use crate::{AccessorSource, DecodedAccessor, GltfError};
 use crate::{Document, Error, ResourceStore, Result};
 use draco_core::draco_types::DataType;
-use draco_io::{AccessorSource, DecodedAccessor, GltfError};
 
 /// Accessor source backed by a [`Document`] and its resolved resources.
 pub struct DocumentAccessorSource<'a> {

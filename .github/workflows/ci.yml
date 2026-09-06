@@ -83,25 +83,37 @@ jobs:
       - name: Test draco-io
         run: cargo test --manifest-path crates/Cargo.toml -p draco-io --features test
 
-      # Lock in the low-level glTF contracts consumed by draco-gltf and the
-      # WASM wrappers.
       - name: Check draco-io feature combinations
         run: |
           cargo test --manifest-path crates/Cargo.toml -p draco-io --no-default-features --doc
-          cargo test --manifest-path crates/Cargo.toml -p draco-io --no-default-features --features gltf-container
-          cargo test --manifest-path crates/Cargo.toml -p draco-io --no-default-features --features gltf-geometry
-          cargo test --manifest-path crates/Cargo.toml -p draco-io --no-default-features --features draco-decode
 
-      # draco-io has eighteen features, so its full powerset is 18,513
-      # configurations -- not a thing CI can run. Depth 2 is 150 and covers
-      # every pair, which is the shape these gating mistakes take: an item
-      # gated on one feature whose callers sit behind another. The steps above
-      # and below stay because they run tests, not just a compile.
+      # draco-io has twelve features once glTF left for draco-gltf, so the full
+      # powerset is 4,095 configurations -- still not a thing CI can run. Depth
+      # 2 covers every pair, which is the shape these gating mistakes take: an
+      # item gated on one feature whose callers sit behind another. The steps
+      # above and below stay because they run tests, not just a compile.
       - name: Check draco-io feature pairs
         env:
           RUSTFLAGS: -D warnings
         run: |
           cargo hack check --manifest-path crates/Cargo.toml -p draco-io \
+            --feature-powerset --depth 2 --no-dev-deps
+
+      # The glTF contracts the WASM wrappers and draco-gltf's own document
+      # layer are built on: container parse and accessor materialization
+      # without the scene model, and the Draco decode path on top of them.
+      - name: Check draco-gltf feature combinations
+        run: |
+          cargo test --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --doc
+          cargo test --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features document
+          cargo test --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features geometry
+          cargo test --manifest-path crates/Cargo.toml -p draco-gltf --no-default-features --features draco-decode
+
+      - name: Check draco-gltf feature pairs
+        env:
+          RUSTFLAGS: -D warnings
+        run: |
+          cargo hack check --manifest-path crates/Cargo.toml -p draco-gltf \
             --feature-powerset --depth 2 --no-dev-deps
 
       # FBX is the only hand-rolled untrusted binary parser in the workspace,
@@ -139,7 +151,7 @@ jobs:
           cargo check --manifest-path web/Cargo.toml -p gltf-wasm --target wasm32-unknown-unknown --no-default-features --features write
           cargo check --manifest-path web/Cargo.toml -p gltf-wasm --target wasm32-unknown-unknown --no-default-features --features write,draco-decode
           cargo check --manifest-path web/Cargo.toml -p gltf-wasm --target wasm32-unknown-unknown --no-default-features --features draco-encode
-          cargo check --manifest-path crates/Cargo.toml -p draco-io --target wasm32-unknown-unknown --no-default-features --features draco-decode
+          cargo check --manifest-path crates/Cargo.toml -p draco-io --target wasm32-unknown-unknown --no-default-features --features all-readers,all-writers,compression
 
       - name: Check public Rust documentation
         env:
