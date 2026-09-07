@@ -31,8 +31,9 @@
 //!    `--all-features` so the number cannot move when the default set is next
 //!    edited -- not because the extra features carry messages. They carry
 //!    none, and they delete a dozen: see below.
-//! 3. The artifact's `.text` is read from its own section table — PE on
-//!    Windows, ELF elsewhere — and each fragment is searched for in the file.
+//! 3. The artifact's machine-code section is read from its own tables — ELF on
+//!    Linux, PE on Windows, Mach-O on macOS — and each fragment is searched
+//!    for in the file.
 //!
 //! ## What the number is a share *of*
 //!
@@ -307,6 +308,8 @@ fn text_section_size(binary: &[u8]) -> Option<usize> {
         elf_text_size(binary)
     } else if binary.starts_with(b"MZ") {
         pe_text_size(binary)
+    } else if binary.starts_with(MACHO64_LE_MAGIC) {
+        macho_text_size(binary)
     } else {
         None
     }
@@ -342,6 +345,57 @@ fn elf_text_size(b: &[u8]) -> Option<usize> {
         if name == ".text" {
             return Some(u64_at(b, hdr + 0x20)? as usize);
         }
+    }
+    None
+}
+
+/// `MH_MAGIC_64` as it sits in a little-endian file: `0xfeedfacf` byte-reversed.
+///
+/// Only this one spelling is accepted. A big-endian or 32-bit Mach-O would be
+/// a cross-build for a machine this test does not run on, and a universal
+/// binary starts `0xcafebabe` instead -- Rust emits a single-architecture
+/// object, and `lipo` is what would produce the other kind.
+const MACHO64_LE_MAGIC: &[u8] = b"\xcf\xfa\xed\xfe";
+
+/// 64-bit little-endian Mach-O.
+///
+/// Mach-O has no section-name string table: both names are inline, padded with
+/// NULs to sixteen bytes, and the section carrying machine code is `__text`
+/// inside segment `__TEXT` rather than a single `.text` as in ELF and PE.
+///
+/// The walk is over load commands rather than a section table, since Mach-O
+/// has no top-level one. Only `LC_SEGMENT_64` is inspected; every other
+/// command is stepped over by its own `cmdsize`, which is what makes the loop
+/// terminate on a file carrying commands this does not model.
+fn macho_text_size(b: &[u8]) -> Option<usize> {
+    const LC_SEGMENT_64: u32 = 0x19;
+    const HEADER_64_SIZE: usize = 32;
+    const SEGMENT_64_HEADER_SIZE: usize = 72;
+    const SECTION_64_SIZE: usize = 80;
+
+    let ncmds = u32_at(b, 16)? as usize;
+    let mut cmd_off = HEADER_64_SIZE;
+
+    for _ in 0..ncmds {
+        let cmd = u32_at(b, cmd_off)?;
+        let cmdsize = u32_at(b, cmd_off + 4)? as usize;
+        // A zero size would spin here forever on a malformed file.
+        if cmdsize == 0 {
+            return None;
+        }
+        if cmd == LC_SEGMENT_64 {
+            let nsects = u32_at(b, cmd_off + 64)? as usize;
+            for i in 0..nsects {
+                let sect = cmd_off + SEGMENT_64_HEADER_SIZE + i * SECTION_64_SIZE;
+                let raw = b.get(sect..sect + 16)?;
+                let name = std::str::from_utf8(raw).ok()?.trim_end_matches('\0');
+                if name == "__text" {
+                    // sectname[16] + segname[16] + addr[8], then size.
+                    return Some(u64_at(b, sect + 40)? as usize);
+                }
+            }
+        }
+        cmd_off += cmdsize;
     }
     None
 }
@@ -789,6 +843,78 @@ mod tests {
             fragments("a message split \\\n                 across lines"),
             vec!["a message split across lines".to_string()]
         );
+    }
+
+    /// The Mach-O reader, exercised on every platform rather than only on the
+    /// one that produces Mach-O.
+    ///
+    /// The other two readers are covered by
+    /// [`the_running_test_binary_has_a_text_section`], which can only ever
+    /// check the format of the machine it runs on -- so the Mach-O arm was
+    /// written blind and stayed unproven on Linux and Windows, which is where
+    /// it is edited. This builds the smallest file the reader must accept: a
+    /// 64-bit header, one load command it has to step over by `cmdsize`, then
+    /// an `LC_SEGMENT_64` whose second section is the `__text` one, so a
+    /// reader that stopped at the first section or ignored `cmdsize` fails.
+    #[test]
+    fn the_macho_reader_finds_text_past_a_command_and_a_sibling_section() {
+        const LC_SEGMENT_64: u32 = 0x19;
+        const TEXT_SIZE: u64 = 0xBEEF;
+
+        fn name16(s: &str) -> [u8; 16] {
+            let mut out = [0u8; 16];
+            out[..s.len()].copy_from_slice(s.as_bytes());
+            out
+        }
+        fn section(sectname: &str, size: u64) -> Vec<u8> {
+            let mut s = Vec::new();
+            s.extend_from_slice(&name16(sectname));
+            s.extend_from_slice(&name16("__TEXT"));
+            s.extend_from_slice(&0u64.to_le_bytes()); // addr
+            s.extend_from_slice(&size.to_le_bytes());
+            s.resize(80, 0);
+            s
+        }
+
+        // One segment carrying two sections, `__text` second.
+        let mut segment = Vec::new();
+        segment.extend_from_slice(&LC_SEGMENT_64.to_le_bytes());
+        segment.extend_from_slice(&(72u32 + 160).to_le_bytes()); // cmdsize
+        segment.extend_from_slice(&name16("__TEXT"));
+        segment.resize(64, 0); // through vmaddr/vmsize/fileoff/filesize/prot
+        segment.extend_from_slice(&2u32.to_le_bytes()); // nsects
+        segment.extend_from_slice(&0u32.to_le_bytes()); // flags
+        assert_eq!(segment.len(), 72, "segment header must be 72 bytes");
+        segment.extend_from_slice(&section("__stubs", 0x11));
+        segment.extend_from_slice(&section("__text", TEXT_SIZE));
+
+        // A command the reader does not model, so it must skip by `cmdsize`.
+        let mut other = vec![0u8; 24];
+        other[..4].copy_from_slice(&0x2Bu32.to_le_bytes()); // LC_SOURCE_VERSION
+        other[4..8].copy_from_slice(&24u32.to_le_bytes());
+
+        let mut file = Vec::new();
+        file.extend_from_slice(super::MACHO64_LE_MAGIC);
+        file.resize(16, 0); // cputype, cpusubtype, filetype
+        file.extend_from_slice(&2u32.to_le_bytes()); // ncmds
+        file.resize(32, 0); // sizeofcmds, flags, reserved
+        file.extend_from_slice(&other);
+        file.extend_from_slice(&segment);
+
+        assert_eq!(text_section_size(&file), Some(TEXT_SIZE as usize));
+    }
+
+    /// A `cmdsize` of zero must not spin the load-command walk forever.
+    #[test]
+    fn a_macho_command_of_zero_size_is_refused_rather_than_looped_on() {
+        let mut file = Vec::new();
+        file.extend_from_slice(super::MACHO64_LE_MAGIC);
+        file.resize(16, 0);
+        file.extend_from_slice(&4u32.to_le_bytes()); // ncmds
+        file.resize(32, 0);
+        file.extend_from_slice(&[0u8; 8]); // cmd 0, cmdsize 0
+
+        assert_eq!(text_section_size(&file), None);
     }
 
     #[test]
