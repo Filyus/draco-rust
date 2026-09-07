@@ -373,6 +373,10 @@ fn validation_requires_node_hierarchy_to_be_disjoint_trees() {
     valid.validate(ValidationProfile::Gltf20).unwrap();
 }
 
+// Both of these drive `Import::load_asset`, which is `resources`-gated, so the
+// tests carry that gate too. Nothing compiled them without it until CI started
+// running the feature slices as tests rather than checking them.
+#[cfg(feature = "resources")]
 #[test]
 fn explicit_asset_loading_tracks_provenance_and_rejects_cycles() {
     let root = parse(
@@ -421,6 +425,7 @@ fn explicit_asset_loading_tracks_provenance_and_rejects_cycles() {
         .is_err());
 }
 
+#[cfg(feature = "resources")]
 #[test]
 fn explicit_asset_loading_accepts_embedded_file_buffer_view() {
     let root = parse(
