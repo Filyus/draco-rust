@@ -205,22 +205,27 @@ jobs:
         shell: pwsh
         run: ./.github/scripts/test-packaged-crates.ps1
 
-  # DRAFT -- not wired into anything yet. See the branch that carries it.
+  # The only job not on Linux, and the reason the project is tested on the
+  # platform it is written on at all.
   #
-  # Every other job here runs on Linux, while the project is developed on
-  # Windows, so no CI has ever exercised the platform the code is written on.
-  # What differs is the platform *family*, not the OS version: path separators
-  # and drive letters, a case-insensitive filesystem, CRLF, console encoding
-  # for non-ASCII, and a file held open against its own rewrite. One runner per
-  # family catches those; a second Windows version would catch almost nothing
-  # more, because Rust links its own runtime and this code calls no system API.
+  # What differs between platforms is the family rather than the OS version:
+  # path separators and drive letters, a case-insensitive filesystem, CRLF,
+  # console encoding for non-ASCII, and a file held open against its own
+  # rewrite. One runner per family catches those; a second Windows version
+  # would catch almost nothing more, because Rust links its own runtime and
+  # this code calls no system API.
   #
   # Deliberately not a matrix over the `rust` job: that one is twenty-odd steps
   # of feature powersets, docs and clippy, and none of it is platform-shaped.
-  # What is worth running three times is the tests that open files.
+  # What is worth running three times is the tests that open files. Both arms
+  # finish well inside the critical path -- 4.7 and 3.0 minutes against the
+  # 9-to-11 the longest job takes -- so this costs no waiting, and standard
+  # runners are free for public repositories. The real price is owning failures
+  # on machines nobody here has.
   #
-  # Costs nothing in money -- standard runners are free for public repos -- and
-  # the real price is owning failures on machines nobody here has.
+  # It earned that on its first run, which is the argument for keeping it: the
+  # prose-to-code measurement read `.text` out of ELF and PE and had never met
+  # Mach-O.
   os-matrix:
     name: tests on ${{ matrix.os }}
     strategy:
