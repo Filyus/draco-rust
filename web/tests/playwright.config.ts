@@ -3,6 +3,12 @@ import { defineConfig } from '@playwright/test';
 export default defineConfig({
   testDir: '.',
   testMatch: 'browser-smoke.spec.ts',
+  // Playwright picks the dot reporter on its own once CI is set, which prints
+  // neither a test name nor a duration -- so a run that takes four minutes
+  // says nothing about which of its eighty tests spent them, and the log of a
+  // failure names no test either. `list` is what it already uses locally, so
+  // this makes CI say what a developer sees.
+  reporter: 'list',
   fullyParallel: false,
   workers: 1,
   use: {
