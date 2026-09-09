@@ -242,7 +242,7 @@ jobs:
       # Keyed per group: the jobs run at the same time and each writes its own
       # entry, so a shared key would have them overwrite each other's corpus.
       - name: Restore fuzz corpus
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           # This group's target only. The path used to be the whole corpus
           # directory so that a group split off another could inherit the old
@@ -360,7 +360,7 @@ jobs:
       # Named per group: two jobs uploading under one artifact name collide.
       - name: Upload crash artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-artifacts-${{ matrix.group }}
           path: fuzz/artifacts/

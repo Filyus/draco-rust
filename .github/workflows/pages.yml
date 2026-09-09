@@ -173,7 +173,7 @@ jobs:
       # integration". Enabling it is a one-time manual step, in the repository
       # settings or through `gh api -X POST repos/OWNER/REPO/pages`.
       - name: Configure Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       # `build.sh` with no arguments builds the release profile, which is the
       # size gate rather than the app: the converter needs `--app`, and so does
@@ -199,11 +199,14 @@ jobs:
           done
           du -sh web/www
 
+      # Dotfiles are left out of the artifact unless `include-hidden-files` is
+      # set. The built site has none; a `.nojekyll` added here would need that
+      # input, or it would go missing from the deploy without any error.
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: web/www
 
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
