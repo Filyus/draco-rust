@@ -23,6 +23,18 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   only methods this crate already exposed, so nothing new is possible that was
   not before.
 
+### Fixed
+
+- The deprecated texture-coordinate prediction scheme (`prediction_scheme`
+  3) over a `uint32` position now decodes what the encoder wrote. The encoder
+  predicts from its `int32` portable copy of the position; the decoder, which
+  registers no such copy for an integral attribute, predicted from the
+  attribute itself and read it unsigned, so every coordinate above
+  `i32::MAX` was a different number on the two sides. The predictions
+  diverged from the first predicted entry, silently for a small mesh and as
+  `Texture-coordinate prediction failed` once the orientation bits ran out.
+  Found by the `encode_drc` fuzz campaign.
+
 ## [2.0.0](https://github.com/Filyus/draco-rust/compare/draco-core-v1.2.0...draco-core-v2.0.0) - 2026-09-05
 
 A breaking release. Its through-line is that a refusal should say what it

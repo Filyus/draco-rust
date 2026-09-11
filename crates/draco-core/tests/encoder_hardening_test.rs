@@ -2035,3 +2035,141 @@ fn a_legacy_stream_reserves_two_bits_per_split_event_edge() {
             .expect("encoder wrote a stream its decoder rejects");
     }
 }
+
+/// The deprecated texture-coordinate scheme predicts from the position, and
+/// the two sides used to read a `uint32` position differently: the encoder
+/// from its `int32` portable copy, the decoder from the attribute itself at
+/// its declared type, since an integral position registers no portable copy
+/// on that side. A coordinate above `i32::MAX` is then two different numbers,
+/// the predictions diverge from the first predicted entry, and the decoder
+/// reports running out of orientation bits somewhere down the attribute.
+/// Found by `encode_drc`; reproducer in
+/// `fuzz/seeds/encode_drc/legacy_texcoord_reads_uint32_position_as_int32.bin`.
+#[test]
+fn a_texture_coordinate_scheme_over_a_uint32_position_round_trips() {
+    const NUM_POINTS: usize = 12;
+    const NUM_FACES: usize = 10;
+
+    let mut mesh = Mesh::new();
+    mesh.set_num_points(NUM_POINTS);
+
+    // Positions straddling `i32::MAX`, so the two readings disagree.
+    let mut position = PointAttribute::new();
+    position.init(
+        GeometryAttributeType::Position,
+        3,
+        DataType::Uint32,
+        false,
+        NUM_POINTS,
+    );
+    for index in 0..NUM_POINTS {
+        let base = if index % 2 == 0 {
+            u32::MAX - 1_000
+        } else {
+            1_000
+        };
+        for component in 0..3 {
+            let value = base.wrapping_add((index * 7 + component * 13) as u32);
+            position
+                .buffer_mut()
+                .write((index * 3 + component) * 4, &value.to_le_bytes());
+        }
+    }
+    mesh.add_attribute(position);
+
+    // Distinct coordinates everywhere, so every predicted entry goes through
+    // the position-based branch rather than the equal-corners shortcut.
+    let mut tex_coord = PointAttribute::new();
+    tex_coord.init(
+        GeometryAttributeType::TexCoord,
+        2,
+        DataType::Uint16,
+        false,
+        NUM_POINTS,
+    );
+    for index in 0..NUM_POINTS {
+        for component in 0..2 {
+            let value = (index * 5_003 + component * 977) as u16;
+            tex_coord
+                .buffer_mut()
+                .write((index * 2 + component) * 2, &value.to_le_bytes());
+        }
+    }
+    mesh.add_attribute(tex_coord);
+
+    // A triangle strip: every face past the first shares an edge with the
+    // one before it, which is what gives the predictor two already-coded
+    // corners to work from.
+    mesh.set_num_faces(NUM_FACES);
+    for face in 0..NUM_FACES {
+        let f = face as u32;
+        mesh.set_face(
+            draco_core::geometry_indices::FaceIndex(f),
+            if face % 2 == 0 {
+                [f.into(), (f + 1).into(), (f + 2).into()]
+            } else {
+                [(f + 1).into(), f.into(), (f + 2).into()]
+            },
+        );
+    }
+
+    let mut options = EncoderOptions::new();
+    // 3 is the deprecated scheme, by number: nothing selects it automatically.
+    options.set_attribute_int(1, "prediction_scheme", 3);
+    let encoded = encode_mesh(mesh, &options).expect("the mesh encodes");
+
+    let mut decoded = Mesh::new();
+    MeshDecoder::new()
+        .decode(&mut DecoderBuffer::new(&encoded), &mut decoded)
+        .unwrap_or_else(|error| panic!("encoder wrote a stream its decoder rejects: {error}"));
+    assert_eq!(decoded.num_faces(), NUM_FACES);
+
+    // A decode that reads the stream is not enough: a wrong prediction only
+    // shows as a wrong value, and the decoder notices nothing until the
+    // orientation bits run out, which a mesh this small never reaches. Every
+    // point must come back with the coordinate it went in with. The
+    // traversal renumbers the points, so pair each with its position, which
+    // is unique per point.
+    let position = decoded.try_attribute(0).expect("position decoded");
+    let tex_coord = decoded.try_attribute(1).expect("tex coord decoded");
+    let mut seen = Vec::new();
+    for point in 0..decoded.num_points() {
+        let point = PointIndex(point as u32);
+        let mut pos = [0u8; 12];
+        assert!(position
+            .buffer()
+            .try_read(position.mapped_index(point).0 as usize * 12, &mut pos));
+        let mut uv = [0u8; 4];
+        assert!(tex_coord
+            .buffer()
+            .try_read(tex_coord.mapped_index(point).0 as usize * 4, &mut uv));
+        seen.push((pos, uv));
+    }
+    seen.sort();
+    seen.dedup();
+    let mut expected: Vec<([u8; 12], [u8; 4])> = (0..NUM_POINTS)
+        .map(|index| {
+            let base = if index % 2 == 0 {
+                u32::MAX - 1_000
+            } else {
+                1_000
+            };
+            let mut pos = [0u8; 12];
+            for component in 0..3 {
+                let value = base.wrapping_add((index * 7 + component * 13) as u32);
+                pos[component * 4..component * 4 + 4].copy_from_slice(&value.to_le_bytes());
+            }
+            let mut uv = [0u8; 4];
+            for component in 0..2 {
+                let value = (index * 5_003 + component * 977) as u16;
+                uv[component * 2..component * 2 + 2].copy_from_slice(&value.to_le_bytes());
+            }
+            (pos, uv)
+        })
+        .collect();
+    expected.sort();
+    assert_eq!(
+        seen, expected,
+        "texture coordinates changed in the round trip"
+    );
+}

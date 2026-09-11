@@ -163,6 +163,16 @@ impl<'a> PredictionParent<'a> {
     /// Only the deprecated texture-coordinate predictor reads this way:
     /// upstream's pre-2.0 tex-coord prediction works on real position values,
     /// not portable ones, and its decoder hands the attribute itself over.
+    ///
+    /// `uint32` is the one integral type whose declared-type read differs from
+    /// the portable one, and it reads as `int32` here for the same reason it
+    /// does in [`Self::read_component_as_i64`]: the encoder predicts from its
+    /// `int32` portable copy, and from 2.0 so does upstream's decoder. The
+    /// decoder here binds the attribute itself when no portable copy was
+    /// registered for it, and an integral position gets none -- so the two
+    /// readers have to agree on the bytes, or a position above `i32::MAX`
+    /// predicts from a value `2^32` away from the one the correction was
+    /// computed against.
     #[cfg(any(
         feature = "legacy_bitstream_decode",
         feature = "legacy_bitstream_encode"
@@ -189,7 +199,7 @@ impl<'a> PredictionParent<'a> {
                 Some(i32::from_le_bytes(read_bytes::<4>(buffer, byte_offset)?) as f32)
             }
             DataType::Uint32 => {
-                Some(u32::from_le_bytes(read_bytes::<4>(buffer, byte_offset)?) as f32)
+                Some(i32::from_le_bytes(read_bytes::<4>(buffer, byte_offset)?) as f32)
             }
             DataType::Float32 => Some(f32::from_le_bytes(read_bytes::<4>(buffer, byte_offset)?)),
             DataType::Float64 => {
