@@ -108,7 +108,9 @@ difference is and what it means for a file — is recorded in
 
 `draco-io` and `draco-gltf` are pre-1.0 and still move: a breaking change bumps
 the minor, which is the breaking field for a `0.x` crate. Each crate keeps its
-own changelog and its own release tags — see [`CHANGELOG.md`](CHANGELOG.md).
+own changelog and its own release tags; the web converter keeps
+[`web/CHANGELOG.md`](web/CHANGELOG.md), since its wrappers ship as release
+assets rather than as crates.
 
 Beyond `KHR_draco_mesh_compression`, glTF reading covers `EXT_meshopt_compression`,
 and Draco compression preserves the extensions a document carries rather than

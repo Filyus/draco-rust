@@ -9,6 +9,19 @@ In the steps below, **`<crate>` is the crate being released** — substitute
 `draco-core`, `draco-io`, or `draco-gltf`. For example, `crate=<crate>` means
 `crate=draco-gltf` when releasing `draco-gltf`.
 
+### The web assets ride along
+
+The `web/` WASM wrappers and converter are not published to crates.io. Every
+wrapper ships as a zipped release asset on every crate release, built from that
+tag by `Release: WASM assets` and stamped with its version. The set travels
+together because it is built together: a module compiles several crates, so
+shipping a subset per crate leaves the rest describing an older tree. The
+converter itself is deployed to GitHub Pages by `Pages: deploy converter`, from
+`main` rather than from a tag — it demonstrates the current code, and pinning it
+to a crate release would show neither crate's version honestly.
+
+Converter changes are recorded in [`web/CHANGELOG.md`](web/CHANGELOG.md).
+
 Normal releases are optimized for a solo maintainer working with an agent:
 
 1. The agent verifies the working tree is clean and current with `origin/main`.
@@ -135,6 +148,10 @@ Preflight checks, for crate `<crate>`:
 - `X.Y.Z` matches `crates/<crate>/Cargo.toml`;
 - every internal dependency `<crate>` pins is already published at the pinned version;
 - `crates/<crate>/CHANGELOG.md` has a `## [X.Y.Z]` section;
+- `web/CHANGELOG.md`'s `Unreleased` section is folded into the GitHub
+  release's notes — the release is the record of what an asset stamp carries —
+  and the section starts empty;
+
 - `cargo semver-checks` succeeds if `<crate>` already exists on crates.io;
 - docs.rs-style nightly docs build for `<crate>`;
 - `<crate> X.Y.Z` is not already published;
