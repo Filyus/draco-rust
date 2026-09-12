@@ -130,6 +130,11 @@ path = "tests/fbx_corpus.rs"
 required-features = ["test", "fbx-reader", "compression"]
 
 [[test]]
+name = "fbx_census"
+path = "tests/fbx_census.rs"
+required-features = ["test", "fbx-reader"]
+
+[[test]]
 name = "cpp_decode_test"
 path = "tests/cpp_decode_test.rs"
 required-features = ["test"]
