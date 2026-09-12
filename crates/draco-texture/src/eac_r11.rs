@@ -25,6 +25,7 @@ pub struct EacR11Block {
 impl EacR11Block {
     /// Take the eight bytes a GPU expects back apart again, so one target
     /// can reuse another's output.
+    #[cfg_attr(not(feature = "uastc"), allow(dead_code))]
     pub(crate) fn from_bytes(bytes: [u8; 8]) -> Self {
         EacR11Block {
             base: bytes[0],
@@ -43,6 +44,7 @@ impl EacR11Block {
         bytes
     }
 
+    #[cfg_attr(not(feature = "etc1s"), allow(dead_code))]
     pub(crate) fn set_selector_bits(&mut self, bits: u64) {
         // The 48-bit selector field is laid out big-endian: the texel that
         // sits at bit 45 lands in the top three bits of the first byte.
@@ -66,6 +68,7 @@ impl EacR11Block {
 
     /// A constant block as the reference's packer writes it: table 13 and
     /// multiplier 0, which also lands every step on the base.
+    #[cfg_attr(not(feature = "uastc"), allow(dead_code))]
     pub(crate) fn solid(value: u8) -> Self {
         EacR11Block {
             base: value,
