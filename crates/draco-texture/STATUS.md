@@ -137,10 +137,11 @@ a disagreement with the reference that the reference itself does not. The
 `basis-crosscheck` job — 215 images against the `basisu` crate from crates.io —
 stays as an independent cross-check against a port of a *later* revision; where
 the two disagree, the vendored one is the authority, because it is the revision
-this port was made from. One seed (`etc1s_endpoint_pred_repeat`) the vendored
-revision refuses outright; the differential gate skips it and says so in its
-tally, and moving to a later revision — which would bring that seed back — is
-a deliberate act with the goldens re-derived after it.
+this port was made from. One seed the differential gate skips whole
+(`etc1s_endpoint_pred_repeat`): it is not a fixture the encoder wrote but a
+fuzz reproducer of a damaged slice, kept from the campaign that found the
+endpoint-repeat wrap, and the reference refuses it outright — a legitimate
+verdict on malformed input, with no decode to differ about.
 
 **The ETC and ASTC uploads are unexercised.** Their transcoding is checked byte
 for byte in Node, but no desktop offers either extension, so the
