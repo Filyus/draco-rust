@@ -18,6 +18,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 import {
+  closeReference,
   FIXTURES,
   firstDifference,
   loadKtx2Module,
@@ -80,3 +81,4 @@ for (const pair of PAIRS) {
 }
 
 console.log(`ktx2-block-formats: ${compared} mip levels match the reference transcoder byte for byte`);
+closeReference();

@@ -61,7 +61,7 @@ fn main() {
     let mut count = 0;
     for name in FIXTURES {
         let original = std::fs::read(root.join("testdata/ktx2").join(name)).expect("a fixture");
-        let plain = basis_cpp_oracle::without_zstd(&original);
+        let plain = basis_cpp_oracle::without_zstd(&original).expect("a committed fixture decodes");
         let levels = basis_cpp_oracle::level_count(&plain);
         // Only the pairs draco-texture claims. The reference reaches more -
         // ETC1S to BC7, for one - and recording those would put lines in the

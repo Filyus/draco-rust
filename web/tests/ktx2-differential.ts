@@ -33,7 +33,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { TARGET, firstDifference, loadKtx2Module, loadReference } from './ktx2-reference.ts';
+import { closeReference, TARGET, firstDifference, loadKtx2Module, loadReference } from './ktx2-reference.ts';
 import type { ReferenceTranscoder } from './ktx2-reference.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -152,9 +152,13 @@ function ours(ktx2: any, bytes: Uint8Array): Map<string, Uint8Array> | null {
 }
 
 /** The same from the reference: null if it refuses the file or the image. */
-function theirs(reference: ReferenceTranscoder, bytes: Uint8Array, target: number): Uint8Array | null {
+async function theirs(
+  reference: ReferenceTranscoder,
+  bytes: Uint8Array,
+  target: number,
+): Promise<Uint8Array | null> {
   try {
-    return reference.transcodeBytes(bytes, 0, target);
+    return await reference.transcodeBytes(bytes, 0, target);
   } catch {
     return null;
   }
@@ -177,6 +181,7 @@ let onlyOurs = 0;
 let onlyTheirs = 0;
 let poisoned = 0;
 let empty = 0;
+let refusedSeeds = 0;
 
 for (const name of seeds) {
   const original = new Uint8Array(await readFile(resolve(SEEDS, name)));
@@ -184,9 +189,18 @@ for (const name of seeds) {
   const next = randomBits(0x2545f491 ^ (name.length * 2654435761));
 
   // What the pristine seed transcodes to, from a fresh instance. It is read
-  // back after every mutant: see `poisoned` below.
+  // back after every mutant: see `poisoned` below. A seed the pristine
+  // reference refuses outright cannot have a canary and is skipped whole —
+  // its mutants would be measured against an oracle that starts blind.
   reference = await loadReference();
-  let canary = reference!.transcodeBytes(original, 0, TARGET.RGBA32);
+  let canary: Uint8Array;
+  try {
+    canary = await reference!.transcodeBytes(original, 0, TARGET.RGBA32);
+  } catch {
+    refusedSeeds++;
+    reference = await loadReference();
+    continue;
+  }
   const keyValues = keyValueRange(original);
 
   for (let round = 0; round < ROUNDS; round++) {
@@ -199,7 +213,7 @@ for (const name of seeds) {
     const pending: [string, Uint8Array, Uint8Array][] = [];
 
     for (const target of TARGETS) {
-      const want = theirs(reference!, bytes, target.reference);
+      const want = await theirs(reference!, bytes, target.reference);
       const got = mine?.get(target.name) ?? null;
       anyOfMine ||= got !== null;
       anyOfTheirs ||= want !== null;
@@ -220,11 +234,11 @@ for (const name of seeds) {
     // the pristine seed is transcoded again, and if it no longer produces what
     // it did from a fresh instance, this mutant's comparisons are discarded
     // rather than believed, and the instance is replaced.
-    const again = theirs(reference!, original, TARGET.RGBA32);
+    const again = await theirs(reference!, original, TARGET.RGBA32);
     if (again === null || firstDifference(canary, again) !== null) {
       poisoned++;
       reference = await loadReference();
-      canary = reference!.transcodeBytes(original, 0, TARGET.RGBA32);
+      canary = await reference!.transcodeBytes(original, 0, TARGET.RGBA32);
       continue;
     }
 
@@ -264,5 +278,7 @@ assert.ok(
 console.log(
   `ktx2-differential: ${mutants} mutants, ${compared} images byte-identical to the reference; `
   + `both read ${agreed}, only this reader ${onlyOurs}, only the reference ${onlyTheirs}, `
-  + `${poisoned} discarded for a degraded oracle, ${empty} for an empty one`,
+  + `${poisoned} discarded for a degraded oracle, ${empty} for an empty one, `
+  + `${refusedSeeds} seed(s) skipped whole — the vendored reference refuses them at any revision it pins`,
 );
+closeReference();

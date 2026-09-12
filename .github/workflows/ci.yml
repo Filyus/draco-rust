@@ -394,11 +394,13 @@ jobs:
           npm run test:scene-document-fbx
         working-directory: web
 
-      # The transcoder is compared against Binomial's own build of the Basis
-      # transcoder, which lives outside this repository. Without it the gate
-      # skips and says so, so what this step proves on a runner is that the
-      # module still builds and still reports its size. What proves the
-      # bytes on a runner is the `basis-crosscheck` job below.
+      # The gates compare against the reference Basis transcoder built in
+      # tree (K17): the binary these tests spawn, so they run byte-exact
+      # checks here rather than skipping as they did when the reference lived
+      # outside this repository.
+      - name: Build the reference oracle
+        run: cargo build --release --manifest-path tools/basis-cpp-oracle/Cargo.toml --bins
+
       - name: Build and smoke the KTX2 transcoder
         run: |
           cargo run --manifest-path build-tool/Cargo.toml -- --module ktx2-wasm --force

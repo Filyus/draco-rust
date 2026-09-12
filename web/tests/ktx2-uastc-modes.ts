@@ -23,7 +23,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
 
-import { FIXTURES, TARGET, firstDifference, loadKtx2Module, loadReference } from './ktx2-reference.ts';
+import { closeReference, FIXTURES, TARGET, firstDifference, loadKtx2Module, loadReference } from './ktx2-reference.ts';
 
 /** Which mode each of the 128 leading bit patterns selects. */
 const HUFF_MODES = [
@@ -197,7 +197,7 @@ for (const mode of MODES) {
 
   for (let level = 0; level < file.levels; level++) {
     for (const target of TARGETS) {
-      const want = reference.transcodeBytes(bytes, level, target.reference, `mode ${mode}`);
+      const want = await reference.transcodeBytes(bytes, level, target.reference, `mode ${mode}`);
       const image = file.decode(level, target.name);
       const got = image.bytes();
       if (target.bytesPerBlock) {
@@ -219,3 +219,4 @@ console.log(
   `ktx2-uastc-modes: modes ${MODES.join(',')} exercised over ${blocks} built blocks, `
   + `${compared} images match the reference transcoder byte for byte`,
 );
+closeReference();

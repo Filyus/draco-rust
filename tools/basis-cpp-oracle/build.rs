@@ -17,6 +17,12 @@ fn main() {
     build
         .cpp(true)
         .std("c++17")
+        // NDEBUG, because that is what the shipped builds are: the reference's
+        // asserts document encoder invariants, and a hostile file can break
+        // one — the differential gate builds such blocks on purpose — where a
+        // shipped transcoder degrades and this one must too, rather than
+        // aborting the process the gates are talking to.
+        .define("NDEBUG", "1")
         .file("csrc/oracle.cpp")
         .file("csrc/basisu_transcoder.cpp")
         .include("csrc")

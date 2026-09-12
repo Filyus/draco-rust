@@ -18,6 +18,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 import {
+  closeReference,
   compareAllLevels,
   FIXTURES,
   loadKtx2Module,
@@ -63,6 +64,7 @@ assert.deepEqual(
 );
 
 console.log(`ktx2-uastc: ${compared} mip levels match the reference transcoder byte for byte`);
+closeReference();
 console.log(
   `ktx2-uastc: modes ${covered.join(',')} exercised by fixtures; `
   + `${missing.join(',')} only by the blocks ktx2-uastc-modes builds`,

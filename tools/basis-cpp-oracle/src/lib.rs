@@ -54,10 +54,6 @@ fn word(data: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(data[at..at + 4].try_into().unwrap())
 }
 
-fn long(data: &[u8], at: usize) -> u64 {
-    u64::from_le_bytes(data[at..at + 8].try_into().unwrap())
-}
-
 /// How many levels a KTX2 file states.
 pub fn level_count(data: &[u8]) -> u32 {
     word(data, 40).max(1)
@@ -70,30 +66,47 @@ pub fn level_count(data: &[u8]) -> u32 {
 /// undone here instead, with this crate's own `ruzstd` rather than the one
 /// inside the crate under test — an oracle that prepares its input with the
 /// implementation it judges is not independent of it.
-pub fn without_zstd(original: &[u8]) -> Vec<u8> {
-    if word(original, 44) != 2 {
-        return original.to_vec();
+///
+/// `None` for a file whose supercompression cannot be undone: a mutated
+/// header can claim anything, and the vendored build refuses a Zstd file
+/// without this having to guess at what it would have decoded to.
+pub fn without_zstd(original: &[u8]) -> Option<Vec<u8>> {
+    // Safe header reads throughout: this runs on mutated files, where any
+    // field can claim anything. A file whose supercompression cannot be
+    // undone here is one the vendored build — compiled without Zstd — would
+    // refuse at init, so the caller sees `None` and answers the same refusal.
+    let word = |at: usize| -> Option<u32> {
+        original.get(at..at + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+    };
+    let long = |at: usize| -> Option<u64> {
+        original.get(at..at + 8).map(|b| u64::from_le_bytes(b.try_into().unwrap()))
+    };
+    if word(44)? != 2 {
+        return Some(original.to_vec());
     }
 
     let levels = level_count(original) as usize;
-    let payloads: Vec<Vec<u8>> = (0..levels)
-        .map(|level| {
-            let at = HEADER + level * ENTRY;
-            let offset = long(original, at) as usize;
-            let length = long(original, at + 8) as usize;
-            let mut out = Vec::with_capacity(long(original, at + 16) as usize);
-            ruzstd::FrameDecoder::new()
-                .decode_all_to_vec(&original[offset..offset + length], &mut out)
-                .expect("a fixture's own Zstd frame");
-            out
-        })
-        .collect();
+    let mut payloads = Vec::new();
+    for level in 0..levels {
+        let at = HEADER + level * ENTRY;
+        let offset = long(at)? as usize;
+        let length = long(at + 8)? as usize;
+        let end = offset.checked_add(length)?;
+        let mut out = Vec::with_capacity(long(at + 16).unwrap_or(0) as usize);
+        ruzstd::FrameDecoder::new()
+            .decode_all_to_vec(original.get(offset..end)?, &mut out)
+            .ok()?;
+        payloads.push(out);
+    }
 
-    let dfd = word(original, 48) as usize;
-    let dfd_length = word(original, 52) as usize;
-    let kvd = word(original, 56) as usize;
-    let kvd_length = word(original, 60) as usize;
+    let dfd = word(48)? as usize;
+    let dfd_length = word(52)? as usize;
+    let kvd = word(56)? as usize;
+    let kvd_length = word(60)? as usize;
 
+    if original.len() < HEADER || original.get(dfd..dfd + dfd_length).is_none() {
+        return None;
+    }
     let mut bytes = original[..HEADER].to_vec();
     bytes.resize(HEADER + levels * ENTRY, 0);
     let new_dfd = bytes.len();
@@ -102,13 +115,13 @@ pub fn without_zstd(original: &[u8]) -> Vec<u8> {
         0
     } else {
         let at = bytes.len();
-        bytes.extend_from_slice(&original[kvd..kvd + kvd_length]);
+        bytes.extend_from_slice(original.get(kvd..kvd + kvd_length)?);
         at
     };
 
     let mut placed = Vec::with_capacity(levels);
     for payload in &payloads {
-        while bytes.len() % 16 != 0 {
+        while !bytes.len().is_multiple_of(16) {
             bytes.push(0);
         }
         placed.push(bytes.len());
@@ -129,7 +142,7 @@ pub fn without_zstd(original: &[u8]) -> Vec<u8> {
         // must agree - the reference asserts on it.
         bytes[at + 16..at + 24].copy_from_slice(&(payload.len() as u64).to_le_bytes());
     }
-    bytes
+    Some(bytes)
 }
 
 /// Whether the file holds ETC1S rather than UASTC, read from its descriptor.

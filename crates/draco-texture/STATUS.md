@@ -122,22 +122,25 @@ descriptor length that change might have moved. It did not — v2.50.0 still
 writes 60 bytes — and both files transcode byte-identically across every
 target. See `testdata/ktx2/README.md`.
 
-**The node gates still run on one machine**, and nothing depends on that any
-more. Byte-exactness is carried by `ktx2_goldens.rs` in the ordinary test suite,
-against hashes of what the reference produced; `tools/basis-cpp-oracle` is what
-keeps those hashes honest, by vendoring the reference at the revision this was
-ported from and re-deriving them. What the node gates add on top is the
-browser-side ranking and upload, which needs a browser anyway.
+**The node gates run everywhere now.** K17, the C++ oracle built in tree, is
+what they compare against: `tools/basis-cpp-oracle` builds the vendored
+reference into a `basis-oracle` binary the gates spawn, so byte-exact checking
+no longer needs a three.js checkout on the machine. Byte-exactness is also
+carried by `ktx2_goldens.rs` in the ordinary test suite, against hashes of what
+the reference produced, which the same vendored source keeps honest. What the
+node gates add on top of the goldens is the browser-side ranking and upload,
+which needs a browser anyway.
 
 One oracle, not three. `tools/basisu-probe` remains as a record of what was
 measured rather than as a check that runs: a third implementation cannot catch
-a disagreement with the reference that the reference itself does not. They compare against Binomial's prebuilt
-WASM at a path inside a three.js checkout, so on a runner they print SKIPPED and
-exit 0 — which was always the stated intent of that step, but left CI proving
-only that the module builds and fits its budget. What proves the bytes on a
-runner is the `basis-crosscheck` job: 215 images against the `basisu` crate,
-which comes from crates.io and needs nothing external. The proper fix is K17, a
-C++ oracle built in tree, after which the node gates run everywhere too.
+a disagreement with the reference that the reference itself does not. The
+`basis-crosscheck` job — 215 images against the `basisu` crate from crates.io —
+stays as an independent cross-check against a port of a *later* revision; where
+the two disagree, the vendored one is the authority, because it is the revision
+this port was made from. One seed (`etc1s_endpoint_pred_repeat`) the vendored
+revision refuses outright; the differential gate skips it and says so in its
+tally, and moving to a later revision — which would bring that seed back — is
+a deliberate act with the goldens re-derived after it.
 
 **The ETC and ASTC uploads are unexercised.** Their transcoding is checked byte
 for byte in Node, but no desktop offers either extension, so the

@@ -9,11 +9,21 @@ cargo test --manifest-path tools/basis-cpp-oracle/Cargo.toml
 
 247 images: five fixtures, every level, seven targets, byte for byte.
 
-## Why it exists
+## The `basis-oracle` binary, and what it is for
 
-The node gates in `web/tests` compare against Binomial's prebuilt WASM at a
-path inside a three.js checkout. Three things follow from that, and this undoes
-all three.
+The same vendored source builds a second artifact, `basis-oracle`, which is
+what the KTX2 gates in `web/tests` compare against. It serves questions over
+stdio — one line in, one framed answer out — and answers one-shot from a shell
+as well:
+
+```sh
+cargo build --release --manifest-path tools/basis-cpp-oracle/Cargo.toml --bins
+./target/release/basis-oracle transcode some.ktx2 0 13 > rgba.raw
+```
+
+This is K17, the fix for the gates' former arrangement: comparing against
+Binomial's prebuilt WASM at a path inside a three.js checkout. Three things
+followed from that, and this undoes all three.
 
 **They skip on any machine without it**, which is every CI runner: the gate
 prints `SKIPPED` and exits 0. Until this crate, nothing byte-exact was verified

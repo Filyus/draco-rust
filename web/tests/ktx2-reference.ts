@@ -1,37 +1,39 @@
 /**
  * The reference Basis transcoder, as ground truth for our own.
  *
- * Binomial's own build, the one three.js ships and every KTX2 texture on the
- * web is decoded by. Our transcoder is a Rust port of the same algorithm from
- * the same source, so "byte for byte" is the only useful standard: a
- * transcoder that is merely close produces a texture that looks right and is
- * wrong, and nothing downstream would ever notice.
+ * K17: the reference lives in this repository — `tools/basis-cpp-oracle`
+ * vendors Binomial's C++ at the revision the Rust port was taken from — and
+ * reaches these gates as the `basis-oracle` binary it builds. Before this the
+ * gates compared against a prebuilt WASM inside a three.js checkout, so on any
+ * machine without that checkout they printed SKIPPED and the byte-exactness
+ * claim rested on wherever the maintainer's machine was.
  *
- * The same arrangement as the C++ Draco bridge — an independent implementation
- * to compare against, not a dependency. It lives outside this repository, so a
- * machine without it skips the gate rather than failing it, and says so.
+ * Our transcoder is a Rust port of the same algorithm from the same source, so
+ * "byte for byte" is the only useful standard: a transcoder that is merely
+ * close produces a texture that looks right and is wrong, and nothing
+ * downstream would ever notice.
+ *
+ * The binary is spawned once per `loadReference` in a request/answer session:
+ * one question in, one framed answer out, until the gate exits. A fresh
+ * session per load is deliberate — the differential gate replaces its
+ * reference when it stops trusting it, and while this oracle is stateless per
+ * request, the gates' semantics should not lean on that.
  */
 import assert from 'node:assert/strict';
+import { execFile, spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 
 const here = dirname(fileURLToPath(import.meta.url));
+const repo = resolve(here, '..', '..');
+const oracle = resolve(repo, 'tools', 'basis-cpp-oracle');
+const binary = resolve(oracle, 'target', 'release',
+  `basis-oracle${process.platform === 'win32' ? '.exe' : ''}`);
 
-// See fbx-test-utils.ts for why this reads web/.env: the checkout location of
-// an external oracle is local by nature, and does not belong in source.
-try {
-  process.loadEnvFile(resolve(here, '..', '.env'));
-} catch {
-  // No web/.env: loadReference() below reports this gate as unavailable.
-}
-
-/** Where the three.js checkout keeps Binomial's build. */
-const REFERENCE_DIR = process.env.THREEJS_BASIS_DIR
-  || resolve(here, '..', '..', 'testdata', 'external', 'three-basis');
-
-export const FIXTURES = resolve(here, '..', '..', 'testdata', 'ktx2');
+export const FIXTURES = resolve(repo, 'testdata', 'ktx2');
 export const PKG = resolve(here, '..', 'www', 'pkg');
 
 /** The transcoder's own name for each output format. */
@@ -40,76 +42,178 @@ export const TARGET = {
   ETC2_RGBA: 1,
   BC1_RGB: 2,
   BC3_RGBA: 3,
+  BC4_R: 4,
+  BC5_RG: 5,
   BC7_RGBA: 6,
   ASTC_4x4_RGBA: 10,
   RGBA32: 13,
+  ETC2_EAC_R11: 20,
+  ETC2_EAC_RG11: 21,
 };
+
+/** A request the oracle refuses is a status byte, not a throw. */
+const ANSWERED = 1;
 
 export interface ReferenceTranscoder {
   transcode(name: string, level: number, target: number): Promise<Uint8Array>;
-  /** The same, for a file that was built rather than read. */
-  transcodeBytes(bytes: Uint8Array, level: number, target: number, name?: string): Uint8Array;
+  /** The same, for bytes that were built rather than read from a file. */
+  transcodeBytes(bytes: Uint8Array, level: number, target: number, name?: string): Promise<Uint8Array>;
   levels(name: string): Promise<number>;
 }
+
+/**
+ * Build the oracle if it is not built, and say so.
+ *
+ * The gates need cargo — which is the same toolchain everything else here
+ * needs — and the first build compiles about 1.5 MB of C++, which is why CI
+ * builds it in its own step and this only runs when a machine skipped that.
+ */
+let built = false;
+async function ensureBinary(): Promise<boolean> {
+  if (existsSync(binary)) return true;
+  if (built) return false;
+  built = true;
+  console.log(`building the reference oracle: cargo build --release (in tools/basis-cpp-oracle)`);
+  try {
+    await promisify(execFile)('cargo', ['build', '--release'], {
+      cwd: oracle,
+      // The build is quiet until it is not; a failure's first line is enough.
+      maxBuffer: 1 << 24,
+    });
+  } catch (error) {
+    console.log(`the oracle build failed: ${(error as Error).message.split('\n')[0]}`);
+    return false;
+  }
+  return existsSync(binary);
+}
+
+/** One framed answer: status byte, u32 little-endian length, payload. */
+interface Answer {
+  answered: boolean;
+  payload: Buffer;
+}
+
+/** One request session: a question in, one framed answer out, until closed. */
+class Session {
+  private readonly child;
+  private tail: Promise<unknown> = Promise.resolve();
+
+  constructor() {
+    this.child = spawn(binary, [], { stdio: ['pipe', 'pipe', 'inherit'] });
+  }
+
+  /**
+   * Ask one question and read its answer.
+   *
+   * Requests are serialized on a promise chain: the protocol has no
+   * multiplexing, and nothing in the gates needs one. The frame boundary is
+   * declared by the answer itself, so the reader takes exactly one answer per
+   * question and the stream stays aligned whatever the payload holds.
+   */
+  ask(line: string, bytes?: Uint8Array): Promise<Answer> {
+    const run = this.tail.then(() => this.exchange(line, bytes));
+    this.tail = run.catch(() => {});
+    return run;
+  }
+
+  private exchange(line: string, bytes?: Uint8Array): Promise<Answer> {
+    return new Promise((done, fail) => {
+      const { stdout, stdin } = this.child;
+      let buffer = Buffer.alloc(0);
+      const cleanup = () => {
+        stdout.off('data', onData);
+        stdout.off('error', onFail);
+        this.child.off('error', onFail);
+      };
+      const onData = (chunk: Buffer) => {
+        buffer = Buffer.concat([buffer, chunk]);
+        // The header is one status byte and a u32 length; the answer is
+        // complete only once the payload has arrived in full.
+        if (buffer.length < 5) return;
+        const length = buffer.readUInt32LE(1);
+        if (buffer.length < 5 + length) return;
+        cleanup();
+        done({ answered: buffer[0] === ANSWERED, payload: buffer.subarray(5, 5 + length) });
+      };
+      const onFail = (error: Error) => {
+        cleanup();
+        fail(error);
+      };
+      stdout.on('data', onData);
+      stdout.on('error', onFail);
+      this.child.on('error', onFail);
+      // Header first, then the payload the header announced — the oracle
+      // reads its request bytes before it writes anything back.
+      stdin.write(line + '\n');
+      if (bytes) stdin.write(bytes);
+    });
+  }
+
+  close() {
+    this.child.stdin.end();
+    this.child.kill();
+  }
+}
+
+// The last session created, so a re-load replaces rather than accumulates:
+// the differential gate reloads its reference whenever it stops trusting it,
+// and an orphaned session would outlive its usefulness to the gate's exit.
+let current: Session | null = null;
 
 /**
  * Load the reference transcoder, or explain why the gate cannot run.
  */
 export async function loadReference(): Promise<ReferenceTranscoder | null> {
-  let wasmBinary: Buffer;
-  try {
-    wasmBinary = await readFile(resolve(REFERENCE_DIR, 'basis_transcoder.wasm'));
-  } catch {
-    return null;
-  }
-  // Evaluated by hand rather than required. The transcoder is a CommonJS
-  // file, but it sits inside a checkout whose package.json declares modules,
-  // so node loads it as ESM and hands back an empty namespace.
-  const source = await readFile(resolve(REFERENCE_DIR, 'basis_transcoder.js'), 'utf8');
-  const scope = { exports: {} as any };
-  new Function('module', 'exports', 'require', '__filename', '__dirname', source)(
-    scope,
-    scope.exports,
-    createRequire(import.meta.url),
-    resolve(REFERENCE_DIR, 'basis_transcoder.js'),
-    REFERENCE_DIR,
-  );
-  const factory = scope.exports;
-  const basis: any = await new Promise((done) => { factory({ wasmBinary }).then(done); });
-  basis.initializeBasis();
+  if (!await ensureBinary()) return null;
+  current?.close();
+  const session = new Session();
+  current = session;
+
+  const transcodeBytes = async (
+    bytes: Uint8Array,
+    level: number,
+    target: number,
+    name = 'the given bytes',
+  ): Promise<Uint8Array> => {
+    const answer = await session.ask(
+      `T ${level} ${target} ${bytes.length}`,
+      bytes,
+    );
+    if (!answer.answered) {
+      throw new Error(`the reference transcoder refuses ${name}`);
+    }
+    return new Uint8Array(answer.payload);
+  };
 
   return {
-    async transcode(this: ReferenceTranscoder, name, level, target) {
-      const bytes = new Uint8Array(await readFile(resolve(FIXTURES, `${name}.ktx2`)));
-      return this.transcodeBytes(bytes, level, target, `${name}.ktx2`);
+    async transcode(name, level, target) {
+      return transcodeBytes(
+        new Uint8Array(await readFile(resolve(FIXTURES, `${name}.ktx2`))),
+        level,
+        target,
+        `${name}.ktx2`,
+      );
     },
-    transcodeBytes(bytes, level, target, name = 'the given bytes') {
-      const file = new basis.KTX2File(bytes);
-      try {
-        if (!file.isValid()) throw new Error(`the reference transcoder rejects ${name}`);
-        file.startTranscoding();
-        const size = file.getImageTranscodedSizeInBytes(level, 0, 0, target);
-        const out = new Uint8Array(size);
-        if (!file.transcodeImage(out, level, 0, 0, target, 0, -1, -1)) {
-          throw new Error(`the reference transcoder failed on ${name} level ${level}`);
-        }
-        return out;
-      } finally {
-        file.close();
-        file.delete();
-      }
-    },
+    transcodeBytes,
     async levels(name) {
-      const bytes = new Uint8Array(await readFile(resolve(FIXTURES, `${name}.ktx2`)));
-      const file = new basis.KTX2File(bytes);
-      try {
-        return file.getLevels();
-      } finally {
-        file.close();
-        file.delete();
-      }
+      const answer = await session.ask(`L ${resolve(FIXTURES, `${name}.ktx2`)}`);
+      if (!answer.answered) throw new Error(`the reference transcoder refuses ${name}`);
+      return answer.payload.readUInt32LE(0);
     },
   };
+}
+
+/**
+ * End the current session.
+ *
+ * A spawned child with open pipes keeps its parent's event loop alive, so a
+ * gate that finished its work would hang on the way out without this. Every
+ * gate calls it as its last step; a gate that dies mid-run takes the child
+ * down with it, which is the behaviour it would have had without a session.
+ */
+export function closeReference() {
+  current?.close();
+  current = null;
 }
 
 /** Load our own transcoder out of the built WASM package. */

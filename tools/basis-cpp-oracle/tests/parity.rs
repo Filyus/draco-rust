@@ -74,7 +74,7 @@ fn agrees_with_the_reference_on_every_fixture_and_target() {
 
         // BasisLZ keeps its own compression inside the level and needs no
         // help; Zstd is undone because the oracle has no decompressor.
-        let for_oracle = without_zstd(&original);
+        let for_oracle = without_zstd(&original).expect("a committed fixture decodes");
 
         for level in 0..file.level_count() {
             for (mine, reference) in TARGETS {

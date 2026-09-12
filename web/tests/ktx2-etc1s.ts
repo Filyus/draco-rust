@@ -12,7 +12,7 @@
  * cases live. A 2×2 image is one block with twelve pixels hanging off its
  * edges, and the last three levels of a 1024² texture are four bytes each.
  */
-import { compareAllLevels, loadKtx2Module, loadReference } from './ktx2-reference.ts';
+import { closeReference, compareAllLevels, loadKtx2Module, loadReference } from './ktx2-reference.ts';
 
 /** ETC1S fixtures, with and without an alpha slice. */
 const FILES = ['facecap', '2d_etc1s', 'sample_etc1s'];
@@ -27,3 +27,4 @@ const ktx2 = await loadKtx2Module();
 const compared = await compareAllLevels(ktx2, reference, FILES, 'etc1s');
 
 console.log(`ktx2-etc1s: ${compared} mip levels match the reference transcoder byte for byte`);
+closeReference();
