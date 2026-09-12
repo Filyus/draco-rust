@@ -107,12 +107,11 @@ source. A port would be to a moving target.
 **BC5 / EAC RG11 and BC4 / EAC R11** were the one remaining group where the
 format is frozen, the hardware is current, and the gain is measurable, and
 they have since been built: BC4 and BC5 for ETC1S, all four for UASTC, gated
-byte for byte against the reference like the rest. What is *not* wired yet is
-the web converter's format choice — `compressed-formats.ts` ranks textures by
-extension list, codec and alpha, and it cannot see that a texture is a normal
-map. Reaching BC5 and EAC RG11 in practice needs the material usage
-(`normalTexture`) folded into that ranking, which is viewer work rather than
-transcoder work.
+byte for byte against the reference like the rest. The web converter's format
+choice now reaches them too: a texture every material samples through
+`normalTexture` is ranked as a normal map and takes BC5 or EAC RG11, with the
+color ranking as the fallback for anything the two-channel formats cannot
+answer.
 
 ## Known limits
 

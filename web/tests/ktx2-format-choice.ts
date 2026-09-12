@@ -18,6 +18,7 @@ import type {
   chooseCompressedTarget as ChooseCompressedTarget,
   CompressedTarget,
   TextureCodec,
+  TextureUsage,
 } from '../src/viewer/compressed-formats.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -68,6 +69,54 @@ for (const [extensions, codec, hasAlpha, expected, why] of CASES) {
   assert.equal(name(chosen), expected, `${codec}${hasAlpha ? ' with alpha' : ''} on [${extensions}]: ${why}`);
 }
 
+// Normal maps, which is the one slot where a two-channel format beats every
+// three-channel one: a tangent-space normal stores X and Y and the shader
+// reconstructs Z, so BC5 keeps both at eight bits where BC1 spends its three
+// channels on two at five.
+type NormalCase = [extensions: string[], codec: TextureCodec, expected: string, why: string];
+
+const NORMAL_CASES: NormalCase[] = [
+  [S3TC, 'etc1s', 'bc5', 'the desktop answer: eight bits a channel instead of five'],
+  [S3TC, 'uastc', 'bc5', 'UASTC reaches BC5 too, and the same reasoning wins'],
+  [MOBILE, 'etc1s', 'eac_rg11', 'the phone answer, on the other hardware family'],
+  [MOBILE, 'uastc', 'eac_rg11', 'and it reaches UASTC as well'],
+  [BPTC, 'etc1s', 'pixels', 'bptc offers no two-channel format, and nothing color either'],
+];
+
+for (const [extensions, codec, expected, why] of NORMAL_CASES) {
+  const chosen = chooseCompressedTarget(extensions, codec, true, 'normal' as TextureUsage);
+  assert.equal(name(chosen), expected, `normal ${codec} on [${extensions}]: ${why}`);
+}
+
+// A normal map without alpha has nowhere to put the normal's Y, so the
+// two-channel formats cannot answer and the ranking falls back to color.
+assert.equal(
+  name(chooseCompressedTarget(S3TC, 'etc1s', false, 'normal' as TextureUsage)),
+  'bc1',
+  'an alpha-less normal map falls back to the color ranking',
+);
+
+// The same fallback on a machine with neither two-channel format: a normal
+// map still renders, through whatever color format the machine takes.
+assert.equal(
+  name(chooseCompressedTarget(ASTC, 'etc1s', true, 'normal' as TextureUsage)),
+  'astc',
+  'an unanswered normal map falls back to color rather than to pixels',
+);
+assert.equal(
+  name(chooseCompressedTarget(BPTC, 'etc1s', true, 'normal' as TextureUsage)),
+  'pixels',
+  'and where the color ranking has no answer either, pixels',
+);
+
+// And a texture used as color only never widens into a two-channel format:
+// one image, one uploaded format, and BC3 for a color texture with alpha.
+assert.equal(
+  name(chooseCompressedTarget(S3TC, 'etc1s', true, 'color' as TextureUsage)),
+  'bc3',
+  'color usage stays in the color ranking',
+);
+
 // The block size has to match the format, because the upload is sized by it.
 assert.equal(chooseCompressedTarget(S3TC, 'etc1s', false)?.bytesPerBlock, 8);
 assert.equal(chooseCompressedTarget(S3TC, 'etc1s', true)?.bytesPerBlock, 16);
@@ -75,4 +124,4 @@ assert.equal(chooseCompressedTarget(BPTC, 'uastc', false)?.bytesPerBlock, 16);
 assert.equal(chooseCompressedTarget(MOBILE, 'etc1s', false)?.bytesPerBlock, 8);
 assert.equal(chooseCompressedTarget(MOBILE, 'uastc', false)?.bytesPerBlock, 16);
 
-console.log(`ktx2-format-choice: ${CASES.length} cases OK`);
+console.log(`ktx2-format-choice: ${CASES.length} color and ${NORMAL_CASES.length + 2} normal cases OK`);

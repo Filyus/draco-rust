@@ -29,10 +29,18 @@ export const COMPRESSED_FORMAT = {
   bc1: 0x83f0,
   /** `COMPRESSED_RGBA_S3TC_DXT5_EXT` */
   bc3: 0x83f3,
+  /** `COMPRESSED_RED_RGTC1`, WebGL2 core */
+  bc4: 0x8dbb,
+  /** `COMPRESSED_RG_RGTC2`, WebGL2 core */
+  bc5: 0x8dbc,
   /** `COMPRESSED_RGBA_BPTC_UNORM_EXT` */
   bc7: 0x8e8c,
   /** `COMPRESSED_RGB8_ETC2` */
   etc1: 0x9274,
+  /** `COMPRESSED_R11_EAC` */
+  eacR11: 0x9270,
+  /** `COMPRESSED_RG11_EAC` */
+  eacRg11: 0x9271,
   /** `COMPRESSED_RGBA8_ETC2_EAC` */
   etc2: 0x9278,
   /** `COMPRESSED_RGBA_ASTC_4x4_KHR` */
@@ -42,18 +50,66 @@ export const COMPRESSED_FORMAT = {
 /** A source codec, as the KTX2 module names it. */
 export type TextureCodec = 'etc1s' | 'uastc';
 
+/**
+ * What slot a texture is sampled through.
+ *
+ * `'normal'` is the one slot where a two-channel format beats every
+ * three-channel one: a tangent-space normal stores X and Y and the shader
+ * reconstructs Z, so BC5 keeps both at eight bits a channel where BC1 spends
+ * its three on two. Every other slot — base color, emissive, the extension
+ * textures — is `'color'`.
+ */
+export type TextureUsage = 'color' | 'normal';
+
 /** What to ask the transcoder for, and how to upload the result. */
 export interface CompressedTarget {
   /** The transcoder's name for the target. */
-  name: 'bc1' | 'bc3' | 'bc7' | 'etc1' | 'etc2' | 'astc';
+  name: 'bc1' | 'bc3' | 'bc4' | 'bc5' | 'bc7' | 'etc1' | 'etc2' | 'eac_r11' | 'eac_rg11' | 'astc';
   /** The GL internal format to pass to `compressedTexImage2D`. */
   format: number;
   /** Bytes each 4×4 block occupies. */
   bytesPerBlock: number;
 }
 
-/** Every target, in the order they would be preferred. */
-const TARGETS: { target: CompressedTarget; extension: string; codecs: TextureCodec[]; alpha: boolean }[] = [
+/** Every target, in the order they would be preferred for its usage. */
+interface Candidate {
+  target: CompressedTarget;
+  extension: string;
+  codecs: TextureCodec[];
+  alpha: boolean;
+  usage: TextureUsage;
+  /**
+   * The candidate is meaningless without alpha, so a texture that has none
+   * never takes it even though nothing forbids it: BC5's second channel is
+   * the alpha the encoder put the normal's Y in.
+   */
+  requiresAlpha?: boolean;
+}
+
+const TARGETS: Candidate[] = [
+  {
+    // A normal map through BC1 falls apart: five bits a channel is exactly
+    // where the eye is most sensitive on lighting. BC5 keeps two channels at
+    // eight bits, and its green half reads the alpha the encoder put the
+    // normal's Y in - hence the alpha requirement. Keyed to s3tc because the
+    // machine that accelerates S3TC is the one that accelerates RGTC; the
+    // formats themselves are WebGL2 core.
+    target: { name: 'bc5', format: COMPRESSED_FORMAT.bc5, bytesPerBlock: 16 },
+    extension: 'WEBGL_compressed_texture_s3tc',
+    codecs: ['etc1s', 'uastc'],
+    alpha: true,
+    requiresAlpha: true,
+    usage: 'normal',
+  },
+  {
+    // The phone's BC5, and the same reasoning on the other hardware family.
+    target: { name: 'eac_rg11', format: COMPRESSED_FORMAT.eacRg11, bytesPerBlock: 16 },
+    extension: 'WEBGL_compressed_texture_etc',
+    codecs: ['etc1s', 'uastc'],
+    alpha: true,
+    requiresAlpha: true,
+    usage: 'normal',
+  },
   {
     // First for a texture without alpha: half the video memory of BC3, and
     // nothing is given up when there is no alpha to carry.
@@ -61,12 +117,14 @@ const TARGETS: { target: CompressedTarget; extension: string; codecs: TextureCod
     extension: 'WEBGL_compressed_texture_s3tc',
     codecs: ['etc1s'],
     alpha: false,
+    usage: 'color',
   },
   {
     target: { name: 'bc3', format: COMPRESSED_FORMAT.bc3, bytesPerBlock: 16 },
     extension: 'WEBGL_compressed_texture_s3tc',
     codecs: ['etc1s'],
     alpha: true,
+    usage: 'color',
   },
   {
     // UASTC goes to BC7 and nowhere else among the BC family. The two formats
@@ -77,6 +135,7 @@ const TARGETS: { target: CompressedTarget; extension: string; codecs: TextureCod
     extension: 'EXT_texture_compression_bptc',
     codecs: ['uastc'],
     alpha: true,
+    usage: 'color',
   },
   {
     // Ahead of ETC because ASTC is the format UASTC is a restricted profile
@@ -86,6 +145,7 @@ const TARGETS: { target: CompressedTarget; extension: string; codecs: TextureCod
     extension: 'WEBGL_compressed_texture_astc',
     codecs: ['uastc'],
     alpha: true,
+    usage: 'color',
   },
   {
     // ETC comes after BC only because the two never appear together in
@@ -95,12 +155,14 @@ const TARGETS: { target: CompressedTarget; extension: string; codecs: TextureCod
     extension: 'WEBGL_compressed_texture_etc',
     codecs: ['etc1s', 'uastc'],
     alpha: false,
+    usage: 'color',
   },
   {
     target: { name: 'etc2', format: COMPRESSED_FORMAT.etc2, bytesPerBlock: 16 },
     extension: 'WEBGL_compressed_texture_etc',
     codecs: ['etc1s', 'uastc'],
     alpha: true,
+    usage: 'color',
   },
   {
     // ASTC again, and last, because for ETC1S it is the opposite of what it is
@@ -111,6 +173,7 @@ const TARGETS: { target: CompressedTarget; extension: string; codecs: TextureCod
     extension: 'WEBGL_compressed_texture_astc',
     codecs: ['etc1s'],
     alpha: true,
+    usage: 'color',
   },
 ];
 
@@ -124,13 +187,23 @@ export function chooseCompressedTarget(
   extensions: readonly string[],
   codec: TextureCodec,
   hasAlpha: boolean,
+  usage: TextureUsage = 'color',
 ): CompressedTarget | null {
   const available = new Set(extensions);
-  for (const candidate of TARGETS) {
-    if (!candidate.codecs.includes(codec)) continue;
-    if (hasAlpha && !candidate.alpha) continue;
-    if (!available.has(candidate.extension)) continue;
-    return candidate.target;
+  // The usage pass first, then color: a normal map the two-channel formats
+  // cannot answer - no alpha to carry the normal's Y, or an extension list
+  // with nothing that takes them - still renders, and the color formats
+  // remain the honest ranking for it. It must never widen the other way: a
+  // color texture has no business in a two-channel format.
+  for (const pass of [usage, 'color'] as const) {
+    for (const candidate of TARGETS) {
+      if (candidate.usage !== pass) continue;
+      if (!candidate.codecs.includes(codec)) continue;
+      if (hasAlpha && !candidate.alpha) continue;
+      if (candidate.requiresAlpha && !hasAlpha) continue;
+      if (!available.has(candidate.extension)) continue;
+      return candidate.target;
+    }
   }
   return null;
 }

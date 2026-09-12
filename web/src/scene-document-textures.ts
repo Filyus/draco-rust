@@ -13,7 +13,7 @@
  */
 
 import { mimeFromUri, sniffMime } from './scene-resources.ts';
-import type { CompressedTarget, TextureCodec } from './viewer/compressed-formats.ts';
+import type { CompressedTarget, TextureCodec, TextureUsage } from './viewer/compressed-formats.ts';
 import type { ViewerScene, ViewerTexture } from './viewer-scene.ts';
 
 /** How the caller reaches a KTX2 transcoder and decides what to ask it for. */
@@ -24,10 +24,11 @@ export interface Ktx2Support {
    * The block format to transcode into, or null to decode to pixels.
    *
    * Asked per texture rather than once, because the answer depends on the
-   * file: BC1 has no alpha, so a texture that carries alpha cannot use it
-   * even on a machine that offers it.
+   * file and on the slot: BC1 has no alpha, so a texture that carries alpha
+   * cannot use it even on a machine that offers it, and BC5 only beats BC1
+   * for a texture sampled as a normal map.
    */
-  target(codec: TextureCodec, hasAlpha: boolean): CompressedTarget | null;
+  target(codec: TextureCodec, hasAlpha: boolean, usage: TextureUsage): CompressedTarget | null;
 }
 
 /** The part of the KTX2 wasm module this file calls. */
@@ -81,9 +82,15 @@ export async function hydrateSceneTextures(
     else groups.set(key, [index]);
   });
 
+  const usages = normalOnlyTextureIndices(scene);
   await Promise.all([...groups.values()].map(async (indices) => {
     const first = scene.textures[indices[0]];
-    const warning = await decodeInto(first, indices[0], ktx2);
+    // One decoded image serves every texture reading it, so the whole group
+    // goes by the strictest usage among them: a resource shared by a normal
+    // map and a base color is color, because only one block format can be
+    // uploaded for it.
+    const usage: TextureUsage = indices.every((i) => usages.has(i)) ? 'normal' : 'color';
+    const warning = await decodeInto(first, indices[0], ktx2, usage);
     if (warning) scene.warnings.push(warning);
     for (const index of indices.slice(1)) {
       scene.textures[index].image = first.image;
@@ -91,6 +98,33 @@ export async function hydrateSceneTextures(
     }
   }));
   return scene;
+}
+
+/**
+ * Which texture indices are referenced only through `normalTexture`.
+ *
+ * Walked off the materials rather than recorded, because the document does
+ * not carry slot usage on the texture and a texture knows nothing about the
+ * materials that sample it. Any binding a material holds — the known slots
+ * and whatever an extension contributes — counts as color, so an unknown
+ * slot never widens what may be answered with a two-channel format.
+ */
+function normalOnlyTextureIndices(scene: ViewerScene): Set<number> {
+  const referenced = new Map<number, 'normal' | 'color'>();
+  for (const material of scene.materials) {
+    if (!material) continue;
+    for (const [property, value] of Object.entries(material)) {
+      const index = (value as { index?: unknown } | null)?.index;
+      if (typeof index !== 'number') continue;
+      const usage = property === 'normalTexture' ? 'normal' : 'color';
+      referenced.set(index, usage === 'normal' ? referenced.get(index) ?? 'normal' : 'color');
+    }
+  }
+  const normalOnly = new Set<number>();
+  for (const [index, usage] of referenced) {
+    if (usage === 'normal') normalOnly.add(index);
+  }
+  return normalOnly;
 }
 
 /**
@@ -128,12 +162,13 @@ async function decodeInto(
   texture: ViewerTexture,
   index: number,
   ktx2?: Ktx2Support,
+  usage: TextureUsage = 'color',
 ): Promise<string | null> {
   const bytes = texture.bytes!;
   const mime = texture.mimeType || sniffMime(bytes) || mimeFromUri(texture.name || '');
   if (mime === 'image/ktx2') {
     if (!ktx2) return 'KTX2 textures require a transcoder; skipping image';
-    return transcodeKtx2(texture, index, bytes, ktx2);
+    return transcodeKtx2(texture, index, bytes, ktx2, usage);
   }
   try {
     // BlobPart excludes SharedArrayBuffer-backed views; these never are.
@@ -160,6 +195,7 @@ async function transcodeKtx2(
   index: number,
   bytes: Uint8Array,
   ktx2: Ktx2Support,
+  usage: TextureUsage,
 ): Promise<string | null> {
   const name = texture.name || index;
   const module = await ktx2.load();
@@ -168,7 +204,7 @@ async function transcodeKtx2(
   let file: Ktx2File | null = null;
   try {
     file = new module.Ktx2File(bytes);
-    const target = ktx2.target(file.codec, file.hasAlpha);
+    const target = ktx2.target(file.codec, file.hasAlpha, usage);
     const levels = [];
     for (let level = 0; level < file.levels; level++) {
       const image = file.decode(level, target ? target.name : 'rgba8');

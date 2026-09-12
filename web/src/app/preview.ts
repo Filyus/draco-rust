@@ -142,10 +142,11 @@ async function previewFromDocument(document: SceneDocument): Promise<ViewerScene
       // The viewer's context decides, because it is the one that will be
       // handed the result: what a machine can sample is not a property of
       // the file.
-      target: (codec, hasAlpha) => chooseCompressedTarget(
+      target: (codec, hasAlpha, usage) => chooseCompressedTarget(
         state.viewer?.compressedTextureExtensions ?? [],
         codec,
         hasAlpha,
+        usage,
       ),
     },
   );
