@@ -35,6 +35,14 @@ pub enum Target {
     /// BC3, sixteen bytes per 4x4 block, alpha in a BC4 block of its own.
     #[cfg(feature = "bc")]
     Bc3,
+    /// BC4, eight bytes per 4x4 block, the red channel alone. What a
+    /// roughness, occlusion or metalness mask becomes on a desktop GPU.
+    #[cfg(feature = "bc")]
+    Bc4,
+    /// BC5, sixteen bytes per 4x4 block: a BC4 block of red and one of
+    /// alpha, the two channels of a tangent-space normal map.
+    #[cfg(feature = "bc")]
+    Bc5,
     /// BC7, sixteen bytes per 4x4 block, colour and alpha together.
     #[cfg(feature = "bc")]
     Bc7,
@@ -44,6 +52,14 @@ pub enum Target {
     /// ETC2 RGBA, sixteen bytes per 4x4 block, alpha in an EAC block.
     #[cfg(feature = "etc")]
     Etc2,
+    /// EAC R11, eight bytes per 4x4 block, the red channel alone — BC4's
+    /// counterpart on a phone.
+    #[cfg(feature = "etc")]
+    EacR11,
+    /// EAC RG11, sixteen bytes per 4x4 block: red from the colour and green
+    /// from the alpha — the phone's BC5, for normal maps.
+    #[cfg(feature = "etc")]
+    EacRg11,
     /// ASTC 4x4, sixteen bytes per block, colour and alpha together.
     #[cfg(feature = "astc")]
     Astc,
@@ -180,10 +196,18 @@ impl Transcoder {
                     Target::Bc1 => decoder.decode_bc1(&level_data, desc, width, height)?,
                     #[cfg(feature = "bc")]
                     Target::Bc3 => decoder.decode_bc3(&level_data, desc, width, height)?,
+                    #[cfg(feature = "bc")]
+                    Target::Bc4 => decoder.decode_bc4(&level_data, desc, width, height)?,
+                    #[cfg(feature = "bc")]
+                    Target::Bc5 => decoder.decode_bc5(&level_data, desc, width, height)?,
                     #[cfg(feature = "etc")]
                     Target::Etc1 => decoder.decode_etc1(&level_data, desc, width, height)?,
                     #[cfg(feature = "etc")]
                     Target::Etc2 => decoder.decode_etc2(&level_data, desc, width, height)?,
+                    #[cfg(feature = "etc")]
+                    Target::EacR11 => decoder.decode_eac_r11(&level_data, desc, width, height)?,
+                    #[cfg(feature = "etc")]
+                    Target::EacRg11 => decoder.decode_eac_rg11(&level_data, desc, width, height)?,
                     #[cfg(feature = "astc")]
                     Target::Astc => decoder.decode_astc(&level_data, desc, width, height)?,
                     #[allow(unreachable_patterns)]
@@ -216,12 +240,20 @@ impl Transcoder {
                     Target::Rgba8 => uastc::decode_rgba(image_data, width, height)?,
                     #[cfg(feature = "bc")]
                     Target::Bc7 => uastc::decode_bc7(image_data, width, height)?,
+                    #[cfg(feature = "bc")]
+                    Target::Bc4 => uastc::decode_bc4(image_data, width, height)?,
+                    #[cfg(feature = "bc")]
+                    Target::Bc5 => uastc::decode_bc5(image_data, width, height)?,
                     #[cfg(feature = "astc")]
                     Target::Astc => uastc::decode_astc(image_data, width, height)?,
                     #[cfg(feature = "etc")]
                     Target::Etc1 => uastc::decode_etc1(image_data, width, height)?,
                     #[cfg(feature = "etc")]
                     Target::Etc2 => uastc::decode_etc2(image_data, width, height)?,
+                    #[cfg(feature = "etc")]
+                    Target::EacR11 => uastc::decode_eac_r11(image_data, width, height)?,
+                    #[cfg(feature = "etc")]
+                    Target::EacRg11 => uastc::decode_eac_rg11(image_data, width, height)?,
                     #[allow(unreachable_patterns)]
                     other => {
                         return Err(TranscodeError::NoSuchTarget {

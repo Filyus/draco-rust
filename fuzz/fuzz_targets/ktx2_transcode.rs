@@ -5,13 +5,17 @@ use draco_texture::transcode::{Target, Transcoder};
 use libfuzzer_sys::fuzz_target;
 
 /// Every target either Basis codec can be asked for.
-const TARGETS: [Target; 7] = [
+const TARGETS: [Target; 11] = [
     Target::Rgba8,
     Target::Bc1,
     Target::Bc3,
+    Target::Bc4,
+    Target::Bc5,
     Target::Bc7,
     Target::Etc1,
     Target::Etc2,
+    Target::EacR11,
+    Target::EacRg11,
     Target::Astc,
 ];
 

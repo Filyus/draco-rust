@@ -31,13 +31,17 @@ const FIXTURES: [&str; 7] = [
     "uastc_alpha_v250.ktx2",
 ];
 
-const TARGETS: [(&str, Target); 7] = [
+const TARGETS: [(&str, Target); 11] = [
     ("rgba8", Target::Rgba32),
     ("bc1", Target::Bc1Rgb),
     ("bc3", Target::Bc3Rgba),
+    ("bc4", Target::Bc4R),
+    ("bc5", Target::Bc5Rg),
     ("bc7", Target::Bc7Rgba),
     ("etc1", Target::Etc1Rgb),
     ("etc2", Target::Etc2Rgba),
+    ("eac_r11", Target::Etc2EacR11),
+    ("eac_rg11", Target::Etc2EacRg11),
     ("astc", Target::Astc4x4Rgba),
 ];
 
@@ -67,7 +71,8 @@ fn main() {
         for level in 0..levels {
             for (label, target) in TARGETS {
                 let claimed = match label {
-                    "rgba8" | "etc1" | "etc2" | "astc" => true,
+                    "rgba8" | "etc1" | "etc2" | "astc" | "bc4" | "bc5" | "eac_r11"
+                    | "eac_rg11" => true,
                     "bc1" | "bc3" => etc1s,
                     "bc7" => !etc1s,
                     _ => false,

@@ -35,9 +35,13 @@ fn target(label: &str) -> Option<Target> {
         "rgba8" => Target::Rgba8,
         "bc1" => Target::Bc1,
         "bc3" => Target::Bc3,
+        "bc4" => Target::Bc4,
+        "bc5" => Target::Bc5,
         "bc7" => Target::Bc7,
         "etc1" => Target::Etc1,
         "etc2" => Target::Etc2,
+        "eac_r11" => Target::EacR11,
+        "eac_rg11" => Target::EacRg11,
         "astc" => Target::Astc,
         _ => return None,
     })

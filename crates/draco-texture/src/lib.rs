@@ -43,11 +43,17 @@ mod astc_pack;
 /// The fixed tables ASTC packing reads.
 #[cfg(all(feature = "astc", any(feature = "etc1s", feature = "uastc")))]
 mod astc_tables;
+/// The BC4 block layout.
+#[cfg(feature = "bc")]
+pub mod bc4;
 /// Packing a BC7 block, and the tables it and the UASTC mapping share.
 #[cfg(all(feature = "uastc", feature = "bc"))]
 pub mod bc7;
 #[cfg(all(feature = "uastc", feature = "bc"))]
 mod bc7_tables;
+/// The EAC R11 block layout.
+#[cfg(feature = "etc")]
+pub mod eac_r11;
 /// Basis Universal ETC1S decoding.
 #[cfg(feature = "etc1s")]
 pub mod etc1s;
@@ -60,6 +66,9 @@ pub mod etc1s_to_bc1;
 /// Turning an ETC1S alpha slice into BC4, the alpha half of BC3.
 #[cfg(all(feature = "etc1s", feature = "bc"))]
 pub mod etc1s_to_bc4;
+/// Turning ETC1S blocks into EAC R11 and EAC RG11, the phone's BC4 and BC5.
+#[cfg(all(feature = "etc1s", feature = "etc"))]
+pub mod etc1s_to_eac_r11;
 /// Turning ETC1S blocks into ETC1 and ETC2.
 #[cfg(all(feature = "etc1s", feature = "etc"))]
 pub mod etc1s_to_etc;
@@ -80,9 +89,15 @@ pub mod uastc;
 /// Restating a UASTC block as an ASTC block.
 #[cfg(all(feature = "uastc", feature = "astc"))]
 pub mod uastc_to_astc;
+/// Re-packing a UASTC block's channels into BC4 and BC5.
+#[cfg(all(feature = "uastc", feature = "bc"))]
+pub mod uastc_to_bc4;
 /// Restating a UASTC block as a BC7 block.
 #[cfg(all(feature = "uastc", feature = "bc"))]
 pub mod uastc_to_bc7;
+/// Re-packing a UASTC block's channels into EAC R11 and EAC RG11.
+#[cfg(all(feature = "uastc", feature = "etc"))]
+pub mod uastc_to_eac_r11;
 /// Turning a UASTC block into ETC1 and ETC2 blocks.
 #[cfg(all(feature = "uastc", feature = "etc"))]
 pub mod uastc_to_etc;

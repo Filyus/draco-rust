@@ -316,7 +316,7 @@ pub enum UastcError {
 /// bytes each, so the caller has already had to supply 268 MB before this can
 /// be asked for a gigabyte -- but an abort is an abort, and this is the
 /// difference between an error and a dead module.
-fn zeroed(len: usize) -> Result<Vec<u8>, UastcError> {
+pub(crate) fn zeroed(len: usize) -> Result<Vec<u8>, UastcError> {
     let mut out = Vec::new();
     out.try_reserve_exact(len)
         .map_err(|_| UastcError::Allocation(len))?;
@@ -435,6 +435,122 @@ pub fn decode_etc2(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Uast
     Ok(blocks)
 }
 
+/// Transcode a whole mip level into BC4 blocks, eight bytes each.
+///
+/// The red channel of every block: what a roughness, occlusion or metalness
+/// mask becomes on a desktop GPU. A texture whose second channel matters
+/// needs BC5.
+#[cfg(feature = "bc")]
+pub fn decode_bc4(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, UastcError> {
+    let blocks_x = width.div_ceil(4) as usize;
+    let blocks_y = height.div_ceil(4) as usize;
+    if data.len() < blocks_x * blocks_y * BLOCK_SIZE {
+        return Err(UastcError::Truncated(data.len()));
+    }
+
+    let mut blocks = zeroed(blocks_x * blocks_y * 8)?;
+    let mut texels = [[0u8; 4]; 16];
+    for index in 0..blocks_x * blocks_y {
+        let block = &data[index * BLOCK_SIZE..index * BLOCK_SIZE + BLOCK_SIZE];
+        let unpacked = unpack_block(block, index)?;
+        write_unpacked(&unpacked, &mut texels);
+        let packed = crate::uastc_to_bc4::pack(&std::array::from_fn(|i| texels[i][0]));
+        blocks[index * 8..index * 8 + 8].copy_from_slice(&packed.to_bytes());
+    }
+    Ok(blocks)
+}
+
+/// Transcode a whole mip level into BC5 blocks, sixteen bytes each.
+///
+/// A BC4 block of the red channel followed by one of the alpha — the two
+/// channels of a tangent-space normal map, whose third component the shader
+/// reconstructs. A UASTC encoder that wants a BC5-shaped output puts the
+/// normal's Y in alpha, which is where the second block reads it.
+#[cfg(feature = "bc")]
+pub fn decode_bc5(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, UastcError> {
+    let blocks_x = width.div_ceil(4) as usize;
+    let blocks_y = height.div_ceil(4) as usize;
+    if data.len() < blocks_x * blocks_y * BLOCK_SIZE {
+        return Err(UastcError::Truncated(data.len()));
+    }
+
+    let mut blocks = zeroed(blocks_x * blocks_y * 16)?;
+    let mut texels = [[0u8; 4]; 16];
+    for index in 0..blocks_x * blocks_y {
+        let block = &data[index * BLOCK_SIZE..index * BLOCK_SIZE + BLOCK_SIZE];
+        let unpacked = unpack_block(block, index)?;
+        write_unpacked(&unpacked, &mut texels);
+        let red = crate::uastc_to_bc4::pack(&std::array::from_fn(|i| texels[i][0]));
+        let green = crate::uastc_to_bc4::pack(&std::array::from_fn(|i| texels[i][3]));
+        blocks[index * 16..index * 16 + 8].copy_from_slice(&red.to_bytes());
+        blocks[index * 16 + 8..index * 16 + 16].copy_from_slice(&green.to_bytes());
+    }
+    Ok(blocks)
+}
+
+/// Transcode a whole mip level into EAC R11 blocks, eight bytes each.
+///
+/// The red channel of every block — the phone's counterpart to BC4.
+#[cfg(feature = "etc")]
+pub fn decode_eac_r11(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, UastcError> {
+    let blocks_x = width.div_ceil(4) as usize;
+    let blocks_y = height.div_ceil(4) as usize;
+    if data.len() < blocks_x * blocks_y * BLOCK_SIZE {
+        return Err(UastcError::Truncated(data.len()));
+    }
+
+    let mut blocks = zeroed(blocks_x * blocks_y * 8)?;
+    let mut texels = [[0u8; 4]; 16];
+    for index in 0..blocks_x * blocks_y {
+        let block = &data[index * BLOCK_SIZE..index * BLOCK_SIZE + BLOCK_SIZE];
+        let unpacked = unpack_block(block, index)?;
+        write_unpacked(&unpacked, &mut texels);
+        let packed = crate::uastc_to_eac_r11::pack(&std::array::from_fn(|i| texels[i][0]));
+        blocks[index * 8..index * 8 + 8].copy_from_slice(&packed.to_bytes());
+    }
+    Ok(blocks)
+}
+
+/// Transcode a whole mip level into EAC RG11 blocks, sixteen bytes each.
+///
+/// Two EAC R11 blocks: red from the red channel and green from the alpha —
+/// the phone's BC5, for tangent-space normal maps. A UASTC encoder that
+/// wants a BC5-shaped output puts the normal's Y in alpha, and the KTX2
+/// transcode path reads the second channel from there.
+///
+/// The green half keeps the reference's two ways of reaching a channel
+/// value: a solid-color block becomes a packed-constant block, and anything
+/// else goes through the same EAC alpha transcode the ETC2 target uses,
+/// which reads the block's own hints. The two disagree about the multiplier
+/// of a constant block — zero versus one — so which path a block takes is
+/// visible in the bytes, and both are kept.
+#[cfg(feature = "etc")]
+pub fn decode_eac_rg11(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, UastcError> {
+    let blocks_x = width.div_ceil(4) as usize;
+    let blocks_y = height.div_ceil(4) as usize;
+    if data.len() < blocks_x * blocks_y * BLOCK_SIZE {
+        return Err(UastcError::Truncated(data.len()));
+    }
+
+    let mut blocks = zeroed(blocks_x * blocks_y * 16)?;
+    let mut texels = [[0u8; 4]; 16];
+    for index in 0..blocks_x * blocks_y {
+        let block = &data[index * BLOCK_SIZE..index * BLOCK_SIZE + BLOCK_SIZE];
+        let unpacked = unpack_block(block, index)?;
+        write_unpacked(&unpacked, &mut texels);
+        let red = crate::uastc_to_eac_r11::pack(&std::array::from_fn(|i| texels[i][0]));
+        let green = if unpacked.mode == MODE_SOLID_COLOR {
+            crate::eac_r11::EacR11Block::solid(unpacked.solid_color[3])
+        } else {
+            let bytes = crate::uastc_to_etc::convert_eac_alpha(&unpacked, &texels);
+            crate::eac_r11::EacR11Block::from_bytes(bytes)
+        };
+        blocks[index * 16..index * 16 + 8].copy_from_slice(&red.to_bytes());
+        blocks[index * 16 + 8..index * 16 + 16].copy_from_slice(&green.to_bytes());
+    }
+    Ok(blocks)
+}
+
 /// Transcode a whole mip level into BC7 blocks, sixteen bytes each.
 ///
 /// BC7 is the one target UASTC reaches without loss worth naming: the format
@@ -505,7 +621,7 @@ fn decode_block(block: &[u8], index: usize, texels: &mut [[u8; 4]; 16]) -> Resul
 }
 
 /// Write one unpacked block's sixteen texels.
-fn write_unpacked(unpacked: &Unpacked, texels: &mut [[u8; 4]; 16]) {
+pub(crate) fn write_unpacked(unpacked: &Unpacked, texels: &mut [[u8; 4]; 16]) {
     if unpacked.mode == MODE_SOLID_COLOR {
         texels.fill(unpacked.solid_color);
         return;

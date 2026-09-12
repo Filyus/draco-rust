@@ -54,11 +54,13 @@ uastc = []
 # will one day stop being. The alternative axis - one flag per target - cuts
 # where nothing ever changes, since BC1 and BC3 arrive and leave together.
 #
-# Desktop: BC1 and BC3 for ETC1S, BC7 for UASTC. `WEBGL_compressed_texture_s3tc`
-# and `EXT_texture_compression_bptc`. Carries the baked BC1 and BC4 tables.
+# Desktop: BC1, BC3, BC4 and BC5 for ETC1S, BC7, BC4 and BC5 for UASTC.
+# `WEBGL_compressed_texture_s3tc` and `EXT_texture_compression_bptc`. Carries
+# the baked BC1 and BC4 tables.
 bc = []
-# Mobile: ETC1 and ETC2 for ETC1S. `WEBGL_compressed_texture_etc`. Load-bearing
-# rather than old, for the reason set out below the umbrella.
+# Mobile: ETC1 and ETC2 for ETC1S, EAC R11 and EAC RG11 for both codecs.
+# `WEBGL_compressed_texture_etc`. Load-bearing rather than old, for the reason
+# set out below the umbrella.
 etc = []
 # Mobile: ASTC 4x4 for UASTC, and only UASTC. `WEBGL_compressed_texture_astc`.
 astc = []

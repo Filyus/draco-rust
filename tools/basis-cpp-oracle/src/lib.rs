@@ -36,9 +36,13 @@ pub enum Target {
     Etc2Rgba = 1,
     Bc1Rgb = 2,
     Bc3Rgba = 3,
+    Bc4R = 4,
+    Bc5Rg = 5,
     Bc7Rgba = 6,
     Astc4x4Rgba = 10,
     Rgba32 = 13,
+    Etc2EacR11 = 20,
+    Etc2EacRg11 = 21,
 }
 
 /// The KTX2 header, up to and not including the level index.

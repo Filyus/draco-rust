@@ -1046,40 +1046,7 @@ const ETC1S_TO_BC4: [(u8, u8, u16); 1024] = [
     (255, 208, 8),
 ];
 
-/// One BC4 block: two endpoints and sixteen three-bit selectors.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Bc4Block {
-    low: u8,
-    high: u8,
-    selectors: [u8; 6],
-}
-
-impl Bc4Block {
-    /// The eight bytes a GPU expects.
-    pub fn to_bytes(self) -> [u8; 8] {
-        let mut bytes = [0u8; 8];
-        bytes[0] = self.low;
-        bytes[1] = self.high;
-        bytes[2..8].copy_from_slice(&self.selectors);
-        bytes
-    }
-
-    fn set_selector(&mut self, texel: usize, value: u8) {
-        let bit = texel * 3;
-        let byte = bit >> 3;
-        let offset = bit & 7;
-        let mut window = self.selectors[byte] as u32;
-        if byte < 5 {
-            window |= (self.selectors[byte + 1] as u32) << 8;
-        }
-        window &= !(7u32 << offset);
-        window |= (value as u32) << offset;
-        self.selectors[byte] = window as u8;
-        if byte < 5 {
-            self.selectors[byte + 1] = (window >> 8) as u8;
-        }
-    }
-}
+use crate::bc4::Bc4Block;
 
 /// Convert one block of an ETC1S alpha slice into a BC4 block.
 ///

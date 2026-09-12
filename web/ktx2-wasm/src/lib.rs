@@ -159,7 +159,8 @@ impl Ktx2File {
     }
 
     /// Decode one mip level into a named target: `"rgba8"`, `"bc1"`, `"bc3"`,
-    /// `"bc7"`, `"etc1"`, `"etc2"` or `"astc"`.
+    /// `"bc4"`, `"bc5"`, `"bc7"`, `"etc1"`, `"etc2"`, `"eac_r11"`,
+    /// `"eac_rg11"` or `"astc"`.
     ///
     /// Named rather than numbered because the caller picks the target from
     /// what the GL context reports, and a string survives that round trip
@@ -173,11 +174,19 @@ impl Ktx2File {
             #[cfg(feature = "bc")]
             "bc3" => Target::Bc3,
             #[cfg(feature = "bc")]
+            "bc4" => Target::Bc4,
+            #[cfg(feature = "bc")]
+            "bc5" => Target::Bc5,
+            #[cfg(feature = "bc")]
             "bc7" => Target::Bc7,
             #[cfg(feature = "etc")]
             "etc1" => Target::Etc1,
             #[cfg(feature = "etc")]
             "etc2" => Target::Etc2,
+            #[cfg(feature = "etc")]
+            "eac_r11" => Target::EacR11,
+            #[cfg(feature = "etc")]
+            "eac_rg11" => Target::EacRg11,
             #[cfg(feature = "astc")]
             "astc" => Target::Astc,
             // Naming what this build does carry, because a module trimmed to

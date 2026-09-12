@@ -18,8 +18,8 @@ missing.
 
 | source | targets |
 |---|---|
-| ETC1S | RGBA8, BC1, BC3, ETC1, ETC2, ASTC 4×4 |
-| UASTC LDR 4×4 | RGBA8, BC7, ASTC 4×4, ETC1, ETC2 |
+| ETC1S | RGBA8, BC1, BC3, BC4, BC5, ETC1, ETC2, EAC R11, EAC RG11, ASTC 4×4 |
+| UASTC LDR 4×4 | RGBA8, BC4, BC5, BC7, ETC1, ETC2, EAC R11, EAC RG11, ASTC 4×4 |
 
 The container reads `none`, `Zstd` and `BasisLZ` supercompression, and names
 plain `vkFormat` files rather than refusing them — a deliberate divergence from
@@ -44,8 +44,8 @@ ships. Current counts:
 | `ktx2-differential` | 2400 mutants, 2505 images identical to the reference |
 | `ktx2_malformed.rs` | six sweeps over headers, long fields, truncation, payloads |
 | `ktx2_transcode` (libFuzzer) | 13521 executions, 5149 edges, no finding |
-| `ktx2_goldens.rs` | 346 images against pinned hashes of what the reference said |
-| C++ parity | the same 346 against the vendored reference itself, in CI |
+| `ktx2_goldens.rs` | 590 images against pinned hashes of what the reference said |
+| C++ parity | the same 590 against the vendored reference itself, in CI |
 | `baked_tables.rs` | the ASTC blob re-derived from the reference's own table |
 
 ## Left out on purpose
@@ -104,11 +104,15 @@ source. A port would be to a moving target.
 
 ## What is worth doing next, and is not done
 
-**BC5 / EAC RG11 and BC4 / EAC R11.** The one remaining group where the format
-is frozen, the hardware is current, and the gain is measurable: a tangent-space
-normal map through BC1 or ETC1 falls apart, while BC5 keeps two channels at
-eight bits per pair. Single-channel maps — roughness, occlusion, metalness —
-want BC4 or EAC R11 for the same reason. This is the next thing to build.
+**BC5 / EAC RG11 and BC4 / EAC R11** were the one remaining group where the
+format is frozen, the hardware is current, and the gain is measurable, and
+they have since been built: BC4 and BC5 for ETC1S, all four for UASTC, gated
+byte for byte against the reference like the rest. What is *not* wired yet is
+the web converter's format choice — `compressed-formats.ts` ranks textures by
+extension list, codec and alpha, and it cannot see that a texture is a normal
+map. Reaching BC5 and EAC RG11 in practice needs the material usage
+(`normalTexture`) folded into that ranking, which is viewer work rather than
+transcoder work.
 
 ## Known limits
 

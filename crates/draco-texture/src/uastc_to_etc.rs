@@ -87,7 +87,7 @@ const INTEN_TABLES: [[i32; 4]; 8] = [
 ];
 
 /// How far each of EAC's eight steps moves from the base value.
-const EAC_MODIFIERS: [[i8; 8]; 16] = [
+pub(crate) const EAC_MODIFIERS: [[i8; 8]; 16] = [
     [-3, -6, -9, -15, 2, 5, 8, 14],
     [-3, -7, -10, -13, 2, 6, 9, 12],
     [-2, -5, -8, -13, 1, 4, 7, 12],
@@ -107,8 +107,8 @@ const EAC_MODIFIERS: [[i8; 8]; 16] = [
 ];
 
 /// Which step of a table is its lowest and which its highest.
-const EAC_MIN_SELECTOR: usize = 3;
-const EAC_MAX_SELECTOR: usize = 7;
+pub(crate) const EAC_MIN_SELECTOR: usize = 3;
+pub(crate) const EAC_MAX_SELECTOR: usize = 7;
 
 /// The selector bits of a constant-alpha EAC block: every texel takes step 4.
 const EAC_CONSTANT_SELECTORS: [u8; 6] = [0x92, 0x49, 0x24, 0x92, 0x49, 0x24];

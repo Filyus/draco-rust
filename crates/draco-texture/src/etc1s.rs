@@ -585,6 +585,207 @@ impl Etc1sDecoder {
         Ok(blocks)
     }
 
+    /// Decode one image's red channel into BC4 blocks, eight bytes each.
+    ///
+    /// The single-channel desktop format: what a roughness, occlusion or
+    /// metalness mask becomes. The colour slice is a grey image in its red
+    /// channel, and [`crate::etc1s_to_bc4::convert`] reads exactly that, so
+    /// the same conversion that fills the alpha half of BC3 fills these
+    /// blocks. A file's alpha slice is not part of BC4; BC5 pairs the two.
+    #[cfg(feature = "bc")]
+    pub fn decode_bc4(
+        &self,
+        level_data: &[u8],
+        desc: ImageDesc,
+        width: u32,
+        height: u32,
+    ) -> Result<Vec<u8>, Etc1sError> {
+        let blocks_x = width.div_ceil(4) as usize;
+        let total = blocks_x * height.div_ceil(4) as usize * 8;
+        let mut blocks: Vec<u8> = Vec::new();
+        let data = self.slice(level_data, desc.rgb_offset, desc.rgb_length)?;
+        self.walk_blocks(
+            data,
+            width,
+            height,
+            &mut blocks,
+            OutputShape {
+                row_bytes: blocks_x * 8,
+                total_bytes: total,
+            },
+            |out: &mut [u8], block_x, block_y, color5, inten5, selectors| {
+                let at = (block_y as usize * blocks_x + block_x as usize) * 8;
+                let block = crate::etc1s_to_bc4::convert(color5, inten5, selectors);
+                out[at..at + 8].copy_from_slice(&block.to_bytes());
+            },
+        )?;
+        Ok(blocks)
+    }
+
+    /// Decode one image into BC5 blocks, sixteen bytes each.
+    ///
+    /// Two BC4 blocks, red then alpha — the two channels of a tangent-space
+    /// normal map, whose third component the shader reconstructs. A file with
+    /// no alpha slice gets fully opaque green blocks, so the caller can choose
+    /// BC5 whatever the file holds.
+    #[cfg(feature = "bc")]
+    pub fn decode_bc5(
+        &self,
+        level_data: &[u8],
+        desc: ImageDesc,
+        width: u32,
+        height: u32,
+    ) -> Result<Vec<u8>, Etc1sError> {
+        let blocks_x = width.div_ceil(4) as usize;
+        let blocks_y = height.div_ceil(4) as usize;
+        let total = blocks_x * blocks_y * 16;
+        let mut blocks: Vec<u8> = Vec::new();
+
+        if desc.alpha_length != 0 {
+            let data = self.slice(level_data, desc.alpha_offset, desc.alpha_length)?;
+            self.walk_blocks(
+                data,
+                width,
+                height,
+                &mut blocks,
+                OutputShape {
+                    row_bytes: blocks_x * 16,
+                    total_bytes: total,
+                },
+                |out: &mut [u8], block_x, block_y, color5, inten5, selectors| {
+                    let at = (block_y as usize * blocks_x + block_x as usize) * 16 + 8;
+                    let block = crate::etc1s_to_bc4::convert(color5, inten5, selectors);
+                    out[at..at + 8].copy_from_slice(&block.to_bytes());
+                },
+            )?;
+        }
+
+        let data = self.slice(level_data, desc.rgb_offset, desc.rgb_length)?;
+        self.walk_blocks(
+            data,
+            width,
+            height,
+            &mut blocks,
+            OutputShape {
+                row_bytes: blocks_x * 16,
+                total_bytes: total,
+            },
+            |out: &mut [u8], block_x, block_y, color5, inten5, selectors| {
+                let at = (block_y as usize * blocks_x + block_x as usize) * 16;
+                let block = crate::etc1s_to_bc4::convert(color5, inten5, selectors);
+                out[at..at + 8].copy_from_slice(&block.to_bytes());
+            },
+        )?;
+        if desc.alpha_length == 0 {
+            // Opaque green: 255 at both endpoints, every selector zero. Filled
+            // after the colour pass, which is what grew the buffer.
+            for block in blocks.as_chunks_mut::<16>().0 {
+                block[8] = 255;
+                block[9] = 255;
+            }
+        }
+        Ok(blocks)
+    }
+
+    /// Decode one image's red channel into EAC R11 blocks, eight bytes each.
+    ///
+    /// BC4's counterpart on a phone, answered from the same solved-endpoint
+    /// table shape as the EAC alpha conversion.
+    #[cfg(feature = "etc")]
+    pub fn decode_eac_r11(
+        &self,
+        level_data: &[u8],
+        desc: ImageDesc,
+        width: u32,
+        height: u32,
+    ) -> Result<Vec<u8>, Etc1sError> {
+        let blocks_x = width.div_ceil(4) as usize;
+        let total = blocks_x * height.div_ceil(4) as usize * 8;
+        let mut blocks: Vec<u8> = Vec::new();
+        let data = self.slice(level_data, desc.rgb_offset, desc.rgb_length)?;
+        self.walk_blocks(
+            data,
+            width,
+            height,
+            &mut blocks,
+            OutputShape {
+                row_bytes: blocks_x * 8,
+                total_bytes: total,
+            },
+            |out: &mut [u8], block_x, block_y, color5, inten5, selectors| {
+                let at = (block_y as usize * blocks_x + block_x as usize) * 8;
+                let block = crate::etc1s_to_eac_r11::convert(color5, inten5, selectors);
+                out[at..at + 8].copy_from_slice(&block.to_bytes());
+            },
+        )?;
+        Ok(blocks)
+    }
+
+    /// Decode one image into EAC RG11 blocks, sixteen bytes each.
+    ///
+    /// Two EAC R11 blocks, red from the colour slice and green from the alpha
+    /// slice — the phone's BC5, for tangent-space normal maps. A file with no
+    /// alpha slice gets fully opaque green blocks, so the caller can choose
+    /// this whatever the file holds.
+    #[cfg(feature = "etc")]
+    pub fn decode_eac_rg11(
+        &self,
+        level_data: &[u8],
+        desc: ImageDesc,
+        width: u32,
+        height: u32,
+    ) -> Result<Vec<u8>, Etc1sError> {
+        let blocks_x = width.div_ceil(4) as usize;
+        let blocks_y = height.div_ceil(4) as usize;
+        let total = blocks_x * blocks_y * 16;
+        let mut blocks: Vec<u8> = Vec::new();
+
+        if desc.alpha_length != 0 {
+            let data = self.slice(level_data, desc.alpha_offset, desc.alpha_length)?;
+            self.walk_blocks(
+                data,
+                width,
+                height,
+                &mut blocks,
+                OutputShape {
+                    row_bytes: blocks_x * 16,
+                    total_bytes: total,
+                },
+                |out: &mut [u8], block_x, block_y, color5, inten5, selectors| {
+                    let at = (block_y as usize * blocks_x + block_x as usize) * 16 + 8;
+                    let block = crate::etc1s_to_eac_r11::convert(color5, inten5, selectors);
+                    out[at..at + 8].copy_from_slice(&block.to_bytes());
+                },
+            )?;
+        }
+
+        let data = self.slice(level_data, desc.rgb_offset, desc.rgb_length)?;
+        self.walk_blocks(
+            data,
+            width,
+            height,
+            &mut blocks,
+            OutputShape {
+                row_bytes: blocks_x * 16,
+                total_bytes: total,
+            },
+            |out: &mut [u8], block_x, block_y, color5, inten5, selectors| {
+                let at = (block_y as usize * blocks_x + block_x as usize) * 16;
+                let block = crate::etc1s_to_eac_r11::convert(color5, inten5, selectors);
+                out[at..at + 8].copy_from_slice(&block.to_bytes());
+            },
+        )?;
+        if desc.alpha_length == 0 {
+            // Opaque green, the EAC way: base 255, table 13, multiplier 1,
+            // every texel on the middle step. Filled after the colour pass.
+            for block in blocks.as_chunks_mut::<16>().0 {
+                let opaque = crate::eac_r11::EacR11Block::constant(255).to_bytes();
+                block[8..16].copy_from_slice(&opaque);
+            }
+        }
+        Ok(blocks)
+    }
+
     /// Decode one image into ASTC 4x4 blocks, sixteen bytes each.
     ///
     /// Unlike every other target here, this one needs both slices at once: an
@@ -1030,7 +1231,7 @@ pub(crate) fn selector_extremes(selectors: [u8; 4]) -> (u8, u8) {
 }
 
 /// The one colour a given selector picks out of the four.
-#[cfg(feature = "bc")]
+#[cfg(any(feature = "bc", feature = "etc"))]
 pub(crate) fn block_color5(color5: [u8; 3], inten5: u8, selector: u8) -> [u8; 3] {
     block_colors5(color5, inten5)[(selector & 3) as usize]
 }
