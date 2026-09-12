@@ -148,9 +148,8 @@ Preflight checks, for crate `<crate>`:
 - `X.Y.Z` matches `crates/<crate>/Cargo.toml`;
 - every internal dependency `<crate>` pins is already published at the pinned version;
 - `crates/<crate>/CHANGELOG.md` has a `## [X.Y.Z]` section;
-- `web/CHANGELOG.md`'s `Unreleased` section is folded into the GitHub
-  release's notes — the release is the record of what an asset stamp carries —
-  and the section starts empty;
+- `web/CHANGELOG.md`'s `Unreleased` section is copied into the GitHub
+  release's notes and renamed here to the shipping date;
 
 - `cargo semver-checks` succeeds if `<crate>` already exists on crates.io;
 - docs.rs-style nightly docs build for `<crate>`;
