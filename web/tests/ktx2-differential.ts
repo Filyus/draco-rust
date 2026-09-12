@@ -279,6 +279,6 @@ console.log(
   `ktx2-differential: ${mutants} mutants, ${compared} images byte-identical to the reference; `
   + `both read ${agreed}, only this reader ${onlyOurs}, only the reference ${onlyTheirs}, `
   + `${poisoned} discarded for a degraded oracle, ${empty} for an empty one, `
-  + `${refusedSeeds} seed(s) skipped whole — the vendored reference refuses them at any revision it pins`,
+  + `${refusedSeeds} seed(s) skipped whole — hostile fuzz reproducers the reference refuses outright`,
 );
 closeReference();
