@@ -451,7 +451,7 @@ needed. Two layers run there:
 
 - Bounded smoke runs (`-max_total_time=120`) for every target on each pull
   request and push to `main`.
-- **A soak every night at 02:00 UTC**, and one on demand with
+- **A soak every night at 00:00 UTC**, and one on demand with
   `gh workflow run fuzz.yml` (or the Actions tab). Nightly rather than manual
   because what a soak finds is not a function of its length: over four soaks
   `compress_gltf` gained +81, +236 and +18 edges from one run to the next, and

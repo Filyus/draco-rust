@@ -41,7 +41,7 @@ on:
   # other reason: GitHub evicts an entry untouched for seven days, and the
   # corpora live nowhere else. A nightly run keeps every entry warm.
   #
-  # 02:00 UTC is where the runners are idle and no push is likely to land a
+  # 00:00 UTC is where the runners are idle and no push is likely to land a
   # smoke run beside it. GitHub suspends a schedule after sixty days without
   # a commit, and attributes each run to whoever last touched this file; a
   # failure notifies that person, so the file is the place to look when the
@@ -52,7 +52,7 @@ on:
   # expected to find things, and a finding is not a broken build. Read a
   # soak's own conclusion from the run list, not from the badge.
   schedule:
-    - cron: "0 2 * * *"
+    - cron: "0 0 * * *"
   workflow_dispatch:
 
 # A change-triggered smoke run supersedes the one before it: they test the same
