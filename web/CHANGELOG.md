@@ -11,6 +11,12 @@ only anchor a shipping without a version of its own has.
 
 ## Unreleased
 
+- The FBX preview draws every node's own geometry again. A geometry FBX
+  carries without polygons — a curve, a lattice — was dropped from the mesh
+  list but still counted by the walk that numbers them, so every node past the
+  first such geometry drew its neighbour's mesh, with its material and morph
+  targets shifted to match. One file of 501 geometries showed as a fragment of
+  the model with the rest scattered.
 - `ktx2-wasm` names the single- and two-channel transcode targets the crate
   gained — `bc4`, `bc5`, `eac_r11`, `eac_rg11` — so a viewer can take a
   normal map or a channel mask in the format drawn for it.
