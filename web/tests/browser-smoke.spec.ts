@@ -1176,9 +1176,12 @@ test('converter explains a missing external glTF buffer', async ({ page }) => {
     'Referenced file not in the selection: Fox.bin',
   );
   await expect(page.locator('#console')).toContainText('External resource denied: Fox.bin');
+  // And said once: the intake names the gesture that supplies it, so the error
+  // below carries no advice of its own.
   await expect(page.locator('#console')).toContainText(
-    'Drop the whole folder instead, or select the .gltf together with every referenced .bin and image.',
+    'They are not part of a single-file selection: drop the folder that holds the model',
   );
+  await expect(page.locator('#console')).not.toContainText('Drop the whole folder instead');
   await expect(page.locator('#console')).not.toContainText('undefined');
 });
 

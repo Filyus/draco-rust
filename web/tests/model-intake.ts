@@ -20,7 +20,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
 
-const { findModels, readModel, resolveUriPath } = await import(
+const { findModels, missingResourceAdvice, readModel, resolveUriPath } = await import(
   pathToFileURL(resolve(here, '..', 'src', 'app', 'model-intake.ts')).href
 );
 
@@ -221,6 +221,26 @@ for (const ascii of [false, true]) {
     [authoredMissing],
     `${label}: a texture the selection does not hold is reported, not guessed at`,
   );
+}
+
+// What is missing is reported as names; what to do about it depends on what was
+// supplied, and a single-file selection is the case the folder drop answers.
+{
+    const alone = missingResourceAdvice(2, 1, 'source/character.fbx');
+    assert.match(alone, /drop the folder/, 'a single-file selection is told the gesture that fixes it');
+    assert.match(alone, /They are/, 'and is worded for the number of files it names');
+    assert.match(missingResourceAdvice(1, 1, 'source/character.fbx'), /It is/);
+
+    // Past one file the selection genuinely lacks them, and FBX is told why a
+    // file it holds may still not have matched.
+    const folder = missingResourceAdvice(1, 40, 'source/character.fbx');
+    assert.match(folder, /among the 40 files supplied/);
+    assert.match(folder, /matched by file name alone/, 'FBX matches on the name, and says so');
+    assert.doesNotMatch(
+        missingResourceAdvice(1, 40, 'source/scene.gltf'),
+        /file name alone/,
+        'a glTF URI is a real path, so that caveat is not its',
+    );
 }
 
 console.log('model-intake: OK');

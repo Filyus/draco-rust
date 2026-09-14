@@ -102,7 +102,7 @@ import {
 import { installDisplayControls } from './app/display-controls.ts';
 import { installVariantPicker } from './app/variant-picker.ts';
 import { entriesFromDataTransfer } from './app/dropped-entries.ts';
-import { findModels, readModel } from './app/model-intake.ts';
+import { findModels, missingResourceAdvice, readModel } from './app/model-intake.ts';
 import type { IntakeEntry } from './app/model-intake.ts';
 import { installModelPicker, syncModelPicker } from './app/model-picker.ts';
 
@@ -479,6 +479,11 @@ async function handleModel(model: IntakeEntry, entries: IntakeEntry[]) {
 
   state.currentFileType = extension;
 
+  // Read before the parse and consulted after it fails: when the intake has
+  // already said what was missing and how to supply it, the error does not say
+  // it again.
+  let reportedMissing = 0;
+
   try {
     const intake = await readModel(model, entries);
     const data = intake.data;
@@ -504,6 +509,10 @@ async function handleModel(model: IntakeEntry, entries: IntakeEntry[]) {
     );
     for (const uri of intake.missing) {
       log(`Referenced file not in the selection: ${uri}`, 'warning');
+    }
+    reportedMissing = intake.missing.length;
+    if (reportedMissing > 0) {
+      log(missingResourceAdvice(reportedMissing, entries.length, model.path), 'warning');
     }
 
     // Parse file based on extension
@@ -577,8 +586,11 @@ async function handleModel(model: IntakeEntry, entries: IntakeEntry[]) {
   } catch (error) {
     const message = errorMessage(error);
     // A model whose companions sit in a sibling folder cannot be selected file
-    // by file at all, so the advice names the way that always works.
-    const resourceHint = extension === 'gltf' && message.includes('External resource denied:')
+    // by file at all, so the advice names the way that always works -- unless
+    // the intake already named it, which it does whenever it could see the URI
+    // in the document. This covers the rest: a resource the reader resolves and
+    // the intake's own scan does not.
+    const resourceHint = extension === 'gltf' && reportedMissing === 0 && message.includes('External resource denied:')
       ? ' Drop the whole folder instead, or select the .gltf together with every referenced .bin and image.'
       : '';
     log(`Error reading file: ${message}.${resourceHint}`, 'error');

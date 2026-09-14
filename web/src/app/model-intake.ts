@@ -45,6 +45,30 @@ function extensionOf(path: string): string {
   return path.split('.').pop()!.toLowerCase();
 }
 
+/**
+ * What to do about the resources a selection did not contain.
+ *
+ * The report names them one by one, and a list of names on its own reads as a
+ * verdict: nothing in it says the remedy is a different gesture rather than a
+ * retry. A selection of one file cannot hold a companion at all -- the browser
+ * hands over what was dropped and nothing beside it -- so there the answer is
+ * to drop the folder, which this application already accepts. Past that the
+ * file really is absent from what was supplied, and for FBX that is also where
+ * the near miss lives: the path inside the file belongs to the machine that
+ * authored it, so only the file name is matched, and a texture renamed since
+ * export is missing under the name the file still calls it.
+ */
+export function missingResourceAdvice(missing: number, supplied: number, modelPath: string): string {
+  const they = missing === 1 ? 'It is' : 'They are';
+  if (supplied <= 1) {
+    return `${they} not part of a single-file selection: drop the folder that holds the model, or select it together with its companions.`;
+  }
+  const named = extensionOf(modelPath) === 'fbx'
+    ? ' An FBX names a texture by the path of the machine that authored it, so it is matched by file name alone; a file renamed since export is missing under its old name.'
+    : '';
+  return `${they} not among the ${supplied} files supplied.${named}`;
+}
+
 function directoryOf(path: string): string {
   const slash = path.lastIndexOf('/');
   return slash < 0 ? '' : path.slice(0, slash);
