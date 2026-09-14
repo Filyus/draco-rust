@@ -44,7 +44,7 @@ impl EacR11Block {
         bytes
     }
 
-    #[cfg_attr(not(feature = "etc1s"), allow(dead_code))]
+    #[cfg_attr(not(any(feature = "etc1s", feature = "uastc")), allow(dead_code))]
     pub(crate) fn set_selector_bits(&mut self, bits: u64) {
         // The 48-bit selector field is laid out big-endian: the texel that
         // sits at bit 45 lands in the top three bits of the first byte.

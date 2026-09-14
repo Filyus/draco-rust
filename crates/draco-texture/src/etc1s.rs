@@ -592,6 +592,10 @@ impl Etc1sDecoder {
     /// channel, and [`crate::etc1s_to_bc4::convert`] reads exactly that, so
     /// the same conversion that fills the alpha half of BC3 fills these
     /// blocks. A file's alpha slice is not part of BC4; BC5 pairs the two.
+    ///
+    /// The colour slice and not the alpha one, always: the reference reads a
+    /// file's alpha slice here only under `cDecodeFlagsTranscodeAlphaDataToOpaqueFormats`,
+    /// a flag off by default and with no counterpart in this API.
     #[cfg(feature = "bc")]
     pub fn decode_bc4(
         &self,
@@ -690,7 +694,8 @@ impl Etc1sDecoder {
     /// Decode one image's red channel into EAC R11 blocks, eight bytes each.
     ///
     /// BC4's counterpart on a phone, answered from the same solved-endpoint
-    /// table shape as the EAC alpha conversion.
+    /// table shape as the EAC alpha conversion. The colour slice and not the
+    /// alpha one, for the reason [`Etc1sDecoder::decode_bc4`] gives.
     #[cfg(feature = "etc")]
     pub fn decode_eac_r11(
         &self,
@@ -778,8 +783,8 @@ impl Etc1sDecoder {
         if desc.alpha_length == 0 {
             // Opaque green, the EAC way: base 255, table 13, multiplier 1,
             // every texel on the middle step. Filled after the colour pass.
+            let opaque = crate::eac_r11::EacR11Block::constant(255).to_bytes();
             for block in blocks.as_chunks_mut::<16>().0 {
-                let opaque = crate::eac_r11::EacR11Block::constant(255).to_bytes();
                 block[8..16].copy_from_slice(&opaque);
             }
         }

@@ -53,12 +53,14 @@ pub(crate) fn pack(values: &[u8; 16]) -> EacR11Block {
             let step = (value as i32 - base).clamp(0, 5);
             bits |= (SINGLE_TABLE_STEPS[step as usize] as u64) << BIT_OFFSETS[texel];
         }
-        return EacR11Block {
+        let mut block = EacR11Block {
             base: (base + 3) as u8,
             table: SINGLE_TABLE as u8,
             multiplier: 1,
-            selectors: bits.to_be_bytes()[2..8].try_into().unwrap(),
+            selectors: [0; 6],
         };
+        block.set_selector_bits(bits);
+        return block;
     }
 
     let range = range as f32;
@@ -107,10 +109,12 @@ pub(crate) fn pack(values: &[u8; 16]) -> EacR11Block {
     for texel in 0..16usize {
         bits |= (selectors[best][texel] as u64) << BIT_OFFSETS[texel];
     }
-    EacR11Block {
+    let mut block = EacR11Block {
         base: bases[best] as u8,
         table: TABLES[best] as u8,
         multiplier: multipliers[best] as u8,
-        selectors: bits.to_be_bytes()[2..8].try_into().unwrap(),
-    }
+        selectors: [0; 6],
+    };
+    block.set_selector_bits(bits);
+    block
 }

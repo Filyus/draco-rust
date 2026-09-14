@@ -23,7 +23,7 @@ const SELECTOR_RANGES: [(u8, u8); 4] = [(0, 3), (1, 3), (0, 2), (1, 2)];
 ///
 /// Indexed by `base_red + intensity_table * 32`, then by selector range. The
 /// fields are the base value, the table and multiplier packed as
-/// `multiplier * 16 + table`, and the four ETC1S selectors' EAC replacements
+/// `table * 16 + multiplier`, and the four ETC1S selectors' EAC replacements
 /// three bits apiece.
 const ETC1S_TO_EAC_R11: [(u8, u8, u16); 1024] = [
     (0, 1, 3328),
