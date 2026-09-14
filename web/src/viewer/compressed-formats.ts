@@ -29,9 +29,9 @@ export const COMPRESSED_FORMAT = {
   bc1: 0x83f0,
   /** `COMPRESSED_RGBA_S3TC_DXT5_EXT` */
   bc3: 0x83f3,
-  /** `COMPRESSED_RED_RGTC1`, WebGL2 core */
+  /** `COMPRESSED_RED_RGTC1_EXT`, from `EXT_texture_compression_rgtc` */
   bc4: 0x8dbb,
-  /** `COMPRESSED_RG_RGTC2`, WebGL2 core */
+  /** `COMPRESSED_RED_GREEN_RGTC2_EXT`, from `EXT_texture_compression_rgtc` */
   bc5: 0x8dbc,
   /** `COMPRESSED_RGBA_BPTC_UNORM_EXT` */
   bc7: 0x8e8c,
@@ -91,11 +91,12 @@ const TARGETS: Candidate[] = [
     // A normal map through BC1 falls apart: five bits a channel is exactly
     // where the eye is most sensitive on lighting. BC5 keeps two channels at
     // eight bits, and its green half reads the alpha the encoder put the
-    // normal's Y in - hence the alpha requirement. Keyed to s3tc because the
-    // machine that accelerates S3TC is the one that accelerates RGTC; the
-    // formats themselves are WebGL2 core.
+    // normal's Y in - hence the alpha requirement. Keyed to RGTC and not to
+    // s3tc: the two travel together on desktop hardware, but they are separate
+    // WebGL2 extensions, and uploading an RGTC format without this one enabled
+    // is an INVALID_ENUM rather than a slow path.
     target: { name: 'bc5', format: COMPRESSED_FORMAT.bc5, bytesPerBlock: 16 },
-    extension: 'WEBGL_compressed_texture_s3tc',
+    extension: 'EXT_texture_compression_rgtc',
     codecs: ['etc1s', 'uastc'],
     alpha: true,
     requiresAlpha: true,

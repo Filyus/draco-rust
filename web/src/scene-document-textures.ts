@@ -12,9 +12,13 @@
  * it is the only part that needs a browser.
  */
 
+import { MATERIAL_TEXTURE_SLOTS } from './scene-document.ts';
 import { mimeFromUri, sniffMime } from './scene-resources.ts';
 import type { CompressedTarget, TextureCodec, TextureUsage } from './viewer/compressed-formats.ts';
 import type { ViewerScene, ViewerTexture } from './viewer-scene.ts';
+
+/** The slots that may hold a texture index, bare or as a binding. */
+const NAMED_SLOTS = new Set<string>(MATERIAL_TEXTURE_SLOTS);
 
 /** How the caller reaches a KTX2 transcoder and decides what to ask it for. */
 export interface Ktx2Support {
@@ -108,13 +112,23 @@ export async function hydrateSceneTextures(
  * materials that sample it. Any binding a material holds — the known slots
  * and whatever an extension contributes — counts as color, so an unknown
  * slot never widens what may be answered with a two-channel format.
+ *
+ * A slot is either a binding with an `index` or, for a named slot, a bare
+ * texture index: base color is flattened to a number by both producers of
+ * `ViewerScene.materials`, and reading only the bindings would leave a texture
+ * sampled as both base color and normal looking normal-only — which is the one
+ * mistake this exists to prevent. A bare number is read only from a slot the
+ * table names, so an unrelated numeric field — a factor, a texCoord — is never
+ * mistaken for a texture index.
  */
-function normalOnlyTextureIndices(scene: ViewerScene): Set<number> {
+export function normalOnlyTextureIndices(scene: ViewerScene): Set<number> {
   const referenced = new Map<number, 'normal' | 'color'>();
   for (const material of scene.materials) {
     if (!material) continue;
     for (const [property, value] of Object.entries(material)) {
-      const index = (value as { index?: unknown } | null)?.index;
+      const index = typeof value === 'number'
+        ? (NAMED_SLOTS.has(property) ? value : undefined)
+        : (value as { index?: unknown } | null)?.index;
       if (typeof index !== 'number') continue;
       const usage = property === 'normalTexture' ? 'normal' : 'color';
       referenced.set(index, usage === 'normal' ? referenced.get(index) ?? 'normal' : 'color');

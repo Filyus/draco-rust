@@ -27,6 +27,10 @@ const { chooseCompressedTarget } = await import(
 ) as { chooseCompressedTarget: typeof ChooseCompressedTarget };
 
 const S3TC = ['WEBGL_compressed_texture_s3tc'];
+/** RGTC, which carries BC4 and BC5 and is a separate extension from S3TC. */
+const RGTC = ['EXT_texture_compression_rgtc'];
+/** What a desktop GPU reports: the two BC extensions arrive together. */
+const DESKTOP = [...S3TC, ...RGTC];
 const BPTC = ['EXT_texture_compression_bptc'];
 const ETC = ['WEBGL_compressed_texture_etc'];
 const ASTC = ['WEBGL_compressed_texture_astc'];
@@ -76,8 +80,11 @@ for (const [extensions, codec, hasAlpha, expected, why] of CASES) {
 type NormalCase = [extensions: string[], codec: TextureCodec, expected: string, why: string];
 
 const NORMAL_CASES: NormalCase[] = [
-  [S3TC, 'etc1s', 'bc5', 'the desktop answer: eight bits a channel instead of five'],
-  [S3TC, 'uastc', 'bc5', 'UASTC reaches BC5 too, and the same reasoning wins'],
+  [DESKTOP, 'etc1s', 'bc5', 'the desktop answer: eight bits a channel instead of five'],
+  [DESKTOP, 'uastc', 'bc5', 'UASTC reaches BC5 too, and the same reasoning wins'],
+  // RGTC is its own extension: a context that reports S3TC and not RGTC would
+  // reject the upload, so the ranking must not reach BC5 on that machine.
+  [S3TC, 'etc1s', 'bc3', 'without RGTC there is no BC5 to upload, whatever S3TC offers'],
   [MOBILE, 'etc1s', 'eac_rg11', 'the phone answer, on the other hardware family'],
   [MOBILE, 'uastc', 'eac_rg11', 'and it reaches UASTC as well'],
   [BPTC, 'etc1s', 'pixels', 'bptc offers no two-channel format, and nothing color either'],
@@ -91,7 +98,7 @@ for (const [extensions, codec, expected, why] of NORMAL_CASES) {
 // A normal map without alpha has nowhere to put the normal's Y, so the
 // two-channel formats cannot answer and the ranking falls back to color.
 assert.equal(
-  name(chooseCompressedTarget(S3TC, 'etc1s', false, 'normal' as TextureUsage)),
+  name(chooseCompressedTarget(DESKTOP, 'etc1s', false, 'normal' as TextureUsage)),
   'bc1',
   'an alpha-less normal map falls back to the color ranking',
 );
@@ -112,7 +119,7 @@ assert.equal(
 // And a texture used as color only never widens into a two-channel format:
 // one image, one uploaded format, and BC3 for a color texture with alpha.
 assert.equal(
-  name(chooseCompressedTarget(S3TC, 'etc1s', true, 'color' as TextureUsage)),
+  name(chooseCompressedTarget(DESKTOP, 'etc1s', true, 'color' as TextureUsage)),
   'bc3',
   'color usage stays in the color ranking',
 );
@@ -124,4 +131,51 @@ assert.equal(chooseCompressedTarget(BPTC, 'uastc', false)?.bytesPerBlock, 16);
 assert.equal(chooseCompressedTarget(MOBILE, 'etc1s', false)?.bytesPerBlock, 8);
 assert.equal(chooseCompressedTarget(MOBILE, 'uastc', false)?.bytesPerBlock, 16);
 
-console.log(`ktx2-format-choice: ${CASES.length} color and ${NORMAL_CASES.length + 2} normal cases OK`);
+// Which textures may be answered as normal maps at all. The ranking above is
+// only ever as right as this classification: one image is uploaded in one
+// block format, so a texture a material also samples as color must not be
+// called a normal map, whatever else references it.
+const { normalOnlyTextureIndices } = await import(
+  pathToFileURL(resolve(here, '..', 'src', 'scene-document-textures.ts')).href
+) as { normalOnlyTextureIndices: (scene: any) => Set<number> };
+
+const usageScene = (materials: unknown[]) => ({ materials } as any);
+
+assert.deepEqual(
+  [...normalOnlyTextureIndices(usageScene([{ normalTexture: { index: 3 } }]))],
+  [3],
+  'a texture sampled only through normalTexture is a normal map',
+);
+assert.deepEqual(
+  // `baseColorTexture` is flattened to a bare index by both producers of
+  // ViewerScene.materials, which is the reading this gate exists to hold.
+  [...normalOnlyTextureIndices(usageScene([{ normalTexture: { index: 3 }, baseColorTexture: 3 }]))],
+  [],
+  'a texture also sampled as base color is color, flattened index and all',
+);
+assert.deepEqual(
+  [...normalOnlyTextureIndices(usageScene([
+    { normalTexture: { index: 3 } },
+    { baseColorTexture: 3 },
+  ]))],
+  [],
+  'and across materials too: one image, one uploaded format',
+);
+assert.deepEqual(
+  // Numbers that are not texture slots: a factor of 3 must not claim texture 3.
+  [...normalOnlyTextureIndices(usageScene([
+    { normalTexture: { index: 3 }, metallic: 3, roughness: 3, baseColorTexCoord: 3 },
+  ]))],
+  [3],
+  'a numeric field that is not a texture slot is not a reference',
+);
+assert.deepEqual(
+  [...normalOnlyTextureIndices(usageScene([
+    { normalTexture: { index: 3 }, somethingUnknownTexture: { index: 3 } },
+  ]))],
+  [],
+  'an unknown binding counts as color, so an unknown slot never widens',
+);
+
+console.log(`ktx2-format-choice: ${CASES.length} color and ${NORMAL_CASES.length + 3} normal cases OK, `
+  + 'and 5 usage classifications');
