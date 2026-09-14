@@ -36,12 +36,13 @@ export async function buildSceneFromFbx(
 
   const flatMeshes: FbxJson[] = [];
   const collectMeshes = (node: FbxJson) => {
+
     // Copied rather than referenced, and V turned on the way past. FBX puts V's
     // origin at the opposite end of the image from glTF, which the preview
     // consumes; without this a textured FBX showed mirrored against the very
     // GLB this application exports from it. A copy because the same mesh objects
     // are what the export path reads, and it turns V itself.
-    flatMeshes.push(...(node.meshes || []).map((mesh: FbxJson) => (mesh.uvs?.length
+    flatMeshes.push(...drawableMeshes(node).map((mesh: FbxJson) => (mesh.uvs?.length
       ? { ...mesh, uvs: flipUvV(mesh.uvs) }
       : mesh)));
     for (const child of node.children || []) collectMeshes(child);
@@ -73,6 +74,25 @@ export async function buildSceneFromFbx(
       .filter(Boolean);
   }
   return scene;
+}
+
+/**
+ * The geometries of one node that reach the scene, in the order they reach it.
+ *
+ * Every walk below numbers meshes as it goes, and the flat build this hands its
+ * list to skips a geometry with no vertices. A geometry one walk keeps and
+ * another drops shifts every mesh index past it, so a node draws its
+ * neighbour's geometry and the last nodes draw nothing at all. FBX stores a
+ * curve as a `Geometry` like any other -- control points, no polygons -- and
+ * one file of 501 geometries carries nine of them, past which 173 nodes drew
+ * the wrong mesh and nine drew none; what showed on screen was a fragment of
+ * the model with the rest scattered by chain-link transforms. So the rule lives
+ * here once rather than in two places that have to agree. Dropping is not
+ * silent: the document path drops the same geometries and names each in a
+ * warning, and the document is built for every file this previews.
+ */
+function drawableMeshes(node: FbxJson): FbxJson[] {
+  return (node.meshes || []).filter((mesh: FbxJson) => (mesh?.positions?.length || 0) > 0);
 }
 
 /**
@@ -385,7 +405,7 @@ function buildFbxNodes(roots: FbxJson[]) {
       usesAuthoredModelTrs,
       localMatrix,
       children: [],
-      weights: Float32Array.from((source.meshes?.[0]?.morphTargets || []).map((target: FbxJson) => (Number(target.defaultWeight) || 0) / 100)),
+      weights: Float32Array.from((drawableMeshes(source)[0]?.morphTargets || []).map((target: FbxJson) => (Number(target.defaultWeight) || 0) / 100)),
       meshIndex: -1,
       skinIndex: -1,
       world: new Float32Array(16),
@@ -393,7 +413,7 @@ function buildFbxNodes(roots: FbxJson[]) {
     nodes.push(node);
     if (source.name) nodeByName.set(source.name, node);
     if (nodeId !== null) nodeById.set(nodeId, node);
-    for (const mesh of source.meshes || []) {
+    for (const mesh of drawableMeshes(source)) {
       const geometric = mesh?.geometricTransform?.matrix;
       renderables.push({
         node,
@@ -419,7 +439,7 @@ function attachFbxSkins(
   const skins: ViewerSkin[] = [];
   let flatMeshIndex = 0;
   const attach = (source: FbxJson, ownerNode: ViewerNode | undefined) => {
-    for (const sourceMesh of source.meshes || []) {
+    for (const sourceMesh of drawableMeshes(source)) {
       if (sourceMesh.skin?.clusters?.length) {
         const bindPose = new Map<unknown, number[]>((sourceMesh.skin.bindPose || []).map((entry: FbxJson) => [entry.nodeId, entry.matrix]));
         const joints = sourceMesh.skin.clusters.map((cluster: FbxJson) => {

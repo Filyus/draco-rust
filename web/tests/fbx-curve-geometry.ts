@@ -8,9 +8,24 @@
  * naming mesh indices that meant nothing to whoever authored it.
  */
 import assert from 'node:assert/strict';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { assertValidSceneDocument } from '../src/scene-document.ts';
 import { buildSceneDocumentFromFbx } from '../src/fbx-scene-document.ts';
+
+const here = dirname(fileURLToPath(import.meta.url));
+
+// Browser globals the import path reaches for while building materials; the
+// preview case below asserts nothing about either.
+(globalThis as any).createImageBitmap = async () => ({ width: 4, height: 4, close() {} });
+(globalThis as any).WebGL2RenderingContext = {
+  REPEAT: 10497, LINEAR: 9729, LINEAR_MIPMAP_LINEAR: 9987,
+};
+
+const { buildSceneFromFbx } = await import(
+  pathToFileURL(resolve(here, '..', 'src', 'mesh-loader.ts')).href
+);
 
 /** A triangle, with one morph target at half weight. */
 function bodyMesh() {
@@ -99,6 +114,43 @@ function parsedScene(rootNodes: unknown[]) {
     assertValidSceneDocument(document);
     assert.equal(document.meshes.length, 0);
     assert.equal(document.nodes.length, 1);
+}
+
+// The preview numbers meshes as it walks, so a geometry it drops has to be
+// dropped by every walk that numbers them. A curve between two meshes used to
+// leave the node walk one ahead of the mesh list: every node past the curve
+// drew its neighbour's geometry, and the last node drew nothing. On the file
+// this was found with -- 501 geometries, nine of them curves -- that was 173
+// nodes drawing the wrong mesh.
+{
+    // The curve sits between them, and the two differ in everything the flat
+    // list is read for afterwards: which material the primitive draws with, and
+    // whether it carries a morph target.
+    const parsed = parsedScene([{
+        id: 1,
+        name: 'Root',
+        children: [
+            { id: 2, name: 'Front', meshes: [{ ...bodyMesh(), name: 'Front', material: 0, morphTargets: [] }], children: [] },
+            { id: 3, name: 'ChainCurve', meshes: [curveGeometry('ChainCurve')], children: [] },
+            { id: 4, name: 'Back', meshes: [{ ...bodyMesh(), name: 'Back', material: 1 }], children: [] },
+        ],
+    }]);
+    parsed.scene.materials = [{ name: 'Skin' }, { name: 'Cloth' }];
+    const scene = await buildSceneFromFbx(parsed, Object.create(null), {});
+    assert.equal(scene.meshes.length, 2, 'the curve must not become a drawable mesh');
+    assert.equal(scene.renderables.length, 2, 'nor may it claim a renderable');
+    const drawn = scene.renderables.map((renderable: any) => [
+        renderable.node.name,
+        scene.meshes[renderable.meshIndex]?.name,
+    ]);
+    assert.deepEqual(drawn, [['Front', 'Front'], ['Back', 'Back']], 'every node draws its own geometry');
+    // The same shift, one list over: what the flat build kept is read back
+    // against the unfiltered tree, and the material and the morph target follow
+    // whichever entry shares the ordinal.
+    const byName = new Map<string, any>(scene.meshes.map((mesh: any) => [mesh.name, mesh]));
+    assert.equal(byName.get('Back').primitives[0].materialIndex, 1, 'the material follows the mesh past the curve');
+    assert.equal(byName.get('Back').primitives[0].morphPositions?.length, 1, 'so does the morph target');
+    assert.equal(byName.get('Front').primitives[0].materialIndex, 0);
 }
 
 console.log('PASS FBX curve geometry: polygon-less geometries are dropped, their nodes and neighbours kept');
