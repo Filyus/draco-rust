@@ -9,6 +9,8 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.3.0...draco-gltf-v0.4.0) - 2026-09-15
+
 A breaking release that takes ownership of glTF whole. The container parser,
 resource resolution, accessor materialization and the `EXT_meshopt_compression`
 decoders lived in `draco-io` and this crate wrapped them; they are here now, and
@@ -38,6 +40,12 @@ versions, so an FBX change cannot force a release here.
 - **Breaking.** `Error::DracoIo` is `Error::Container`, and its message reads
   `container error:` rather than `draco-io error:`. The crate it named is no
   longer a dependency.
+- Mesh construction ends through `draco_core::mesh::Mesh::finalize`, which is
+  what raises the `draco-core` requirement to 2.1.0. Same steps in the same
+  order; decoded geometry is unchanged.
+- The manifest declares `rust-version = "1.88.0"`, which is the toolchain this
+  crate already required. Cargo now says so before the build does, and a CI job
+  holds the floor so it cannot drift upward unnoticed.
 - `document` no longer enables anything. It named `draco-io/gltf-container`,
   which was never optional in practice -- the document, JSON, extension and
   import modules are unconditional and all name types from it. The feature
