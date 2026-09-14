@@ -17,6 +17,11 @@ only anchor a shipping without a version of its own has.
   first such geometry drew its neighbour's mesh, with its material and morph
   targets shifted to match. One file of 501 geometries showed as a fragment of
   the model with the rest scattered.
+- A file the selection did not hold is reported with the gesture that supplies
+  it, not only by name: the folder for a single-file selection, and for FBX the
+  reason a file that *was* supplied may still not have matched — its texture
+  paths belong to the machine that authored the file, so only the name is
+  compared. The glTF parse error no longer repeats that advice.
 - `ktx2-wasm` names the single- and two-channel transcode targets the crate
   gained — `bc4`, `bc5`, `eac_r11`, `eac_rg11` — so a viewer can take a
   normal map or a channel mask in the format drawn for it.
