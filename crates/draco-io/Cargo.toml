@@ -1,6 +1,6 @@
 [package]
 name = "draco-io"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 rust-version = "1.88.0"
 description = "OBJ, PLY, STL and FBX mesh readers and writers for the Draco geometry model"
@@ -40,7 +40,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 undocumented_unsafe_blocks = "warn"
 
 [dependencies]
-draco-core = { version = "2.0.0", path = "../draco-core", default-features = false }
+draco-core = { version = "2.1.0", path = "../draco-core", default-features = false }
 thiserror = "2.0.17"
 byteorder = { version = "1.5.0", optional = true }
 miniz_oxide = { version = "0.9.1", optional = true }
@@ -91,7 +91,7 @@ tempfile = "3.24.0"
 # `draco-core`, which forbids `unsafe`; this crate allows the `unsafe` a
 # counting allocator needs and already pins the readers that way in
 # `reader_hardening_test.rs`.
-draco-core = { version = "2.0.0", path = "../draco-core", features = [
+draco-core = { version = "2.1.0", path = "../draco-core", features = [
     "encoder",
     "decoder",
     "point_cloud_decode",

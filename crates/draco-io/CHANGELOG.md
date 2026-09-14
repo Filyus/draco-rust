@@ -9,6 +9,8 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/Filyus/draco-rust/compare/draco-io-v0.4.0...draco-io-v0.5.0) - 2026-09-15
+
 A breaking release that moves glTF out. What is left is the set of formats that
 carry geometry in their own encoding -- OBJ, PLY, STL and FBX -- and this crate
 no longer enables any part of the Draco codec.
@@ -40,7 +42,11 @@ forced a `draco-gltf` release that carried nothing for its users.
 - Mesh construction ends through `draco_core::mesh::Mesh::finalize` rather than
   a private pass of this crate's. Same three steps in the same order, and the
   FBX corner path keeps its merge map through
-  `finalize_returning_corner_map`. Reader output is unchanged.
+  `finalize_returning_corner_map`. Reader output is unchanged. Those two methods
+  are what raises the `draco-core` requirement to 2.1.0.
+- The manifest declares `rust-version = "1.88.0"`, which is the toolchain this
+  crate already required. Cargo now says so before the build does, and a CI job
+  holds the floor so it cannot drift upward unnoticed.
 
 ## [0.4.0](https://github.com/Filyus/draco-rust/compare/draco-io-v0.3.2...draco-io-v0.4.0) - 2026-09-05
 
