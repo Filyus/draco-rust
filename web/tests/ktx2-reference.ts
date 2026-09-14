@@ -62,18 +62,25 @@ export interface ReferenceTranscoder {
 }
 
 /**
- * Build the oracle if it is not built, and say so.
+ * Build the oracle, and say so when it has to be compiled from scratch.
  *
- * The gates need cargo — which is the same toolchain everything else here
- * needs — and the first build compiles about 1.5 MB of C++, which is why CI
- * builds it in its own step and this only runs when a machine skipped that.
+ * Built every run rather than only when the binary is missing: an existing
+ * binary proves a build happened once, not that it was built from the vendored
+ * C++ as it stands now, and a gate comparing against a stale reference is worse
+ * than one that skips. Cargo answers in well under a second when there is
+ * nothing to do, and the first build — about 1.5 MB of C++ — is why CI has its
+ * own step for it.
  */
-let built = false;
-async function ensureBinary(): Promise<boolean> {
-  if (existsSync(binary)) return true;
-  if (built) return false;
-  built = true;
-  console.log(`building the reference oracle: cargo build --release (in tools/basis-cpp-oracle)`);
+let build: Promise<boolean> | null = null;
+function ensureBinary(): Promise<boolean> {
+  build ??= buildOracle();
+  return build;
+}
+
+async function buildOracle(): Promise<boolean> {
+  if (!existsSync(binary)) {
+    console.log('building the reference oracle: cargo build --release (in tools/basis-cpp-oracle)');
+  }
   try {
     await promisify(execFile)('cargo', ['build', '--release'], {
       cwd: oracle,
@@ -97,9 +104,24 @@ interface Answer {
 class Session {
   private readonly child;
   private tail: Promise<unknown> = Promise.resolve();
+  /**
+   * Why the oracle is gone, once it is.
+   *
+   * A dead oracle is the one failure that must never read as a slow one: a
+   * pending question would otherwise wait on a process that will never answer,
+   * and the gate would hang instead of failing. Every exit is recorded here and
+   * every waiting question is failed with it, named.
+   */
+  private departed: string | null = null;
 
   constructor() {
     this.child = spawn(binary, [], { stdio: ['pipe', 'pipe', 'inherit'] });
+    this.child.on('exit', (code, signal) => {
+      this.departed = signal
+        ? `the reference oracle was killed by ${signal}`
+        : `the reference oracle exited with status ${code}`;
+      this.child.emit('gone', new Error(this.departed));
+    });
   }
 
   /**
@@ -120,10 +142,18 @@ class Session {
     return new Promise((done, fail) => {
       const { stdout, stdin } = this.child;
       let buffer = Buffer.alloc(0);
+      // A question asked after the oracle is already gone fails at once
+      // rather than waiting for output that cannot come.
+      if (this.departed) {
+        fail(new Error(this.departed));
+        return;
+      }
       const cleanup = () => {
         stdout.off('data', onData);
         stdout.off('error', onFail);
+        stdout.off('end', onEnd);
         this.child.off('error', onFail);
+        this.child.off('gone', onFail);
       };
       const onData = (chunk: Buffer) => {
         buffer = Buffer.concat([buffer, chunk]);
@@ -139,9 +169,17 @@ class Session {
         cleanup();
         fail(error);
       };
+      // Every way the answer can fail to arrive: the pipe ending, the child
+      // exiting, and an error on either. Without these three the reader would
+      // sit on a promise nothing will ever settle.
+      const onEnd = () => onFail(new Error(
+        this.departed ?? 'the reference oracle closed its output mid-answer',
+      ));
       stdout.on('data', onData);
       stdout.on('error', onFail);
+      stdout.on('end', onEnd);
       this.child.on('error', onFail);
+      this.child.on('gone', onFail);
       // Header first, then the payload the header announced — the oracle
       // reads its request bytes before it writes anything back.
       stdin.write(line + '\n');

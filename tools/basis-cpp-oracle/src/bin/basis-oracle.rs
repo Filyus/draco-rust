@@ -23,6 +23,12 @@
 //! the payload. A transcode's payload is the block bytes; `L` answers with a
 //! four-byte little-endian count. A refusal is a `0` frame, not a crash: the
 //! malformed files the gates feed it on purpose are exactly what refuses.
+//!
+//! A `T` request's payload is always read before the answer is decided, so a
+//! refusal leaves the stream aligned for the next question. The one thing that
+//! cannot be realigned is a `T` header that does not parse — nothing then says
+//! how many bytes follow — so the session refuses that request and ends rather
+//! than answering later questions about the wrong bytes.
 
 use std::io::{BufRead, Read, Write};
 use std::process::ExitCode;
@@ -83,16 +89,36 @@ fn serve() -> ExitCode {
         let answer = match fields.as_slice() {
             ["T", level, target, nbytes] => match (level.parse::<u32>(), target.parse::<i32>(), nbytes.parse::<usize>()) {
                 (Ok(level), Ok(raw), Ok(nbytes)) => {
-                    target_from_i32(raw)
-                        .and_then(|target| answer_transcode_bytes(&mut stdin, level, target, nbytes))
-                        .map(|bytes| frame(1, &bytes))
-                        .unwrap_or_else(refused)
+                    // The payload is consumed whatever the answer turns out to
+                    // be, including for a target this build has no name for:
+                    // leaving those bytes in the pipe would make the next
+                    // request start mid-file, and every later answer would be
+                    // about something nobody asked.
+                    match read_payload(&mut stdin, nbytes) {
+                        Some(original) => target_from_i32(raw)
+                            .and_then(|target| answer_transcode_bytes(&original, level, target))
+                            .map(|bytes| frame(1, &bytes))
+                            .unwrap_or_else(refused),
+                        None => refused(),
+                    }
                 }
-                _ => refused(),
+                // A header that does not parse says nothing about how many
+                // bytes follow, so the session cannot be realigned: the
+                // refusal is the last honest answer this process can give.
+                _ => {
+                    let _ = out.write_all(&refused());
+                    let _ = out.flush();
+                    break;
+                }
             },
-            ["L", path] => answer_levels(path)
-                .map(|count| frame(1, &count.to_le_bytes()))
-                .unwrap_or_else(refused),
+            // Split once rather than on every space: the path is the rest of
+            // the line, and a checkout directory may well hold a space.
+            ["L", ..] => {
+                let path = line[1..].trim();
+                answer_levels(path)
+                    .map(|count| frame(1, &count.to_le_bytes()))
+                    .unwrap_or_else(refused)
+            }
             _ => refused(),
         };
         // The reader blocks on these bytes, so a half-written frame would
@@ -135,21 +161,25 @@ fn refused() -> Vec<u8> {
     frame(0, &[])
 }
 
-/// Read `nbytes` of KTX2 from the request and transcode one level, or refuse.
+/// Read the `nbytes` of KTX2 a request announced.
+///
+/// Read before anything else is decided, so a refused request still consumes
+/// its bytes and the next question starts on a clean boundary. The buffer is
+/// grown from what arrives rather than from the announced count: the count is
+/// the sender's word, and a mistyped one should cost a refusal, not the
+/// process.
+fn read_payload(stdin: &mut impl Read, nbytes: usize) -> Option<Vec<u8>> {
+    let mut original = Vec::new();
+    let read = stdin.take(nbytes as u64).read_to_end(&mut original).ok()?;
+    (read == nbytes).then_some(original)
+}
+
+/// Transcode one level of the request's bytes, or refuse.
 ///
 /// Zstd is undone here — the vendored build has none, and the bytes the gates
-/// hand over are exactly what a file or a mutant carries. Reading the payload
-/// happens before anything else, so a refused request still consumes its
-/// bytes and the next question starts on a clean boundary.
-fn answer_transcode_bytes(
-    stdin: &mut impl Read,
-    level: u32,
-    target: Target,
-    nbytes: usize,
-) -> Option<Vec<u8>> {
-    let mut original = vec![0u8; nbytes];
-    stdin.read_exact(&mut original).ok()?;
-    let plain = without_zstd(&original)?;
+/// hand over are exactly what a file or a mutant carries.
+fn answer_transcode_bytes(original: &[u8], level: u32, target: Target) -> Option<Vec<u8>> {
+    let plain = without_zstd(original)?;
     transcode(&plain, level, target)
 }
 

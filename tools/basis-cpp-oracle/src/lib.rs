@@ -15,6 +15,8 @@
 //! cargo test --manifest-path tools/basis-cpp-oracle/Cargo.toml
 //! ```
 
+use std::io::Read as _;
+
 unsafe extern "C" {
     fn basis_oracle_init();
     fn basis_oracle_size(data: *const u8, length: u32, level: u32, target: i32) -> u32;
@@ -49,6 +51,12 @@ pub enum Target {
 const HEADER: usize = 80;
 /// One level index entry: offset, length, uncompressed length.
 const ENTRY: usize = 24;
+/// The most a single level may decompress to before the file is refused.
+///
+/// A ceiling on the work a mutant can ask for, not a format limit: 256 MB is
+/// orders of magnitude above the largest fixture level here and far below the
+/// sizes a Zstd bomb reaches.
+const UNCOMPRESSED_CAP: usize = 256 << 20;
 
 fn word(data: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(data[at..at + 4].try_into().unwrap())
@@ -92,10 +100,22 @@ pub fn without_zstd(original: &[u8]) -> Option<Vec<u8>> {
         let offset = long(at)? as usize;
         let length = long(at + 8)? as usize;
         let end = offset.checked_add(length)?;
-        let mut out = Vec::with_capacity(long(at + 16).unwrap_or(0) as usize);
-        ruzstd::FrameDecoder::new()
-            .decode_all_to_vec(original.get(offset..end)?, &mut out)
+        // Nothing is reserved from the level's declared uncompressed size, and
+        // the stream is read through the cap rather than to its end: on a
+        // mutated file both the declared size and the frame are the file's
+        // word, and an oracle that aborts on an allocation leaves the gate
+        // talking to a dead process rather than reading a refusal. The cap sits
+        // far above any fixture level and far below what a bomb would ask for.
+        let frame = original.get(offset..end)?;
+        let mut out = Vec::new();
+        ruzstd::StreamingDecoder::new(frame)
+            .ok()?
+            .take(UNCOMPRESSED_CAP as u64 + 1)
+            .read_to_end(&mut out)
             .ok()?;
+        if out.len() > UNCOMPRESSED_CAP {
+            return None;
+        }
         payloads.push(out);
     }
 
