@@ -152,8 +152,14 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
+      # A prebuilt binary rather than `cargo install wasm-pack --locked`, which
+      # compiles it from source on every run: that took 70 seconds here, more
+      # than the 64 the seven modules themselves need. Same action the other
+      # tools in these workflows come from.
       - name: Install wasm-pack
-        run: cargo install wasm-pack --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
 
       - name: Install wasm-opt
         run: |
