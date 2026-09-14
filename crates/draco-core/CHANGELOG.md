@@ -8,6 +8,8 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.1.0](https://github.com/Filyus/draco-rust/compare/draco-core-v2.0.0...draco-core-v2.1.0) - 2026-09-15
+
 ### Added
 
 - `Mesh::finalize` and `Mesh::finalize_returning_corner_map`: the pass a reader
@@ -22,6 +24,12 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `draco-gltf` once the two crates stopped depending on each other. It composes
   only methods this crate already exposed, so nothing new is possible that was
   not before.
+
+### Changed
+
+- The manifest declares `rust-version = "1.88.0"`, which is the toolchain this
+  crate already required. Cargo now says so before the build does, and a CI job
+  holds the floor so it cannot drift upward unnoticed.
 
 ### Fixed
 
