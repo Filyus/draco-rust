@@ -23,6 +23,22 @@ impl Mesh {
         Self::default()
     }
 
+    /// Takes the underlying point cloud, dropping the triangle topology.
+    ///
+    /// A mesh already *is* a point cloud with faces on top, and `Deref` lends
+    /// that half out for reading. Encoding it as a point cloud needs it owned:
+    /// a reader that produced a mesh from a file with no faces — a PLY point
+    /// cloud, a file whose payload is per-point attributes — otherwise has no
+    /// way to reach [`PointCloudEncoder`](crate::PointCloudEncoder) without
+    /// rebuilding every attribute.
+    ///
+    /// Faces are discarded rather than triangulated into anything; this is for
+    /// geometry that had none to begin with, and for callers that have decided
+    /// the connectivity is not what they are encoding.
+    pub fn into_point_cloud(self) -> PointCloud {
+        self.point_cloud
+    }
+
     /// Drops every face and everything the underlying point cloud holds,
     /// keeping the allocated capacity of both lists.
     ///
@@ -461,6 +477,40 @@ mod tests {
     use super::*;
     use crate::draco_types::DataType;
     use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
+
+    #[test]
+    fn into_point_cloud_keeps_points_attributes_and_metadata() {
+        let mut mesh = Mesh::new();
+        mesh.set_num_points(3);
+        mesh.set_num_faces(1);
+
+        let mut attribute = PointAttribute::new();
+        attribute.init(
+            GeometryAttributeType::Position,
+            3,
+            DataType::Float32,
+            false,
+            3,
+        );
+        let id = mesh.add_attribute(attribute);
+        let unique_id = mesh.attribute(id).unique_id();
+
+        let mut entries = crate::metadata::Metadata::new();
+        entries.set_string("name", "carried").unwrap();
+        mesh.metadata_or_insert()
+            .set_attribute_metadata(unique_id, entries);
+
+        let cloud = mesh.into_point_cloud();
+        assert_eq!(cloud.num_points(), 3);
+        assert_eq!(cloud.num_attributes(), 1);
+        assert_eq!(
+            cloud
+                .attribute_metadata_by_unique_id(unique_id)
+                .and_then(|metadata| metadata.metadata().get_string("name")),
+            Some("carried"),
+            "the half a point cloud encoder reads must come through intact"
+        );
+    }
 
     /// A mesh whose vertices are not all referenced by faces -- ordinary in
     /// scanned geometry, where the raw point set outlives the triangulation.

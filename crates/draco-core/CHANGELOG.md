@@ -8,6 +8,14 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `Mesh::into_point_cloud` takes the point cloud a mesh is built on, dropping
+  the triangle topology. `Deref` already lent that half out for reading, but
+  `PointCloudEncoder` needs it owned, so geometry read from a file with no
+  faces had no way to reach the point-cloud coder without every attribute
+  being rebuilt.
+
 ## [2.1.0](https://github.com/Filyus/draco-rust/compare/draco-core-v2.0.0...draco-core-v2.1.0) - 2026-09-15
 
 ### Added

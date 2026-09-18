@@ -11,6 +11,13 @@ only anchor a shipping without a version of its own has.
 
 ## Unreleased
 
+- `create_drc` takes a `point_cloud` option, which writes the input through
+  Draco's point-cloud coder instead of the mesh one. Off by default, since a
+  caller passing no indices today gets a mesh with no faces and switching that
+  silently would change the geometry type its decoder reports. It is what a
+  file whose payload is per-point attributes actually is -- a scan, or a
+  Gaussian splat read with the PLY reader's generic attributes turned on.
+
 - `parse_ply_bytes` reports the vertex properties, face properties and whole
   elements the reader could not carry, through the `warnings` array it already
   returned. A Gaussian-splat PLY keeps everything but the position in

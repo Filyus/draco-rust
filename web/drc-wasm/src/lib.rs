@@ -556,6 +556,15 @@ pub struct ExportOptions {
     /// sequential, `2` forces EdgeBreaker. Matches the convention
     /// `gltf-wasm`'s `compressPrimitive` uses for the same control.
     pub encoding_method: Option<i32>,
+    /// Encodes the input as a point cloud rather than a mesh.
+    ///
+    /// Off by default: a caller passing no indices today gets a mesh with no
+    /// faces, and switching that silently would change the geometry type its
+    /// decoder reports. On, connectivity is dropped and every attribute is
+    /// written through Draco's point-cloud coder, which is what a file whose
+    /// payload is per-point attributes -- a Gaussian splat, a scan -- actually
+    /// is.
+    pub point_cloud: Option<bool>,
 }
 
 /// Export result. `binary_data` is the payload; `.drc` has no text container.
@@ -791,6 +800,7 @@ fn export_options_from_js(value: &JsValue) -> ExportOptions {
         include_uvs: opt_bool_from_js(value, "include_uvs"),
         include_colors: opt_bool_from_js(value, "include_colors"),
         encoding_method: opt_i32_from_js(value, "encoding_method"),
+        point_cloud: opt_bool_from_js(value, "point_cloud"),
     }
 }
 
@@ -828,6 +838,10 @@ fn create_drc_internal(input: &MeshInput, options: &ExportOptions) -> ExportResu
         settings.set_attribute_int(attribute_id, "quantization_bits", bits);
     }
 
+    if options.point_cloud.unwrap_or(false) {
+        return encode_as_point_cloud(mesh, &settings, speed);
+    }
+
     let mut encoder = MeshEncoder::new();
     encoder.set_mesh(mesh);
     let mut output = EncoderBuffer::new();
@@ -854,6 +868,59 @@ fn create_drc_internal(input: &MeshInput, options: &ExportOptions) -> ExportResu
                     compressed_size: bytes.len(),
                     method,
                     prediction_scheme: info.and_then(prediction_summary),
+                }),
+                binary_data: Some(bytes),
+                error: None,
+            }
+        }
+        Err(error) => ExportResult {
+            success: false,
+            binary_data: None,
+            error: Some(error.to_string()),
+            draco_stats: None,
+        },
+    }
+}
+
+/// Encode the built geometry through Draco's point-cloud coder.
+///
+/// The mesh is built the same way either way — the attribute ids the bit
+/// settings address come from the order attributes were added, and that order
+/// does not depend on which coder runs — so this takes the finished mesh and
+/// drops the connectivity rather than there being a second builder.
+#[cfg(feature = "write")]
+fn encode_as_point_cloud(
+    mesh: Mesh,
+    settings: &draco_core::encoder_options::EncoderOptions,
+    speed: i32,
+) -> ExportResult {
+    use draco_core::encoder_buffer::EncoderBuffer;
+    use draco_core::point_cloud_encoder::PointCloudEncoder;
+
+    let mut encoder = PointCloudEncoder::new();
+    encoder.set_point_cloud(mesh.into_point_cloud());
+    let mut output = EncoderBuffer::new();
+    match encoder.encode(settings, &mut output) {
+        Ok(()) => {
+            let bytes = output.data().to_vec();
+            let info = encoder.encoded_point_cloud_info();
+            ExportResult {
+                success: true,
+                draco_stats: Some(DracoStats {
+                    primitives: 1,
+                    speed: info.map_or(speed, |info| info.speed),
+                    compressed_size: bytes.len(),
+                    // A point cloud's coders are not the mesh connectivity
+                    // coders, so they are named for what they are rather than
+                    // reported as `sequential`/`edgebreaker`.
+                    method: info.map(|info| match info.encoding_method {
+                        1 => "kd-tree".to_string(),
+                        0 => "sequential points".to_string(),
+                        other => format!("method {other}"),
+                    }),
+                    // Point-cloud encoding reports no per-attribute prediction
+                    // schemes, so claiming any here would be inventing them.
+                    prediction_scheme: None,
                 }),
                 binary_data: Some(bytes),
                 error: None,
@@ -1207,6 +1274,74 @@ mod tests {
     /// directions: EdgeBreaker at speed 10, where auto always chooses
     /// sequential, and sequential well below 10, where auto always chooses
     /// EdgeBreaker.
+    /// A splat is positions plus per-point attributes and no connectivity.
+    ///
+    /// The extras carry what a PLY reader with generic attributes turned on
+    /// would have produced, so this is the shape the whole path ends in.
+    #[cfg(feature = "write")]
+    fn splat_points() -> MeshInput {
+        MeshInput {
+            positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0],
+            indices: vec![],
+            normals: None,
+            uvs: None,
+            colors: None,
+            extras: Some(vec![ExtraAttribute {
+                attribute_type: "GENERIC".to_string(),
+                components: 1,
+                data_type: "float32".to_string(),
+                unique_id: 7,
+                normalized: false,
+                values: vec![-3.0, -2.0, -1.0, 0.0],
+            }]),
+        }
+    }
+
+    #[test]
+    fn test_point_cloud_option_writes_a_point_cloud_and_is_off_by_default() {
+        let as_mesh = create_drc_internal(&splat_points(), &ExportOptions::default());
+        assert!(as_mesh.success, "{:?}", as_mesh.error);
+        let mesh_method = as_mesh.draco_stats.unwrap().method;
+        assert!(
+            matches!(
+                mesh_method.as_deref(),
+                Some("sequential") | Some("edgebreaker")
+            ),
+            "without the option the input is still encoded as a mesh, got {mesh_method:?}"
+        );
+
+        let as_points = create_drc_internal(
+            &splat_points(),
+            &ExportOptions {
+                point_cloud: Some(true),
+                ..Default::default()
+            },
+        );
+        assert!(as_points.success, "{:?}", as_points.error);
+        let stats = as_points.draco_stats.unwrap();
+        assert!(
+            matches!(
+                stats.method.as_deref(),
+                Some("kd-tree") | Some("sequential points")
+            ),
+            "the point-cloud coders are named for what they are, got {:?}",
+            stats.method
+        );
+
+        // And the stream decodes as a point cloud carrying every point.
+        let bytes = as_points.binary_data.expect("a payload");
+        let mut decoded = draco_core::PointCloud::new();
+        draco_core::PointCloudDecoder::new()
+            .decode(&mut draco_core::DecoderBuffer::new(&bytes), &mut decoded)
+            .expect("a stream this module wrote must decode");
+        assert_eq!(decoded.num_points(), 4);
+        assert_eq!(
+            decoded.num_attributes(),
+            2,
+            "position and the carried extra"
+        );
+    }
+
     #[test]
     fn test_encoding_method_overrides_the_speed_default() {
         let forced_edgebreaker = create_drc_internal(
