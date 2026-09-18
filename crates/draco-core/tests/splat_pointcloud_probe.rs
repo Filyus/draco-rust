@@ -246,3 +246,79 @@ fn an_unquantized_generic_attribute_is_byte_identical() {
     );
     assert_eq!(before, after, "lossless path is not lossless");
 }
+
+/// The whole path, from a splat PLY to a Draco point cloud and back.
+///
+/// Each link is covered on its own elsewhere; this is the one test that fails
+/// if any of them stops meeting the next.
+#[test]
+fn a_splat_ply_survives_the_round_trip_to_a_draco_point_cloud() {
+    use draco_io::ply_reader::PlyReader;
+
+    // Three splats, degree-0 spherical harmonics, in the property order the
+    // original 3DGS exporter writes.
+    let mut ply = String::from(
+        "ply\nformat ascii 1.0\nelement vertex 3\n\
+         property float x\nproperty float y\nproperty float z\n\
+         property float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\n\
+         property float opacity\n\
+         property float scale_0\nproperty float scale_1\nproperty float scale_2\n\
+         property float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\n\
+         end_header\n",
+    );
+    for i in 0..3 {
+        let f = i as f32;
+        ply.push_str(&format!(
+            "{f} 0 0  {} {} {}  {}  -2.5 -0.5 -0.2  1 0 0 0\n",
+            1.0 + f,
+            2.0 + f,
+            3.0 + f,
+            -1.0 - f
+        ));
+    }
+
+    let (mesh, report) = PlyReader::from_bytes(ply.into_bytes())
+        .with_generic_attributes(true)
+        .read_mesh_reporting_loss()
+        .expect("a splat PLY parses");
+    assert!(
+        report.is_lossless(),
+        "everything the file declared is carried: {:?}",
+        report.dropped()
+    );
+    // Position plus the eleven splat properties, one attribute each.
+    assert_eq!(mesh.num_attributes(), 12);
+
+    let cloud = mesh.into_point_cloud();
+    let names_before = attribute_names(&cloud);
+    assert!(names_before.contains(&"f_dc_0".to_string()));
+    assert!(names_before.contains(&"rot_3".to_string()));
+
+    let (bytes, decoded) = round_trip(cloud, Some(16)).expect("encodes and decodes");
+    assert_eq!(decoded.num_points(), 3);
+    assert_eq!(decoded.num_attributes(), 12);
+    assert_eq!(
+        attribute_names(&decoded),
+        names_before,
+        "every property keeps its name through the bitstream"
+    );
+    println!(
+        "splat PLY -> drc: {} bytes for 3 points across {} attributes",
+        bytes.len(),
+        decoded.num_attributes()
+    );
+}
+
+/// Names of the attributes that carry one, in attribute order.
+fn attribute_names(cloud: &PointCloud) -> Vec<String> {
+    (0..cloud.num_attributes())
+        .filter_map(|id| {
+            let unique_id = cloud.attribute(id).unique_id();
+            cloud
+                .attribute_metadata_by_unique_id(unique_id)?
+                .metadata()
+                .get_string("name")
+                .map(str::to_string)
+        })
+        .collect()
+}
