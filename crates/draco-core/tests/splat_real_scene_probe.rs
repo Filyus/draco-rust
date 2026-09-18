@@ -379,6 +379,52 @@ fn a_real_scene_under_the_spz_bit_budget() {
         alone * 8.0 / sh_components as f32,
     );
 
+    // ---------------------------------------------------------------------
+    // Positions on their own, under both encoders.
+    //
+    // This is the other half of the same question. The kd-tree coder is what
+    // exploits where the points are, and the sequential coder is what a
+    // per-attribute budget reaches; a splat needs both and the format makes
+    // them exclusive. What that exclusivity costs is this pair of numbers.
+    // ---------------------------------------------------------------------
+    println!();
+    println!("=== positions, under each encoder ===");
+    let position_id = (0..cloud.num_attributes())
+        .find(|id| cloud.attribute(*id).attribute_type() == GeometryAttributeType::Position)
+        .expect("a splat has positions");
+    let mut positions_only = PointCloud::new();
+    positions_only.set_num_points(num_points);
+    {
+        let source_attribute = cloud.attribute(position_id);
+        let mut attribute = PointAttribute::new();
+        attribute.init(
+            GeometryAttributeType::Position,
+            source_attribute.num_components(),
+            DataType::Float32,
+            false,
+            num_points,
+        );
+        let width = source_attribute.num_components() as usize * 4;
+        let stride = source_attribute.byte_stride() as usize;
+        let mut scratch = vec![0u8; width];
+        let buffer_out = attribute.buffer_mut();
+        for point in 0..num_points {
+            source_attribute.buffer().read(point * stride, &mut scratch);
+            buffer_out.write(point * width, &scratch);
+        }
+        positions_only.add_attribute(attribute);
+    }
+    let twenty_four = vec![24];
+    let kd = encode(&positions_only, &twenty_four, None) as f32 / num_points as f32;
+    let seq = encode(&positions_only, &twenty_four, Some(SEQUENTIAL)) as f32 / num_points as f32;
+    println!("  budget                {:>7.2} B/point (3 x 24 bits)", 9.0);
+    println!("  kd-tree               {kd:>7.2} B/point");
+    println!("  sequential            {seq:>7.2} B/point");
+    println!(
+        "  choosing sequential for the harmonics' sake costs {:.2} B/point here",
+        seq - kd
+    );
+
     // Kept only to show what it is not: this is the slope, printed next to the
     // cost it would have been mistaken for.
     let slope = (encode(&cloud, &budgets(8), Some(SEQUENTIAL)) as f32
