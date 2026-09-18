@@ -11,6 +11,13 @@ only anchor a shipping without a version of its own has.
 
 ## Unreleased
 
+- `parse_ply_bytes` reports the vertex properties, face properties and whole
+  elements the reader could not carry, through the `warnings` array it already
+  returned. A Gaussian-splat PLY keeps everything but the position in
+  properties this reader has no attribute for, so it parsed into a bare point
+  cloud and said only that it had succeeded. Until now the array was filled
+  only by the fallback path for a malformed file, which meant a broken file
+  was explained and an intact one that lost most of its payload was not.
 - The FBX preview draws every node's own geometry again. A geometry FBX
   carries without polygons — a curve, a lattice — was dropped from the mesh
   list but still counted by the walk that numbers them, so every node past the

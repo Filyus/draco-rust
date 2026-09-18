@@ -179,13 +179,20 @@ pub fn parse_ply_bytes(data: &[u8]) -> JsValue {
 
 #[cfg(feature = "read")]
 fn parse_ply_with_core(data: &[u8]) -> Result<ParseResult, String> {
-    let mesh = PlyReader::read_from_bytes(data).map_err(|error| error.to_string())?;
+    // Reported from the same parse as the mesh, so the warnings describe the
+    // buffer that produced these meshes. A PLY carrying its payload in
+    // properties this reader has no attribute for -- a Gaussian splat is the
+    // live example -- parses successfully into bare positions, and without
+    // this the caller is told only that it succeeded.
+    let (mesh, loss) = PlyReader::from_bytes(data.to_vec())
+        .read_mesh_reporting_loss()
+        .map_err(|error| error.to_string())?;
     let mesh_data = mesh_to_js_data(&mesh);
     Ok(ParseResult {
         success: true,
         meshes: vec![mesh_data],
         error: None,
-        warnings: vec![],
+        warnings: loss.dropped().iter().map(ToString::to_string).collect(),
         header: parse_header_info(data),
     })
 }
@@ -856,6 +863,60 @@ mod reader_tests {
         assert_eq!(header.format, format);
         assert_eq!(header.vertex_count, 4);
         assert_eq!(header.face_count, 1);
+    }
+
+    #[test]
+    fn test_parse_reports_properties_the_reader_could_not_carry() {
+        // A Gaussian-splat PLY trimmed to one coefficient per group. It parses
+        // into bare positions, which is a success worth a warning: before the
+        // report was wired through, only a malformed file produced any.
+        let ply = r#"ply
+format ascii 1.0
+element vertex 1
+property float x
+property float y
+property float z
+property float f_dc_0
+property float opacity
+property float scale_0
+property float rot_0
+end_header
+0 0 0 1.2 -3.0 -2.5 1.0
+"#;
+
+        let result = parse_ply_with_core(ply.as_bytes()).expect("a splat PLY still parses");
+        assert!(result.success);
+        assert_eq!(result.meshes[0].positions.len(), 3);
+        assert_eq!(
+            result.warnings,
+            [
+                "vertex property \"f_dc_0\" (Float32) has no attribute to read it into",
+                "vertex property \"opacity\" (Float32) has no attribute to read it into",
+                "vertex property \"scale_0\" (Float32) has no attribute to read it into",
+                "vertex property \"rot_0\" (Float32) has no attribute to read it into",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_warns_about_nothing_when_the_file_is_carried_whole() {
+        let ply = r#"ply
+format ascii 1.0
+element vertex 3
+property float x
+property float y
+property float z
+element face 1
+property list uchar int vertex_indices
+end_header
+0 0 0
+1 0 0
+0.5 1 0
+3 0 1 2
+"#;
+
+        let result = parse_ply_with_core(ply.as_bytes()).expect("parses");
+        assert!(result.warnings.is_empty(), "{:?}", result.warnings);
     }
 
     #[test]
