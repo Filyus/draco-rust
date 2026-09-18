@@ -454,6 +454,8 @@ fn a_real_scene_under_the_spz_bit_budget() {
     // ---------------------------------------------------------------------
     println!();
     println!("=== positions, under each encoder ===");
+    // Used by this section and by the whole-scene arms below.
+    let sorted = morton_sorted(&cloud, position_id_of(&cloud));
     let position_id = (0..cloud.num_attributes())
         .find(|id| cloud.attribute(*id).attribute_type() == GeometryAttributeType::Position)
         .expect("a splat has positions");
@@ -482,12 +484,44 @@ fn a_real_scene_under_the_spz_bit_budget() {
     let twenty_four = vec![24];
     let kd = encode(&positions_only, &twenty_four, None) as f32 / num_points as f32;
     let seq = encode(&positions_only, &twenty_four, Some(SEQUENTIAL)) as f32 / num_points as f32;
+    // And the same positions after the points are sorted. The kd-tree coder
+    // wins by using where the points are; a difference predictor can use the
+    // same thing once the order puts neighbours next to each other, so how much
+    // of the gap is really the coder and how much was only the ordering is a
+    // question the sorted cloud answers.
+    let sorted_positions = {
+        let mut only = PointCloud::new();
+        only.set_num_points(num_points);
+        let source_attribute = sorted.attribute(position_id);
+        let mut attribute = PointAttribute::new();
+        attribute.init(
+            GeometryAttributeType::Position,
+            source_attribute.num_components(),
+            DataType::Float32,
+            false,
+            num_points,
+        );
+        let width = source_attribute.num_components() as usize * 4;
+        let stride = source_attribute.byte_stride() as usize;
+        let mut scratch = vec![0u8; width];
+        let buffer_out = attribute.buffer_mut();
+        for point in 0..num_points {
+            source_attribute.buffer().read(point * stride, &mut scratch);
+            buffer_out.write(point * width, &scratch);
+        }
+        only.add_attribute(attribute);
+        only
+    };
+    let seq_sorted =
+        encode(&sorted_positions, &twenty_four, Some(SEQUENTIAL)) as f32 / num_points as f32;
     println!("  budget                {:>7.2} B/point (3 x 24 bits)", 9.0);
     println!("  kd-tree               {kd:>7.2} B/point");
-    println!("  sequential            {seq:>7.2} B/point");
+    println!("  sequential, file order{seq:>7.2} B/point");
+    println!("  sequential, Morton    {seq_sorted:>7.2} B/point");
     println!(
-        "  choosing sequential for the harmonics' sake costs {:.2} B/point here",
-        seq - kd
+        "  the exclusive choice costs {:.2} B/point in file order and {:.2} once sorted",
+        seq - kd,
+        seq_sorted - kd,
     );
 
     // ---------------------------------------------------------------------
@@ -503,7 +537,6 @@ fn a_real_scene_under_the_spz_bit_budget() {
     // ---------------------------------------------------------------------
     println!();
     println!("=== the whole scene, with the predictor chosen per attribute ===");
-    let sorted = morton_sorted(&cloud, position_id);
     let per_attribute: Vec<i32> = (0..cloud.num_attributes())
         .map(|id| {
             if names[id as usize]
@@ -594,6 +627,13 @@ fn a_real_scene_under_the_spz_bit_budget() {
         "  (the 8-to-4-bit slope is {slope:.2} B/point, which is the difference \
          of two compressed costs and not a cost)"
     );
+}
+
+/// The id of the cloud's position attribute.
+fn position_id_of(cloud: &PointCloud) -> i32 {
+    (0..cloud.num_attributes())
+        .find(|id| cloud.attribute(*id).attribute_type() == GeometryAttributeType::Position)
+        .expect("a splat has positions")
 }
 
 /// The same cloud with its points in Morton order.
