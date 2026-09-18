@@ -9,6 +9,17 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `PlyReader::loss_report` reports what a read of a PLY file does not carry
+  into the mesh: vertex properties with no attribute to land in, normals
+  declared in a type the reader will not build from, face properties other
+  than the corner indices, and whole elements it skips. The reader has always
+  ignored these without failing, so a file whose payload lives in custom
+  per-vertex properties -- a Gaussian-splat PLY, where everything but the
+  position sits in `f_dc_*`, `f_rest_*`, `opacity`, `scale_*` and `rot_*` --
+  read back as a bare point cloud and reported no error.
+
 ## [0.5.0](https://github.com/Filyus/draco-rust/compare/draco-io-v0.4.0...draco-io-v0.5.0) - 2026-09-15
 
 A breaking release that moves glTF out. What is left is the set of formats that

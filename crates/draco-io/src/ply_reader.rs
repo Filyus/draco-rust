@@ -127,6 +127,63 @@ fn parse_ply_scalar_type(token: &str) -> Option<DataType> {
     }
 }
 
+/// One thing a PLY file declares that a read does not carry into the mesh.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlyDroppedItem {
+    /// A vertex property with no attribute to land in.
+    ///
+    /// `data_type` is `None` for a list property, which the vertex element has
+    /// no reading for at all.
+    VertexProperty {
+        /// The property name as the header spells it.
+        name: String,
+        /// The declared scalar type, or `None` for a list.
+        data_type: Option<DataType>,
+    },
+    /// `nx`/`ny`/`nz` are declared, but not all three as `float32`, which is
+    /// the only form the normal attribute is built from.
+    Normals,
+    /// A face property other than the corner-index list — per-corner texture
+    /// coordinates, most often.
+    FaceProperty {
+        /// The property name as the header spells it.
+        name: String,
+    },
+    /// A whole element other than `vertex` and `face`, skipped with everything
+    /// declared on it.
+    Element {
+        /// The element name as the header spells it.
+        name: String,
+        /// How many of them the header declares.
+        count: usize,
+    },
+}
+
+/// What a read of a PLY file leaves behind.
+///
+/// The reader maps a fixed set of property names onto Draco's attribute types
+/// and ignores the rest without failing, so a file whose payload lives in
+/// custom per-vertex properties — a Gaussian-splat PLY, say, where everything
+/// but the position sits in `f_dc_*`, `f_rest_*`, `opacity`, `scale_*` and
+/// `rot_*` — reads back as a bare point cloud and reports no error. This says
+/// what went missing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PlyLossReport {
+    dropped: Vec<PlyDroppedItem>,
+}
+
+impl PlyLossReport {
+    /// Everything the read does not carry, in header declaration order.
+    pub fn dropped(&self) -> &[PlyDroppedItem] {
+        &self.dropped
+    }
+
+    /// Whether the read carries the file's whole declared content.
+    pub fn is_lossless(&self) -> bool {
+        self.dropped.is_empty()
+    }
+}
+
 /// PLY format reader.
 ///
 /// Reads vertex positions from ASCII and little-endian binary PLY files.
@@ -167,6 +224,21 @@ impl PlyReader {
     pub fn read_from_bytes(bytes: &[u8]) -> io::Result<Mesh> {
         let mut reader = Self::from_bytes(bytes.to_vec());
         reader.read_mesh()
+    }
+
+    /// Report what a read of this file would not carry into the mesh.
+    ///
+    /// Reads and validates the header only, so it answers for the same file a
+    /// following [`read_mesh`](Self::read_mesh) would parse, and fails on the
+    /// headers that one rejects.
+    pub fn loss_report(&mut self) -> io::Result<PlyLossReport> {
+        let bytes = match &self.source {
+            PlyReaderSource::Path(path) => std::borrow::Cow::Owned(fs::read(path)?),
+            PlyReaderSource::Bytes(bytes) => std::borrow::Cow::Borrowed(bytes.as_slice()),
+        };
+        let (header, _) = parse_ply_header(&bytes)?;
+        let schema = build_read_schema(&header)?;
+        Ok(build_loss_report(&header, &schema))
     }
 
     /// Read all positions from the PLY file.
@@ -660,6 +732,63 @@ fn build_read_schema(header: &PlyHeader) -> io::Result<PlyReadSchema> {
         color_components,
         texcoord_pair: detect_texcoord_pair(header)?,
     })
+}
+
+/// Diff what the header declares against what the schema reads.
+///
+/// The two have to be derived from one header: the schema is what decides
+/// whether a declared property is consumed or ignored, so asking the names
+/// alone would call a non-`float32` `nx` supported and a second texture
+/// coordinate pair read.
+fn build_loss_report(header: &PlyHeader, schema: &PlyReadSchema) -> PlyLossReport {
+    const NORMAL_NAMES: [&str; 3] = ["nx", "ny", "nz"];
+    const COLOR_NAMES: [&str; 4] = ["red", "green", "blue", "alpha"];
+
+    let mut dropped = Vec::new();
+
+    let declares_normals = header
+        .vertex_properties
+        .iter()
+        .any(|property| NORMAL_NAMES.contains(&property.name.as_str()));
+    if declares_normals && !schema.has_normals {
+        dropped.push(PlyDroppedItem::Normals);
+    }
+
+    for property in &header.vertex_properties {
+        let name = property.name.as_str();
+        let consumed = matches!(name, "x" | "y" | "z")
+            || NORMAL_NAMES.contains(&name)
+            || COLOR_NAMES.contains(&name)
+            || schema
+                .texcoord_pair
+                .is_some_and(|pair| name == pair.u || name == pair.v);
+        if !consumed {
+            dropped.push(PlyDroppedItem::VertexProperty {
+                name: property.name.clone(),
+                data_type: property.scalar_type(),
+            });
+        }
+    }
+
+    let face_index = face_index_property(&header.face_properties);
+    for (index, property) in header.face_properties.iter().enumerate() {
+        if Some(index) != face_index {
+            dropped.push(PlyDroppedItem::FaceProperty {
+                name: property.name.clone(),
+            });
+        }
+    }
+
+    for element in &header.elements {
+        if !matches!(element.name.as_str(), "vertex" | "face") {
+            dropped.push(PlyDroppedItem::Element {
+                name: element.name.clone(),
+                count: element.count,
+            });
+        }
+    }
+
+    PlyLossReport { dropped }
 }
 
 fn triangulate_vertex_indices(indices: &[u32], faces: &mut Vec<[u32; 3]>) {
@@ -1906,6 +2035,115 @@ end_header
         assert_eq!(
             mesh.face(draco_core::geometry_indices::FaceIndex(1)),
             [0u32.into(), 2u32.into(), 3u32.into()]
+        );
+    }
+
+    #[test]
+    fn test_loss_report_is_empty_for_a_file_the_reader_carries_whole() {
+        let ply = r#"ply
+format ascii 1.0
+element vertex 1
+property float x
+property float y
+property float z
+property float nx
+property float ny
+property float nz
+property uchar red
+property uchar green
+property uchar blue
+element face 1
+property list uchar int vertex_indices
+end_header
+0 0 0 0 0 1 255 0 0
+3 0 0 0
+"#;
+
+        let report = PlyReader::from_bytes(ply.as_bytes().to_vec())
+            .loss_report()
+            .unwrap();
+        assert!(report.is_lossless(), "{:?}", report.dropped());
+    }
+
+    #[test]
+    fn test_loss_report_names_gaussian_splat_properties() {
+        // The shape a splat PLY has, trimmed to one coefficient per group: the
+        // reader takes the position and reports the rest rather than failing.
+        let ply = r#"ply
+format ascii 1.0
+element vertex 1
+property float x
+property float y
+property float z
+property float f_dc_0
+property float f_rest_0
+property float opacity
+property float scale_0
+property float rot_0
+end_header
+0 0 0 1.2 0.1 -3.0 -2.5 1.0
+"#;
+
+        let report = PlyReader::from_bytes(ply.as_bytes().to_vec())
+            .loss_report()
+            .unwrap();
+        let names: Vec<&str> = report
+            .dropped()
+            .iter()
+            .map(|item| match item {
+                PlyDroppedItem::VertexProperty { name, data_type } => {
+                    assert_eq!(*data_type, Some(DataType::Float32));
+                    name.as_str()
+                }
+                other => panic!("unexpected drop: {other:?}"),
+            })
+            .collect();
+        assert_eq!(names, ["f_dc_0", "f_rest_0", "opacity", "scale_0", "rot_0"]);
+
+        // And the read itself still succeeds, silently, which is what the
+        // report exists to say out loud.
+        let mesh = PlyReader::read_from_bytes(ply.as_bytes()).unwrap();
+        assert_eq!(mesh.num_points(), 1);
+    }
+
+    #[test]
+    fn test_loss_report_covers_normals_faces_and_whole_elements() {
+        let ply = r#"ply
+format ascii 1.0
+element vertex 1
+property double nx
+property double ny
+property double nz
+property float x
+property float y
+property float z
+element face 1
+property list uchar int vertex_indices
+property list uchar float texcoord
+element camera 2
+property float view_px
+end_header
+0 0 1 0 0 0
+3 0 0 0
+0.5
+0.5
+"#;
+
+        let report = PlyReader::from_bytes(ply.as_bytes().to_vec())
+            .loss_report()
+            .unwrap();
+        assert_eq!(
+            report.dropped(),
+            [
+                PlyDroppedItem::Normals,
+                PlyDroppedItem::FaceProperty {
+                    name: "texcoord".to_string(),
+                },
+                PlyDroppedItem::Element {
+                    name: "camera".to_string(),
+                    count: 2,
+                },
+            ]
         );
     }
 }
