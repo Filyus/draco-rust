@@ -176,9 +176,15 @@ fn encode(cloud: &PointCloud, budgets: &[i32], method: Option<i32>) -> usize {
 
 /// Encodes with `set_prediction_search`, the option this all became.
 fn encode_searching(cloud: &PointCloud, budgets: &[i32]) -> usize {
+    encode_with_options(cloud, budgets, true, false)
+}
+
+/// Encodes with the two shipped options, in whatever combination.
+fn encode_with_options(cloud: &PointCloud, budgets: &[i32], search: bool, spatial: bool) -> usize {
     let mut options = EncoderOptions::new();
     options.set_encoding_method(SEQUENTIAL);
-    options.set_prediction_search(true);
+    options.set_prediction_search(search);
+    options.set_spatial_point_order(spatial);
     for (id, bits) in budgets.iter().enumerate() {
         options.set_attribute_int(id as i32, "quantization_bits", *bits);
     }
@@ -589,6 +595,12 @@ fn a_real_scene_under_the_spz_bit_budget() {
     println!("  both                          {both:>7.2} B/point");
     println!("  set_prediction_search(true)   {searched:>7.2} B/point");
     println!("  the same, Morton order        {searched_sorted:>7.2} B/point");
+    // Both shipped options, doing on their own what the arms above did with a
+    // hand-sorted cloud and a hand-written list of attributes.
+    let spatial_only = encode_with_options(&cloud, &budget, false, true) as f32 / num_points as f32;
+    let both_options = encode_with_options(&cloud, &budget, true, true) as f32 / num_points as f32;
+    println!("  set_spatial_point_order(true) {spatial_only:>7.2} B/point");
+    println!("  both options                  {both_options:>7.2} B/point");
     println!(
         "  together {:.2} B/point, {:.1}% off, and {:.2}x the raw floats",
         base - both,

@@ -24,6 +24,22 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is byte-identical to C++ Draco's for the same input; the cost when it is on
   is encode time, and every stream it can produce is one an ordinary decoder
   reads, `PREDICTION_NONE` having been in the bitstream since version 1.1.
+- `EncoderOptions::set_spatial_point_order` emits a point cloud's points in
+  Morton order rather than in the order they were handed in, which gives the
+  difference predictor a spatial neighbour to predict from. A point cloud's
+  point order carries no meaning — nothing refers to it and every attribute is
+  read through the same index — so an encoder may choose it. Off by default,
+  for the same byte-parity reason. It reorders the decoded points, and it can
+  make a file bigger when an attribute varies along the order it came in rather
+  than through space; both are measured in `spatial_point_order_test`. On the
+  same splat scene: 53.02 to 47.02 bytes per point alone, 46.52 with the
+  prediction search.
+
+### Changed
+
+- The point-cloud sequential encoder takes its point order from `point_order`
+  rather than assuming the identity. With no option set it still is the
+  identity, and the stream is unchanged.
 
 ## [2.1.0](https://github.com/Filyus/draco-rust/compare/draco-core-v2.0.0...draco-core-v2.1.0) - 2026-09-15
 

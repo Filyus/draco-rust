@@ -138,6 +138,8 @@ fn emit() {
         // it.
         ("prediction_searched.drc", None, true),
     ] {
+        // Kept separate from the spatial file below, which changes the point
+        // order and so cannot be compared point by point against these.
         let cloud = splat_cloud();
         let mut options = EncoderOptions::new();
         options.set_encoding_method(0); // sequential
@@ -154,5 +156,22 @@ fn emit() {
         encoder.encode(&options, &mut buffer).expect("encode");
         write(name, buffer.data());
     }
-    println!("decode both with draco_decoder.exe and compare the outputs");
+    // And one with the points reordered. Nothing about the stream is unusual
+    // -- the order is data, not a format element -- but that is a claim about
+    // another decoder, so it gets a file too. Its points come back in a
+    // different order, so it is checked as a set rather than point by point.
+    let cloud = splat_cloud();
+    let mut options = EncoderOptions::new();
+    options.set_encoding_method(0);
+    options.set_spatial_point_order(true);
+    for id in 0..cloud.num_attributes() {
+        options.set_attribute_int(id, "quantization_bits", 8);
+    }
+    let mut encoder = PointCloudEncoder::new();
+    encoder.set_point_cloud(cloud);
+    let mut buffer = EncoderBuffer::new();
+    encoder.encode(&options, &mut buffer).expect("encode");
+    write("prediction_spatial.drc", buffer.data());
+
+    println!("decode them with draco_decoder.exe and compare the outputs");
 }

@@ -183,6 +183,53 @@ impl EncoderOptions {
         self.set_global_int("prediction_scheme_search", i32::from(enabled));
     }
 
+    /// Whether a point cloud's points may be reordered spatially before being
+    /// encoded.
+    pub fn spatial_point_order(&self) -> bool {
+        self.get_global_int("spatial_point_order", 0) != 0
+    }
+
+    /// Lets the encoder emit a point cloud's points in Morton order rather than
+    /// in the order they were handed in.
+    ///
+    /// A point cloud's point order carries no meaning: no connectivity refers
+    /// to it, every attribute is read through the same point index, and a
+    /// decoder reconstructs whatever order the stream has. So an encoder may
+    /// choose it, and choosing it spatially is what makes the difference
+    /// predictor predict from a neighbour instead of from whatever the
+    /// exporter happened to write next. On a Gaussian splat scene that is 53.02
+    /// bytes per point down to 47.02, and 46.52 together with
+    /// [`Self::set_prediction_search`].
+    ///
+    /// Off by default for the same reason the prediction search is: the output
+    /// differs, byte for byte, from what upstream C++ Draco writes for the same
+    /// input, and this crate's default is to match it.
+    ///
+    /// **This reorders the decoded points.** Anything outside the file that
+    /// indexes into it by point number — a sidecar array, an index written by
+    /// another tool — will be pointing at different points afterwards. Nothing
+    /// inside a `.drc` does, which is why this is expressible at all, but a
+    /// caller who has such a thing is the one who knows.
+    ///
+    /// **It can also make a file bigger**, and unlike the prediction search it
+    /// does not check. The gain comes from attributes that vary through space;
+    /// an attribute that varies along the order it was handed in — an index, a
+    /// timestamp, anything written in sequence — is scrambled by the reorder
+    /// and costs more afterwards. A cloud of positions plus a running integer
+    /// tag grows by 14% here. It is not checked because the option is a
+    /// statement about the order, not about the size: a caller who wants
+    /// spatial locality in the decoded cloud wants it whether or not it also
+    /// happens to compress better. Whoever wants only the smaller file can
+    /// encode both ways and keep the smaller, which is what this would
+    /// otherwise be doing on their behalf and at twice the encode time.
+    ///
+    /// Applies to the sequential coder. The kd-tree coder chooses its own point
+    /// order and this leaves it alone. A point cloud with no position attribute
+    /// has nothing to sort by and is also left alone.
+    pub fn set_spatial_point_order(&mut self, enabled: bool) {
+        self.set_global_int("spatial_point_order", i32::from(enabled));
+    }
+
     /// Returns the forced encoding method, if one was set.
     pub fn get_encoding_method(&self) -> Option<i32> {
         self.inner.global_options.get("encoding_method").cloned()
