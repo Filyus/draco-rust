@@ -172,6 +172,14 @@ impl EncoderOptions {
     /// a file 2.5x larger. Neither is knowable without encoding, which is what
     /// this does.
     ///
+    /// **It is worth turning on only for data of that shape**, and the honest
+    /// version of "that shape" is narrow. On a photogrammetry capture — eight
+    /// million points carrying position and colour — the search finds nothing
+    /// at all: both attributes are well served by differencing, and coding
+    /// either directly is 27% worse. Attributes whose values do not follow
+    /// their neighbours are what this is for, and a scanned surface is the
+    /// opposite of that.
+    ///
     /// The cost is encode time — each candidate is a full encode of that
     /// attribute — and nothing else. Decoding is unaffected, and every stream
     /// this can produce is one an ordinary decoder reads: the scheme is a byte
@@ -197,9 +205,15 @@ impl EncoderOptions {
     /// decoder reconstructs whatever order the stream has. So an encoder may
     /// choose it, and choosing it spatially is what makes the difference
     /// predictor predict from a neighbour instead of from whatever the
-    /// exporter happened to write next. On a Gaussian splat scene that is 53.02
-    /// bytes per point down to 47.02, and 46.52 together with
-    /// [`Self::set_prediction_search`].
+    /// exporter happened to write next.
+    ///
+    /// **This is the general one of the two.** It was written for Gaussian
+    /// splats, where it takes a scene from 53.02 bytes per point to 47.02, and
+    /// it does more on ordinary captured geometry: a 223 MB photogrammetry
+    /// point cloud of eight million coloured points goes from 6.26 bytes per
+    /// point to 4.31, which is 31% and more than twice the splat's share. Any
+    /// cloud whose attributes vary through space rather than along its file
+    /// order should expect something in that range.
     ///
     /// Off by default for the same reason the prediction search is: the output
     /// differs, byte for byte, from what upstream C++ Draco writes for the same

@@ -24,6 +24,8 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is byte-identical to C++ Draco's for the same input; the cost when it is on
   is encode time, and every stream it can produce is one an ordinary decoder
   reads, `PREDICTION_NONE` having been in the bitstream since version 1.1.
+  It is narrow: on a photogrammetry capture of eight million coloured points it
+  finds nothing, because differencing serves both attributes well there.
 - `EncoderOptions::set_spatial_point_order` emits a point cloud's points in
   Morton order rather than in the order they were handed in, which gives the
   difference predictor a spatial neighbour to predict from. A point cloud's
@@ -31,9 +33,10 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   read through the same index — so an encoder may choose it. Off by default,
   for the same byte-parity reason. It reorders the decoded points, and it can
   make a file bigger when an attribute varies along the order it came in rather
-  than through space; both are measured in `spatial_point_order_test`. On the
-  same splat scene: 53.02 to 47.02 bytes per point alone, 46.52 with the
-  prediction search.
+  than through space; both are measured in `spatial_point_order_test`. It is
+  the general one of the two: 53.02 to 47.02 bytes per point on the splat scene
+  (46.52 with the prediction search), and 6.26 to 4.31 — 31% — on a 223 MB
+  photogrammetry capture of eight million coloured points.
 
 ### Changed
 
