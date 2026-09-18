@@ -320,34 +320,73 @@ fn a_real_scene_under_the_spz_bit_budget() {
     }
 
     // ---------------------------------------------------------------------
-    // Where the bytes are. Lowering only the harmonics' budget changes the
-    // output by whatever the harmonics cost, so the slope across those arms
-    // says what a bit of harmonic costs to store -- and whether anything
-    // compresses it at all.
+    // What the harmonics cost, measured on the harmonics.
+    //
+    // The tempting shortcut is the slope: lower only their budget, and the
+    // change in the total is what they cost. It is wrong, and quietly. The
+    // difference between two arms is a difference of two *compressed* costs,
+    // and the coder does not compress a 4-bit plane by the same fraction as an
+    // 8-bit one -- so the slope can equal the budget exactly while the coder is
+    // compressing at both ends. It does here. Reading that slope as a cost said
+    // nothing compresses the harmonics, which the direct measurement below
+    // contradicts by nine bytes a point.
     // ---------------------------------------------------------------------
     println!();
     println!("=== what the harmonics cost ===");
-    let sh_components: usize = (0..cloud.num_attributes())
+    let harmonic_ids: Vec<i32> = (0..cloud.num_attributes())
         .filter(|id| {
             names[*id as usize]
                 .as_deref()
                 .is_some_and(|name| name.starts_with("f_rest_"))
         })
-        .map(|id| cloud.attribute(id).num_components() as usize)
+        .collect();
+    let sh_components: usize = harmonic_ids
+        .iter()
+        .map(|id| cloud.attribute(*id).num_components() as usize)
         .sum();
-    let at = |sh_bits: i32| encode(&cloud, &budgets(sh_bits), Some(SEQUENTIAL)) as f32;
-    let (eight, four) = (at(8), at(4));
-    let measured = (eight - four) / num_points as f32;
-    let budgeted = sh_components as f32 * 4.0 / 8.0;
+
+    let mut harmonics_only = PointCloud::new();
+    harmonics_only.set_num_points(num_points);
+    for id in &harmonic_ids {
+        let source_attribute = cloud.attribute(*id);
+        let mut attribute = PointAttribute::new();
+        attribute.init(
+            GeometryAttributeType::Generic,
+            source_attribute.num_components(),
+            DataType::Float32,
+            false,
+            num_points,
+        );
+        let width = source_attribute.num_components() as usize * 4;
+        let stride = source_attribute.byte_stride() as usize;
+        let mut scratch = vec![0u8; width];
+        let buffer_out = attribute.buffer_mut();
+        for point in 0..num_points {
+            source_attribute.buffer().read(point * stride, &mut scratch);
+            buffer_out.write(point * width, &scratch);
+        }
+        harmonics_only.add_attribute(attribute);
+    }
+    let eight_budget = vec![8; harmonic_ids.len()];
+    let alone = encode(&harmonics_only, &eight_budget, Some(SEQUENTIAL)) as f32 / num_points as f32;
+    let budgeted = sh_components as f32 * 8.0 / 8.0;
     println!("  {sh_components} harmonic components per point");
+    println!("  budget                {budgeted:>7.2} B/point");
+    println!("  encoded on their own  {alone:>7.2} B/point");
     println!(
-        "  dropping them from 8 bits to 4 saves {measured:.2} B/point, against \
-         {budgeted:.2} B/point of budget"
+        "  so the coder takes {:.1}% off them, at {:.2} bits per 8-bit value",
+        (1.0 - alone / budgeted) * 100.0,
+        alone * 8.0 / sh_components as f32,
     );
+
+    // Kept only to show what it is not: this is the slope, printed next to the
+    // cost it would have been mistaken for.
+    let slope = (encode(&cloud, &budgets(8), Some(SEQUENTIAL)) as f32
+        - encode(&cloud, &budgets(4), Some(SEQUENTIAL)) as f32)
+        / num_points as f32;
     println!(
-        "  so a harmonic bit costs {:.3} bits to store: at 1.0 nothing is \
-         compressing them",
-        measured / budgeted
+        "  (the 8-to-4-bit slope is {slope:.2} B/point, which is the difference \
+         of two compressed costs and not a cost)"
     );
 }
 
