@@ -40,7 +40,7 @@ use crate::prediction_scheme_tex_coords_portable::{
 use crate::prediction_scheme_wrap::PredictionSchemeWrapEncodingTransform;
 use crate::sequential_attribute_encoder::SequentialAttributeEncoder;
 use crate::status::{DracoError, Status};
-use crate::symbol_encoding::{encode_symbols, SymbolEncodingOptions};
+use crate::symbol_encoding::{encode_symbols, estimate_bits, SymbolEncodingOptions};
 
 /// Which transform family this encoder builds its prediction schemes with.
 ///
@@ -1207,6 +1207,54 @@ impl SequentialIntegerAttributeEncoder {
         try_encode_prediction_data(predictor_tex_coords_portable, &mut pred_data_opt)?;
         try_encode_prediction_data(predictor_geometric_normal, &mut pred_data_opt)?;
 
+        // The prediction search, where it is cheap. Both candidates are in
+        // memory by now -- `values` is what `PredictionSchemeMethod::None`
+        // would code, `corrections` is what `Difference` did -- and the symbol
+        // coder decides tagged-versus-raw from `estimate_bits` before writing
+        // anything, so the same estimate ranks the two candidates the way the
+        // coder itself will see them. Choosing here costs a zigzag pass and a
+        // histogram; choosing by encoding both would cost a second rANS pass
+        // and a second buffer for the same answer.
+        //
+        // Only a wrap-transformed `Difference` is considered. The automatic
+        // choice for a point-cloud attribute is always `Difference`, and
+        // `None` is the one alternative that needs no corner table; an
+        // octahedron transform belongs to normals, whose values are not what
+        // `None` would code. A scheme the caller named is left alone: naming
+        // one is itself the decision this would otherwise make.
+        //
+        // Ties keep `Difference`, so a search that finds nothing leaves the
+        // stream exactly as it was without the option.
+        let mut searched_symbols: Option<Vec<u32>> = None;
+        if options.prediction_search()
+            && preferred_scheme == -1
+            && encoder.mesh().is_none()
+            && selected_method == PredictionSchemeMethod::Difference
+            && selected_transform_type == PredictionSchemeTransformType::Wrap
+        {
+            // The wrap transform keeps corrections signed, so both candidates
+            // reach the coder through ZigZag; the winner is what step 5 below
+            // would have formed from `corrections`, formed here once.
+            let zigzag = |v: &[i32]| -> Vec<u32> {
+                v.iter().map(|&c| ((c << 1) ^ (c >> 31)) as u32).collect()
+            };
+            let predicted = zigzag(&corrections);
+            // What `Difference` writes beyond its symbols: the transform byte
+            // and the wrap transform's own data. `None` writes neither.
+            let overhead_bits =
+                8 * (1 + pred_data_opt.as_ref().map_or(0, |data| data.len()) as u64);
+            let predicted_bits = estimate_bits(&predicted, num_components) + overhead_bits;
+            let plain = zigzag(&values);
+            let plain_bits = estimate_bits(&plain, num_components);
+            if plain_bits < predicted_bits {
+                selected_method = PredictionSchemeMethod::None;
+                pred_data_opt = None;
+                searched_symbols = Some(plain);
+            } else {
+                searched_symbols = Some(predicted);
+            }
+        }
+
         // Pre-2.2 prefixes the constrained-multi-parallelogram prediction data with
         // an optimal-multi-parallelogram mode byte that the decoder reads before
         // the crease-edge streams; 2.2+ dropped it. Mirror of the decode-side
@@ -1292,7 +1340,9 @@ impl SequentialIntegerAttributeEncoder {
                 | PredictionSchemeTransformType::NormalOctahedronCanonicalized
         );
 
-        let symbols: Vec<u32> = if are_corrections_positive {
+        let symbols: Vec<u32> = if let Some(symbols) = searched_symbols {
+            symbols
+        } else if are_corrections_positive {
             // Corrections are already unsigned - just cast
             corrections.iter().map(|&c| c as u32).collect()
         } else {

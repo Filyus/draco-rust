@@ -1,9 +1,9 @@
-//! Choosing a point-cloud attribute's prediction scheme by encoding both ways.
+//! Choosing a point-cloud attribute's prediction scheme by estimating both ways.
 //!
 //! The automatic choice for a point-cloud attribute is always `Difference`,
 //! which costs more than it saves whenever consecutive values do not correlate.
-//! `EncoderOptions::set_prediction_search` lets the encoder find that out by
-//! encoding, rather than by a heuristic that cannot know.
+//! `EncoderOptions::set_prediction_search` lets the encoder find that out from
+//! the values, rather than from a rule that cannot know.
 //!
 //! What these pin, in the order that matters: that the option changes nothing
 //! when it is off, that it changes nothing when the search finds nothing, that

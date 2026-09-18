@@ -148,14 +148,14 @@ impl EncoderOptions {
         self.set_global_int("prediction_scheme", value);
     }
 
-    /// Whether a point-cloud attribute may be encoded with each candidate
-    /// prediction scheme so the smallest can be kept.
+    /// Whether the encoder may choose a point-cloud attribute's prediction
+    /// scheme by estimating the cost of each candidate.
     pub fn prediction_search(&self) -> bool {
         self.get_global_int("prediction_scheme_search", 0) != 0
     }
 
-    /// Lets the encoder try each candidate prediction scheme per attribute and
-    /// keep whichever produced fewer bytes.
+    /// Lets the encoder choose each attribute's prediction scheme by the
+    /// estimated cost of the candidates rather than by upstream's fixed rule.
     ///
     /// Off by default, and deliberately: the automatic choice is upstream's,
     /// and this crate's output is byte-identical to C++ Draco's for the same
@@ -169,8 +169,8 @@ impl EncoderOptions {
     /// prompted this — predicted they cost 6.35 bits per 8-bit value, coded
     /// directly 5.72, against an order-0 entropy of 5.685. The opposite case is
     /// just as real: on smoothly varying data, turning prediction off has made
-    /// a file 2.5x larger. Neither is knowable without encoding, which is what
-    /// this does.
+    /// a file 2.5x larger. Neither is knowable from the attribute's type, so
+    /// this looks at its values.
     ///
     /// **It is worth turning on only for data of that shape**, and the honest
     /// version of "that shape" is narrow. On a photogrammetry capture — eight
@@ -180,10 +180,13 @@ impl EncoderOptions {
     /// their neighbours are what this is for, and a scanned surface is the
     /// opposite of that.
     ///
-    /// The cost is encode time — each candidate is a full encode of that
-    /// attribute — and nothing else. Decoding is unaffected, and every stream
-    /// this can produce is one an ordinary decoder reads: the scheme is a byte
-    /// the bitstream has always carried, `PREDICTION_NONE` included.
+    /// The cost is encode time and nothing else. The candidates are ranked by
+    /// the same bit estimate the symbol coder uses to choose its own scheme,
+    /// which is an entropy pass over each candidate's symbols, not a second
+    /// encode: on a splat of a million points and 58 attributes the option
+    /// adds 40% to the encode. Decoding is unaffected, and every stream this
+    /// can produce is one an ordinary decoder reads: the scheme is a byte the
+    /// bitstream has always carried, `PREDICTION_NONE` included.
     ///
     /// An attribute with an explicit `prediction_scheme` is left alone; a
     /// caller who named a scheme has already made this choice.

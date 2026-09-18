@@ -163,14 +163,6 @@ fn validate_attribute_storage(att_id: i32, attribute: &PointAttribute) -> Status
 /// Note the asymmetry upstream has and this keeps: the `speed == 10` shortcut is
 /// guarded on the method being unset, so an explicitly requested KD-tree encode
 /// still takes that path at speed 10.
-/// Draco's `PREDICTION_NONE`: code the values rather than their differences.
-///
-/// The one candidate worth trying against the automatic choice here, because
-/// the automatic choice for a point-cloud attribute is always `Difference`
-/// (`prediction_scheme_selection`), and the mesh schemes need a corner table
-/// a point cloud does not have.
-const PREDICTION_NONE: i32 = -2;
-
 /// The order the sequential coder should walk the points in.
 ///
 /// Identity unless the caller asked for a spatial order and the geometry gives
@@ -286,64 +278,6 @@ fn read_component_as_f64(
         DataType::Uint64 => u64::from_le_bytes(bytes) as f64,
         DataType::Bool | DataType::Invalid => return None,
     })
-}
-
-/// Whether this attribute's prediction scheme is the encoder's to search.
-///
-/// An attribute the caller gave an explicit scheme is left alone: naming one is
-/// itself the decision this would otherwise make.
-fn searches_predictions(options: &EncoderOptions, att_id: i32) -> bool {
-    options.prediction_search() && options.get_attribute_prediction_scheme(att_id) == -1
-}
-
-/// Encodes one attribute once per candidate prediction scheme and returns the
-/// smallest result, with the encoder that produced it.
-///
-/// Ties keep the first candidate, which is the automatic choice, so a search
-/// that finds nothing better leaves the stream exactly as it was. That also
-/// makes the result independent of how the candidates happen to be ordered
-/// beyond the first.
-///
-/// Each trial writes into its own buffer rather than into the output, because
-/// the losing candidates' bytes must not reach it. The winner's bytes are then
-/// appended whole, which is what the raw-attribute path a few lines below does
-/// too, and each attribute's encode is byte-aligned at both ends.
-fn encode_attribute_choosing_prediction(
-    pc: &PointCloud,
-    point_ids: &[PointIndex],
-    att_id: i32,
-    options: &EncoderOptions,
-    encoder: &dyn GeometryEncoder,
-) -> Result<(SequentialIntegerAttributeEncoder, Vec<u8>), DracoError> {
-    let mut best: Option<(SequentialIntegerAttributeEncoder, Vec<u8>)> = None;
-
-    for candidate in [None, Some(PREDICTION_NONE)] {
-        let mut trial_options = options.clone();
-        if let Some(scheme) = candidate {
-            trial_options.set_attribute_int(att_id, "prediction_scheme", scheme);
-        }
-        let mut att_encoder = SequentialIntegerAttributeEncoder::new();
-        att_encoder.init(att_id);
-        let mut trial_buffer = EncoderBuffer::new();
-        att_encoder.encode_values(
-            pc,
-            point_ids,
-            &mut trial_buffer,
-            &trial_options,
-            encoder,
-            None,
-            false,
-        )?;
-        let bytes = trial_buffer.data().to_vec();
-        if best
-            .as_ref()
-            .is_none_or(|(_, best)| bytes.len() < best.len())
-        {
-            best = Some((att_encoder, bytes));
-        }
-    }
-
-    best.ok_or_else(|| DracoError::general("No prediction candidate was encoded".to_string()))
 }
 
 fn select_encoding_method(
@@ -777,35 +711,23 @@ impl PointCloudEncoder {
                     }
                     SequentialAttributeEncoderType::Quantization
                     | SequentialAttributeEncoderType::Integer => {
-                        // The search path is taken only when it was asked for,
-                        // so the ordinary encode still writes straight into the
-                        // output buffer and is unchanged byte for byte.
-                        if searches_predictions(&self.options, i) {
-                            let (att_encoder, bytes) = encode_attribute_choosing_prediction(
-                                pc,
-                                &point_ids,
-                                i,
-                                &self.options,
-                                self,
-                            )?;
-                            out_buffer.encode_data(&bytes);
-                            integer_encoders.push(Some(att_encoder));
-                        } else {
-                            let mut att_encoder = SequentialIntegerAttributeEncoder::new();
-                            att_encoder.init(i);
+                        // The prediction search, when asked for, is decided
+                        // inside `encode_values`, where both candidates are
+                        // already in memory; nothing about the call changes.
+                        let mut att_encoder = SequentialIntegerAttributeEncoder::new();
+                        att_encoder.init(i);
 
-                            att_encoder.encode_values(
-                                pc,
-                                &point_ids,
-                                out_buffer,
-                                &self.options,
-                                self,
-                                None,
-                                false,
-                            )?;
+                        att_encoder.encode_values(
+                            pc,
+                            &point_ids,
+                            out_buffer,
+                            &self.options,
+                            self,
+                            None,
+                            false,
+                        )?;
 
-                            integer_encoders.push(Some(att_encoder));
-                        }
+                        integer_encoders.push(Some(att_encoder));
                     }
                     SequentialAttributeEncoderType::Generic => {
                         let entry_size = att.byte_stride() as usize;
