@@ -159,6 +159,35 @@ pub enum PlyDroppedItem {
     },
 }
 
+impl std::fmt::Display for PlyDroppedItem {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PlyDroppedItem::VertexProperty { name, data_type } => match data_type {
+                Some(data_type) => write!(
+                    formatter,
+                    "vertex property {name:?} ({data_type:?}) has no attribute to read it into"
+                ),
+                None => write!(
+                    formatter,
+                    "vertex property {name:?} is a list, which the vertex element has no reading for"
+                ),
+            },
+            PlyDroppedItem::Normals => write!(
+                formatter,
+                "normals are declared but not as three float32 components, so they are not read"
+            ),
+            PlyDroppedItem::FaceProperty { name } => write!(
+                formatter,
+                "face property {name:?} is not the corner-index list and is skipped"
+            ),
+            PlyDroppedItem::Element { name, count } => write!(
+                formatter,
+                "element {name:?} and its {count} entries are skipped entirely"
+            ),
+        }
+    }
+}
+
 /// What a read of a PLY file leaves behind.
 ///
 /// The reader maps a fixed set of property names onto Draco's attribute types
@@ -248,71 +277,89 @@ impl PlyReader {
 
     /// Read a mesh with positions (and faces if present).
     pub fn read_mesh(&mut self) -> io::Result<Mesh> {
-        let parsed = read_ply_source(&self.source)?;
-        let mut mesh = Mesh::new();
-
-        if parsed.positions.len() == 0 {
-            return Ok(mesh);
-        }
-
-        mesh.set_num_points(parsed.positions.len());
-        mesh.set_num_faces(parsed.faces.len());
-
-        // Create position attribute
-        match &parsed.positions {
-            ParsedPlyPositionData::Float32(values) => {
-                mesh.add_attribute(make_f32x3_attribute(
-                    GeometryAttributeType::Position,
-                    values,
-                ));
-            }
-            ParsedPlyPositionData::Int32(values) => {
-                mesh.add_attribute(make_i32x3_attribute(
-                    GeometryAttributeType::Position,
-                    values,
-                ));
-            }
-        }
-
-        if let Some(normals) = parsed.normals.as_ref() {
-            mesh.add_attribute(make_f32x3_attribute(GeometryAttributeType::Normal, normals));
-        }
-
-        if let Some(colors) = parsed.colors.as_ref() {
-            mesh.add_attribute(make_u8_attribute(
-                GeometryAttributeType::Color,
-                colors.num_components,
-                true,
-                &colors.values,
-            ));
-        }
-
-        if let Some(texcoords) = parsed.texcoords.as_ref() {
-            mesh.add_attribute(make_f32x2_attribute(
-                GeometryAttributeType::TexCoord,
-                texcoords,
-            ));
-        }
-
-        for (i, face) in parsed.faces.iter().enumerate() {
-            mesh.set_face(
-                draco_core::geometry_indices::FaceIndex(i as u32),
-                [
-                    draco_core::geometry_indices::PointIndex(face[0]),
-                    draco_core::geometry_indices::PointIndex(face[1]),
-                    draco_core::geometry_indices::PointIndex(face[2]),
-                ],
-            );
-        }
-
-        // Upstream's PLY reader guards this on there being faces at all: a
-        // point cloud has nothing whose connectivity could change.
-        if mesh.num_faces() > 0 {
-            finalize_mesh(&mut mesh)?;
-        }
-
-        Ok(mesh)
+        mesh_from_parsed(read_ply_source(&self.source)?)
     }
+
+    /// Read a mesh, and what the read did not carry into it.
+    ///
+    /// The report answers for the bytes this mesh came from.
+    /// [`loss_report`](Self::loss_report) parses on its own, so for a reader
+    /// opened on a path the two calls can land either side of a write to that
+    /// file; this one cannot.
+    pub fn read_mesh_reporting_loss(&mut self) -> io::Result<(Mesh, PlyLossReport)> {
+        let (parsed, report) = read_ply_source_reporting(&self.source)?;
+        Ok((mesh_from_parsed(parsed)?, report))
+    }
+}
+
+/// Build the mesh a parsed PLY describes.
+///
+/// Shared so that reading with a loss report and reading without one cannot
+/// disagree about the mesh.
+fn mesh_from_parsed(parsed: ParsedPlyData) -> io::Result<Mesh> {
+    let mut mesh = Mesh::new();
+
+    if parsed.positions.len() == 0 {
+        return Ok(mesh);
+    }
+
+    mesh.set_num_points(parsed.positions.len());
+    mesh.set_num_faces(parsed.faces.len());
+
+    // Create position attribute
+    match &parsed.positions {
+        ParsedPlyPositionData::Float32(values) => {
+            mesh.add_attribute(make_f32x3_attribute(
+                GeometryAttributeType::Position,
+                values,
+            ));
+        }
+        ParsedPlyPositionData::Int32(values) => {
+            mesh.add_attribute(make_i32x3_attribute(
+                GeometryAttributeType::Position,
+                values,
+            ));
+        }
+    }
+
+    if let Some(normals) = parsed.normals.as_ref() {
+        mesh.add_attribute(make_f32x3_attribute(GeometryAttributeType::Normal, normals));
+    }
+
+    if let Some(colors) = parsed.colors.as_ref() {
+        mesh.add_attribute(make_u8_attribute(
+            GeometryAttributeType::Color,
+            colors.num_components,
+            true,
+            &colors.values,
+        ));
+    }
+
+    if let Some(texcoords) = parsed.texcoords.as_ref() {
+        mesh.add_attribute(make_f32x2_attribute(
+            GeometryAttributeType::TexCoord,
+            texcoords,
+        ));
+    }
+
+    for (i, face) in parsed.faces.iter().enumerate() {
+        mesh.set_face(
+            draco_core::geometry_indices::FaceIndex(i as u32),
+            [
+                draco_core::geometry_indices::PointIndex(face[0]),
+                draco_core::geometry_indices::PointIndex(face[1]),
+                draco_core::geometry_indices::PointIndex(face[2]),
+            ],
+        );
+    }
+
+    // Upstream's PLY reader guards this on there being faces at all: a
+    // point cloud has nothing whose connectivity could change.
+    if mesh.num_faces() > 0 {
+        finalize_mesh(&mut mesh)?;
+    }
+
+    Ok(mesh)
 }
 
 impl Reader for PlyReader {
@@ -951,8 +998,11 @@ fn body_bounded_capacity(
     declared.min(available_bytes / min_bytes_per_item.max(1))
 }
 
-fn read_ply_ascii_body(header: &PlyHeader, body: &[u8]) -> io::Result<ParsedPlyData> {
-    let schema = build_read_schema(header)?;
+fn read_ply_ascii_body(
+    header: &PlyHeader,
+    schema: &PlyReadSchema,
+    body: &[u8],
+) -> io::Result<ParsedPlyData> {
     let body_text = std::str::from_utf8(body)
         .map_err(|_| invalid_ply("ASCII PLY payload must be valid UTF-8/ASCII"))?;
     let (vertex_lines, face_lines) = split_ascii_vertex_lines(header, body_text)?;
@@ -1274,10 +1324,10 @@ fn skip_binary_element(
 
 fn read_ply_binary_body(
     header: &PlyHeader,
+    schema: &PlyReadSchema,
     body: &[u8],
     endian: BinaryEndian,
 ) -> io::Result<ParsedPlyData> {
-    let schema = build_read_schema(header)?;
     let mut cursor = Cursor::new(body);
     let vertex_element_index = header
         .elements
@@ -1502,18 +1552,40 @@ fn read_ply_source(source: &PlyReaderSource) -> io::Result<ParsedPlyData> {
     }
 }
 
-fn read_ply_bytes(bytes: &[u8]) -> io::Result<ParsedPlyData> {
-    let (header, body_offset) = parse_ply_header(bytes)?;
+fn read_ply_source_reporting(
+    source: &PlyReaderSource,
+) -> io::Result<(ParsedPlyData, PlyLossReport)> {
+    match source {
+        PlyReaderSource::Path(path) => read_ply_bytes_reporting(&fs::read(path)?),
+        PlyReaderSource::Bytes(bytes) => read_ply_bytes_reporting(bytes),
+    }
+}
 
-    match header.format {
-        PlyFormat::Ascii => read_ply_ascii_body(&header, &bytes[body_offset..]),
+fn read_ply_bytes(bytes: &[u8]) -> io::Result<ParsedPlyData> {
+    Ok(read_ply_bytes_reporting(bytes)?.0)
+}
+
+/// Parse a PLY, and say in the same pass what the parse did not carry.
+///
+/// One header, one schema, one report: asking separately would answer for a
+/// second read of the file, which for a path source is not necessarily the
+/// same bytes.
+fn read_ply_bytes_reporting(bytes: &[u8]) -> io::Result<(ParsedPlyData, PlyLossReport)> {
+    let (header, body_offset) = parse_ply_header(bytes)?;
+    let schema = build_read_schema(&header)?;
+    let report = build_loss_report(&header, &schema);
+    let body = &bytes[body_offset..];
+
+    let parsed = match header.format {
+        PlyFormat::Ascii => read_ply_ascii_body(&header, &schema, body)?,
         PlyFormat::BinaryLittleEndian => {
-            read_ply_binary_body(&header, &bytes[body_offset..], BinaryEndian::Little)
+            read_ply_binary_body(&header, &schema, body, BinaryEndian::Little)?
         }
         PlyFormat::BinaryBigEndian => {
-            read_ply_binary_body(&header, &bytes[body_offset..], BinaryEndian::Big)
+            read_ply_binary_body(&header, &schema, body, BinaryEndian::Big)?
         }
-    }
+    };
+    Ok((parsed, report))
 }
 
 /// Write point positions to an ASCII PLY file.
@@ -2141,6 +2213,89 @@ end_header
                     name: "t".to_string(),
                     data_type: Some(DataType::Float32),
                 },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_read_mesh_reporting_loss_agrees_with_reading_each_half_alone() {
+        let ply = r#"ply
+format ascii 1.0
+element vertex 2
+property float x
+property float y
+property float z
+property float confidence
+element face 1
+property list uchar int vertex_indices
+property uchar flags
+end_header
+0 0 0 0.25
+1 0 0 0.75
+3 0 1 1
+"#;
+
+        let (mesh, report) = PlyReader::from_bytes(ply.as_bytes().to_vec())
+            .read_mesh_reporting_loss()
+            .unwrap();
+        let separate_mesh = PlyReader::from_bytes(ply.as_bytes().to_vec())
+            .read_mesh()
+            .unwrap();
+        let separate_report = PlyReader::from_bytes(ply.as_bytes().to_vec())
+            .loss_report()
+            .unwrap();
+
+        assert_eq!(mesh.num_points(), separate_mesh.num_points());
+        assert_eq!(mesh.num_faces(), separate_mesh.num_faces());
+        assert_eq!(report, separate_report);
+        assert_eq!(
+            report.dropped(),
+            [
+                PlyDroppedItem::VertexProperty {
+                    name: "confidence".to_string(),
+                    data_type: Some(DataType::Float32),
+                },
+                PlyDroppedItem::FaceProperty {
+                    name: "flags".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_dropped_items_describe_themselves() {
+        // The wrappers hand these to a caller as plain strings, so the wording
+        // lives here rather than in each of them.
+        let rendered: Vec<String> = [
+            PlyDroppedItem::VertexProperty {
+                name: "f_dc_0".to_string(),
+                data_type: Some(DataType::Float32),
+            },
+            PlyDroppedItem::VertexProperty {
+                name: "weights".to_string(),
+                data_type: None,
+            },
+            PlyDroppedItem::Normals,
+            PlyDroppedItem::FaceProperty {
+                name: "texcoord".to_string(),
+            },
+            PlyDroppedItem::Element {
+                name: "camera".to_string(),
+                count: 2,
+            },
+        ]
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+
+        assert_eq!(
+            rendered,
+            [
+                "vertex property \"f_dc_0\" (Float32) has no attribute to read it into",
+                "vertex property \"weights\" is a list, which the vertex element has no reading for",
+                "normals are declared but not as three float32 components, so they are not read",
+                "face property \"texcoord\" is not the corner-index list and is skipped",
+                "element \"camera\" and its 2 entries are skipped entirely",
             ]
         );
     }

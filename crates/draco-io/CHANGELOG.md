@@ -19,6 +19,12 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   per-vertex properties -- a Gaussian-splat PLY, where everything but the
   position sits in `f_dc_*`, `f_rest_*`, `opacity`, `scale_*` and `rot_*` --
   read back as a bare point cloud and reported no error.
+- `PlyReader::read_mesh_reporting_loss` returns the mesh and that report from
+  one parse, so the report answers for the bytes the mesh came from. Asking
+  `loss_report` separately parses again, which for a reader opened on a path
+  can land either side of a write to that file.
+- `PlyDroppedItem` implements `Display`, so a wrapper can hand these to a
+  caller as plain strings without restating the wording.
 
 ## [0.5.0](https://github.com/Filyus/draco-rust/compare/draco-io-v0.4.0...draco-io-v0.5.0) - 2026-09-15
 
