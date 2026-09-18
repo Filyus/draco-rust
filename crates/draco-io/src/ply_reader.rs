@@ -2065,6 +2065,86 @@ end_header
         assert!(report.is_lossless(), "{:?}", report.dropped());
     }
 
+    // The set of properties a read consumes is decided by `build_read_schema`
+    // and re-derived by `build_loss_report`, so the two can drift apart and the
+    // report starts naming a property that was in fact read. Every recognized
+    // spelling gets a case here: a name this crate learns to consume without
+    // the report learning it too fails on the line that names it.
+    #[test]
+    fn test_loss_report_omits_every_property_spelling_the_reader_consumes() {
+        for (label, texcoords) in [
+            ("texture_u/texture_v", ("texture_u", "texture_v")),
+            ("u/v", ("u", "v")),
+            ("s/t", ("s", "t")),
+        ] {
+            let (u, v) = texcoords;
+            let ply = format!(
+                "ply\n\
+                 format ascii 1.0\n\
+                 element vertex 1\n\
+                 property float x\n\
+                 property float y\n\
+                 property float z\n\
+                 property float nx\n\
+                 property float ny\n\
+                 property float nz\n\
+                 property uchar red\n\
+                 property uchar green\n\
+                 property uchar blue\n\
+                 property uchar alpha\n\
+                 property float {u}\n\
+                 property float {v}\n\
+                 end_header\n\
+                 0 0 0 0 0 1 255 0 0 255 0.5 0.5\n"
+            );
+
+            let report = PlyReader::from_bytes(ply.into_bytes())
+                .loss_report()
+                .unwrap();
+            assert!(
+                report.is_lossless(),
+                "{label} is read but reported as lost: {:?}",
+                report.dropped()
+            );
+        }
+    }
+
+    // The other direction: only the pair actually chosen is consumed, so a
+    // file carrying a second spelling must still hear about it.
+    #[test]
+    fn test_loss_report_names_the_texcoord_pair_that_lost() {
+        let ply = r#"ply
+format ascii 1.0
+element vertex 1
+property float x
+property float y
+property float z
+property float u
+property float v
+property float s
+property float t
+end_header
+0 0 0 0.5 0.5 0.25 0.75
+"#;
+
+        let report = PlyReader::from_bytes(ply.as_bytes().to_vec())
+            .loss_report()
+            .unwrap();
+        assert_eq!(
+            report.dropped(),
+            [
+                PlyDroppedItem::VertexProperty {
+                    name: "s".to_string(),
+                    data_type: Some(DataType::Float32),
+                },
+                PlyDroppedItem::VertexProperty {
+                    name: "t".to_string(),
+                    data_type: Some(DataType::Float32),
+                },
+            ]
+        );
+    }
+
     #[test]
     fn test_loss_report_names_gaussian_splat_properties() {
         // The shape a splat PLY has, trimmed to one coefficient per group: the
