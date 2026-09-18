@@ -117,6 +117,17 @@ impl Import {
     /// Validates the document and all registered extension handlers.
     ///
     /// With `strict-validation`, this also checks the complete scene graph.
+    ///
+    /// An extension named in `extensionsRequired` that no handler claims is
+    /// not an error, and the omission is deliberate. glTF puts that refusal on
+    /// clients that render the asset; this crate reads geometry out and writes
+    /// the rest back from the JSON DOM it parsed, so an extension it has no
+    /// handler for rides through untouched and refusing would reject assets it
+    /// transcodes correctly. The case where the difference is real -- one where
+    /// accessors and buffer views are renumbered under an extension whose
+    /// binary references are unknown -- is covered instead by
+    /// [`ExtensionRegistry::allows_binary_transform`], which is false for
+    /// anything unregistered and makes the transform refuse by name.
     pub fn validate(&self, extensions: &ExtensionRegistry) -> Result<()> {
         self.document.validate(self.profile)?;
         extensions.validate(&self.document)?;
