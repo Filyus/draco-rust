@@ -828,6 +828,61 @@ mod compression_tests {
         assert_eq!(decoded.num_faces(), 1);
     }
 
+    /// The shape `KHR_gaussian_splatting` actually arrives in.
+    ///
+    /// The list test above puts its extension on a material, which is the
+    /// cheap way to exercise the whole-document check but not how a splat
+    /// asset is built: the extension sits on a POINTS primitive whose
+    /// attributes carry the payload, next to ordinary geometry that is what
+    /// anyone reaches for compression to shrink. This pins the pair --
+    /// the triangles compress, and the splat primitive comes through with its
+    /// mode, its extension and its own attributes untouched.
+    #[cfg(feature = "draco-encode")]
+    #[test]
+    fn compression_leaves_a_gaussian_splat_primitive_alone_and_compresses_its_neighbour() {
+        let document = r#"{"asset":{"version":"2.0"},
+            "buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],
+            "bufferViews":[{"buffer":0,"byteLength":36}],
+            "accessors":[
+                {"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]},
+                {"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]},
+                {"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}
+            ],
+            "meshes":[{"primitives":[
+                {"attributes":{"POSITION":0}},
+                {"mode":0,"attributes":{"POSITION":1,"KHR_gaussian_splatting:SCALE":2},
+                 "extensions":{"KHR_gaussian_splatting":{"kernel":"ellipse","colorSpace":"srgb_rec709_display"}}}
+            ]}],
+            "extensionsUsed":["KHR_gaussian_splatting"]}"#;
+
+        let mut import = parse(document.as_bytes(), ValidationProfile::Gltf20).unwrap();
+        let report = import
+            .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
+            .expect("a splat elsewhere in the document must not block compression");
+        assert_eq!(report.compressed_primitives, 1);
+
+        let splat = &import.document.as_value()["meshes"][0]["primitives"][1];
+        assert_eq!(splat["mode"].as_u64(), Some(0));
+        assert_eq!(
+            splat["extensions"]["KHR_gaussian_splatting"]["kernel"].as_str(),
+            Some("ellipse")
+        );
+        assert!(
+            splat["attributes"]["KHR_gaussian_splatting:SCALE"]
+                .as_u64()
+                .is_some(),
+            "the splat attribute must survive with an accessor index: {splat:?}"
+        );
+        assert!(
+            splat["extensions"]
+                .as_object()
+                .is_some_and(|extensions| extensions
+                    .iter()
+                    .all(|(name, _)| name != crate::KHR_DRACO_MESH_COMPRESSION)),
+            "the splat primitive must not have been compressed: {splat:?}"
+        );
+    }
+
     /// One document, two extensions, two answers.
     ///
     /// The safety check is whole-document, so an extension on a *material*

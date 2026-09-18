@@ -105,6 +105,24 @@ pub const BINARY_FREE_EXTENSIONS: &[&str] = &[
     // every vertex record survives compression with its values, its component
     // types and its pairing intact, and the semantics keep their names.
     "EXT_mesh_features",
+    // Four strings -- `kernel`, `colorSpace`, `projection`, `sortingMethod` --
+    // and nothing else. A splat's payload rides in the primitive's own
+    // `attributes` under `KHR_gaussian_splatting:ROTATION`, `:SCALE`,
+    // `:OPACITY` and `:SH_DEGREE_n_COEF_m`, which the reference walk already
+    // follows: it reads every entry of that map by value and never by
+    // semantic name.
+    //
+    // Registering it is what lets an asset that mixes splats with ordinary
+    // geometry be compressed at all, since the document-wide transform guard
+    // refuses on any unregistered extension anywhere in the file. The splat
+    // primitives themselves stay untouched either way: they are POINTS, and
+    // compression takes only modes 4..=6.
+    //
+    // This covers the base extension alone. The compression extensions built
+    // on top of it -- which the specification anticipates and which will carry
+    // buffer views of their own -- are not named here, so they keep refusing
+    // until each one is read.
+    "KHR_gaussian_splatting",
 ];
 
 /// Extension name for per-node GPU instancing.
