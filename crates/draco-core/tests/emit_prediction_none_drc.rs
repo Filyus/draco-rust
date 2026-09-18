@@ -41,18 +41,40 @@ const NUM_POINTS: usize = 4096;
 /// `prediction_scheme` other than -1 onto it.
 const PREDICTION_NONE: i32 = -2;
 
-/// Values with enough structure that prediction changes the output, so the two
-/// files differ and the comparison is not vacuous.
-fn attribute(kind: GeometryAttributeType, components: u8, seed: u32) -> PointAttribute {
+/// Values shaped so that prediction changes the output, which is what keeps the
+/// comparison from being vacuous.
+///
+/// Positions vary smoothly, where differencing wins; the harmonics are
+/// concentrated around a centre with rare outliers stretching the quantization
+/// range, which is the shape differencing makes worse and the one the search
+/// exists for. Both shapes in one file, so the emitted streams exercise a
+/// search that says yes to some attributes and no to others.
+fn attribute(
+    kind: GeometryAttributeType,
+    components: u8,
+    seed: u32,
+    concentrated: bool,
+) -> PointAttribute {
     let mut attribute = PointAttribute::new();
     attribute.init(kind, components, DataType::Float32, false, NUM_POINTS);
     let buffer = attribute.buffer_mut();
     let mut state = seed.wrapping_mul(2654435761).wrapping_add(1);
     for point in 0..NUM_POINTS {
         for component in 0..components as usize {
-            state = state.wrapping_mul(1664525).wrapping_add(1013904223);
-            let noise = (state >> 8) as f32 / (1 << 24) as f32 - 0.5;
-            let value = point as f32 * 0.01 + component as f32 * 0.25 + noise;
+            let mut unit = || {
+                state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+                (state >> 8) as f32 / (1 << 24) as f32
+            };
+            let value = if concentrated {
+                let bell: f32 = (0..4).map(|_| unit()).sum::<f32>() - 2.0;
+                if unit() < 0.002 {
+                    bell * 8.0
+                } else {
+                    bell
+                }
+            } else {
+                point as f32 * 0.01 + component as f32 * 0.25 + (unit() - 0.5)
+            };
             let offset = (point * components as usize + component) * 4;
             buffer.write(offset, &value.to_le_bytes());
         }
@@ -63,7 +85,7 @@ fn attribute(kind: GeometryAttributeType, components: u8, seed: u32) -> PointAtt
 fn splat_cloud() -> PointCloud {
     let mut cloud = PointCloud::new();
     cloud.set_num_points(NUM_POINTS);
-    cloud.add_attribute(attribute(GeometryAttributeType::Position, 3, 1));
+    cloud.add_attribute(attribute(GeometryAttributeType::Position, 3, 1, false));
 
     let mut layout: Vec<(String, u8)> = vec![
         ("scale".to_string(), 3),
@@ -78,6 +100,7 @@ fn splat_cloud() -> PointCloud {
             GeometryAttributeType::Generic,
             components,
             10 + index as u32,
+            name.starts_with("f_rest_"),
         ));
         let unique_id = cloud.attribute(id).unique_id();
         let mut metadata = Metadata::new();
@@ -107,13 +130,18 @@ fn write(name: &str, bytes: &[u8]) -> String {
 #[test]
 #[ignore = "emits files for the C++ decoder; run with --ignored --nocapture"]
 fn emit() {
-    for (name, prediction) in [
-        ("prediction_default.drc", None),
-        ("prediction_none.drc", Some(PREDICTION_NONE)),
+    for (name, prediction, search) in [
+        ("prediction_default.drc", None, false),
+        ("prediction_none.drc", Some(PREDICTION_NONE), false),
+        // The shipped option, so what a caller actually produces is what the
+        // C++ probe is pointed at -- not only the hand-forced flag underneath
+        // it.
+        ("prediction_searched.drc", None, true),
     ] {
         let cloud = splat_cloud();
         let mut options = EncoderOptions::new();
         options.set_encoding_method(0); // sequential
+        options.set_prediction_search(search);
         for id in 0..cloud.num_attributes() {
             options.set_attribute_int(id, "quantization_bits", 8);
             if let Some(prediction) = prediction {
