@@ -23,7 +23,8 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   default, because the automatic choice is upstream's and this crate's output
   is byte-identical to C++ Draco's for the same input. The cost when it is on
   is encode time: the candidates are ranked by the symbol coder's own bit
-  estimate, one entropy pass each, which adds 40% to the encode of that splat.
+  estimate, one entropy pass each, and the winner's is what the coder then
+  writes from, which adds about a third to the encode of that splat.
   Every stream it can produce is one an ordinary decoder reads,
   `PREDICTION_NONE` having been in the bitstream since version 1.1.
   It is narrow: on a photogrammetry capture of eight million coloured points it
@@ -45,6 +46,15 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The point-cloud sequential encoder takes its point order from `point_order`
   rather than assuming the identity. With no option set it still is the
   identity, and the stream is unchanged.
+- The symbol coder counts small alphabets into four interleaved tables, and
+  what it works out before choosing its scheme is now a value a caller can
+  build and hand back. A histogram is a scatter into one table, so a run of
+  equal symbols serializes on the store buffer; four tables break that chain.
+  Ranking prediction candidates and choosing the coder's own scheme ask the
+  same question of the same symbols, so the winner's answer is carried into
+  the encode instead of being worked out again. Together these take a quarter
+  off the encode of a splat scene with `set_prediction_search` on, and leave
+  every stream byte-for-byte what it was.
 
 ## [2.1.0](https://github.com/Filyus/draco-rust/compare/draco-core-v2.0.0...draco-core-v2.1.0) - 2026-09-15
 

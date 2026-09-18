@@ -183,8 +183,9 @@ impl EncoderOptions {
     /// The cost is encode time and nothing else. The candidates are ranked by
     /// the same bit estimate the symbol coder uses to choose its own scheme,
     /// which is an entropy pass over each candidate's symbols, not a second
-    /// encode: on a splat of a million points and 58 attributes the option
-    /// adds 40% to the encode. Decoding is unaffected, and every stream this
+    /// encode, and the winner's estimate is what the coder is then handed
+    /// rather than working it out again: on a splat of a million points and 58
+    /// attributes the option adds about a third to the encode. Decoding is unaffected, and every stream this
     /// can produce is one an ordinary decoder reads: the scheme is a byte the
     /// bitstream has always carried, `PREDICTION_NONE` included.
     ///

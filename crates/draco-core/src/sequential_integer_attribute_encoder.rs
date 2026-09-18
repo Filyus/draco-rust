@@ -40,7 +40,9 @@ use crate::prediction_scheme_tex_coords_portable::{
 use crate::prediction_scheme_wrap::PredictionSchemeWrapEncodingTransform;
 use crate::sequential_attribute_encoder::SequentialAttributeEncoder;
 use crate::status::{DracoError, Status};
-use crate::symbol_encoding::{encode_symbols, estimate_bits, SymbolEncodingOptions};
+use crate::symbol_encoding::{
+    encode_symbols, encode_symbols_with_plan, plan_symbols, SymbolEncodingOptions, SymbolPlan,
+};
 
 /// Which transform family this encoder builds its prediction schemes with.
 ///
@@ -1210,11 +1212,11 @@ impl SequentialIntegerAttributeEncoder {
         // The prediction search, where it is cheap. Both candidates are in
         // memory by now -- `values` is what `PredictionSchemeMethod::None`
         // would code, `corrections` is what `Difference` did -- and the symbol
-        // coder decides tagged-versus-raw from `estimate_bits` before writing
-        // anything, so the same estimate ranks the two candidates the way the
-        // coder itself will see them. Choosing here costs a zigzag pass and a
-        // histogram; choosing by encoding both would cost a second rANS pass
-        // and a second buffer for the same answer.
+        // coder decides tagged-versus-raw by planning the symbols before it
+        // writes anything, so planning both candidates ranks them the way the
+        // coder itself will see them -- and the winner's plan is what the
+        // coder is then handed, so the search costs a zigzag pass and one
+        // extra plan, not a second rANS pass and a second buffer.
         //
         // Only a wrap-transformed `Difference` is considered. The automatic
         // choice for a point-cloud attribute is always `Difference`, and
@@ -1225,7 +1227,7 @@ impl SequentialIntegerAttributeEncoder {
         //
         // Ties keep `Difference`, so a search that finds nothing leaves the
         // stream exactly as it was without the option.
-        let mut searched_symbols: Option<Vec<u32>> = None;
+        let mut searched: Option<(Vec<u32>, SymbolPlan)> = None;
         if options.prediction_search()
             && preferred_scheme == -1
             && encoder.mesh().is_none()
@@ -1239,19 +1241,20 @@ impl SequentialIntegerAttributeEncoder {
                 v.iter().map(|&c| ((c << 1) ^ (c >> 31)) as u32).collect()
             };
             let predicted = zigzag(&corrections);
+            let predicted_plan = plan_symbols(&predicted, num_components);
             // What `Difference` writes beyond its symbols: the transform byte
             // and the wrap transform's own data. `None` writes neither.
             let overhead_bits =
                 8 * (1 + pred_data_opt.as_ref().map_or(0, |data| data.len()) as u64);
-            let predicted_bits = estimate_bits(&predicted, num_components) + overhead_bits;
+            let predicted_bits = predicted_plan.estimated_bits() + overhead_bits;
             let plain = zigzag(&values);
-            let plain_bits = estimate_bits(&plain, num_components);
-            if plain_bits < predicted_bits {
+            let plain_plan = plan_symbols(&plain, num_components);
+            if plain_plan.estimated_bits() < predicted_bits {
                 selected_method = PredictionSchemeMethod::None;
                 pred_data_opt = None;
-                searched_symbols = Some(plain);
+                searched = Some((plain, plain_plan));
             } else {
-                searched_symbols = Some(predicted);
+                searched = Some((predicted, predicted_plan));
             }
         }
 
@@ -1340,18 +1343,22 @@ impl SequentialIntegerAttributeEncoder {
                 | PredictionSchemeTransformType::NormalOctahedronCanonicalized
         );
 
-        let symbols: Vec<u32> = if let Some(symbols) = searched_symbols {
-            symbols
-        } else if are_corrections_positive {
-            // Corrections are already unsigned - just cast
-            corrections.iter().map(|&c| c as u32).collect()
-        } else {
-            // Apply ZigZag encoding
-            corrections
-                .iter()
-                .map(|&c| ((c << 1) ^ (c >> 31)) as u32)
-                .collect()
-        };
+        let (symbols, searched_plan): (Vec<u32>, Option<SymbolPlan>) =
+            if let Some((symbols, plan)) = searched {
+                (symbols, Some(plan))
+            } else if are_corrections_positive {
+                // Corrections are already unsigned - just cast
+                (corrections.iter().map(|&c| c as u32).collect(), None)
+            } else {
+                // Apply ZigZag encoding
+                (
+                    corrections
+                        .iter()
+                        .map(|&c| ((c << 1) ^ (c >> 31)) as u32)
+                        .collect(),
+                    None,
+                )
+            };
 
         // 6. Encode symbols
         // Write compression level/type (1 = compressed with symbols)
@@ -1379,7 +1386,19 @@ impl SequentialIntegerAttributeEncoder {
         }
 
         let _start_len = out_buffer.size();
-        encode_symbols(&symbols, num_components, &symbol_options, out_buffer).map_err(|err| {
+        let encoded = match searched_plan {
+            // The search already worked out how these symbols code; the coder
+            // takes that rather than working it out a second time.
+            Some(plan) => encode_symbols_with_plan(
+                &symbols,
+                num_components,
+                &symbol_options,
+                &plan,
+                out_buffer,
+            ),
+            None => encode_symbols(&symbols, num_components, &symbol_options, out_buffer),
+        };
+        encoded.map_err(|err| {
             DracoError::general(format!(
                 "Failed to entropy-code the prediction residuals: {err}"
             ))
