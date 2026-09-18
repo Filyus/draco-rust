@@ -389,6 +389,48 @@ fn a_real_scene_under_the_spz_bit_budget() {
         None => println!("  gzip -9           (no gzip on PATH; skipped)"),
     }
 
+    // The comparison above is Draco as it encodes today against gzip, and it
+    // stops being the interesting one the moment the encoder is told to do
+    // better. Repeat it with both options on -- and give gzip the same
+    // courtesy, because a spatially ordered planar stream is easier for a
+    // byte-level compressor too, and comparing a sorted Draco against an
+    // unsorted gzip would be arranging the answer.
+    let order = morton_order_of(&planes[0], num_points);
+    let mut packed_sorted = Vec::with_capacity(packed.len());
+    for (id, values) in planes.iter().enumerate() {
+        let components = values.len() / num_points;
+        let width = if budget[id] <= 8 { 1 } else { 3 };
+        for point in &order {
+            for c in 0..components {
+                let value = values[*point as usize * components + c];
+                packed_sorted.extend_from_slice(&value.to_le_bytes()[..width]);
+            }
+        }
+    }
+    let sorted_path = std::env::temp_dir().join("draco_splat_spz_packed_morton.bin");
+    std::fs::write(&sorted_path, &packed_sorted).expect("the sorted stream writes");
+    let draco_best = encode_with_options(&integer_cloud, &no_budget, true, true);
+
+    println!();
+    println!("  and with both encoders doing their best on those same integers:");
+    println!(
+        "  draco, both options {:>8.2} B/point  ({draco_best} bytes)",
+        per_point(draco_best)
+    );
+    match gzip_size(&sorted_path) {
+        Some(gzipped) => {
+            println!(
+                "  gzip -9, sorted     {:>8.2} B/point  ({gzipped} bytes)",
+                per_point(gzipped)
+            );
+            println!(
+                "  draco is {:.3}x gzip once both are allowed to try",
+                draco_best as f32 / gzipped as f32
+            );
+        }
+        None => println!("  gzip -9, sorted     (no gzip on PATH; skipped)"),
+    }
+
     // ---------------------------------------------------------------------
     // What the harmonics cost, measured on the harmonics.
     //
@@ -768,6 +810,33 @@ fn morton_sorted(cloud: &PointCloud, position_id: i32) -> PointCloud {
         }
     }
     sorted
+}
+
+/// Point indices in Morton order, from interleaved 24-bit position components.
+///
+/// The same curve the encoder's own reorder uses, computed here so the planes
+/// written for gzip are permuted by it too.
+fn morton_order_of(positions: &[u32], num_points: usize) -> Vec<u32> {
+    let spread = |v: u32| -> u32 {
+        let mut x = v & 0x3FF;
+        x = (x | (x << 16)) & 0x0300_00FF;
+        x = (x | (x << 8)) & 0x0300_F00F;
+        x = (x | (x << 4)) & 0x030C_30C3;
+        x = (x | (x << 2)) & 0x0924_9249;
+        x
+    };
+    let mut keyed: Vec<(u32, u32)> = (0..num_points)
+        .map(|point| {
+            let mut key = 0u32;
+            for axis in 0..3 {
+                // The values are 24-bit; the top ten bits are the cell.
+                key |= spread(positions[point * 3 + axis] >> 14) << axis;
+            }
+            (key, point as u32)
+        })
+        .collect();
+    keyed.sort_unstable();
+    keyed.into_iter().map(|(_, point)| point).collect()
 }
 
 /// What `gzip -9` makes of a file, or `None` where there is no gzip.
