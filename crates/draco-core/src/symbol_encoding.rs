@@ -226,10 +226,7 @@ fn compute_raw_scheme_bits_and_frequencies(
         return (0, Vec::new(), 0);
     }
 
-    let frequencies: Vec<u64> = histogram(symbols, max_value)
-        .into_iter()
-        .map(u64::from)
-        .collect();
+    let frequencies: Vec<u64> = histogram(symbols, max_value);
 
     let num_symbols_d = symbols.len() as f64;
     let log2_num_symbols = num_symbols_d.log2();
@@ -285,35 +282,44 @@ fn compute_tagged_scheme_bits(
 /// cache footprint while they are small - a 16-bit position attribute reaches
 /// one of 2^17 symbols - so a wide alphabet keeps the single table, where the
 /// chain is rare and the misses are what cost.
+///
+/// The counter type is the caller's, so counting straight into the width the
+/// caller needs costs no pass over the alphabet to widen it afterwards. That
+/// pass is not free: an attribute with few symbols over a wide alphabet walks
+/// far more table than it does data.
 #[cfg(feature = "encoder")]
-fn histogram(symbols: &[u32], max_value: u32) -> Vec<u32> {
+fn histogram<T>(symbols: &[u32], max_value: u32) -> Vec<T>
+where
+    T: Copy + Default + std::ops::Add<Output = T> + std::ops::AddAssign + From<u8>,
+{
     let len = max_value as usize + 1;
+    let one = T::from(1u8);
 
     /// Four tables of this many counters still sit inside a 64 KiB L1.
     const INTERLEAVED_MAX_LEN: usize = 1 << 12;
 
     if len > INTERLEAVED_MAX_LEN {
-        let mut frequencies = vec![0u32; len];
+        let mut frequencies = vec![T::default(); len];
         for &sym in symbols {
-            frequencies[sym as usize] += 1;
+            frequencies[sym as usize] += one;
         }
         return frequencies;
     }
 
-    let mut tables = vec![0u32; len * 4];
+    let mut tables = vec![T::default(); len * 4];
     let (first, rest) = tables.split_at_mut(len);
     let (second, rest) = rest.split_at_mut(len);
     let (third, fourth) = rest.split_at_mut(len);
 
     let (quads, remainder) = symbols.as_chunks::<4>();
     for quad in quads {
-        first[quad[0] as usize] += 1;
-        second[quad[1] as usize] += 1;
-        third[quad[2] as usize] += 1;
-        fourth[quad[3] as usize] += 1;
+        first[quad[0] as usize] += one;
+        second[quad[1] as usize] += one;
+        third[quad[2] as usize] += one;
+        fourth[quad[3] as usize] += one;
     }
     for &sym in remainder {
-        first[sym as usize] += 1;
+        first[sym as usize] += one;
     }
 
     for index in 0..len {
@@ -330,7 +336,7 @@ fn compute_shannon_entropy_bits_trunc(symbols: &[u32], max_value: u32) -> (i64, 
     //   return static_cast<int64_t>(-total_bits);
     // The cast truncates toward zero.
 
-    let frequencies = histogram(symbols, max_value);
+    let frequencies: Vec<u32> = histogram(symbols, max_value);
 
     let num_symbols_d = symbols.len() as f64;
     let log2_num_symbols = num_symbols_d.log2();
@@ -358,10 +364,7 @@ pub fn encode_raw_symbols(
     // num_values is known by decoder
 
     // Count frequencies
-    let frequencies: Vec<u64> = histogram(symbols, max_value)
-        .into_iter()
-        .map(u64::from)
-        .collect();
+    let frequencies: Vec<u64> = histogram(symbols, max_value);
 
     let mut num_unique_symbols: u32 = 0;
     for &f in &frequencies {
