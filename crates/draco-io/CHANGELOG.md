@@ -23,6 +23,13 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   one parse, so the report answers for the bytes the mesh came from. Asking
   `loss_report` separately parses again, which for a reader opened on a path
   can land either side of a write to that file.
+- `PlyReader::with_generic_attributes` carries vertex properties that have no
+  attribute of their own as `Generic` attributes, one per property, each keeping
+  the type the file declared and named through its attribute metadata under
+  `"name"` -- the key upstream Draco writes and reads. Off by default, since it
+  changes what a read produces. A property carried this way leaves the loss
+  report in the same breath, because it is no longer lost; list properties
+  cannot become attributes and stay dropped and reported.
 - `PlyDroppedItem` implements `Display`, so a wrapper can hand these to a
   caller as plain strings without restating the wording.
 

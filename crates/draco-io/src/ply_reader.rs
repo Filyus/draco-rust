@@ -31,6 +31,21 @@ struct ParsedPlyData {
     normals: Option<Vec<[f32; 3]>>,
     colors: Option<ParsedPlyColorData>,
     texcoords: Option<Vec<[f32; 2]>>,
+    generic: Vec<ParsedGenericProperty>,
+}
+
+/// One vertex property carried through as a generic attribute.
+///
+/// Values are held as `f64` whatever the file declared, which is exact for
+/// every scalar type PLY has — the widest are `int32`, `uint32` and `float64`,
+/// and `f64` represents all three without loss. The declared type is kept
+/// beside them so the attribute is built in the file's own width rather than
+/// widened to the one used for transport.
+#[derive(Debug)]
+struct ParsedGenericProperty {
+    name: String,
+    data_type: DataType,
+    values: Vec<f64>,
 }
 
 #[derive(Debug)]
@@ -219,6 +234,7 @@ impl PlyLossReport {
 #[derive(Debug)]
 pub struct PlyReader {
     source: PlyReaderSource,
+    carry_generics: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -239,6 +255,7 @@ impl PlyReader {
         }
         Ok(Self {
             source: PlyReaderSource::Path(path),
+            carry_generics: false,
         })
     }
 
@@ -246,7 +263,32 @@ impl PlyReader {
     pub fn from_bytes(bytes: impl Into<Vec<u8>>) -> Self {
         Self {
             source: PlyReaderSource::Bytes(bytes.into()),
+            carry_generics: false,
         }
+    }
+
+    /// Carry vertex properties with no attribute of their own as `Generic`
+    /// attributes, one per property, named after the property.
+    ///
+    /// Off by default, because it changes what a read produces: a file with
+    /// custom properties gains attributes that callers reading by index do not
+    /// expect. On, a Gaussian-splat PLY arrives whole rather than as bare
+    /// positions.
+    ///
+    /// Each attribute keeps the type the file declared, and its name is stored
+    /// as a `"name"` entry in the attribute's metadata, which is the key
+    /// upstream Draco writes and reads. List properties stay behind — an
+    /// attribute has one width per point and a list does not — and remain in
+    /// the loss report, which never names anything this carries.
+    pub fn with_generic_attributes(mut self, enabled: bool) -> Self {
+        self.carry_generics = enabled;
+        self
+    }
+
+    /// The mutable form of [`with_generic_attributes`](Self::with_generic_attributes).
+    pub fn set_generic_attributes(&mut self, enabled: bool) -> &mut Self {
+        self.carry_generics = enabled;
+        self
     }
 
     /// Read a mesh directly from in-memory bytes.
@@ -267,7 +309,8 @@ impl PlyReader {
         };
         let (header, _) = parse_ply_header(&bytes)?;
         let schema = build_read_schema(&header)?;
-        Ok(build_loss_report(&header, &schema))
+        let plan = GenericPlan::build(&header, &schema, self.carry_generics);
+        Ok(build_loss_report(&header, &schema, !plan.is_empty()))
     }
 
     /// Read all positions from the PLY file.
@@ -277,7 +320,7 @@ impl PlyReader {
 
     /// Read a mesh with positions (and faces if present).
     pub fn read_mesh(&mut self) -> io::Result<Mesh> {
-        mesh_from_parsed(read_ply_source(&self.source)?)
+        Ok(self.read_mesh_reporting_loss()?.0)
     }
 
     /// Read a mesh, and what the read did not carry into it.
@@ -287,7 +330,7 @@ impl PlyReader {
     /// opened on a path the two calls can land either side of a write to that
     /// file; this one cannot.
     pub fn read_mesh_reporting_loss(&mut self) -> io::Result<(Mesh, PlyLossReport)> {
-        let (parsed, report) = read_ply_source_reporting(&self.source)?;
+        let (parsed, report) = read_ply_source_reporting(&self.source, self.carry_generics)?;
         Ok((mesh_from_parsed(parsed)?, report))
     }
 }
@@ -342,6 +385,27 @@ fn mesh_from_parsed(parsed: ParsedPlyData) -> io::Result<Mesh> {
         ));
     }
 
+    for property in &parsed.generic {
+        // A property short of a value for every point would make an attribute
+        // whose tail is whatever the buffer was initialised to, which is worse
+        // than not carrying it: the values would look real. The body reader
+        // already fails on a truncated vertex, so this guards the case where a
+        // header declares a property the body never supplies.
+        if property.values.len() != mesh.num_points() {
+            continue;
+        }
+        let attribute_id = mesh.add_attribute(make_generic_attribute(property));
+        let unique_id = mesh.attribute(attribute_id).unique_id();
+        let mut metadata = draco_core::metadata::Metadata::new();
+        // `"name"` is upstream Draco's key for this: `obj_decoder.cc` writes it
+        // onto a generic attribute and `obj_encoder.cc` reads it back.
+        metadata
+            .set_string("name", property.name.clone())
+            .map_err(|error| invalid_ply(format!("Cannot name attribute: {error:?}")))?;
+        mesh.metadata_or_insert()
+            .set_attribute_metadata(unique_id, metadata);
+    }
+
     for (i, face) in parsed.faces.iter().enumerate() {
         mesh.set_face(
             draco_core::geometry_indices::FaceIndex(i as u32),
@@ -393,6 +457,50 @@ impl PointCloudReader for PlyReader {
 /// Returns a vec of [x, y, z] positions.
 pub fn read_ply_positions<P: AsRef<Path>>(path: P) -> io::Result<Vec<[f32; 3]>> {
     Ok(read_ply(path)?.positions.to_f32_positions())
+}
+
+/// Build a one-component `Generic` attribute in the type the file declared.
+///
+/// Values arrive as `f64`, which held every PLY scalar exactly on the way in,
+/// and are narrowed here to the declared type. The narrowing is the file's own
+/// width rather than a choice: a `uchar` property that came in as `uchar` goes
+/// back out as one byte per point.
+fn make_generic_attribute(property: &ParsedGenericProperty) -> PointAttribute {
+    let mut attribute = PointAttribute::new();
+    attribute.init(
+        GeometryAttributeType::Generic,
+        1,
+        property.data_type,
+        false,
+        property.values.len(),
+    );
+
+    let buffer = attribute.buffer_mut();
+    let width = property.data_type.byte_length();
+    for (index, value) in property.values.iter().enumerate() {
+        let value = *value;
+        let bytes: [u8; 8] = match property.data_type {
+            DataType::Int8 => pad(&(value as i8).to_le_bytes()),
+            DataType::Uint8 => pad(&(value as u8).to_le_bytes()),
+            DataType::Int16 => pad(&(value as i16).to_le_bytes()),
+            DataType::Uint16 => pad(&(value as u16).to_le_bytes()),
+            DataType::Int32 => pad(&(value as i32).to_le_bytes()),
+            DataType::Uint32 => pad(&(value as u32).to_le_bytes()),
+            DataType::Float64 => value.to_le_bytes(),
+            // Float32 and anything a header could not have declared.
+            _ => pad(&(value as f32).to_le_bytes()),
+        };
+        buffer.write(index * width, &bytes[..width]);
+    }
+    attribute
+}
+
+/// Widen a little-endian encoding to eight bytes so one array type serves every
+/// branch above; only the declared width is ever written.
+fn pad(bytes: &[u8]) -> [u8; 8] {
+    let mut padded = [0u8; 8];
+    padded[..bytes.len()].copy_from_slice(bytes);
+    padded
 }
 
 fn make_i32x3_attribute(
@@ -787,10 +895,96 @@ fn build_read_schema(header: &PlyHeader) -> io::Result<PlyReadSchema> {
 /// whether a declared property is consumed or ignored, so asking the names
 /// alone would call a non-`float32` `nx` supported and a second texture
 /// coordinate pair read.
-fn build_loss_report(header: &PlyHeader, schema: &PlyReadSchema) -> PlyLossReport {
-    const NORMAL_NAMES: [&str; 3] = ["nx", "ny", "nz"];
-    const COLOR_NAMES: [&str; 4] = ["red", "green", "blue", "alpha"];
+const NORMAL_NAMES: [&str; 3] = ["nx", "ny", "nz"];
+const COLOR_NAMES: [&str; 4] = ["red", "green", "blue", "alpha"];
 
+/// Whether a read takes this vertex property into a built-in attribute.
+///
+/// One answer for three callers that must not disagree: the body readers,
+/// which carry a property as a generic attribute only when nothing else
+/// claimed it; the loss report, which must not name a property that was read;
+/// and the schema, whose match arms this mirrors. Keeping it in one place is
+/// what stops a spelling learned in one of them from being missed by another.
+fn consumes_vertex_property(schema: &PlyReadSchema, name: &str) -> bool {
+    matches!(name, "x" | "y" | "z")
+        || NORMAL_NAMES.contains(&name)
+        || COLOR_NAMES.contains(&name)
+        || schema
+            .texcoord_pair
+            .is_some_and(|pair| name == pair.u || name == pair.v)
+}
+
+/// Which vertex properties a read carries through as generic attributes.
+///
+/// Built once per file from the header and the schema, so the two body readers
+/// and the attribute builder all agree on the set and its order without each
+/// re-deriving it.
+#[derive(Debug, Default)]
+struct GenericPlan {
+    /// Header property index -> column, for the properties being carried.
+    columns: Vec<Option<usize>>,
+    /// Name and declared type per column, in header order.
+    properties: Vec<(String, DataType)>,
+}
+
+impl GenericPlan {
+    /// Empty when the option is off, so the body readers pay nothing for it.
+    fn build(header: &PlyHeader, schema: &PlyReadSchema, enabled: bool) -> Self {
+        let mut plan = Self::default();
+        if !enabled {
+            return plan;
+        }
+        plan.columns = vec![None; header.vertex_properties.len()];
+        for (index, property) in header.vertex_properties.iter().enumerate() {
+            // A list has no fixed width, so it cannot become an attribute and
+            // stays in the loss report instead.
+            let Some(data_type) = property.scalar_type() else {
+                continue;
+            };
+            if consumes_vertex_property(schema, &property.name) {
+                continue;
+            }
+            plan.columns[index] = Some(plan.properties.len());
+            plan.properties.push((property.name.clone(), data_type));
+        }
+        plan
+    }
+
+    fn column_for(&self, property_index: usize) -> Option<usize> {
+        self.columns.get(property_index).copied().flatten()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.properties.is_empty()
+    }
+
+    /// Fresh per-column accumulators sized for the vertices expected.
+    fn new_values(&self, capacity: usize) -> Vec<Vec<f64>> {
+        self.properties
+            .iter()
+            .map(|_| Vec::with_capacity(capacity))
+            .collect()
+    }
+
+    /// Pair the accumulated columns with their names and declared types.
+    fn finish(&self, values: Vec<Vec<f64>>) -> Vec<ParsedGenericProperty> {
+        self.properties
+            .iter()
+            .zip(values)
+            .map(|((name, data_type), values)| ParsedGenericProperty {
+                name: name.clone(),
+                data_type: *data_type,
+                values,
+            })
+            .collect()
+    }
+}
+
+fn build_loss_report(
+    header: &PlyHeader,
+    schema: &PlyReadSchema,
+    carried_generics: bool,
+) -> PlyLossReport {
     let mut dropped = Vec::new();
 
     let declares_normals = header
@@ -803,13 +997,13 @@ fn build_loss_report(header: &PlyHeader, schema: &PlyReadSchema) -> PlyLossRepor
 
     for property in &header.vertex_properties {
         let name = property.name.as_str();
-        let consumed = matches!(name, "x" | "y" | "z")
-            || NORMAL_NAMES.contains(&name)
-            || COLOR_NAMES.contains(&name)
-            || schema
-                .texcoord_pair
-                .is_some_and(|pair| name == pair.u || name == pair.v);
-        if !consumed {
+        let consumed = consumes_vertex_property(schema, name);
+        // A property carried into a generic attribute is not lost, so naming it
+        // here would name a non-problem -- and a report that does that stops
+        // being read. Lists are the exception: an attribute has one width and
+        // a list does not, so they are dropped whatever the option says.
+        let carried = carried_generics && property.scalar_type().is_some();
+        if !consumed && !carried {
             dropped.push(PlyDroppedItem::VertexProperty {
                 name: property.name.clone(),
                 data_type: property.scalar_type(),
@@ -968,6 +1162,17 @@ fn parse_ascii_f32(token: &str, label: &str) -> io::Result<f32> {
         .map_err(|_| invalid_ply(format!("Bad {label} value")))
 }
 
+/// Parse a carried property's value.
+///
+/// `f64` for every declared type: it represents `int32`, `uint32` and
+/// `float64` exactly, and those are the widest PLY has, so the transport is
+/// lossless whatever the attribute is later built as.
+fn parse_ascii_f64(token: &str, label: &str) -> io::Result<f64> {
+    token
+        .parse()
+        .map_err(|_| invalid_ply(format!("Bad {label} value")))
+}
+
 fn parse_ascii_i32(token: &str, label: &str) -> io::Result<i32> {
     token
         .parse()
@@ -1001,6 +1206,7 @@ fn body_bounded_capacity(
 fn read_ply_ascii_body(
     header: &PlyHeader,
     schema: &PlyReadSchema,
+    generic_plan: &GenericPlan,
     body: &[u8],
 ) -> io::Result<ParsedPlyData> {
     let body_text = std::str::from_utf8(body)
@@ -1025,6 +1231,7 @@ fn read_ply_ascii_body(
         .texcoord_pair
         .is_some()
         .then(|| Vec::with_capacity(vertex_capacity));
+    let mut generic_values = generic_plan.new_values(vertex_capacity);
 
     for line in vertex_lines {
         let trimmed = line.trim();
@@ -1041,7 +1248,7 @@ fn read_ply_ascii_body(
         let mut color_component = 0usize;
         let mut cursor = 0usize;
 
-        for property in &header.vertex_properties {
+        for (property_index, property) in header.vertex_properties.iter().enumerate() {
             let Some(data_type) = property.scalar_type() else {
                 if cursor >= parts.len() {
                     break;
@@ -1093,7 +1300,11 @@ fn read_ply_ascii_body(
                 name if schema.texcoord_pair.is_some_and(|pair| name == pair.v) => {
                     texcoord[1] = parse_ascii_f32(token, name)?;
                 }
-                _ => {}
+                name => {
+                    if let Some(column) = generic_plan.column_for(property_index) {
+                        generic_values[column].push(parse_ascii_f64(token, name)?);
+                    }
+                }
             }
         }
 
@@ -1133,6 +1344,7 @@ fn read_ply_ascii_body(
         normals,
         colors,
         texcoords,
+        generic: generic_plan.finish(generic_values),
     })
 }
 
@@ -1160,6 +1372,54 @@ fn skip_binary_scalar(cursor: &mut Cursor<&[u8]>, data_type: DataType) -> io::Re
 enum BinaryEndian {
     Little,
     Big,
+}
+
+/// Read a carried property's value, whatever width the file declared it at.
+///
+/// `f64` because it is the only type that holds every PLY scalar exactly:
+/// `int32` and `uint32` need more than `f32`'s 24 bits of mantissa, and a
+/// carried value that a widening step has already rounded cannot be narrowed
+/// back to what the file said.
+fn read_binary_scalar_as_f64(
+    cursor: &mut Cursor<&[u8]>,
+    data_type: DataType,
+    endian: BinaryEndian,
+) -> io::Result<f64> {
+    ensure_remaining(cursor, data_type.byte_length())?;
+    let value = match data_type {
+        DataType::Int8 => cursor.read_i8()? as f64,
+        DataType::Uint8 => cursor.read_u8()? as f64,
+        DataType::Int16 => match endian {
+            BinaryEndian::Little => cursor.read_i16::<LittleEndian>()? as f64,
+            BinaryEndian::Big => cursor.read_i16::<BigEndian>()? as f64,
+        },
+        DataType::Uint16 => match endian {
+            BinaryEndian::Little => cursor.read_u16::<LittleEndian>()? as f64,
+            BinaryEndian::Big => cursor.read_u16::<BigEndian>()? as f64,
+        },
+        DataType::Int32 => match endian {
+            BinaryEndian::Little => cursor.read_i32::<LittleEndian>()? as f64,
+            BinaryEndian::Big => cursor.read_i32::<BigEndian>()? as f64,
+        },
+        DataType::Uint32 => match endian {
+            BinaryEndian::Little => cursor.read_u32::<LittleEndian>()? as f64,
+            BinaryEndian::Big => cursor.read_u32::<BigEndian>()? as f64,
+        },
+        DataType::Float32 => match endian {
+            BinaryEndian::Little => cursor.read_f32::<LittleEndian>()? as f64,
+            BinaryEndian::Big => cursor.read_f32::<BigEndian>()? as f64,
+        },
+        DataType::Float64 => match endian {
+            BinaryEndian::Little => cursor.read_f64::<LittleEndian>()?,
+            BinaryEndian::Big => cursor.read_f64::<BigEndian>()?,
+        },
+        other => {
+            return Err(invalid_ply(format!(
+                "Vertex property type {other:?} cannot be carried"
+            )))
+        }
+    };
+    Ok(value)
 }
 
 fn read_binary_scalar_as_f32(
@@ -1325,6 +1585,7 @@ fn skip_binary_element(
 fn read_ply_binary_body(
     header: &PlyHeader,
     schema: &PlyReadSchema,
+    generic_plan: &GenericPlan,
     body: &[u8],
     endian: BinaryEndian,
 ) -> io::Result<ParsedPlyData> {
@@ -1361,6 +1622,7 @@ fn read_ply_binary_body(
         .texcoord_pair
         .is_some()
         .then(|| Vec::with_capacity(vertex_capacity));
+    let mut generic_values = generic_plan.new_values(vertex_capacity);
 
     for _ in 0..header.vertex_count {
         let mut float_position = [0.0f32; 3];
@@ -1370,7 +1632,7 @@ fn read_ply_binary_body(
         let mut texcoord = [0.0f32; 2];
         let mut color_component = 0usize;
 
-        for property in &header.vertex_properties {
+        for (property_index, property) in header.vertex_properties.iter().enumerate() {
             match property.kind {
                 PlyPropertyKind::Scalar(data_type) => match property.name.as_str() {
                     "x" => match schema.position_data_type {
@@ -1428,7 +1690,14 @@ fn read_ply_binary_body(
                     name if schema.texcoord_pair.is_some_and(|pair| name == pair.v) => {
                         texcoord[1] = read_binary_scalar_as_f32(&mut cursor, data_type, endian)?
                     }
-                    _ => skip_binary_scalar(&mut cursor, data_type)?,
+                    _ => match generic_plan.column_for(property_index) {
+                        Some(column) => generic_values[column].push(read_binary_scalar_as_f64(
+                            &mut cursor,
+                            data_type,
+                            endian,
+                        )?),
+                        None => skip_binary_scalar(&mut cursor, data_type)?,
+                    },
                 },
                 PlyPropertyKind::List {
                     count_type,
@@ -1537,6 +1806,7 @@ fn read_ply_binary_body(
         normals,
         colors,
         texcoords,
+        generic: generic_plan.finish(generic_values),
     })
 }
 
@@ -1554,15 +1824,16 @@ fn read_ply_source(source: &PlyReaderSource) -> io::Result<ParsedPlyData> {
 
 fn read_ply_source_reporting(
     source: &PlyReaderSource,
+    carry_generics: bool,
 ) -> io::Result<(ParsedPlyData, PlyLossReport)> {
     match source {
-        PlyReaderSource::Path(path) => read_ply_bytes_reporting(&fs::read(path)?),
-        PlyReaderSource::Bytes(bytes) => read_ply_bytes_reporting(bytes),
+        PlyReaderSource::Path(path) => read_ply_bytes_reporting(&fs::read(path)?, carry_generics),
+        PlyReaderSource::Bytes(bytes) => read_ply_bytes_reporting(bytes, carry_generics),
     }
 }
 
 fn read_ply_bytes(bytes: &[u8]) -> io::Result<ParsedPlyData> {
-    Ok(read_ply_bytes_reporting(bytes)?.0)
+    Ok(read_ply_bytes_reporting(bytes, false)?.0)
 }
 
 /// Parse a PLY, and say in the same pass what the parse did not carry.
@@ -1570,19 +1841,23 @@ fn read_ply_bytes(bytes: &[u8]) -> io::Result<ParsedPlyData> {
 /// One header, one schema, one report: asking separately would answer for a
 /// second read of the file, which for a path source is not necessarily the
 /// same bytes.
-fn read_ply_bytes_reporting(bytes: &[u8]) -> io::Result<(ParsedPlyData, PlyLossReport)> {
+fn read_ply_bytes_reporting(
+    bytes: &[u8],
+    carry_generics: bool,
+) -> io::Result<(ParsedPlyData, PlyLossReport)> {
     let (header, body_offset) = parse_ply_header(bytes)?;
     let schema = build_read_schema(&header)?;
-    let report = build_loss_report(&header, &schema);
+    let plan = GenericPlan::build(&header, &schema, carry_generics);
+    let report = build_loss_report(&header, &schema, !plan.is_empty());
     let body = &bytes[body_offset..];
 
     let parsed = match header.format {
-        PlyFormat::Ascii => read_ply_ascii_body(&header, &schema, body)?,
+        PlyFormat::Ascii => read_ply_ascii_body(&header, &schema, &plan, body)?,
         PlyFormat::BinaryLittleEndian => {
-            read_ply_binary_body(&header, &schema, body, BinaryEndian::Little)?
+            read_ply_binary_body(&header, &schema, &plan, body, BinaryEndian::Little)?
         }
         PlyFormat::BinaryBigEndian => {
-            read_ply_binary_body(&header, &schema, body, BinaryEndian::Big)?
+            read_ply_binary_body(&header, &schema, &plan, body, BinaryEndian::Big)?
         }
     };
     Ok((parsed, report))
@@ -2297,6 +2572,162 @@ end_header
                 "face property \"texcoord\" is not the corner-index list and is skipped",
                 "element \"camera\" and its 2 entries are skipped entirely",
             ]
+        );
+    }
+
+    /// Read one carried attribute back as `f64`, whatever width it was built at.
+    fn generic_values(mesh: &Mesh, name: &str) -> Option<Vec<f64>> {
+        for id in 0..mesh.num_attributes() {
+            let attribute = mesh.attribute(id);
+            let unique_id = attribute.unique_id();
+            let carries_name = mesh
+                .attribute_metadata_by_unique_id(unique_id)
+                .and_then(|metadata| metadata.metadata().get_string("name"))
+                .is_some_and(|found| found == name);
+            if !carries_name {
+                continue;
+            }
+            let width = attribute.data_type().byte_length();
+            let data = attribute.buffer().data();
+            return Some(
+                (0..mesh.num_points())
+                    .map(|index| {
+                        let bytes = &data[index * width..(index + 1) * width];
+                        match attribute.data_type() {
+                            DataType::Uint8 => bytes[0] as f64,
+                            DataType::Int32 => i32::from_le_bytes(bytes.try_into().unwrap()) as f64,
+                            DataType::Float64 => f64::from_le_bytes(bytes.try_into().unwrap()),
+                            _ => f32::from_le_bytes(bytes.try_into().unwrap()) as f64,
+                        }
+                    })
+                    .collect(),
+            );
+        }
+        None
+    }
+
+    const SPLAT_PLY: &str = r#"ply
+format ascii 1.0
+element vertex 2
+property float x
+property float y
+property float z
+property float f_dc_0
+property float opacity
+property uchar confidence
+end_header
+0 0 0 1.5 -3.0 200
+1 0 0 2.5 -4.0 100
+"#;
+
+    #[test]
+    fn test_generic_attributes_are_off_unless_asked_for() {
+        let mesh = PlyReader::from_bytes(SPLAT_PLY.as_bytes().to_vec())
+            .read_mesh()
+            .unwrap();
+        // Position only: the default read is what it always was.
+        assert_eq!(mesh.num_attributes(), 1);
+        assert!(generic_values(&mesh, "f_dc_0").is_none());
+    }
+
+    #[test]
+    fn test_generic_attributes_carry_values_names_and_declared_types() {
+        let mesh = PlyReader::from_bytes(SPLAT_PLY.as_bytes().to_vec())
+            .with_generic_attributes(true)
+            .read_mesh()
+            .unwrap();
+
+        assert_eq!(mesh.num_attributes(), 4, "position plus three carried");
+        assert_eq!(generic_values(&mesh, "f_dc_0"), Some(vec![1.5, 2.5]));
+        assert_eq!(generic_values(&mesh, "opacity"), Some(vec![-3.0, -4.0]));
+        assert_eq!(
+            generic_values(&mesh, "confidence"),
+            Some(vec![200.0, 100.0])
+        );
+
+        // The declared width is kept rather than everything being widened.
+        let confidence = (0..mesh.num_attributes())
+            .map(|id| mesh.attribute(id))
+            .find(|attribute| attribute.data_type() == DataType::Uint8)
+            .expect("the uchar property stays a uchar");
+        assert_eq!(confidence.attribute_type(), GeometryAttributeType::Generic);
+        assert_eq!(confidence.num_components(), 1);
+    }
+
+    #[test]
+    fn test_carrying_removes_the_properties_from_the_loss_report() {
+        let dropped_by_default = PlyReader::from_bytes(SPLAT_PLY.as_bytes().to_vec())
+            .loss_report()
+            .unwrap();
+        assert_eq!(dropped_by_default.dropped().len(), 3);
+
+        let carried = PlyReader::from_bytes(SPLAT_PLY.as_bytes().to_vec())
+            .with_generic_attributes(true)
+            .loss_report()
+            .unwrap();
+        assert!(
+            carried.is_lossless(),
+            "a carried property is not lost, so naming it would name a non-problem: {:?}",
+            carried.dropped()
+        );
+    }
+
+    #[test]
+    fn test_lists_stay_dropped_and_reported_even_when_carrying() {
+        // A list has no fixed width per point, so it cannot become an
+        // attribute however the option is set.
+        let ply = r#"ply
+format ascii 1.0
+element vertex 1
+property float x
+property float y
+property float z
+property list uchar int weights
+property float confidence
+end_header
+0 0 0 2 7 8 0.5
+"#;
+
+        let (mesh, report) = PlyReader::from_bytes(ply.as_bytes().to_vec())
+            .with_generic_attributes(true)
+            .read_mesh_reporting_loss()
+            .unwrap();
+
+        assert_eq!(generic_values(&mesh, "confidence"), Some(vec![0.5]));
+        assert_eq!(
+            report.dropped(),
+            [PlyDroppedItem::VertexProperty {
+                name: "weights".to_string(),
+                data_type: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn test_generic_attributes_survive_the_binary_path() {
+        let mut ply = b"ply\nformat binary_little_endian 1.0\nelement vertex 2\n\
+            property float x\nproperty float y\nproperty float z\n\
+            property float opacity\nproperty uchar confidence\nend_header\n"
+            .to_vec();
+        for (position, opacity, confidence) in [
+            ([0.0f32, 0.0, 0.0], -3.0f32, 200u8),
+            ([1.0f32, 0.0, 0.0], -4.0f32, 100u8),
+        ] {
+            for value in position {
+                ply.extend_from_slice(&value.to_le_bytes());
+            }
+            ply.extend_from_slice(&opacity.to_le_bytes());
+            ply.push(confidence);
+        }
+
+        let mesh = PlyReader::from_bytes(ply)
+            .with_generic_attributes(true)
+            .read_mesh()
+            .unwrap();
+        assert_eq!(generic_values(&mesh, "opacity"), Some(vec![-3.0, -4.0]));
+        assert_eq!(
+            generic_values(&mesh, "confidence"),
+            Some(vec![200.0, 100.0])
         );
     }
 
