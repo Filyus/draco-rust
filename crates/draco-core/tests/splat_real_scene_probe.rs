@@ -171,9 +171,54 @@ fn quantized_cloud(source: &PointCloud, budgets: &[i32]) -> (PointCloud, Vec<Vec
 }
 
 fn encode(cloud: &PointCloud, budgets: &[i32], method: Option<i32>) -> usize {
+    encode_predicting(cloud, budgets, method, None)
+}
+
+/// One prediction scheme per attribute, `-1` where the encoder should decide.
+fn encode_per_attribute(
+    cloud: &PointCloud,
+    budgets: &[i32],
+    method: Option<i32>,
+    predictions: &[i32],
+) -> usize {
+    encode_inner(cloud, budgets, method, None, predictions)
+}
+
+/// Draco's `PREDICTION_NONE`: code the values themselves rather than their
+/// differences. It has been in the bitstream since version 1.1, so choosing it
+/// is a choice an ordinary decoder reads, not an extension.
+const PREDICTION_NONE: i32 = -2;
+
+fn encode_predicting(
+    cloud: &PointCloud,
+    budgets: &[i32],
+    method: Option<i32>,
+    prediction: Option<i32>,
+) -> usize {
+    encode_inner(cloud, budgets, method, prediction, &[])
+}
+
+fn encode_inner(
+    cloud: &PointCloud,
+    budgets: &[i32],
+    method: Option<i32>,
+    prediction: Option<i32>,
+    predictions: &[i32],
+) -> usize {
     let mut options = EncoderOptions::new();
     if let Some(method) = method {
         options.set_encoding_method(method);
+    }
+    if let Some(prediction) = prediction {
+        for id in 0..cloud.num_attributes() {
+            options.set_attribute_int(id, "prediction_scheme", prediction);
+        }
+    }
+    for (id, scheme) in predictions.iter().enumerate() {
+        // -1 is Draco's "undefined": leave the encoder's own choice alone.
+        if *scheme != -1 {
+            options.set_attribute_int(id as i32, "prediction_scheme", *scheme);
+        }
     }
     for (id, bits) in budgets.iter().enumerate() {
         options.set_attribute_int(id as i32, "quantization_bits", *bits);
@@ -379,6 +424,26 @@ fn a_real_scene_under_the_spz_bit_budget() {
         alone * 8.0 / sh_components as f32,
     );
 
+    // The sequential coder difference-predicts every attribute, and
+    // `splat_entropy_probe` measured that differenced harmonics cost *more*
+    // than the values themselves. If that is what is happening, then the gap to
+    // the entropy floor is not the coder falling short of its data -- it is the
+    // coder sitting exactly on the entropy of the wrong sequence, and the fix
+    // is a flag the bitstream has always carried.
+    let unpredicted = encode_predicting(
+        &harmonics_only,
+        &eight_budget,
+        Some(SEQUENTIAL),
+        Some(PREDICTION_NONE),
+    ) as f32
+        / num_points as f32;
+    println!("  with PREDICTION_NONE  {unpredicted:>7.2} B/point");
+    println!(
+        "  predicting them costs {:.2} B/point, at {:.2} bits per value unpredicted",
+        alone - unpredicted,
+        unpredicted * 8.0 / sh_components as f32,
+    );
+
     // ---------------------------------------------------------------------
     // Positions on their own, under both encoders.
     //
@@ -425,6 +490,101 @@ fn a_real_scene_under_the_spz_bit_budget() {
         seq - kd
     );
 
+    // ---------------------------------------------------------------------
+    // Both fixes together, on the whole scene.
+    //
+    // Neither needs anything the bitstream does not already carry. The
+    // prediction scheme is per attribute and has been readable since version
+    // 1.1; the point order of a point cloud is not semantic, so sorting before
+    // encoding is a choice inside the encoder that no decoder has to know
+    // about. What the sort buys is a difference predictor on positions that
+    // predicts from a spatial neighbour rather than from whatever the exporter
+    // happened to write next.
+    // ---------------------------------------------------------------------
+    println!();
+    println!("=== the whole scene, with the predictor chosen per attribute ===");
+    let sorted = morton_sorted(&cloud, position_id);
+    let per_attribute: Vec<i32> = (0..cloud.num_attributes())
+        .map(|id| {
+            if names[id as usize]
+                .as_deref()
+                .is_some_and(|name| name.starts_with("f_rest_"))
+            {
+                PREDICTION_NONE
+            } else {
+                -1
+            }
+        })
+        .collect();
+    let budget = budgets(8);
+    let base = encode(&cloud, &budget, Some(SEQUENTIAL)) as f32 / num_points as f32;
+    let sorted_only = encode(&sorted, &budget, Some(SEQUENTIAL)) as f32 / num_points as f32;
+    let predicted_only =
+        encode_per_attribute(&cloud, &budget, Some(SEQUENTIAL), &per_attribute) as f32
+            / num_points as f32;
+    let both = encode_per_attribute(&sorted, &budget, Some(SEQUENTIAL), &per_attribute) as f32
+        / num_points as f32;
+    println!("  as encoded today              {base:>7.2} B/point");
+    println!("  Morton order only             {sorted_only:>7.2} B/point");
+    println!("  per-attribute prediction only {predicted_only:>7.2} B/point");
+    println!("  both                          {both:>7.2} B/point");
+    println!(
+        "  together {:.2} B/point, {:.1}% off, and {:.2}x the raw floats",
+        base - both,
+        (1.0 - both / base) * 100.0,
+        raw_bytes_per_point / both,
+    );
+
+    // The two fixes are far from additive -- 3.53 and 6.00 apart, 6.36
+    // together -- and the reason matters, because "they overlap" and "one of
+    // them stopped working" look identical in a total. So the harmonics are
+    // measured again in the sorted cloud: if sorting is what makes their
+    // difference predictor stop hurting, that shows up here as the gap between
+    // these two numbers closing.
+    let mut sorted_harmonics = PointCloud::new();
+    sorted_harmonics.set_num_points(num_points);
+    for id in &harmonic_ids {
+        let source_attribute = sorted.attribute(*id);
+        let mut attribute = PointAttribute::new();
+        attribute.init(
+            GeometryAttributeType::Generic,
+            source_attribute.num_components(),
+            DataType::Float32,
+            false,
+            num_points,
+        );
+        let width = source_attribute.num_components() as usize * 4;
+        let stride = source_attribute.byte_stride() as usize;
+        let mut scratch = vec![0u8; width];
+        let buffer_out = attribute.buffer_mut();
+        for point in 0..num_points {
+            source_attribute.buffer().read(point * stride, &mut scratch);
+            buffer_out.write(point * width, &scratch);
+        }
+        sorted_harmonics.add_attribute(attribute);
+    }
+    let sorted_predicted =
+        encode(&sorted_harmonics, &eight_budget, Some(SEQUENTIAL)) as f32 / num_points as f32;
+    let sorted_unpredicted = encode_predicting(
+        &sorted_harmonics,
+        &eight_budget,
+        Some(SEQUENTIAL),
+        Some(PREDICTION_NONE),
+    ) as f32
+        / num_points as f32;
+    println!();
+    println!("  harmonics alone, in file order:  {alone:>6.2} predicted, {unpredicted:>6.2} not");
+    println!(
+        "  harmonics alone, in Morton order:{sorted_predicted:>7.2} predicted, \
+         {sorted_unpredicted:>6.2} not"
+    );
+    println!(
+        "  so sorting takes {:.2} B/point off the predictor's penalty, and what \
+         is left for PREDICTION_NONE to save is {:.2}",
+        (alone - unpredicted) - (sorted_predicted - sorted_unpredicted),
+        sorted_predicted - sorted_unpredicted,
+    );
+
     // Kept only to show what it is not: this is the slope, printed next to the
     // cost it would have been mistaken for.
     let slope = (encode(&cloud, &budgets(8), Some(SEQUENTIAL)) as f32
@@ -434,6 +594,99 @@ fn a_real_scene_under_the_spz_bit_budget() {
         "  (the 8-to-4-bit slope is {slope:.2} B/point, which is the difference \
          of two compressed costs and not a cost)"
     );
+}
+
+/// The same cloud with its points in Morton order.
+///
+/// A point cloud's point order carries no meaning -- there is no connectivity
+/// referring to it and a splat renderer sorts by depth anyway -- so an encoder
+/// may choose it freely. Every attribute is permuted together, which is what
+/// keeps a point a point.
+fn morton_sorted(cloud: &PointCloud, position_id: i32) -> PointCloud {
+    let num_points = cloud.num_points();
+    let positions = cloud.attribute(position_id);
+    let stride = positions.byte_stride() as usize;
+    let read = |point: usize, component: usize| -> f32 {
+        let mut bytes = [0u8; 4];
+        positions
+            .buffer()
+            .read(point * stride + component * 4, &mut bytes);
+        f32::from_le_bytes(bytes)
+    };
+
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    for point in 0..num_points {
+        for c in 0..3 {
+            min[c] = min[c].min(read(point, c));
+            max[c] = max[c].max(read(point, c));
+        }
+    }
+    // Ten bits an axis interleave into 30 and fit a u32 key. At three quarters
+    // of a million points that separates neighbours far more finely than the
+    // difference predictor can use.
+    let spread = |v: u32| -> u32 {
+        let mut x = v & 0x3FF;
+        x = (x | (x << 16)) & 0x030000FF;
+        x = (x | (x << 8)) & 0x0300F00F;
+        x = (x | (x << 4)) & 0x030C30C3;
+        x = (x | (x << 2)) & 0x09249249;
+        x
+    };
+    let mut keys: Vec<(u32, u32)> = (0..num_points)
+        .map(|point| {
+            let mut axis = [0u32; 3];
+            for c in 0..3 {
+                let range = max[c] - min[c];
+                let normalized = if range > 0.0 {
+                    (read(point, c) - min[c]) / range
+                } else {
+                    0.0
+                };
+                axis[c] = (normalized * 1023.0) as u32;
+            }
+            let key = spread(axis[0]) | (spread(axis[1]) << 1) | (spread(axis[2]) << 2);
+            (key, point as u32)
+        })
+        .collect();
+    keys.sort_unstable();
+
+    let mut sorted = PointCloud::new();
+    sorted.set_num_points(num_points);
+    for id in 0..cloud.num_attributes() {
+        let source_attribute = cloud.attribute(id);
+        let components = source_attribute.num_components();
+        let mut attribute = PointAttribute::new();
+        attribute.init(
+            source_attribute.attribute_type(),
+            components,
+            source_attribute.data_type(),
+            source_attribute.normalized(),
+            num_points,
+        );
+        let width = components as usize * source_attribute.data_type().byte_length();
+        let source_stride = source_attribute.byte_stride() as usize;
+        let mut scratch = vec![0u8; width];
+        let buffer_out = attribute.buffer_mut();
+        for (destination, (_, source)) in keys.iter().enumerate() {
+            source_attribute
+                .buffer()
+                .read(*source as usize * source_stride, &mut scratch);
+            buffer_out.write(destination * width, &scratch);
+        }
+        let new_id = sorted.add_attribute(attribute);
+        // Names travel with the values; without them a reader cannot tell
+        // which harmonic it is holding.
+        let unique_id = cloud.attribute(id).unique_id();
+        if let Some(metadata) = cloud.attribute_metadata_by_unique_id(unique_id) {
+            let carried = metadata.metadata().clone();
+            let new_unique_id = sorted.attribute(new_id).unique_id();
+            sorted
+                .metadata_or_insert()
+                .set_attribute_metadata(new_unique_id, carried);
+        }
+    }
+    sorted
 }
 
 /// What `gzip -9` makes of a file, or `None` where there is no gzip.
