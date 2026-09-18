@@ -148,6 +148,41 @@ impl EncoderOptions {
         self.set_global_int("prediction_scheme", value);
     }
 
+    /// Whether a point-cloud attribute may be encoded with each candidate
+    /// prediction scheme so the smallest can be kept.
+    pub fn prediction_search(&self) -> bool {
+        self.get_global_int("prediction_scheme_search", 0) != 0
+    }
+
+    /// Lets the encoder try each candidate prediction scheme per attribute and
+    /// keep whichever produced fewer bytes.
+    ///
+    /// Off by default, and deliberately: the automatic choice is upstream's,
+    /// and this crate's output is byte-identical to C++ Draco's for the same
+    /// input. Searching produces a different — smaller — stream, so it is a
+    /// thing a caller asks for rather than a thing that happens to them.
+    ///
+    /// What it buys, and why it exists at all: the automatic choice for a
+    /// point-cloud attribute is always `Difference`, and differencing costs
+    /// more than it saves whenever consecutive values do not correlate.
+    /// Spherical-harmonic coefficients in a Gaussian splat are the case that
+    /// prompted this — predicted they cost 6.35 bits per 8-bit value, coded
+    /// directly 5.72, against an order-0 entropy of 5.685. The opposite case is
+    /// just as real: on smoothly varying data, turning prediction off has made
+    /// a file 2.5x larger. Neither is knowable without encoding, which is what
+    /// this does.
+    ///
+    /// The cost is encode time — each candidate is a full encode of that
+    /// attribute — and nothing else. Decoding is unaffected, and every stream
+    /// this can produce is one an ordinary decoder reads: the scheme is a byte
+    /// the bitstream has always carried, `PREDICTION_NONE` included.
+    ///
+    /// An attribute with an explicit `prediction_scheme` is left alone; a
+    /// caller who named a scheme has already made this choice.
+    pub fn set_prediction_search(&mut self, enabled: bool) {
+        self.set_global_int("prediction_scheme_search", i32::from(enabled));
+    }
+
     /// Returns the forced encoding method, if one was set.
     pub fn get_encoding_method(&self) -> Option<i32> {
         self.inner.global_options.get("encoding_method").cloned()

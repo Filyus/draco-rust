@@ -148,10 +148,7 @@ fn round_trip(
 ///
 /// An empty slice encodes losslessly; that is the only way to say "no
 /// quantization", since every entry present is a budget to spend.
-fn round_trip_with_bits(
-    cloud: PointCloud,
-    bits: &[i32],
-) -> Result<(Vec<u8>, PointCloud), String> {
+fn round_trip_with_bits(cloud: PointCloud, bits: &[i32]) -> Result<(Vec<u8>, PointCloud), String> {
     round_trip_full(cloud, bits, None)
 }
 
@@ -403,8 +400,7 @@ fn draco_under_the_spz_bit_budget() {
             let mut per_point = [0.0f32; 2];
             for (slot, method) in [None, Some(SEQUENTIAL)].into_iter().enumerate() {
                 let cloud = build_splat_cloud_sized(&layout, false, shape, POINTS);
-                let (bytes, decoded) =
-                    round_trip_full(cloud, budget, method).expect("round trip");
+                let (bytes, decoded) = round_trip_full(cloud, budget, method).expect("round trip");
                 assert_eq!(decoded.num_points(), POINTS);
                 per_point[slot] = bytes.len() as f32 / POINTS as f32;
             }

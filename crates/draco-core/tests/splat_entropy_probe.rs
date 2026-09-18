@@ -64,10 +64,10 @@ fn quantize_planes(attribute: &PointAttribute, num_points: usize, bits: i32) -> 
     let mut min = vec![f32::INFINITY; components];
     let mut max = vec![f32::NEG_INFINITY; components];
     for point in 0..num_points {
-        for c in 0..components {
+        for (c, (low, high)) in min.iter_mut().zip(max.iter_mut()).enumerate() {
             let value = read_f32(attribute, point, c);
-            min[c] = min[c].min(value);
-            max[c] = max[c].max(value);
+            *low = low.min(value);
+            *high = high.max(value);
         }
     }
     let range = (0..components)
@@ -246,10 +246,15 @@ fn where_the_harmonics_bits_actually_go() {
     // Harmonics, which are 45 of the 62 values a splat carries.
     // ---------------------------------------------------------------------
     let is_harmonic = |label: &str| label.starts_with("f_rest_");
-    let harmonic: Vec<&(String, Vec<u8>)> =
-        planes.iter().filter(|(label, _)| is_harmonic(label)).collect();
+    let harmonic: Vec<&(String, Vec<u8>)> = planes
+        .iter()
+        .filter(|(label, _)| is_harmonic(label))
+        .collect();
     println!();
-    println!("=== harmonics: {} planes at {BITS} bits ===", harmonic.len());
+    println!(
+        "=== harmonics: {} planes at {BITS} bits ===",
+        harmonic.len()
+    );
     println!(
         "{:<14} {:>8} {:>8} {:>10} {:>10} {:>9}",
         "plane", "levels", "90% in", "raw bits", "morton", "shuffled"
@@ -276,13 +281,27 @@ fn where_the_harmonics_bits_actually_go() {
     let n = harmonic.len() as f64;
     println!(
         "{:<14} {:>8} {:>8} {:>10.3} {:>10.3} {:>9.3}   <- mean over all {}",
-        "MEAN", "", "", totals[0] / n, totals[2] / n, totals[3] / n, harmonic.len()
+        "MEAN",
+        "",
+        "",
+        totals[0] / n,
+        totals[2] / n,
+        totals[3] / n,
+        harmonic.len()
     );
     println!(
         "{:<14} {:>8} {:>8} {:>10.2} {:>10.2} {:>9.2}   <- B/point for the harmonics",
-        "TOTAL", "", "", totals[0] / 8.0, totals[2] / 8.0, totals[3] / 8.0
+        "TOTAL",
+        "",
+        "",
+        totals[0] / 8.0,
+        totals[2] / 8.0,
+        totals[3] / 8.0
     );
-    println!("  file order, for comparison: {:.2} B/point", totals[1] / 8.0);
+    println!(
+        "  file order, for comparison: {:.2} B/point",
+        totals[1] / 8.0
+    );
 
     println!();
     println!("  what the numbers separate:");

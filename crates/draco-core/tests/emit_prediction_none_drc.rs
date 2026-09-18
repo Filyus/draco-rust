@@ -90,7 +90,10 @@ fn splat_cloud() -> PointCloud {
 }
 
 fn write(name: &str, bytes: &[u8]) -> String {
-    let path = std::env::temp_dir().join(name).to_string_lossy().into_owned();
+    let path = std::env::temp_dir()
+        .join(name)
+        .to_string_lossy()
+        .into_owned();
     // Written and synced through the one handle: a reopened read-only handle
     // cannot be synced on Windows, and the C++ decoder reads this next.
     let mut file = std::fs::File::create(&path).expect("create");

@@ -15,6 +15,15 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `PointCloudEncoder` needs it owned, so geometry read from a file with no
   faces had no way to reach the point-cloud coder without every attribute
   being rebuilt.
+- `EncoderOptions::set_prediction_search` encodes each point-cloud attribute
+  with every candidate prediction scheme and keeps the smallest. The automatic
+  choice for a point-cloud attribute is always `Difference`, which costs more
+  than it saves whenever consecutive values do not correlate — on a Gaussian
+  splat scene the option takes 53.02 to 48.82 bytes per point. It is off by
+  default, because the automatic choice is upstream's and this crate's output
+  is byte-identical to C++ Draco's for the same input; the cost when it is on
+  is encode time, and every stream it can produce is one an ordinary decoder
+  reads, `PREDICTION_NONE` having been in the bitstream since version 1.1.
 
 ## [2.1.0](https://github.com/Filyus/draco-rust/compare/draco-core-v2.0.0...draco-core-v2.1.0) - 2026-09-15
 

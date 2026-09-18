@@ -102,10 +102,10 @@ fn quantize(attribute: &PointAttribute, num_points: usize, bits: i32) -> Vec<u32
     let mut min = vec![f32::INFINITY; components];
     let mut max = vec![f32::NEG_INFINITY; components];
     for point in 0..num_points {
-        for c in 0..components {
+        for (c, (low, high)) in min.iter_mut().zip(max.iter_mut()).enumerate() {
             let value = read_f32(attribute, point, c);
-            min[c] = min[c].min(value);
-            max[c] = max[c].max(value);
+            *low = low.min(value);
+            *high = high.max(value);
         }
     }
     let range = (0..components)
@@ -118,9 +118,9 @@ fn quantize(attribute: &PointAttribute, num_points: usize, bits: i32) -> Vec<u32
 
     let mut out = Vec::with_capacity(num_points * components);
     for point in 0..num_points {
-        for c in 0..components {
+        for (c, low) in min.iter().enumerate() {
             let value = read_f32(attribute, point, c);
-            out.push((((value - min[c]) * scale) + 0.5) as u32);
+            out.push((((value - low) * scale) + 0.5) as u32);
         }
     }
     out
@@ -172,6 +172,21 @@ fn quantized_cloud(source: &PointCloud, budgets: &[i32]) -> (PointCloud, Vec<Vec
 
 fn encode(cloud: &PointCloud, budgets: &[i32], method: Option<i32>) -> usize {
     encode_predicting(cloud, budgets, method, None)
+}
+
+/// Encodes with `set_prediction_search`, the option this all became.
+fn encode_searching(cloud: &PointCloud, budgets: &[i32]) -> usize {
+    let mut options = EncoderOptions::new();
+    options.set_encoding_method(SEQUENTIAL);
+    options.set_prediction_search(true);
+    for (id, bits) in budgets.iter().enumerate() {
+        options.set_attribute_int(id as i32, "quantization_bits", *bits);
+    }
+    let mut encoder = PointCloudEncoder::new();
+    encoder.set_point_cloud(cloud.clone());
+    let mut buffer = EncoderBuffer::new();
+    encoder.encode(&options, &mut buffer).expect("encodes");
+    buffer.data().len()
 }
 
 /// One prediction scheme per attribute, `-1` where the encoder should decide.
@@ -249,7 +264,11 @@ fn a_real_scene_under_the_spz_bit_budget() {
         return;
     };
     let file_bytes = std::fs::metadata(&path).expect("the scene exists").len();
-    println!("scene: {} ({:.1} MB)", path.display(), file_bytes as f64 / 1e6);
+    println!(
+        "scene: {} ({:.1} MB)",
+        path.display(),
+        file_bytes as f64 / 1e6
+    );
 
     let source = std::fs::read(&path).expect("the scene reads");
     let (mesh, report) = draco_io::ply_reader::PlyReader::from_bytes(source)
@@ -552,15 +571,24 @@ fn a_real_scene_under_the_spz_bit_budget() {
     let budget = budgets(8);
     let base = encode(&cloud, &budget, Some(SEQUENTIAL)) as f32 / num_points as f32;
     let sorted_only = encode(&sorted, &budget, Some(SEQUENTIAL)) as f32 / num_points as f32;
-    let predicted_only =
-        encode_per_attribute(&cloud, &budget, Some(SEQUENTIAL), &per_attribute) as f32
-            / num_points as f32;
+    let predicted_only = encode_per_attribute(&cloud, &budget, Some(SEQUENTIAL), &per_attribute)
+        as f32
+        / num_points as f32;
     let both = encode_per_attribute(&sorted, &budget, Some(SEQUENTIAL), &per_attribute) as f32
         / num_points as f32;
+    // The shipped option, doing by measurement what the hand-written list above
+    // does by knowing which attributes are harmonics. It should land on the
+    // same place or better -- better, where it finds an attribute the list did
+    // not think to name.
+    let searched = encode_searching(&cloud, &budget) as f32 / num_points as f32;
+    let searched_sorted = encode_searching(&sorted, &budget) as f32 / num_points as f32;
+
     println!("  as encoded today              {base:>7.2} B/point");
     println!("  Morton order only             {sorted_only:>7.2} B/point");
     println!("  per-attribute prediction only {predicted_only:>7.2} B/point");
     println!("  both                          {both:>7.2} B/point");
+    println!("  set_prediction_search(true)   {searched:>7.2} B/point");
+    println!("  the same, Morton order        {searched_sorted:>7.2} B/point");
     println!(
         "  together {:.2} B/point, {:.1}% off, and {:.2}x the raw floats",
         base - both,
@@ -657,9 +685,10 @@ fn morton_sorted(cloud: &PointCloud, position_id: i32) -> PointCloud {
     let mut min = [f32::INFINITY; 3];
     let mut max = [f32::NEG_INFINITY; 3];
     for point in 0..num_points {
-        for c in 0..3 {
-            min[c] = min[c].min(read(point, c));
-            max[c] = max[c].max(read(point, c));
+        for (c, (low, high)) in min.iter_mut().zip(max.iter_mut()).enumerate() {
+            let value = read(point, c);
+            *low = low.min(value);
+            *high = high.max(value);
         }
     }
     // Ten bits an axis interleave into 30 and fit a u32 key. At three quarters
@@ -741,5 +770,5 @@ fn gzip_size(path: &std::path::Path) -> Option<usize> {
         .arg(path)
         .output()
         .ok()?;
-    output.status.success().then(|| output.stdout.len())
+    output.status.success().then_some(output.stdout.len())
 }
