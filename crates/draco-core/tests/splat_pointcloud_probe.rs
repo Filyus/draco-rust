@@ -21,13 +21,23 @@ const NUM_POINTS: usize = 64;
 
 /// How the probe's values are shaped.
 ///
-/// A ramp is perfectly predictable and a compressor's best case; noise is its
-/// worst. Real splat coefficients sit between, so running both brackets the
-/// answer instead of quoting one synthetic number as if it were a measurement.
+/// A ramp is perfectly predictable and a compressor's best case; noise drawn
+/// flat across the range is its worst. Quoting either alone would be quoting a
+/// synthetic number as if it were a measurement, so every cost below is run
+/// through all three and reported as a bracket.
+///
+/// `Clustered` is the third point because the other two bracket the wrong
+/// thing for spherical harmonics. Real SH coefficients are overwhelmingly near
+/// zero with a thin tail, which is neither a ramp nor flat noise, and it is
+/// exactly that concentration a byte-level compressor turns into its gains.
+/// It is a model of that shape and not a sample of real data; it says what the
+/// entropy coder does when values concentrate, not what any particular scene
+/// costs.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Shape {
     Ramp,
     Noise,
+    Clustered,
 }
 
 /// One attribute filled with distinct, recoverable values.
@@ -36,20 +46,29 @@ fn f32_attribute(
     components: u8,
     seed: f32,
     shape: Shape,
+    num_points: usize,
 ) -> PointAttribute {
     let mut attribute = PointAttribute::new();
-    attribute.init(kind, components, DataType::Float32, false, NUM_POINTS);
+    attribute.init(kind, components, DataType::Float32, false, num_points);
     let buffer = attribute.buffer_mut();
     // A fixed LCG rather than a dependency: the numbers must be the same on
     // every run for the costs below to be comparable.
     let mut state = (seed as u32).wrapping_mul(2654435761).wrapping_add(1);
-    for point in 0..NUM_POINTS {
+    let next_unit = |state: &mut u32| {
+        *state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+        (*state >> 8) as f32 / (1 << 24) as f32
+    };
+    for point in 0..num_points {
         for component in 0..components as usize {
             let value = match shape {
                 Shape::Ramp => seed + point as f32 + component as f32 * 0.25,
-                Shape::Noise => {
-                    state = state.wrapping_mul(1664525).wrapping_add(1013904223);
-                    (state >> 8) as f32 / (1 << 24) as f32 * 4.0 - 2.0
+                Shape::Noise => next_unit(&mut state) * 4.0 - 2.0,
+                // Sum of four uniforms, centred and narrowed: a bell around
+                // zero whose tail still reaches the same range as `Noise`, so
+                // the two differ in concentration and not in extent.
+                Shape::Clustered => {
+                    let sum: f32 = (0..4).map(|_| next_unit(&mut state)).sum();
+                    (sum - 2.0) * 1.0
                 }
             };
             let offset = (point * components as usize + component) * 4;
@@ -74,13 +93,23 @@ fn splat_layout() -> Vec<(String, u8)> {
 }
 
 fn build_splat_cloud(layout: &[(String, u8)], with_names: bool, shape: Shape) -> PointCloud {
+    build_splat_cloud_sized(layout, with_names, shape, NUM_POINTS)
+}
+
+fn build_splat_cloud_sized(
+    layout: &[(String, u8)],
+    with_names: bool,
+    shape: Shape,
+    num_points: usize,
+) -> PointCloud {
     let mut cloud = PointCloud::new();
-    cloud.set_num_points(NUM_POINTS);
+    cloud.set_num_points(num_points);
     cloud.add_attribute(f32_attribute(
         GeometryAttributeType::Position,
         3,
         0.0,
         shape,
+        num_points,
     ));
 
     for (index, (name, components)) in layout.iter().enumerate() {
@@ -89,6 +118,7 @@ fn build_splat_cloud(layout: &[(String, u8)], with_names: bool, shape: Shape) ->
             *components,
             100.0 + index as f32,
             shape,
+            num_points,
         ));
         if with_names {
             let unique_id = cloud.attribute(id).unique_id();
@@ -108,12 +138,43 @@ fn round_trip(
     cloud: PointCloud,
     quantization: Option<i32>,
 ) -> Result<(Vec<u8>, PointCloud), String> {
+    let uniform: Vec<i32> = quantization
+        .map(|bits| vec![bits; cloud.num_attributes() as usize])
+        .unwrap_or_default();
+    round_trip_with_bits(cloud, &uniform)
+}
+
+/// Round trip with one quantization budget per attribute, in attribute order.
+///
+/// An empty slice encodes losslessly; that is the only way to say "no
+/// quantization", since every entry present is a budget to spend.
+fn round_trip_with_bits(
+    cloud: PointCloud,
+    bits: &[i32],
+) -> Result<(Vec<u8>, PointCloud), String> {
+    round_trip_full(cloud, bits, None)
+}
+
+/// Sequential, the encoder that codes each attribute on its own.
+const SEQUENTIAL: i32 = 0;
+
+fn round_trip_full(
+    cloud: PointCloud,
+    bits: &[i32],
+    method: Option<i32>,
+) -> Result<(Vec<u8>, PointCloud), String> {
     let attribute_count = cloud.num_attributes();
+    assert!(
+        bits.is_empty() || bits.len() == attribute_count as usize,
+        "a budget per attribute or none at all: {} budgets for {attribute_count} attributes",
+        bits.len()
+    );
     let mut options = EncoderOptions::new();
-    if let Some(bits) = quantization {
-        for id in 0..attribute_count {
-            options.set_attribute_int(id, "quantization_bits", bits);
-        }
+    if let Some(method) = method {
+        options.set_encoding_method(method);
+    }
+    for (id, budget) in bits.iter().enumerate() {
+        options.set_attribute_int(id as i32, "quantization_bits", *budget);
     }
     let mut encoder = PointCloudEncoder::new();
     encoder.set_point_cloud(cloud);
@@ -225,6 +286,137 @@ fn cost_per_point_of_a_splat_shaped_cloud() {
                     per_point / RAW_BYTES_PER_POINT * 100.0
                 );
             }
+        }
+    }
+}
+
+/// Does Draco reach SPZ's size when it is given SPZ's bit budget?
+///
+/// SPZ is a fixed allocation followed by gzip: positions in 24-bit fixed
+/// point, scale, rotation and colour in 8 bits each, every spherical-harmonics
+/// coefficient in 8. That allocation is a number, not an opinion --
+/// `SPZ_PACKED_BYTES_PER_POINT` below -- so the comparison needs no
+/// implementation of SPZ to be exact about the part that is exact.
+///
+/// What it cannot be exact about is gzip. SPZ's published ratio against a PLY
+/// is reached only after the packed stream is deflated, and how much that wins
+/// depends entirely on the scene. So the packed figure is a *ceiling* for SPZ
+/// and the rows below say whether Draco is already under it before SPZ's
+/// compressor has run -- which is the question, because Draco's rANS and
+/// kd-tree coder are that same stage done differently.
+///
+/// One budget here is not SPZ's: rotation gets four components where SPZ
+/// stores three and recovers the fourth from the norm. That costs a byte a
+/// point and is a transform we do not have, not a limit of the format.
+///
+/// # Why both encoders are run
+///
+/// A cloud whose every attribute is a quantized float selects the kd-tree
+/// coder automatically (`select_encoding_method`), and that coder pools all 59
+/// components into one `PointDVector` and codes them in a cube whose side is
+/// **one bit depth for every dimension** -- the maximum over all of them
+/// (`kd_tree_attributes_encoder.rs`, "Compute maximum bit length"). A
+/// per-attribute budget therefore does not reach it: with positions at 24 bits
+/// the harmonics are coded in a 24-bit space no matter what they were
+/// quantized to, and lowering their budget changes the output by nothing at
+/// all. The `auto` column shows exactly that, which is why it is kept next to
+/// the sequential one rather than dropped -- it is the reason a bit budget
+/// looks inert until the encoder is chosen deliberately.
+///
+/// A measurement, not a test. Run with `--ignored --nocapture`.
+#[test]
+#[ignore = "a measurement, not a test: run with --ignored --nocapture"]
+fn draco_under_the_spz_bit_budget() {
+    // Header and attribute declarations are a fixed cost; at 64 points they
+    // are most of the file and would drown the per-point figure being compared.
+    const POINTS: usize = 16_384;
+    const RAW_BYTES_PER_POINT: f32 = 59.0 * 4.0;
+    // 3*24 position + 3*8 scale + 3*8 rotation + 8 alpha + 3*8 colour + 45*8 SH.
+    const SPZ_PACKED_BYTES_PER_POINT: f32 = 64.0;
+
+    let layout = splat_layout();
+
+    /// The budget for one attribute of the grouped layout, by name.
+    fn spz_bits(name: &str, sh_bits: i32) -> i32 {
+        match name {
+            "scale" | "rotation" | "opacity" | "f_dc" => 8,
+            _ => sh_bits,
+        }
+    }
+
+    let arms: Vec<(&str, Option<Vec<i32>>)> = {
+        let budget = |sh_bits: i32| {
+            let mut bits = vec![24]; // position
+            bits.extend(layout.iter().map(|(name, _)| spz_bits(name, sh_bits)));
+            Some(bits)
+        };
+        vec![
+            ("lossless", None),
+            ("uniform 14", Some(vec![14; layout.len() + 1])),
+            ("spz budget", budget(8)),
+            ("spz, sh 6 bits", budget(6)),
+            ("spz, sh 4 bits", budget(4)),
+        ]
+    };
+
+    println!(
+        "{POINTS} points, {} attributes; raw {RAW_BYTES_PER_POINT} B/point, \
+         SPZ packed {SPZ_PACKED_BYTES_PER_POINT} B/point (pre-gzip)",
+        layout.len() + 1
+    );
+    println!(
+        "{:<16} {:<10} {:>9} {:>11} {:>10} {:>12}",
+        "arm", "shape", "auto B/pt", "sequential", "x vs raw", "x vs SPZ"
+    );
+
+    // What keeps the numbers below honest. The SPZ budget on noise has nothing
+    // for an entropy coder to find, so the output must land on the packed size
+    // that budget implies -- a figure computed above from SPZ's allocation and
+    // not from anything this file encodes. If a budget ever stops reaching the
+    // encoder again, this is what says so instead of the table quietly
+    // reprinting the wrong column.
+    {
+        let budget = arms
+            .iter()
+            .find(|(label, _)| *label == "spz budget")
+            .and_then(|(_, bits)| bits.clone())
+            .expect("the spz arm");
+        let cloud = build_splat_cloud_sized(&layout, false, Shape::Noise, POINTS);
+        let (bytes, _) = round_trip_full(cloud, &budget, Some(SEQUENTIAL)).expect("round trip");
+        let per_point = bytes.len() as f32 / POINTS as f32;
+        let ratio = per_point / SPZ_PACKED_BYTES_PER_POINT;
+        println!("check: SPZ budget on noise is {per_point:.2} B/point, {ratio:.3} of packed");
+        assert!(
+            (0.9..1.1).contains(&ratio),
+            "the per-attribute budget is not reaching the encoder: \
+             {per_point:.2} B/point against a packed {SPZ_PACKED_BYTES_PER_POINT}"
+        );
+    }
+
+    for (label, bits) in &arms {
+        for (shape, shape_label) in [
+            (Shape::Ramp, "ramp"),
+            (Shape::Clustered, "clustered"),
+            (Shape::Noise, "noise"),
+        ] {
+            let budget = bits.as_deref().unwrap_or(&[]);
+            let mut per_point = [0.0f32; 2];
+            for (slot, method) in [None, Some(SEQUENTIAL)].into_iter().enumerate() {
+                let cloud = build_splat_cloud_sized(&layout, false, shape, POINTS);
+                let (bytes, decoded) =
+                    round_trip_full(cloud, budget, method).expect("round trip");
+                assert_eq!(decoded.num_points(), POINTS);
+                per_point[slot] = bytes.len() as f32 / POINTS as f32;
+            }
+            // The ratios quote the sequential arm: it is the one a bit budget
+            // reaches, so it is the one comparable to SPZ's.
+            println!(
+                "{label:<16} {shape_label:<10} {:>9.2} {:>11.2} {:>9.2}x {:>11.2}x",
+                per_point[0],
+                per_point[1],
+                RAW_BYTES_PER_POINT / per_point[1],
+                SPZ_PACKED_BYTES_PER_POINT / per_point[1],
+            );
         }
     }
 }
