@@ -6,7 +6,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $packageDir = Join-Path $repoRoot 'crates/target/package'
-$workDir = [IO.Path]::GetFullPath((Join-Path $repoRoot 'target/package-tests'))
+$workDir = [IO.Path]::GetFullPath((Join-Path $repoRoot 'crates/target/package-tests'))
 
 if (-not $workDir.StartsWith($repoRoot, [StringComparison]::OrdinalIgnoreCase)) {
     throw "Refusing to use package-test directory outside repository: $workDir"

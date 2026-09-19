@@ -501,15 +501,15 @@ jobs:
 
       - name: Produce a Draco GLB with Rust
         run: |
-          mkdir -p target/gltf-interop
+          mkdir -p crates/target/gltf-interop
           cargo run --manifest-path crates/Cargo.toml -p draco-gltf \
             --example gltf_tool -- \
-            testdata/Box/glTF/Box.gltf target/gltf-interop/rust-box.glb
+            testdata/Box/glTF/Box.gltf crates/target/gltf-interop/rust-box.glb
 
       - name: Validate and decode Rust output independently
         run: >-
           node .github/scripts/gltf-interop.ts
-          target/gltf-interop/rust-box.glb
+          crates/target/gltf-interop/rust-box.glb
           testdata/Box/glTF/Box.gltf
 
   basis-parity:
