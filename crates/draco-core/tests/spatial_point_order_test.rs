@@ -315,3 +315,84 @@ fn the_kd_tree_coder_keeps_its_own_order() {
     });
     assert_eq!(as_given, asked, "the kd-tree stream changed");
 }
+
+/// A cluster with one far outlier, which is what a real range looks like once
+/// something stretches it: almost every point sits in a small part of the
+/// bounding box the curve is laid over.
+fn clustered_positions() -> PointAttribute {
+    let mut attribute = PointAttribute::new();
+    attribute.init(
+        GeometryAttributeType::Position,
+        3,
+        DataType::Float32,
+        false,
+        NUM_POINTS,
+    );
+    let buffer = attribute.buffer_mut();
+    let mut state = 12345u32;
+    for point in 0..NUM_POINTS {
+        let coordinates = if point == NUM_POINTS - 1 {
+            [1000.0f32; 3]
+        } else {
+            [lcg(&mut state), lcg(&mut state), lcg(&mut state)]
+        };
+        for (component, value) in coordinates.iter().enumerate() {
+            buffer.write((point * 3 + component) * 4, &value.to_le_bytes());
+        }
+    }
+    attribute
+}
+
+/// The mean distance from one point to the next, in the order they are stored.
+///
+/// This is what the difference predictor is handed: small means consecutive
+/// points are neighbours, large means the order is telling it nothing.
+fn mean_step(cloud: &PointCloud, points: usize) -> f64 {
+    let mut total = 0.0;
+    for point in 1..points {
+        let previous = position_of(cloud, point - 1);
+        let current = position_of(cloud, point);
+        total += previous
+            .iter()
+            .zip(current.iter())
+            .map(|(a, b)| f64::from(a - b).powi(2))
+            .sum::<f64>()
+            .sqrt();
+    }
+    total / (points - 1) as f64
+}
+
+/// The curve's grid follows the positions' own quantization.
+///
+/// A fixed grid has to be coarse enough for the worst range and is then too
+/// coarse for a clustered one: here a tenth of the bounding box holds every
+/// point but the outlier, so ten bits an axis leave the cluster sharing a
+/// handful of cells, and points sharing a cell keep the order they came in --
+/// which for this cloud is no order at all. Following the quantization instead
+/// resolves them, and the predictor gets neighbours.
+#[test]
+fn the_grid_resolves_a_cluster_the_quantization_can_tell_apart() {
+    let mut cloud = PointCloud::new();
+    cloud.set_num_points(NUM_POINTS);
+    cloud.add_attribute(clustered_positions());
+    cloud.add_attribute(tags());
+
+    // The outlier is the last point in both orders and its step dwarfs every
+    // other, so it is left out of both means rather than allowed to set them.
+    let as_given = decode(&encode(&cloud, |options| {
+        options.set_attribute_int(0, "quantization_bits", 20);
+    }));
+    let sorted = decode(&encode(&cloud, |options| {
+        options.set_attribute_int(0, "quantization_bits", 20);
+        options.set_spatial_point_order(true);
+    }));
+
+    let given_step = mean_step(&as_given, NUM_POINTS - 1);
+    let sorted_step = mean_step(&sorted, NUM_POINTS - 1);
+    println!("mean step: {given_step:.6} as given, {sorted_step:.6} sorted");
+    assert!(
+        sorted_step * 5.0 < given_step,
+        "the spatial order left the cluster in its original order: mean step \
+         {sorted_step} against {given_step}"
+    );
+}

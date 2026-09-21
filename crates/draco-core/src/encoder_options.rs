@@ -212,12 +212,18 @@ impl EncoderOptions {
     /// exporter happened to write next.
     ///
     /// **This is the general one of the two.** It was written for Gaussian
-    /// splats, where it takes a scene from 53.02 bytes per point to 47.02, and
+    /// splats, where it takes a scene from 53.02 bytes per point to 45.47, and
     /// it does more on ordinary captured geometry: a 223 MB photogrammetry
     /// point cloud of eight million coloured points goes from 6.26 bytes per
-    /// point to 4.31, which is 31% and more than twice the splat's share. Any
+    /// point to 4.23, which is 32% and more than twice the splat's share. Any
     /// cloud whose attributes vary through space rather than along its file
     /// order should expect something in that range.
+    ///
+    /// The curve is laid over a grid as fine as the positions' own
+    /// `quantization_bits`, up to 21 bits an axis. Both halves of that are
+    /// measured: a coarser grid puts points the stream will distinguish into
+    /// one cell, where their order is whatever the sort left them in, and a
+    /// finer one sorts by differences the quantization discards.
     ///
     /// Off by default for the same reason the prediction search is: the output
     /// differs, byte for byte, from what upstream C++ Draco writes for the same

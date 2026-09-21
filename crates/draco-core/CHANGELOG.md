@@ -37,9 +37,11 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   for the same byte-parity reason. It reorders the decoded points, and it can
   make a file bigger when an attribute varies along the order it came in rather
   than through space; both are measured in `spatial_point_order_test`. It is
-  the general one of the two: 53.02 to 47.02 bytes per point on the splat scene
-  (46.52 with the prediction search), and 6.26 to 4.31 — 31% — on a 223 MB
-  photogrammetry capture of eight million coloured points.
+  the general one of the two: 53.02 to 45.47 bytes per point on the splat scene
+  (45.43 with the prediction search), and 6.26 to 4.23 — 32% — on a 223 MB
+  photogrammetry capture of eight million coloured points. The curve is laid
+  over a grid as fine as the positions' own `quantization_bits`, capped at the
+  21 bits an axis that still interleave into a `u64` key.
 
 ### Changed
 

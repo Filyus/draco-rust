@@ -174,10 +174,33 @@ fn point_order(pc: &PointCloud, options: &EncoderOptions) -> Vec<PointIndex> {
     if !options.spatial_point_order() {
         return identity();
     }
-    let Some(order) = morton_point_order(pc) else {
+    let Some(order) = morton_point_order(pc, options) else {
         return identity();
     };
     order
+}
+
+/// How finely the curve resolves each axis, from how finely the positions will
+/// be stored.
+///
+/// The grid is not a free parameter. Coarser than the quantization and
+/// distinct points share a cell, where their order is whatever the sort left
+/// them in rather than anything spatial: at ten bits an axis that was 86% of
+/// the points of a million-point splat, seven to a cell, and it cost 5% of the
+/// file. Finer than the quantization and the order sorts by differences the
+/// encode then discards, which measurably buys nothing.
+///
+/// Twenty-one bits an axis is the ceiling either way, being what still
+/// interleaves into a `u64` key.
+fn curve_axis_bits(options: &EncoderOptions, att_id: i32) -> u32 {
+    const MAX_AXIS_BITS: i32 = 21;
+    let quantization = options.get_attribute_int(att_id, "quantization_bits", -1);
+    if quantization <= 0 {
+        // Nothing quantizes the positions, so they reach the decoder with
+        // every bit they arrived with and there is no coarser grid to match.
+        return MAX_AXIS_BITS as u32;
+    }
+    quantization.min(MAX_AXIS_BITS) as u32
 }
 
 /// Point indices sorted along a Morton curve over the position attribute.
@@ -186,7 +209,7 @@ fn point_order(pc: &PointCloud, options: &EncoderOptions) -> Vec<PointIndex> {
 /// whose values this cannot read. Returning the caller's order unchanged is the
 /// only honest answer there — a spatial order derived from values that were not
 /// the positions would be worse than none.
-fn morton_point_order(pc: &PointCloud) -> Option<Vec<PointIndex>> {
+fn morton_point_order(pc: &PointCloud, options: &EncoderOptions) -> Option<Vec<PointIndex>> {
     let att_id = (0..pc.num_attributes())
         .find(|id| pc.attribute(*id).attribute_type() == GeometryAttributeType::Position)?;
     let attribute = pc.attribute(att_id);
@@ -214,22 +237,22 @@ fn morton_point_order(pc: &PointCloud) -> Option<Vec<PointIndex>> {
         }
     }
 
-    // Ten bits an axis interleave into 30 and fit a u32 key. Finer than that
-    // buys nothing here: what reads the order is a predictor that looks one
-    // point back.
-    const LEVELS: f64 = 1023.0;
-    let spread = |v: u32| -> u32 {
-        let mut x = v & 0x3FF;
-        x = (x | (x << 16)) & 0x0300_00FF;
-        x = (x | (x << 8)) & 0x0300_F00F;
-        x = (x | (x << 4)) & 0x030C_30C3;
-        x = (x | (x << 2)) & 0x0924_9249;
+    let axis_bits = curve_axis_bits(options, att_id);
+    let levels = ((1u64 << axis_bits) - 1) as f64;
+    // Twenty-one bits an axis interleave into 63 and fit a u64 key.
+    let spread = |v: u32| -> u64 {
+        let mut x = u64::from(v) & 0x1f_ffff;
+        x = (x | (x << 32)) & 0x001f_0000_0000_ffff;
+        x = (x | (x << 16)) & 0x001f_0000_ff00_00ff;
+        x = (x | (x << 8)) & 0x100f_00f0_0f00_f00f;
+        x = (x | (x << 4)) & 0x10c3_0c30_c30c_30c3;
+        x = (x | (x << 2)) & 0x1249_2492_4924_9249;
         x
     };
 
-    let mut keyed: Vec<(u32, u32)> = (0..num_points)
+    let mut keyed: Vec<(u64, u32)> = (0..num_points)
         .map(|point| {
-            let mut key = 0u32;
+            let mut key = 0u64;
             for (axis, (low, high)) in min.iter().zip(max.iter()).enumerate() {
                 let span = high - low;
                 let normalized = if span > 0.0 {
@@ -237,7 +260,7 @@ fn morton_point_order(pc: &PointCloud) -> Option<Vec<PointIndex>> {
                 } else {
                     0.0
                 };
-                key |= spread((normalized * LEVELS) as u32) << axis;
+                key |= spread((normalized * levels) as u32) << axis;
             }
             (key, point as u32)
         })
@@ -894,5 +917,29 @@ impl PointCloudEncoder {
     /// Returns the geometry type produced by this encoder.
     pub fn get_geometry_type(&self) -> EncodedGeometryType {
         EncodedGeometryType::PointCloud
+    }
+}
+
+#[cfg(test)]
+mod curve_grid_tests {
+    use super::curve_axis_bits;
+    use crate::encoder_options::EncoderOptions;
+
+    #[test]
+    fn the_grid_follows_the_positions_quantization() {
+        let mut options = EncoderOptions::new();
+        for bits in [4, 8, 14, 16, 21] {
+            options.set_attribute_int(0, "quantization_bits", bits);
+            assert_eq!(curve_axis_bits(&options, 0), bits as u32);
+        }
+
+        // Past what a u64 key can hold, the grid stops rather than wrapping.
+        options.set_attribute_int(0, "quantization_bits", 30);
+        assert_eq!(curve_axis_bits(&options, 0), 21);
+
+        // Unquantized positions keep every bit they arrived with, so the
+        // finest grid is the one that matches them.
+        let options = EncoderOptions::new();
+        assert_eq!(curve_axis_bits(&options, 0), 21);
     }
 }
