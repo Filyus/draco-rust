@@ -186,9 +186,14 @@ fn point_order(pc: &PointCloud, options: &EncoderOptions) -> Vec<PointIndex> {
 /// The grid is not a free parameter. Coarser than the quantization and
 /// distinct points share a cell, where their order is whatever the sort left
 /// them in rather than anything spatial: at ten bits an axis that was 86% of
-/// the points of a million-point splat, seven to a cell, and it cost 5% of the
-/// file. Finer than the quantization and the order sorts by differences the
-/// encode then discards, which measurably buys nothing.
+/// the points of a million-point splat, seven to a cell. Finer than the
+/// quantization and the order sorts by differences the encode then discards,
+/// which measurably buys nothing.
+///
+/// What a fixed grid costs depends entirely on how crowded its cells get, so
+/// it is worth 5% of that splat and 1% of two interiors whose points fill
+/// their bounding box. Following the quantization is never the worse of the
+/// two, which is the reason to do it; the size of the win is the scene's.
 ///
 /// Twenty-one bits an axis is the ceiling either way, being what still
 /// interleaves into a `u64` key.
