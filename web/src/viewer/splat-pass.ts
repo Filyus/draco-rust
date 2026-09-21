@@ -272,6 +272,7 @@ export interface SplatResources {
   instances: WebGLBuffer;
   /** Four RGBA32F texels a splat; this never changes after upload. */
   texture: WebGLTexture;
+  textureWidth: number;
   textureHeight: number;
   /** One RGB32F texel a harmonic coefficient, or null when there are none. */
   harmonics: WebGLTexture | null;
@@ -299,8 +300,30 @@ export interface SplatResources {
 /** Floats a splat in the texture: four RGBA texels. */
 const STRIDE = 16;
 
-/** Texels across the splat texture. Four a splat, so 512 splats a row. */
-const TEXTURE_WIDTH = 2048;
+/**
+ * Where `texels` of splat data go, on a device with this texture limit.
+ *
+ * The width is the device's maximum rather than a constant, because the height
+ * is what runs out: degree-3 harmonics are fifteen texels a splat, and two
+ * million splats need 14036 rows at a width of 2048 -- past the 8192 a
+ * software rasteriser offers, where the failure is a blank frame and not an
+ * error. Taking the width from the device makes the limit an area instead of a
+ * height: 67 million texels at 8192, which is four million splats with their
+ * harmonics.
+ *
+ * A cloud past even that is refused rather than truncated, because a truncated
+ * one draws -- wrongly, and without saying so.
+ */
+function layoutFor(gl: WebGL2RenderingContext, texels: number, what: string) {
+  const width = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
+  const height = Math.max(1, Math.ceil(texels / width));
+  if (height > width) {
+    throw new Error(
+      `splat ${what}: ${texels} texels need ${height} rows of ${width}, past this device's ${width}`,
+    );
+  }
+  return { width, height };
+}
 
 function compile(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader {
   const shader = gl.createShader(type)!;
@@ -461,9 +484,8 @@ export function uploadSplats(gl: WebGL2RenderingContext, cloud: SplatCloud): Spl
 
   // The splats themselves, which never move again.
   const packed = packSplats(cloud);
-  const texels = cloud.count * 4;
-  const height = Math.max(1, Math.ceil(texels / TEXTURE_WIDTH));
-  const padded = new Float32Array(TEXTURE_WIDTH * height * 4);
+  const { width: textureWidth, height } = layoutFor(gl, cloud.count * 4, 'data');
+  const padded = new Float32Array(textureWidth * height * 4);
   padded.set(packed);
   const texture = gl.createTexture()!;
   gl.bindTexture(gl.TEXTURE_2D, texture);
@@ -472,7 +494,7 @@ export function uploadSplats(gl: WebGL2RenderingContext, cloud: SplatCloud): Spl
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   gl.texImage2D(
-    gl.TEXTURE_2D, 0, gl.RGBA32F, TEXTURE_WIDTH, height, 0, gl.RGBA, gl.FLOAT, padded,
+    gl.TEXTURE_2D, 0, gl.RGBA32F, textureWidth, height, 0, gl.RGBA, gl.FLOAT, padded,
   );
   gl.bindTexture(gl.TEXTURE_2D, null);
 
@@ -484,9 +506,10 @@ export function uploadSplats(gl: WebGL2RenderingContext, cloud: SplatCloud): Spl
   let harmonicsWidth = 1;
   const perChannel = coefficientsFor(cloud.shDegree);
   if (perChannel > 0 && cloud.sh.length >= cloud.count * perChannel * 3) {
-    harmonicsWidth = TEXTURE_WIDTH;
     const coefficientTexels = cloud.count * perChannel;
-    const shHeight = Math.max(1, Math.ceil(coefficientTexels / harmonicsWidth));
+    const shLayout = layoutFor(gl, coefficientTexels, 'harmonics');
+    harmonicsWidth = shLayout.width;
+    const shHeight = shLayout.height;
     const shPadded = new Float32Array(harmonicsWidth * shHeight * 3);
     shPadded.set(cloud.sh.subarray(0, coefficientTexels * 3));
     harmonics = gl.createTexture()!;
@@ -507,6 +530,7 @@ export function uploadSplats(gl: WebGL2RenderingContext, cloud: SplatCloud): Spl
     corners,
     instances,
     texture,
+    textureWidth,
     textureHeight: height,
     harmonics,
     harmonicsWidth,
@@ -573,7 +597,7 @@ export function drawSplats(
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D, splats.texture);
   gl.uniform1i(splats.uniforms.splats, 0);
-  gl.uniform1i(splats.uniforms.textureWidth, TEXTURE_WIDTH);
+  gl.uniform1i(splats.uniforms.textureWidth, splats.textureWidth);
   gl.activeTexture(gl.TEXTURE1);
   gl.bindTexture(gl.TEXTURE_2D, splats.harmonics);
   gl.uniform1i(splats.uniforms.harmonics, 1);
