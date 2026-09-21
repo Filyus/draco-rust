@@ -70,6 +70,9 @@ export function parseObjMaterials(objText: string, resources: ResourceMap, warni
 // would answer differently the first time either was corrected.
 export { mtlMapPath } from './model-intake.ts';
 
+import { isSplatPly, readSplatCloud, splatPropertyNames } from '../splat.ts';
+import type { SelectedProperties } from '../splat.ts';
+
 // Parse PLY file
 export async function parsePlyFile(data: Uint8Array) {
   if (!modules.ply.loaded) {
@@ -78,6 +81,24 @@ export async function parsePlyFile(data: Uint8Array) {
 
   const result = modules.ply.module.parse_ply_bytes(data);
   debugLog('PLY parse result:', result);
+
+  // A Gaussian splat is an ordinary point cloud to the reader above and a
+  // scene to a renderer, and the difference is entirely in property names it
+  // has no slot for. When the header says this is one, fetch exactly the
+  // properties the splat pass draws from -- not all sixty-two, which for a
+  // real scene is hundreds of megabytes to throw most of away.
+  const properties: string[] = result?.header?.properties ?? [];
+  if (isSplatPly(properties)) {
+    const selected = modules.ply.module.parse_ply_properties(data, splatPropertyNames());
+    const cloud = readSplatCloud(selected as SelectedProperties);
+    if (cloud) {
+      result.splats = cloud;
+      debugLog('PLY splat cloud:', cloud.count, 'splats');
+    } else {
+      debugLog('PLY looked like a splat by its header but did not read as one');
+    }
+  }
+
   if (result.meshes) {
     for (const mesh of result.meshes) {
       debugLog('PLY mesh: positions=', mesh.positions?.length,

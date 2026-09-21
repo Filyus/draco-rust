@@ -110,6 +110,9 @@ export async function loadPreview(extension: string, { keepView = false } = {}) 
     }
 
     state.viewer!.setScene(scene, { keepView });
+    // A splat draws beside the scene rather than in it: the positions are
+    // already a point cloud in `scene`, and this puts the gaussians over them.
+    state.viewer!.setSplats(state.currentMeshData?.splats ?? null);
     renderSceneDocumentSummary(state.currentSceneDocument!);
     setWarningSource('preview', scene.warnings || []);
     setViewerControlsEnabled(true);

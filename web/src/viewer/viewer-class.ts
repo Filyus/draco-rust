@@ -51,6 +51,9 @@ import {
 } from './renderer.ts';
 import { enableCompressedFormats } from './compressed-formats.ts';
 import { setSampler, uploadImage } from './textures.ts';
+import type { SplatCloud } from '../splat.ts';
+import { disposeSplats, uploadSplats } from './splat-pass.ts';
+import type { SplatResources } from './splat-pass.ts';
 import { uploadPrimitive } from './primitive-upload.ts';
 import type { SharedVertexBuffers } from './primitive-upload.ts';
 import type { GlResources, UploadedPrimitive } from './primitive-upload.ts';
@@ -148,6 +151,8 @@ export class Viewer {
     this._dirty = true;
   }
 
+  declare _splats: SplatResources | null;
+  declare _splatScratch: { buffer?: Float32Array } | undefined;
   declare _projection: Mat4;
   declare _view: Mat4;
   declare _projectionView: Mat4;
@@ -560,8 +565,34 @@ export class Viewer {
     }
   }
 
+  /**
+   * Put a Gaussian splat cloud on the GPU, or take the current one off.
+   *
+   * Separate from `setScene` on purpose: a splat is not a primitive this
+   * pipeline has a shape for, so it is uploaded and drawn beside the meshes
+   * rather than through them. A file that is both -- a splat PLY, whose
+   * positions also make an ordinary point cloud -- sets both, and the pass
+   * draws over the points.
+   */
+  setSplats(cloud: SplatCloud | null) {
+    if (this._splats) {
+      disposeSplats(this.gl, this._splats);
+      this._splats = null;
+      this._splatScratch = undefined;
+    }
+    if (cloud && cloud.count > 0) {
+      this._splats = uploadSplats(this.gl, cloud);
+    }
+    this.invalidate();
+  }
+
   _disposeGlResources() {
     const gl = this.gl;
+    if (this._splats) {
+      disposeSplats(gl, this._splats);
+      this._splats = null;
+      this._splatScratch = undefined;
+    }
     if (!this.glResources) return;
     // Vertex buffers are shared across the primitives of one mesh, so gather
     // them before deleting: the same buffer is listed by each reader.

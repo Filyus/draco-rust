@@ -15,6 +15,8 @@ import {
   sceneTargetHdrSupported,
 } from './scene-target.ts';
 import type { SceneTarget } from './scene-target.ts';
+import { drawSplats, ensureOrder } from './splat-pass.ts';
+import type { SplatResources } from './splat-pass.ts';
 import { MORPH_TEXTURE_UNIT } from './morph-texture.ts';
 import {
   MAX_MATERIAL_TEXTURE_UNITS, SHARED_TEXTURE_UNITS, assertTextureUnitBudget, materialTextureUnit,
@@ -224,6 +226,10 @@ export interface RenderHost extends CameraHost, SceneGraphHost {
   _bloom?: BloomChain | null;
   /** Bound in place of the capture before there is one. */
   _snapshotPlaceholder?: WebGLTexture | null;
+  /** A Gaussian splat cloud on the GPU, drawn by its own pass. */
+  _splats?: SplatResources | null;
+  /** The reorder buffer the splat sort fills, kept so it is allocated once. */
+  _splatScratch?: { buffer?: Float32Array };
   /** Whether this machine can hold the frame as half floats. Asked once. */
   _sceneTargetHdr?: boolean;
   /** How much of the frame's light the output pass spreads as glare. */
@@ -336,6 +342,7 @@ export function render(host: RenderHost) {
   // something blended behind it.
   drawOpaqueSurfaces(host);
   drawDeferredSurfaces(host, scene);
+  drawSplatCloud(host);
 
   gl.depthMask(true);
   gl.disable(gl.BLEND);
@@ -347,6 +354,33 @@ export function render(host: RenderHost) {
   resolveScene(gl, scene);
   drawGlare(host);
   drawOutput(host);
+}
+
+/**
+ * The splat cloud, if one is loaded.
+ *
+ * After the surfaces and before the frame is resolved: splats blend, so they
+ * belong with what is drawn over the opaque half, and they read the depth
+ * buffer the surfaces wrote so a mesh in front still hides them.
+ *
+ * The sort is on the view direction, which is the camera's forward axis and
+ * not its position — dollying along a line does not change which splat is
+ * behind which, and turning does.
+ */
+function drawSplatCloud(host: RenderHost) {
+  const splats = host._splats;
+  if (!splats) return;
+  const forward: [number, number, number] = [-host._view[2], -host._view[6], -host._view[10]];
+  if (!host._splatScratch) host._splatScratch = {};
+  ensureOrder(host.gl, splats, forward, host._splatScratch);
+  drawSplats(
+    host.gl,
+    splats,
+    host._view as unknown as Float32Array,
+    host._projection as unknown as Float32Array,
+    host.canvas.width,
+    host.canvas.height,
+  );
 }
 
 /**
@@ -511,6 +545,10 @@ function drawPrimitive(
   // Stated per draw because the uniform belongs to whatever surface program is
   // bound, and programs are shared between point and triangle primitives.
   const isPoints = uploaded.mode === 0;
+  // A splat file is also a point cloud -- its positions make one -- and the
+  // splat pass draws the same points as gaussians. Drawing both puts a white
+  // dot in the middle of every splat.
+  if (isPoints && host._splats) return;
   gl.uniform1i(host.uniforms.uPointDraw, isPoints ? 1 : 0);
   if (isPoints) gl.uniform1f(host.uniforms.uPointSize, pointSize(host));
   const instances = bindInstances(host, node);

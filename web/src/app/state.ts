@@ -1,3 +1,4 @@
+import type { SplatCloud } from '../splat.ts';
 import type { FbxSceneProvenance } from '../fbx-scene-provenance.ts';
 import type { GltfSceneProvenance } from '../gltf-scene-provenance.ts';
 import type { LoadedMesh, LoadedObjMaterial } from '../mesh-loader.ts';
@@ -67,6 +68,11 @@ export interface LoadedFile {
    * lives in `currentSceneDocument`, which may be null when this is set.
    */
   document?: boolean;
+  /**
+   * PLY only: the Gaussian splat cloud, when the file's properties say it is
+   * one. The viewer draws it beside the scene rather than in it.
+   */
+  splats?: SplatCloud;
   format?: string;
   meshCount?: number;
   vertexCount?: number;

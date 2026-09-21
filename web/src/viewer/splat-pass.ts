@@ -134,9 +134,22 @@ void main() {
   float power = -0.5 * dot(vLocal, vLocal);
   float weight = exp(power) * vColour.a;
   if (weight < 1.0 / 255.0) discard;
-  // Premultiplied: the blend below adds, so the colour arrives already
-  // weighted and the destination keeps what is left.
-  outColour = vec4(vColour.rgb * weight, weight);
+
+  // A splat's colour is what a splat renderer would put on the screen, which
+  // is display-referred; this frame is linear and tone mapped on the way out.
+  // Writing the one into the other without converting is what turns a lit
+  // scene into a white one.
+  //
+  // The clamp comes first and is not a detail: a degree-0 harmonic reaches
+  // outside [0, 1] for about a third of the values in a real scene, because
+  // the higher bands are expected to bring it back. Nothing here carries those
+  // bands yet, so the colour has to be clamped rather than allowed to shine.
+  vec3 display = clamp(vColour.rgb, 0.0, 1.0);
+  vec3 linear = pow(display, vec3(2.2));
+
+  // Premultiplied: the blend adds, so the colour arrives already weighted and
+  // the destination keeps what is left.
+  outColour = vec4(linear * weight, weight);
 }
 `;
 
