@@ -53,6 +53,8 @@ uniform vec2 uViewport;
 // How many standard deviations the quad reaches. Past three the gaussian is
 // under 1.2% and the quad is mostly wasted fill.
 uniform float uExtent;
+// The largest ellipse this will draw, as a fraction of the viewport's height.
+uniform float uMaxRadius;
 
 out vec2 vLocal;
 out vec4 vColour;
@@ -127,6 +129,25 @@ void main() {
   if (screen[0][1] == 0.0) majorAxis = vec2(1.0, 0.0);
   vec2 minorAxis = vec2(majorAxis.y, -majorAxis.x);
 
+  // A splat close enough to the eye projects to an ellipse spanning much of
+  // the frame, and drawing it is worse than dropping it: the projection above
+  // is the Jacobian at the splat's centre, a first-order approximation that
+  // holds only while the footprint is small. A metre-wide gaussian half a
+  // metre from the lens is not the shape this draws, and forty thousand of
+  // them -- which is what a trained scene leaves along the camera path --
+  // arrive last in the order and smear the frame to a flat grey.
+  //
+  // So they are dropped rather than drawn wrong. The limit is generous: a
+  // splat reaching a quarter of the frame's height is already far outside
+  // where the approximation is worth anything.
+  float radius = sqrt(major) * uExtent;
+  if (radius > uMaxRadius * uViewport.y) {
+    gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+    vLocal = vec2(0.0);
+    vColour = vec4(0.0);
+    return;
+  }
+
   vec2 offset = aCorner.x * majorAxis * sqrt(major) * uExtent
               + aCorner.y * minorAxis * sqrt(minor) * uExtent;
 
@@ -190,6 +211,7 @@ export interface SplatResources {
     projection: WebGLUniformLocation | null;
     viewport: WebGLUniformLocation | null;
     extent: WebGLUniformLocation | null;
+    maxRadius: WebGLUniformLocation | null;
     splats: WebGLUniformLocation | null;
     textureWidth: WebGLUniformLocation | null;
   };
@@ -391,6 +413,7 @@ export function uploadSplats(gl: WebGL2RenderingContext, cloud: SplatCloud): Spl
       projection: gl.getUniformLocation(program, 'uProjection'),
       viewport: gl.getUniformLocation(program, 'uViewport'),
       extent: gl.getUniformLocation(program, 'uExtent'),
+      maxRadius: gl.getUniformLocation(program, 'uMaxRadius'),
       splats: gl.getUniformLocation(program, 'uSplats'),
       textureWidth: gl.getUniformLocation(program, 'uTextureWidth'),
     },
@@ -428,6 +451,7 @@ export function drawSplats(
   viewportWidth: number,
   viewportHeight: number,
   extent = 3,
+  maxRadius = 0.25,
 ) {
   if (splats.cloud.count === 0) return;
   gl.useProgram(splats.program);
@@ -440,6 +464,7 @@ export function drawSplats(
   gl.uniformMatrix4fv(splats.uniforms.projection, false, projection);
   gl.uniform2f(splats.uniforms.viewport, viewportWidth, viewportHeight);
   gl.uniform1f(splats.uniforms.extent, extent);
+  gl.uniform1f(splats.uniforms.maxRadius, maxRadius);
 
   // Blended back to front, and the depth buffer is read but not written: one
   // splat does not hide the next, they accumulate.

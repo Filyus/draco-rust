@@ -81,6 +81,40 @@ function sigmoid(x: number): number {
 }
 
 /**
+ * Turn the file's frame the right way up.
+ *
+ * 3DGS keeps the world frame COLMAP hands it, in which **Y points down**. A
+ * viewer whose world is Y-up therefore shows a splat scene upside down, and no
+ * camera can fix that: it is a property of the coordinates, not of the view.
+ *
+ * Measured rather than assumed: Blender's viewport has to be flown to an
+ * up vector of −Y before this corpus's `train` scene stands upright, and
+ * COLMAP's convention says why.
+ *
+ * The turn is a half rotation about X: `y` and `z` change sign. Positions
+ * follow directly; a gaussian's orientation follows as `r · q` for that same
+ * half turn, which for `r = (0, 1, 0, 0)` in `(w, x, y, z)` order works out to
+ * the shuffle below. The axis lengths do not change — a rotation does not
+ * stretch anything.
+ */
+function turnUpright(cloud: SplatCloud): SplatCloud {
+  for (let splat = 0; splat < cloud.count; splat += 1) {
+    cloud.positions[splat * 3 + 1] = -cloud.positions[splat * 3 + 1];
+    cloud.positions[splat * 3 + 2] = -cloud.positions[splat * 3 + 2];
+
+    const w = cloud.rotations[splat * 4];
+    const x = cloud.rotations[splat * 4 + 1];
+    const y = cloud.rotations[splat * 4 + 2];
+    const z = cloud.rotations[splat * 4 + 3];
+    cloud.rotations[splat * 4] = -x;
+    cloud.rotations[splat * 4 + 1] = w;
+    cloud.rotations[splat * 4 + 2] = -z;
+    cloud.rotations[splat * 4 + 3] = y;
+  }
+  return cloud;
+}
+
+/**
  * The selected properties as a splat cloud, or `null` when they do not
  * describe one.
  *
@@ -133,12 +167,9 @@ export function readSplatCloud(selected: SelectedProperties): SplatCloud | null 
     rotations[splat * 4 + 3] = z;
   }
 
-  return {
-    count,
-    positions: selected.positions.subarray(0, count * 3),
-    scales,
-    rotations,
-    alphas,
-    dc,
-  };
+  // The positions are the reader's buffer, and turning the cloud writes to
+  // them, so take a copy rather than reach back into what the caller holds.
+  const positions = selected.positions.slice(0, count * 3);
+
+  return turnUpright({ count, positions, scales, rotations, alphas, dc });
 }
