@@ -228,8 +228,6 @@ export interface RenderHost extends CameraHost, SceneGraphHost {
   _snapshotPlaceholder?: WebGLTexture | null;
   /** A Gaussian splat cloud on the GPU, drawn by its own pass. */
   _splats?: SplatResources | null;
-  /** The reorder buffer the splat sort fills, kept so it is allocated once. */
-  _splatScratch?: { buffer?: Float32Array };
   /** Whether this machine can hold the frame as half floats. Asked once. */
   _sceneTargetHdr?: boolean;
   /** How much of the frame's light the output pass spreads as glare. */
@@ -371,8 +369,7 @@ function drawSplatCloud(host: RenderHost) {
   const splats = host._splats;
   if (!splats) return;
   const forward: [number, number, number] = [-host._view[2], -host._view[6], -host._view[10]];
-  if (!host._splatScratch) host._splatScratch = {};
-  ensureOrder(host.gl, splats, forward, host._splatScratch);
+  ensureOrder(host.gl, splats, forward);
   drawSplats(
     host.gl,
     splats,

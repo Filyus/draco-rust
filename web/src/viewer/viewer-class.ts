@@ -152,7 +152,6 @@ export class Viewer {
   }
 
   declare _splats: SplatResources | null;
-  declare _splatScratch: { buffer?: Float32Array } | undefined;
   declare _projection: Mat4;
   declare _view: Mat4;
   declare _projectionView: Mat4;
@@ -578,7 +577,6 @@ export class Viewer {
     if (this._splats) {
       disposeSplats(this.gl, this._splats);
       this._splats = null;
-      this._splatScratch = undefined;
     }
     if (cloud && cloud.count > 0) {
       this._splats = uploadSplats(this.gl, cloud);
@@ -591,7 +589,6 @@ export class Viewer {
     if (this._splats) {
       disposeSplats(gl, this._splats);
       this._splats = null;
-      this._splatScratch = undefined;
     }
     if (!this.glResources) return;
     // Vertex buffers are shared across the primitives of one mesh, so gather

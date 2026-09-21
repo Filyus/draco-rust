@@ -13,11 +13,17 @@
  * shader. The colour is the degree-0 harmonic and does not change with the
  * view — the higher bands are not carried yet, so a shiny surface looks flat.
  *
- * Sorting re-uploads the instance buffer, which is the simple half of the
- * trade: it is fourteen floats a splat moved whenever the camera turns enough,
- * and it stops being the right answer somewhere in the hundreds of thousands.
- * The scale-up is splat data in textures with a sorted index buffer, four
- * bytes a splat instead of fifty-six.
+ * Turning the camera re-sorts, and panning does not, which is what the two
+ * mouse buttons feeling different was: the order depends on the view direction
+ * alone. The first version of this file made that asymmetry expensive -- a
+ * comparator sort over a boxed array, then fifty-six bytes a splat re-uploaded
+ * in the new order, 344 ms for 742k splats. Both halves are gone:
+ *
+ *   - the sort is a counting sort over depth quantized to sixteen bits, which
+ *     is linear in the splats and touches no boxed values;
+ *   - the splats themselves never move. They live in a texture, and what the
+ *     sort produces is an index per instance -- four bytes a splat uploaded
+ *     instead of fifty-six.
  */
 
 import type { SplatCloud } from '../splat.ts';
@@ -33,12 +39,13 @@ precision highp float;
 
 // The quad, in its own square. The gaussian is evaluated in these coordinates.
 layout(location = 0) in vec2 aCorner;
-// One splat: where it is, how big, which way, how solid, what colour.
-layout(location = 1) in vec3 aCenter;
-layout(location = 2) in vec3 aScale;
-layout(location = 3) in vec4 aRotation;   // (w, x, y, z), as the file orders it
-layout(location = 4) in float aAlpha;
-layout(location = 5) in vec3 aDc;
+// Which splat this instance draws. The splat itself is in the texture, so a
+// re-sort moves this and nothing else.
+layout(location = 1) in uint aIndex;
+
+// Four texels a splat: centre and alpha, the scale, the rotation, the colour.
+uniform highp sampler2D uSplats;
+uniform int uTextureWidth;
 
 uniform mat4 uView;
 uniform mat4 uProjection;
@@ -59,7 +66,19 @@ mat3 rotationOf(vec4 q) {
   );
 }
 
+vec4 splatTexel(uint splat, int which) {
+  int texel = int(splat) * 4 + which;
+  return texelFetch(uSplats, ivec2(texel % uTextureWidth, texel / uTextureWidth), 0);
+}
+
 void main() {
+  vec4 centreAlpha = splatTexel(aIndex, 0);
+  vec3 aCenter = centreAlpha.xyz;
+  float aAlpha = centreAlpha.w;
+  vec3 aScale = splatTexel(aIndex, 1).xyz;
+  vec4 aRotation = splatTexel(aIndex, 2);
+  vec3 aDc = splatTexel(aIndex, 3).xyz;
+
   vec4 viewCenter = uView * vec4(aCenter, 1.0);
   vec4 clip = uProjection * viewCenter;
   if (clip.w <= 0.0) {
@@ -157,12 +176,13 @@ export interface SplatResources {
   program: WebGLProgram;
   vao: WebGLVertexArrayObject;
   corners: WebGLBuffer;
+  /** One unsigned index an instance, in draw order. */
   instances: WebGLBuffer;
-  /** The interleaved per-splat data, in draw order. */
-  packed: Float32Array;
+  /** Four RGBA32F texels a splat; this never changes after upload. */
+  texture: WebGLTexture;
+  textureHeight: number;
   cloud: SplatCloud;
-  /** Splat indices, ordered back to front for the direction below. */
-  order: Uint32Array;
+  scratch: SortScratch;
   /** The view direction the order was made for. */
   sortedFor: [number, number, number];
   uniforms: {
@@ -170,11 +190,16 @@ export interface SplatResources {
     projection: WebGLUniformLocation | null;
     viewport: WebGLUniformLocation | null;
     extent: WebGLUniformLocation | null;
+    splats: WebGLUniformLocation | null;
+    textureWidth: WebGLUniformLocation | null;
   };
 }
 
-/** Floats per splat in the instance buffer: centre, scale, rotation, alpha, dc. */
-const STRIDE = 3 + 3 + 4 + 1 + 3;
+/** Floats a splat in the texture: four RGBA texels. */
+const STRIDE = 16;
+
+/** Texels across the splat texture. Four a splat, so 512 splats a row. */
+const TEXTURE_WIDTH = 2048;
 
 function compile(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader {
   const shader = gl.createShader(type)!;
@@ -205,7 +230,13 @@ function link(gl: WebGL2RenderingContext): WebGLProgram {
   return program;
 }
 
-/** The cloud as one interleaved array, which is what the sort reorders. */
+/**
+ * The cloud as the texture holds it: four RGBA texels a splat.
+ *
+ * Centre and alpha share a texel because both are wanted first and a vec4 is
+ * one fetch. The two floats left spare are the price of a layout the shader
+ * indexes by shifting rather than by multiplying.
+ */
 export function packSplats(cloud: SplatCloud): Float32Array {
   const packed = new Float32Array(cloud.count * STRIDE);
   for (let splat = 0; splat < cloud.count; splat += 1) {
@@ -213,49 +244,92 @@ export function packSplats(cloud: SplatCloud): Float32Array {
     packed[at] = cloud.positions[splat * 3];
     packed[at + 1] = cloud.positions[splat * 3 + 1];
     packed[at + 2] = cloud.positions[splat * 3 + 2];
-    packed[at + 3] = cloud.scales[splat * 3];
-    packed[at + 4] = cloud.scales[splat * 3 + 1];
-    packed[at + 5] = cloud.scales[splat * 3 + 2];
-    packed[at + 6] = cloud.rotations[splat * 4];
-    packed[at + 7] = cloud.rotations[splat * 4 + 1];
-    packed[at + 8] = cloud.rotations[splat * 4 + 2];
-    packed[at + 9] = cloud.rotations[splat * 4 + 3];
-    packed[at + 10] = cloud.alphas[splat];
-    packed[at + 11] = cloud.dc[splat * 3];
-    packed[at + 12] = cloud.dc[splat * 3 + 1];
-    packed[at + 13] = cloud.dc[splat * 3 + 2];
+    packed[at + 3] = cloud.alphas[splat];
+    packed[at + 4] = cloud.scales[splat * 3];
+    packed[at + 5] = cloud.scales[splat * 3 + 1];
+    packed[at + 6] = cloud.scales[splat * 3 + 2];
+    packed[at + 8] = cloud.rotations[splat * 4];
+    packed[at + 9] = cloud.rotations[splat * 4 + 1];
+    packed[at + 10] = cloud.rotations[splat * 4 + 2];
+    packed[at + 11] = cloud.rotations[splat * 4 + 3];
+    packed[at + 12] = cloud.dc[splat * 3];
+    packed[at + 13] = cloud.dc[splat * 3 + 1];
+    packed[at + 14] = cloud.dc[splat * 3 + 2];
   }
   return packed;
 }
 
 /**
- * Splat indices, furthest first, along `direction`.
+ * Splat indices, furthest first along `direction`.
  *
- * Furthest first because the blend below is `over`: what is drawn later sits
- * in front. Sorting on the view direction rather than on distance to the eye
- * is what makes the order stable while the camera dollies, and wrong only for
- * a splat that is behind the camera, which is not drawn anyway.
+ * Furthest first because the blend is `over`: what is drawn later sits in
+ * front. Sorting on the view direction rather than on distance to the eye is
+ * what keeps the order stable while the camera dollies, and wrong only for a
+ * splat behind the camera, which is not drawn anyway.
+ *
+ * A counting sort, not a comparator one. The depths are quantized to sixteen
+ * bits across the range they actually span, which is finer than the difference
+ * between two splats that matters and costs one pass each to bucket, total and
+ * place. The comparator version this replaced took 243 ms on 742k splats
+ * against 12 for this, and that difference was the whole of why turning the
+ * camera stuttered where panning did not.
  */
 export function sortOrder(
   cloud: SplatCloud,
   direction: readonly [number, number, number],
-  into?: Uint32Array,
+  scratch?: SortScratch,
 ): Uint32Array {
   const count = cloud.count;
-  const depths = new Float32Array(count);
+  const work = scratch && scratch.depths.length === count ? scratch : makeSortScratch(count);
+  const { depths, counts, order } = work;
+
   const [dx, dy, dz] = direction;
+  let low = Infinity;
+  let high = -Infinity;
   for (let splat = 0; splat < count; splat += 1) {
-    depths[splat] = cloud.positions[splat * 3] * dx
+    const depth = cloud.positions[splat * 3] * dx
       + cloud.positions[splat * 3 + 1] * dy
       + cloud.positions[splat * 3 + 2] * dz;
+    depths[splat] = depth;
+    if (depth < low) low = depth;
+    if (depth > high) high = depth;
   }
-  const order = into && into.length === count ? into : new Uint32Array(count);
-  for (let splat = 0; splat < count; splat += 1) order[splat] = splat;
-  // Descending: the largest projection along the view direction is the
-  // furthest away, and goes first.
-  const sorted = Array.from(order).sort((a, b) => depths[b] - depths[a]);
-  order.set(sorted);
+
+  const buckets = counts.length;
+  // A scene with every splat at one depth has no order to find; any is right.
+  const scale = high > low ? (buckets - 1) / (high - low) : 0;
+  counts.fill(0);
+  const bucketOf = (depth: number) => (buckets - 1) - ((depth - low) * scale | 0);
+  for (let splat = 0; splat < count; splat += 1) counts[bucketOf(depths[splat])] += 1;
+  let running = 0;
+  for (let bucket = 0; bucket < buckets; bucket += 1) {
+    const here = counts[bucket];
+    counts[bucket] = running;
+    running += here;
+  }
+  for (let splat = 0; splat < count; splat += 1) {
+    const bucket = bucketOf(depths[splat]);
+    order[counts[bucket]] = splat;
+    counts[bucket] += 1;
+  }
   return order;
+}
+
+/** The three arrays the sort reuses, so that turning the camera allocates nothing. */
+export interface SortScratch {
+  depths: Float32Array;
+  counts: Uint32Array;
+  order: Uint32Array;
+}
+
+export function makeSortScratch(count: number): SortScratch {
+  return {
+    depths: new Float32Array(count),
+    // Sixteen bits of depth: finer than a splat is wide at any framing this
+    // draws, and a histogram that still fits a cache.
+    counts: new Uint32Array(1 << 16),
+    order: new Uint32Array(count),
+  };
 }
 
 export function uploadSplats(gl: WebGL2RenderingContext, cloud: SplatCloud): SplatResources {
@@ -274,33 +348,42 @@ export function uploadSplats(gl: WebGL2RenderingContext, cloud: SplatCloud): Spl
   gl.enableVertexAttribArray(0);
   gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 
-  const packed = packSplats(cloud);
+  // The only per-instance attribute: which splat to draw. Integer, so the
+  // pointer is the `I` form -- the float one would round past 2^24.
   const instances = gl.createBuffer()!;
   gl.bindBuffer(gl.ARRAY_BUFFER, instances);
-  gl.bufferData(gl.ARRAY_BUFFER, packed.byteLength, gl.DYNAMIC_DRAW);
-  const bytes = STRIDE * 4;
-  const layout: [number, number, number][] = [
-    [1, 3, 0],   // centre
-    [2, 3, 12],  // scale
-    [3, 4, 24],  // rotation
-    [4, 1, 40],  // alpha
-    [5, 3, 44],  // dc
-  ];
-  for (const [location, size, offset] of layout) {
-    gl.enableVertexAttribArray(location);
-    gl.vertexAttribPointer(location, size, gl.FLOAT, false, bytes, offset);
-    gl.vertexAttribDivisor(location, 1);
-  }
+  gl.bufferData(gl.ARRAY_BUFFER, cloud.count * 4, gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(1);
+  gl.vertexAttribIPointer(1, 1, gl.UNSIGNED_INT, 0, 0);
+  gl.vertexAttribDivisor(1, 1);
   gl.bindVertexArray(null);
+
+  // The splats themselves, which never move again.
+  const packed = packSplats(cloud);
+  const texels = cloud.count * 4;
+  const height = Math.max(1, Math.ceil(texels / TEXTURE_WIDTH));
+  const padded = new Float32Array(TEXTURE_WIDTH * height * 4);
+  padded.set(packed);
+  const texture = gl.createTexture()!;
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texImage2D(
+    gl.TEXTURE_2D, 0, gl.RGBA32F, TEXTURE_WIDTH, height, 0, gl.RGBA, gl.FLOAT, padded,
+  );
+  gl.bindTexture(gl.TEXTURE_2D, null);
 
   return {
     program,
     vao,
     corners,
     instances,
-    packed,
+    texture,
+    textureHeight: height,
     cloud,
-    order: new Uint32Array(cloud.count),
+    scratch: makeSortScratch(cloud.count),
     // No direction yet, so the first frame always sorts.
     sortedFor: [0, 0, 0],
     uniforms: {
@@ -308,17 +391,10 @@ export function uploadSplats(gl: WebGL2RenderingContext, cloud: SplatCloud): Spl
       projection: gl.getUniformLocation(program, 'uProjection'),
       viewport: gl.getUniformLocation(program, 'uViewport'),
       extent: gl.getUniformLocation(program, 'uExtent'),
+      splats: gl.getUniformLocation(program, 'uSplats'),
+      textureWidth: gl.getUniformLocation(program, 'uTextureWidth'),
     },
   };
-}
-
-/** The packed data in `order`, which is what the instance buffer holds. */
-export function reorder(packed: Float32Array, order: Uint32Array, into: Float32Array): Float32Array {
-  for (let slot = 0; slot < order.length; slot += 1) {
-    const from = order[slot] * STRIDE;
-    into.set(packed.subarray(from, from + STRIDE), slot * STRIDE);
-  }
-  return into;
 }
 
 /**
@@ -326,25 +402,21 @@ export function reorder(packed: Float32Array, order: Uint32Array, into: Float32A
  *
  * The threshold is on the direction rather than on a frame count: a still
  * camera never re-sorts, and one being dragged re-sorts as often as it must.
+ * Only the index buffer moves, four bytes a splat.
  */
 export function ensureOrder(
   gl: WebGL2RenderingContext,
   splats: SplatResources,
   direction: readonly [number, number, number],
-  scratch: { buffer?: Float32Array },
 ): boolean {
   const [px, py, pz] = splats.sortedFor;
   const [dx, dy, dz] = direction;
   if (px * dx + py * dy + pz * dz > RESORT_COSINE) return false;
 
-  sortOrder(splats.cloud, direction, splats.order);
+  const order = sortOrder(splats.cloud, direction, splats.scratch);
   splats.sortedFor = [dx, dy, dz];
-  if (!scratch.buffer || scratch.buffer.length !== splats.packed.length) {
-    scratch.buffer = new Float32Array(splats.packed.length);
-  }
-  reorder(splats.packed, splats.order, scratch.buffer);
   gl.bindBuffer(gl.ARRAY_BUFFER, splats.instances);
-  gl.bufferSubData(gl.ARRAY_BUFFER, 0, scratch.buffer);
+  gl.bufferSubData(gl.ARRAY_BUFFER, 0, order);
   return true;
 }
 
@@ -360,6 +432,10 @@ export function drawSplats(
   if (splats.cloud.count === 0) return;
   gl.useProgram(splats.program);
   gl.bindVertexArray(splats.vao);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, splats.texture);
+  gl.uniform1i(splats.uniforms.splats, 0);
+  gl.uniform1i(splats.uniforms.textureWidth, TEXTURE_WIDTH);
   gl.uniformMatrix4fv(splats.uniforms.view, false, view);
   gl.uniformMatrix4fv(splats.uniforms.projection, false, projection);
   gl.uniform2f(splats.uniforms.viewport, viewportWidth, viewportHeight);
@@ -381,5 +457,6 @@ export function disposeSplats(gl: WebGL2RenderingContext, splats: SplatResources
   gl.deleteVertexArray(splats.vao);
   gl.deleteBuffer(splats.corners);
   gl.deleteBuffer(splats.instances);
+  gl.deleteTexture(splats.texture);
   gl.deleteProgram(splats.program);
 }

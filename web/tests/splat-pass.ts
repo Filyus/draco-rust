@@ -1,17 +1,17 @@
 /**
  * The half of splat drawing that is not a shader.
  *
- * Packing, ordering and reordering decide what the GPU is handed; the shader
- * decides what it does with it. Only the first half runs without a browser,
- * and it is where a wrong answer is silent — a sort that is backwards draws a
- * scene inside out and still draws a scene.
+ * Packing and ordering decide what the GPU is handed; the shader decides what
+ * it does with it. Only the first half runs without a browser, and it is where
+ * a wrong answer is silent — a sort that is backwards draws a scene inside out
+ * and still draws a scene.
  */
 import assert from 'node:assert/strict';
 
-import { packSplats, reorder, sortOrder } from '../src/viewer/splat-pass.ts';
+import { makeSortScratch, packSplats, sortOrder } from '../src/viewer/splat-pass.ts';
 import type { SplatCloud } from '../src/splat.ts';
 
-const STRIDE = 14;
+const STRIDE = 16;
 
 function cloudOf(positions: number[][]): SplatCloud {
   const count = positions.length;
@@ -35,16 +35,18 @@ function cloudOf(positions: number[][]): SplatCloud {
 }
 
 // ---------------------------------------------------------------------------
-// Packing keeps each splat's fourteen numbers together and in order
+// Packing lays each splat out as the four texels the shader fetches
 // ---------------------------------------------------------------------------
 
 {
   const cloud = cloudOf([[10, 11, 12], [20, 21, 22]]);
   const packed = packSplats(cloud);
   assert.equal(packed.length, 2 * STRIDE);
+  // Four RGBA texels: centre and alpha, scale, rotation, colour. The two spare
+  // floats are padding and must stay zero, or the shader reads them as data.
   assert.deepEqual(
     [...packed.subarray(0, STRIDE)].map((v) => Math.round(v * 10) / 10),
-    [10, 11, 12, 0.1, 0.2, 0.3, 1, 0, 0, 0, 0.4, 0.5, 0.6, 0.7],
+    [10, 11, 12, 0.4, 0.1, 0.2, 0.3, 0, 1, 0, 0, 0, 0.5, 0.6, 0.7, 0],
   );
   assert.equal(packed[STRIDE], 20, 'the second splat starts at the second stride');
 }
@@ -66,37 +68,43 @@ function cloudOf(positions: number[][]): SplatCloud {
   assert.deepEqual([...sortOrder(cloud, [1, 0, 0])], [0, 1, 2]);
 }
 
-// The caller's buffer is filled rather than a new one allocated, which is what
-// makes a re-sort per camera move affordable.
+// The scratch is reused rather than reallocated, which is what makes a re-sort
+// per camera move affordable.
 {
   const cloud = cloudOf([[0, 0, 1], [0, 0, 2]]);
-  const into = new Uint32Array(2);
-  const out = sortOrder(cloud, [0, 0, 1], into);
-  assert.equal(out, into, 'the same array comes back');
-  assert.deepEqual([...into], [1, 0]);
+  const scratch = makeSortScratch(2);
+  const out = sortOrder(cloud, [0, 0, 1], scratch);
+  assert.equal(out, scratch.order, 'the scratch buffer is what comes back');
+  assert.deepEqual([...out], [1, 0]);
 }
 
-// ---------------------------------------------------------------------------
-// Reordering moves whole splats
-// ---------------------------------------------------------------------------
-
+// A counting sort has one failure a comparator sort cannot have: every splat
+// at the same depth divides by a range of zero.
 {
-  const cloud = cloudOf([[10, 11, 12], [20, 21, 22], [30, 31, 32]]);
-  const packed = packSplats(cloud);
-  const into = new Float32Array(packed.length);
-
-  reorder(packed, Uint32Array.from([0, 1, 2]), into);
-  assert.deepEqual([...into], [...packed], 'the identity order changes nothing');
-
-  reorder(packed, Uint32Array.from([2, 0, 1]), into);
-  // Each slot holds one splat's fourteen numbers, not a mixture: the position
-  // and the alpha in a slot must name the same splat.
-  assert.equal(into[0], 30);
-  assert.ok(Math.abs(into[10] - 2.4) < 1e-5, 'slot 0 carries splat 2 alpha');
-  assert.equal(into[STRIDE], 10);
-  assert.ok(Math.abs(into[STRIDE + 10] - 0.4) < 1e-5, 'slot 1 carries splat 0 alpha');
-  assert.equal(into[STRIDE * 2], 20);
-  assert.ok(Math.abs(into[STRIDE * 2 + 10] - 1.4) < 1e-5, 'slot 2 carries splat 1 alpha');
+  const cloud = cloudOf([[0, 0, 5], [0, 0, 5], [0, 0, 5]]);
+  const out = sortOrder(cloud, [0, 0, 1]);
+  assert.equal(out.length, 3);
+  assert.deepEqual([...out].sort((a, b) => a - b), [0, 1, 2], 'every splat is placed once');
 }
 
-console.log('splat pass: packing, ordering and reordering hold');
+// And a real scene's worth. A counting sort is exact only to the width of a
+// bucket -- two splats inside one keep the order they arrived in -- so that
+// width is the tolerance, and asserting anything tighter would be asserting
+// something this sort does not promise. Sixteen bits over a 200-unit scene is
+// 3 mm, far under what a splat is wide.
+{
+  const count = 5000;
+  const spread = 100;
+  const positions = Array.from({ length: count }, (_, i) => [0, 0, Math.sin(i) * spread]);
+  const cloud = cloudOf(positions);
+  const bucket = (2 * spread) / ((1 << 16) - 1);
+  const out = sortOrder(cloud, [0, 0, 1]);
+  assert.deepEqual([...out].sort((a, b) => a - b), [...Array(count).keys()], 'a permutation');
+  for (let i = 1; i < count; i += 1) {
+    const before = cloud.positions[out[i - 1] * 3 + 2];
+    const after = cloud.positions[out[i] * 3 + 2];
+    assert.ok(before >= after - bucket, `splat ${i} is out of order by more than a bucket`);
+  }
+}
+
+console.log('splat pass: packing and the counting sort hold');
