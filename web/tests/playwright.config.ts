@@ -2,7 +2,7 @@ import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
   testDir: '.',
-  testMatch: 'browser-smoke.spec.ts',
+  testMatch: ['browser-smoke.spec.ts', 'splat-render-arms.spec.ts'],
   // Playwright picks the dot reporter on its own once CI is set, which prints
   // neither a test name nor a duration -- so a run that takes four minutes
   // says nothing about which of its eighty tests spent them, and the log of a
