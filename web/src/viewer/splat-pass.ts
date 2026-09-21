@@ -53,8 +53,9 @@ uniform vec2 uViewport;
 // How many standard deviations the quad reaches. Past three the gaussian is
 // under 1.2% and the quad is mostly wasted fill.
 uniform float uExtent;
-// The largest ellipse this will draw, as a fraction of the viewport's height.
-uniform float uMaxRadius;
+// The longest ellipse axis this will draw, in pixels. Not a cull: an axis past
+// it is shortened, and the splat is still drawn.
+uniform float uMaxAxis;
 
 out vec2 vLocal;
 out vec4 vColour;
@@ -103,20 +104,34 @@ void main() {
   mat3 viewCovariance = viewRotation * covariance * transpose(viewRotation);
 
   // The perspective divide is not linear, so the projection is taken as its
-  // Jacobian at the splat's own depth. Anything further from the centre than
-  // the quad reaches is wrong by more than it is worth correcting.
+  // Jacobian at the splat's own depth.
+  //
+  // The point it is evaluated at is first clamped to 1.3 times the frustum's
+  // own tangent, which is where the linearisation stops meaning anything: a
+  // splat far off axis, or very close, otherwise projects to an ellipse that
+  // is not the shape it has. This is the reference implementation's remedy and
+  // Blender's, and it clamps the evaluation point rather than the splat --
+  // nothing is dropped.
   float fx = uProjection[0][0] * 0.5 * uViewport.x;
   float fy = uProjection[1][1] * 0.5 * uViewport.y;
+  float limX = 1.3 / uProjection[0][0];
+  float limY = 1.3 / uProjection[1][1];
   float z = -viewCenter.z;
+  vec2 evaluateAt = vec2(
+    clamp(viewCenter.x / z, -limX, limX) * z,
+    clamp(viewCenter.y / z, -limY, limY) * z
+  );
+
   float invZ = 1.0 / z;
   mat3x2 jacobian = mat3x2(
     fx * invZ, 0.0,
     0.0, fy * invZ,
-    -fx * viewCenter.x * invZ * invZ, -fy * viewCenter.y * invZ * invZ
+    -fx * evaluateAt.x * invZ * invZ, -fy * evaluateAt.y * invZ * invZ
   );
   mat2 screen = jacobian * viewCovariance * transpose(jacobian);
   // A splat thinner than a pixel has no shape left to project; the dilation
-  // keeps it a dot instead of an invisible sliver.
+  // keeps it a dot instead of an invisible sliver. The constant is the
+  // reference implementation's.
   screen[0][0] += 0.3;
   screen[1][1] += 0.3;
 
@@ -124,32 +139,23 @@ void main() {
   float mid = 0.5 * (screen[0][0] + screen[1][1]);
   float discriminant = sqrt(max(0.0, mid * mid - determinant(screen)));
   float major = mid + discriminant;
-  float minor = max(mid - discriminant, 0.0);
+  // Floored rather than allowed to reach zero, so an edge-on gaussian stays a
+  // sliver with a width instead of a line with none. The reference's floor.
+  float minor = max(mid - discriminant, 0.001);
   vec2 majorAxis = normalize(vec2(screen[0][1], major - screen[0][0]));
   if (screen[0][1] == 0.0) majorAxis = vec2(1.0, 0.0);
   vec2 minorAxis = vec2(majorAxis.y, -majorAxis.x);
 
-  // A splat close enough to the eye projects to an ellipse spanning much of
-  // the frame, and drawing it is worse than dropping it: the projection above
-  // is the Jacobian at the splat's centre, a first-order approximation that
-  // holds only while the footprint is small. A metre-wide gaussian half a
-  // metre from the lens is not the shape this draws, and forty thousand of
-  // them -- which is what a trained scene leaves along the camera path --
-  // arrive last in the order and smear the frame to a flat grey.
-  //
-  // So they are dropped rather than drawn wrong. The limit is generous: a
-  // splat reaching a quarter of the frame's height is already far outside
-  // where the approximation is worth anything.
-  float radius = sqrt(major) * uExtent;
-  if (radius > uMaxRadius * uViewport.y) {
-    gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
-    vLocal = vec2(0.0);
-    vColour = vec4(0.0);
-    return;
-  }
+  // The axes are capped in pixels, not as a share of the frame, and a splat
+  // that hits the cap is drawn smaller than it is rather than dropped. That is
+  // what the reference does, and it is the honest half-measure: the shape is
+  // already approximate there, and removing it outright would take real
+  // geometry with it.
+  float majorLength = min(sqrt(major) * uExtent, uMaxAxis);
+  float minorLength = min(sqrt(minor) * uExtent, uMaxAxis);
 
-  vec2 offset = aCorner.x * majorAxis * sqrt(major) * uExtent
-              + aCorner.y * minorAxis * sqrt(minor) * uExtent;
+  vec2 offset = aCorner.x * majorAxis * majorLength
+              + aCorner.y * minorAxis * minorLength;
 
   vLocal = aCorner * uExtent;
   vColour = vec4(SH_C0_CONST * aDc + 0.5, aAlpha);
@@ -211,7 +217,7 @@ export interface SplatResources {
     projection: WebGLUniformLocation | null;
     viewport: WebGLUniformLocation | null;
     extent: WebGLUniformLocation | null;
-    maxRadius: WebGLUniformLocation | null;
+    maxAxis: WebGLUniformLocation | null;
     splats: WebGLUniformLocation | null;
     textureWidth: WebGLUniformLocation | null;
   };
@@ -413,7 +419,7 @@ export function uploadSplats(gl: WebGL2RenderingContext, cloud: SplatCloud): Spl
       projection: gl.getUniformLocation(program, 'uProjection'),
       viewport: gl.getUniformLocation(program, 'uViewport'),
       extent: gl.getUniformLocation(program, 'uExtent'),
-      maxRadius: gl.getUniformLocation(program, 'uMaxRadius'),
+      maxAxis: gl.getUniformLocation(program, 'uMaxAxis'),
       splats: gl.getUniformLocation(program, 'uSplats'),
       textureWidth: gl.getUniformLocation(program, 'uTextureWidth'),
     },
@@ -451,7 +457,8 @@ export function drawSplats(
   viewportWidth: number,
   viewportHeight: number,
   extent = 3,
-  maxRadius = 0.25,
+  /** The longest ellipse axis to draw, in pixels; the reference uses 1024. */
+  maxAxis = 1024,
 ) {
   if (splats.cloud.count === 0) return;
   gl.useProgram(splats.program);
@@ -464,7 +471,7 @@ export function drawSplats(
   gl.uniformMatrix4fv(splats.uniforms.projection, false, projection);
   gl.uniform2f(splats.uniforms.viewport, viewportWidth, viewportHeight);
   gl.uniform1f(splats.uniforms.extent, extent);
-  gl.uniform1f(splats.uniforms.maxRadius, maxRadius);
+  gl.uniform1f(splats.uniforms.maxAxis, maxAxis);
 
   // Blended back to front, and the depth buffer is read but not written: one
   // splat does not hide the next, they accumulate.
