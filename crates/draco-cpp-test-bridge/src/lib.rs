@@ -285,6 +285,15 @@ mod ffi {
             encoded_size: usize,
             result: *mut DracoDecodeFingerprint,
         ) -> c_int;
+
+        /// Decode a point cloud once and return one attribute's values.
+        pub fn draco_decode_point_cloud_attribute_values(
+            encoded_data: *const u8,
+            encoded_size: usize,
+            attribute_type: c_int,
+            output: *mut f32,
+            output_capacity: usize,
+        ) -> usize;
     }
 }
 
@@ -532,6 +541,40 @@ pub fn decode_cpp_attribute_values(encoded: &[u8], attribute_type: i32) -> Optio
 
 #[cfg(cpp_test_bridge_disabled)]
 pub fn decode_cpp_attribute_values(_encoded: &[u8], _attribute_type: i32) -> Option<Vec<f32>> {
+    None
+}
+
+/// As `decode_cpp_attribute_values`, for a payload holding a point cloud.
+///
+/// The two entry points differ only in which `Decode*FromBuffer` they call,
+/// and a point cloud decoded as a mesh fails outright, so the caller picks.
+#[cfg(not(cpp_test_bridge_disabled))]
+pub fn decode_cpp_point_cloud_attribute_values(
+    encoded: &[u8],
+    attribute_type: i32,
+) -> Option<Vec<f32>> {
+    let mut values = vec![0.0f32; 1 << 20];
+    let written = unsafe {
+        ffi::draco_decode_point_cloud_attribute_values(
+            encoded.as_ptr(),
+            encoded.len(),
+            attribute_type,
+            values.as_mut_ptr(),
+            values.len(),
+        )
+    };
+    if written == 0 {
+        return None;
+    }
+    values.truncate(written);
+    Some(values)
+}
+
+#[cfg(cpp_test_bridge_disabled)]
+pub fn decode_cpp_point_cloud_attribute_values(
+    _encoded: &[u8],
+    _attribute_type: i32,
+) -> Option<Vec<f32>> {
     None
 }
 

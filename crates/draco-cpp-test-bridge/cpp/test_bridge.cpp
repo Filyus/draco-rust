@@ -1070,6 +1070,50 @@ size_t draco_decode_attribute_values(
     return needed;
 }
 
+// As above, for a payload holding a point cloud rather than a mesh. The two
+// differ only in which Decode*FromBuffer runs; a point cloud decoded as a mesh
+// fails outright, so the caller picks.
+size_t draco_decode_point_cloud_attribute_values(
+    const uint8_t* encoded_data,
+    size_t encoded_size,
+    int attribute_type,
+    float* output,
+    size_t output_capacity
+) {
+    draco::DecoderBuffer buffer;
+    buffer.Init(reinterpret_cast<const char*>(encoded_data), encoded_size);
+
+    draco::Decoder decoder;
+    auto decode_result = decoder.DecodePointCloudFromBuffer(&buffer);
+    if (!decode_result.ok()) {
+        return 0;
+    }
+    auto point_cloud = std::move(decode_result).value();
+
+    const draco::PointAttribute* att = point_cloud->GetNamedAttribute(
+        static_cast<draco::GeometryAttribute::Type>(attribute_type));
+    if (att == nullptr) {
+        return 0;
+    }
+
+    const int components = att->num_components();
+    const size_t needed = static_cast<size_t>(point_cloud->num_points()) * components;
+    if (needed > output_capacity) {
+        return 0;
+    }
+
+    for (draco::PointIndex i(0); i < point_cloud->num_points(); ++i) {
+        std::vector<float> value(components);
+        if (!att->ConvertValue<float>(att->mapped_index(i), components, value.data())) {
+            return 0;
+        }
+        for (int c = 0; c < components; ++c) {
+            output[i.value() * components + c] = value[c];
+        }
+    }
+    return needed;
+}
+
 int draco_decode_mesh_fingerprint(
     const uint8_t* encoded_data,
     size_t encoded_size,
