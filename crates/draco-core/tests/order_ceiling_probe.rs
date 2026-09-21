@@ -193,6 +193,135 @@ fn hilbert_order(cells: &[[u32; 3]]) -> Vec<u32> {
     keyed.into_iter().map(|(_, point)| point).collect()
 }
 
+/// The psi tour on the SIMD index rather than the scalar one.
+///
+/// `finish_simd` produces the layout psi's runtime-dispatched kernels read;
+/// the query is otherwise the unbounded walk, so this isolates the index
+/// layout from how it is asked.
+fn nearest_neighbour_order_psi_simd(cells: &[[u32; 3]]) -> (Vec<u32>, usize) {
+    use packed_spatial_index::{Index3DBuilder, Point3D};
+    use std::ops::ControlFlow;
+
+    let mut builder = Index3DBuilder::new(cells.len());
+    for cell in cells {
+        let (x, y, z) = (f64::from(cell[0]), f64::from(cell[1]), f64::from(cell[2]));
+        builder.add(packed_spatial_index::Box3D::new(x, y, z, x, y, z));
+    }
+    let index = builder.finish_simd().expect("the index builds");
+
+    let mut visited = vec![false; cells.len()];
+    let mut order = Vec::with_capacity(cells.len());
+    let mut current = 0u32;
+    visited[0] = true;
+    order.push(current);
+
+    while order.len() < cells.len() {
+        let cell = &cells[current as usize];
+        let query = Point3D::new(f64::from(cell[0]), f64::from(cell[1]), f64::from(cell[2]));
+        let mut found = None;
+        let _: ControlFlow<()> = index.neighbors_each(query, f64::INFINITY, |item, _| {
+            if visited[item] {
+                return ControlFlow::Continue(());
+            }
+            found = Some(item as u32);
+            ControlFlow::Break(())
+        });
+        let Some(next) = found else { break };
+        visited[next as usize] = true;
+        order.push(next);
+        current = next;
+    }
+
+    (order, 0)
+}
+
+/// The psi tour again, asking the index the way it wants to be asked.
+///
+/// The unbounded `neighbors_each` below allocates a priority queue per call and
+/// is told to search the whole scene, so it walks the growing tail of already
+/// visited points every step. This one reuses a workspace, asks for a handful
+/// of neighbours inside a radius scaled to the step it just took, and only
+/// widens when that comes back with nothing new. The last resort is the
+/// unbounded walk, so the tour stays exact and strands nowhere.
+fn nearest_neighbour_order_psi_bounded(cells: &[[u32; 3]]) -> (Vec<u32>, usize) {
+    use packed_spatial_index::{Index3DBuilder, NeighborWorkspace, Point3D};
+    use std::ops::ControlFlow;
+
+    let mut builder = Index3DBuilder::new(cells.len());
+    for cell in cells {
+        let (x, y, z) = (f64::from(cell[0]), f64::from(cell[1]), f64::from(cell[2]));
+        builder.add(packed_spatial_index::Box3D::new(x, y, z, x, y, z));
+    }
+    let index = builder.finish().expect("the index builds");
+
+    let point_of = |point: u32| -> Point3D {
+        let cell = &cells[point as usize];
+        Point3D::new(f64::from(cell[0]), f64::from(cell[1]), f64::from(cell[2]))
+    };
+    let distance = |a: u32, b: u32| -> f64 {
+        let (a, b) = (&cells[a as usize], &cells[b as usize]);
+        let dx = f64::from(a[0]) - f64::from(b[0]);
+        let dy = f64::from(a[1]) - f64::from(b[1]);
+        let dz = f64::from(a[2]) - f64::from(b[2]);
+        (dx * dx + dy * dy + dz * dz).sqrt()
+    };
+
+    let mut workspace = NeighborWorkspace::with_capacity(64, 256);
+    let mut visited = vec![false; cells.len()];
+    let mut order = Vec::with_capacity(cells.len());
+    let mut widenings = 0usize;
+
+    let mut current = 0u32;
+    visited[0] = true;
+    order.push(current);
+    // Seeded at a whole grid cell and then tracked to the tour's own step, so
+    // the radius follows the local density rather than a guess about it.
+    let mut radius = 16.0f64;
+
+    while order.len() < cells.len() {
+        let query = point_of(current);
+        let mut next = None;
+        for attempt in 0..4 {
+            let wanted = 8usize << (attempt * 2);
+            let found = index.neighbors_with(query, wanted, radius, &mut workspace);
+            next = found
+                .iter()
+                .find(|&&item| !visited[item])
+                .map(|&i| i as u32);
+            if next.is_some() {
+                break;
+            }
+            widenings += 1;
+            radius *= 4.0;
+        }
+        let next = match next {
+            Some(next) => next,
+            None => {
+                // Everything nearby is visited; fall back to the exact walk so
+                // this stays the same tour as the unbounded version.
+                let mut found = None;
+                let _: ControlFlow<()> = index.neighbors_each(query, f64::INFINITY, |item, _| {
+                    if visited[item] {
+                        return ControlFlow::Continue(());
+                    }
+                    found = Some(item as u32);
+                    ControlFlow::Break(())
+                });
+                match found {
+                    Some(next) => next,
+                    None => break,
+                }
+            }
+        };
+        radius = (distance(current, next) * 4.0).max(16.0);
+        visited[next as usize] = true;
+        order.push(next);
+        current = next;
+    }
+
+    (order, widenings)
+}
+
 /// The same greedy tour, over `packed_spatial_index`'s 3D index.
 ///
 /// `neighbors_each` visits in nondecreasing distance, so the first unvisited
@@ -505,11 +634,36 @@ fn how_much_is_left_in_the_order() {
     let started = std::time::Instant::now();
     let (psi_tour, psi_strandings) = nearest_neighbour_order_psi(&cells);
     println!(
-        "tour, packed_spatial_index: {} points, {psi_strandings} strandings, built in {:.1}s",
+        "tour, psi unbounded: {} points, {psi_strandings} strandings, built in {:.1}s",
         psi_tour.len(),
         started.elapsed().as_secs_f64()
     );
     assert_eq!(psi_tour.len(), num_points, "the tour missed points");
+
+    let started = std::time::Instant::now();
+    let (psi_bounded, widenings) = nearest_neighbour_order_psi_bounded(&cells);
+    println!(
+        "tour, psi bounded:   {} points, {widenings} widenings, built in {:.1}s",
+        psi_bounded.len(),
+        started.elapsed().as_secs_f64()
+    );
+    assert_eq!(psi_bounded.len(), num_points, "the tour missed points");
+    assert_eq!(
+        psi_bounded, psi_tour,
+        "the bounded search found a different tour than the exact one"
+    );
+
+    let started = std::time::Instant::now();
+    let (psi_simd, _) = nearest_neighbour_order_psi_simd(&cells);
+    println!(
+        "tour, psi SIMD:      {} points, built in {:.1}s",
+        psi_simd.len(),
+        started.elapsed().as_secs_f64()
+    );
+    assert_eq!(
+        psi_simd, psi_tour,
+        "the SIMD index found a different tour than the scalar one"
+    );
     println!();
 
     println!(
