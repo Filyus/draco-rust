@@ -157,6 +157,35 @@ fn span(values: &[f32]) -> (f32, f32) {
         })
 }
 
+/// The two-sided `fraction` percentile of the values, as a clipping window.
+fn percentile_window(values: &[f32], fraction: f64) -> (f32, f32) {
+    let mut sorted: Vec<f32> = values.to_vec();
+    sorted.sort_unstable_by(f32::total_cmp);
+    let last = sorted.len() - 1;
+    let low = (fraction * sorted.len() as f64) as usize;
+    let high = last - low.min(last);
+    (sorted[low.min(last)], sorted[high])
+}
+
+/// What an arm does to the values, and how the stored value is read back in
+/// the unit the arm is judged in.
+///
+/// The second half is what keeps the arms comparable: an arm that stores RGB
+/// and one that stores `f_dc` are both scored by the error a viewer would see,
+/// so each has to say how its stored number becomes that.
+struct Arm<'a> {
+    label: &'a str,
+    /// The original value to what this arm actually stores.
+    store: Box<dyn Fn(f32) -> f32 + 'a>,
+    /// A stored value to the unit the arm is judged in.
+    judge: Box<dyn Fn(f32) -> f32 + 'a>,
+    /// The original value to that same unit, exactly — what the stored one is
+    /// compared against. For an arm that stores `f_dc` this is the RGB the
+    /// value would have had; for one that stores clamped RGB it is the RGB
+    /// before the clamp, which is the whole point.
+    reference: Box<dyn Fn(f32) -> f32 + 'a>,
+}
+
 fn values_of(cloud: &PointCloud, targets: &[i32]) -> Vec<f32> {
     let mut out = Vec::new();
     for &id in targets {
@@ -203,8 +232,6 @@ fn which_domain_colour_and_scale_should_be() {
         return;
     }
 
-    let per_point = |bytes: usize| bytes as f64 / num_points as f64;
-
     // ---- colour -----------------------------------------------------------
     let raw = values_of(&cloud, &colour);
     let (low, high) = span(&raw);
@@ -230,43 +257,52 @@ fn which_domain_colour_and_scale_should_be() {
         "  outside visible RGB once converted:                {out_of_rgb} values, {:.2}%",
         out_of_rgb as f64 / raw.len() as f64 * 100.0
     );
-    println!();
-    println!(
-        "{:<34} {:>5} {:>13} {:>13} {:>13}",
-        "arm", "bits", "colour B/pt", "whole B/pt", "step in RGB"
-    );
-    let colour_arms: Vec<(&str, PointCloud, f32)> = vec![
-        (
-            "f_dc, as the PLY has it",
-            mapped(&cloud, &[], |v| v),
-            SH_C0 * (high - low),
-        ),
-        (
-            "f_dc clamped to SPZ's window",
-            mapped(&cloud, &colour, |v| {
-                v.clamp(-SPZ_COLOUR_HALF_WIDTH, SPZ_COLOUR_HALF_WIDTH)
-            }),
-            SH_C0 * 2.0 * SPZ_COLOUR_HALF_WIDTH,
-        ),
-        (
-            "RGB, clamped to what is visible",
-            mapped(&cloud, &colour, |v| (SH_C0 * v + 0.5).clamp(0.0, 1.0)),
-            1.0,
-        ),
+    let to_rgb = |v: f32| SH_C0 * v + 0.5;
+    let (p01_low, p01_high) = percentile_window(&raw, 0.001);
+    let (p1_low, p1_high) = percentile_window(&raw, 0.01);
+    println!("  the 0.1% percentile window is [{p01_low:.3}, {p01_high:.3}]");
+    println!("  the 1%   percentile window is [{p1_low:.3}, {p1_high:.3}]");
+    let colour_arms = vec![
+        Arm {
+            label: "f_dc, as the PLY has it",
+            store: Box::new(|v| v),
+            judge: Box::new(to_rgb),
+            reference: Box::new(to_rgb),
+        },
+        Arm {
+            label: "f_dc, SPZ's fixed window",
+            store: Box::new(|v: f32| v.clamp(-SPZ_COLOUR_HALF_WIDTH, SPZ_COLOUR_HALF_WIDTH)),
+            judge: Box::new(to_rgb),
+            reference: Box::new(to_rgb),
+        },
+        Arm {
+            label: "f_dc, clipped at 0.1%",
+            store: Box::new(move |v: f32| v.clamp(p01_low, p01_high)),
+            judge: Box::new(to_rgb),
+            reference: Box::new(to_rgb),
+        },
+        Arm {
+            label: "f_dc, clipped at 1%",
+            store: Box::new(move |v: f32| v.clamp(p1_low, p1_high)),
+            judge: Box::new(to_rgb),
+            reference: Box::new(to_rgb),
+        },
+        Arm {
+            label: "RGB, clamped to visible",
+            store: Box::new(move |v: f32| to_rgb(v).clamp(0.0, 1.0)),
+            judge: Box::new(|v| v),
+            reference: Box::new(to_rgb),
+        },
     ];
-    for (label, arm, rgb_span) in &colour_arms {
-        for bits in [8, 7, 6] {
-            println!(
-                "{label:<34} {bits:>5} {:>13.4} {:>13.4} {:>13.5}",
-                {
-                    let (alone, ids) = only(arm, &colour);
-                    per_point(encode(&alone, &ids, bits))
-                },
-                per_point(encode(arm, &colour, bits)),
-                rgb_span / ((1i64 << bits) - 1) as f32,
-            );
-        }
-    }
+    report(
+        &cloud,
+        &colour,
+        &raw,
+        &colour_arms,
+        num_points,
+        "colour B/pt",
+        |e| format!("{e:.5}"),
+    );
 
     // ---- scale ------------------------------------------------------------
     let raw = values_of(&cloud, &scale);
@@ -282,40 +318,105 @@ fn which_domain_colour_and_scale_should_be() {
         "  outside it: {out_of_spz} values, {:.2}%",
         out_of_spz as f64 / raw.len() as f64 * 100.0
     );
+    let (p01_low, p01_high) = percentile_window(&raw, 0.001);
+    let (p1_low, p1_high) = percentile_window(&raw, 0.01);
+    println!("  the 0.1% percentile window is [{p01_low:.3}, {p01_high:.3}]");
+    println!("  the 1%   percentile window is [{p1_low:.3}, {p1_high:.3}]");
+    let scale_arms = vec![
+        Arm {
+            label: "log scale, as the PLY has it",
+            store: Box::new(|v| v),
+            judge: Box::new(|v| v),
+            reference: Box::new(|v| v),
+        },
+        Arm {
+            label: "SPZ's fixed window",
+            store: Box::new(|v: f32| v.clamp(SPZ_SCALE_LOW, SPZ_SCALE_HIGH)),
+            judge: Box::new(|v| v),
+            reference: Box::new(|v| v),
+        },
+        Arm {
+            label: "clipped at 0.1%",
+            store: Box::new(move |v: f32| v.clamp(p01_low, p01_high)),
+            judge: Box::new(|v| v),
+            reference: Box::new(|v| v),
+        },
+        Arm {
+            label: "clipped at 1%",
+            store: Box::new(move |v: f32| v.clamp(p1_low, p1_high)),
+            judge: Box::new(|v| v),
+            reference: Box::new(|v| v),
+        },
+    ];
+    // A log step of `d` is a factor of `exp(d)`, so both the step and the
+    // clipping displacement are reported as the relative error in the axis
+    // length they imply.
+    report(
+        &cloud,
+        &scale,
+        &raw,
+        &scale_arms,
+        num_points,
+        "scale B/pt",
+        |e| format!("{:.2}%", (e.exp() - 1.0) * 100.0),
+    );
+
+    println!();
+    println!("  `step` is the error every value carries; `worst clip` is the error");
+    println!("  the clipped ones carry instead, and `clipped` is how many. A window");
+    println!("  that looks free in the first column is paying in the other two.");
+}
+
+/// One table: every arm at three bit depths, scored in the arm's own unit.
+fn report(
+    cloud: &PointCloud,
+    targets: &[i32],
+    raw: &[f32],
+    arms: &[Arm],
+    num_points: usize,
+    alone_header: &str,
+    unit: impl Fn(f32) -> String,
+) {
     println!();
     println!(
-        "{:<34} {:>5} {:>13} {:>13} {:>13}",
-        "arm", "bits", "scale B/pt", "whole B/pt", "size error"
+        "{:<30} {:>5} {:>12} {:>12} {:>10} {:>10} {:>11}",
+        "arm", "bits", alone_header, "whole B/pt", "step", "clipped", "worst clip"
     );
-    let scale_arms: Vec<(&str, PointCloud, f32)> = vec![
-        (
-            "log scale, as the PLY has it",
-            mapped(&cloud, &[], |v| v),
-            high - low,
-        ),
-        (
-            "clamped to SPZ's window",
-            mapped(&cloud, &scale, |v| v.clamp(SPZ_SCALE_LOW, SPZ_SCALE_HIGH)),
-            SPZ_SCALE_HIGH - SPZ_SCALE_LOW,
-        ),
-    ];
-    for (label, arm, log_span) in &scale_arms {
+    for arm in arms {
+        // What clipping does, before the quantizer does anything: the error the
+        // displaced values carry, and how many of them there are.
+        let mut clipped = 0usize;
+        let mut worst = 0.0f32;
+        let mut low = f32::INFINITY;
+        let mut high = f32::NEG_INFINITY;
+        for &value in raw {
+            let stored = (arm.store)(value);
+            low = low.min(stored);
+            high = high.max(stored);
+            let displaced = ((arm.judge)(stored) - (arm.reference)(value)).abs();
+            if displaced > 0.0 {
+                clipped += 1;
+                worst = worst.max(displaced);
+            }
+        }
+        let judged_span = ((arm.judge)(high) - (arm.judge)(low)).abs();
+        let permuted = mapped(cloud, targets, &arm.store);
         for bits in [8, 7, 6] {
-            let step = log_span / ((1i64 << bits) - 1) as f32;
+            let step = judged_span / ((1i64 << bits) - 1) as f32;
+            let (alone, ids) = only(&permuted, targets);
             println!(
-                "{label:<34} {bits:>5} {:>13.4} {:>13.4} {:>12.2}%",
-                {
-                    let (alone, ids) = only(arm, &scale);
-                    per_point(encode(&alone, &ids, bits))
+                "{:<30} {bits:>5} {:>12.4} {:>12.4} {:>10} {:>9.2}% {:>11}",
+                arm.label,
+                encode(&alone, &ids, bits) as f64 / num_points as f64,
+                encode(&permuted, targets, bits) as f64 / num_points as f64,
+                unit(step),
+                clipped as f64 / raw.len() as f64 * 100.0,
+                if clipped == 0 {
+                    "-".to_string()
+                } else {
+                    unit(worst)
                 },
-                per_point(encode(arm, &scale, bits)),
-                (step.exp() - 1.0) * 100.0,
             );
         }
     }
-
-    println!();
-    println!("  sizes and resolutions, not renderings. The RGB arm discards");
-    println!("  everything a higher harmonic band could have brought back, which");
-    println!("  is the reason SPZ's window is as wide as it is.");
 }
