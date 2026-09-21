@@ -193,6 +193,69 @@ fn hilbert_order(cells: &[[u32; 3]]) -> Vec<u32> {
     keyed.into_iter().map(|(_, point)| point).collect()
 }
 
+/// The same greedy tour, over `packed_spatial_index`'s 3D index.
+///
+/// `neighbors_each` visits in nondecreasing distance, so the first unvisited
+/// point it reaches is the answer and there is no `k` to guess and no shell
+/// radius to cap. The index is static and cannot have visited points removed
+/// from it, which is the one thing the hand-rolled grid below does better;
+/// whether that matters is what the timing says.
+fn nearest_neighbour_order_psi(cells: &[[u32; 3]]) -> (Vec<u32>, usize) {
+    use packed_spatial_index::{Index3DBuilder, Point3D};
+    use std::ops::ControlFlow;
+
+    let mut builder = Index3DBuilder::new(cells.len());
+    for cell in cells {
+        let (x, y, z) = (f64::from(cell[0]), f64::from(cell[1]), f64::from(cell[2]));
+        builder.add(packed_spatial_index::Box3D::new(x, y, z, x, y, z));
+    }
+    let index = builder.finish().expect("the index builds");
+
+    let mut visited = vec![false; cells.len()];
+    let mut order = Vec::with_capacity(cells.len());
+    let mut strandings = 0usize;
+    let mut cursor = 0usize;
+
+    let mut current = 0u32;
+    visited[0] = true;
+    order.push(current);
+
+    while order.len() < cells.len() {
+        let cell = &cells[current as usize];
+        let query = Point3D::new(f64::from(cell[0]), f64::from(cell[1]), f64::from(cell[2]));
+        let mut found: Option<u32> = None;
+        let _: ControlFlow<()> = index.neighbors_each(query, f64::INFINITY, |item, _| {
+            if visited[item] {
+                return ControlFlow::Continue(());
+            }
+            found = Some(item as u32);
+            ControlFlow::Break(())
+        });
+
+        let next = match found {
+            Some(next) => next,
+            None => {
+                // Cannot happen while any point is unvisited, since the walk is
+                // unbounded; kept so the loop terminates rather than spins if
+                // it ever does.
+                strandings += 1;
+                while cursor < cells.len() && visited[cursor] {
+                    cursor += 1;
+                }
+                if cursor >= cells.len() {
+                    break;
+                }
+                cursor as u32
+            }
+        };
+        visited[next as usize] = true;
+        order.push(next);
+        current = next;
+    }
+
+    (order, strandings)
+}
+
 /// A greedy nearest-neighbour tour over the quantized cells.
 ///
 /// Points go into a uniform grid sized for a handful per occupied cell, and
@@ -433,11 +496,20 @@ fn how_much_is_left_in_the_order() {
     let started = std::time::Instant::now();
     let (tour, strandings) = nearest_neighbour_order(&cells, &morton);
     println!(
-        "nearest-neighbour tour: {} points, {strandings} strandings, built in {:.1}s",
+        "tour, hand-rolled grid: {} points, {strandings} strandings, built in {:.1}s",
         tour.len(),
         started.elapsed().as_secs_f64()
     );
     assert_eq!(tour.len(), num_points, "the tour missed points");
+
+    let started = std::time::Instant::now();
+    let (psi_tour, psi_strandings) = nearest_neighbour_order_psi(&cells);
+    println!(
+        "tour, packed_spatial_index: {} points, {psi_strandings} strandings, built in {:.1}s",
+        psi_tour.len(),
+        started.elapsed().as_secs_f64()
+    );
+    assert_eq!(psi_tour.len(), num_points, "the tour missed points");
     println!();
 
     println!(
@@ -450,6 +522,7 @@ fn how_much_is_left_in_the_order() {
         ("Morton", &morton),
         ("Hilbert", &hilbert),
         ("nearest neighbour", &tour),
+        ("nearest neighbour, psi", &psi_tour),
     ] {
         let permuted = permute(&cloud, order);
         let plain = encode(&permuted, false);

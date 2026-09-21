@@ -62,3 +62,7 @@ bytemuck = { version = "1.24.0", features = ["derive"] }
 [dev-dependencies]
 draco-io = { path = "../draco-io" }
 tempfile = "3.24.0"
+# EXPERIMENT ONLY, and a path outside the repository, so this branch cannot be
+# landed as it stands: `order_ceiling_probe` uses its 3D kNN to build a
+# nearest-neighbour tour.
+packed_spatial_index = { path = "C:/Projects/packed_spatial_index" }
