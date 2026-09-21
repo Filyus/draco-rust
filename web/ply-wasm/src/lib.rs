@@ -252,6 +252,102 @@ fn mesh_to_js_data(mesh: &Mesh) -> MeshData {
     }
 }
 
+/// What a PLY carries for the names asked for, as planes of `f32`.
+#[cfg(feature = "read")]
+pub struct SelectedProperties {
+    pub count: usize,
+    pub positions: Vec<f32>,
+    /// In the order the file declares them, not the order asked for.
+    pub properties: Vec<(String, Vec<f32>)>,
+}
+
+/// The reading half of `parse_ply_properties`, without the JavaScript shell so
+/// that it can be tested.
+#[cfg(feature = "read")]
+pub fn selected_properties(data: &[u8], names: &[String]) -> Result<SelectedProperties, String> {
+    let mesh = PlyReader::from_bytes(data.to_vec())
+        .with_generic_attributes(true)
+        .read_mesh()
+        .map_err(|error| error.to_string())?;
+
+    let count = mesh.num_points();
+    let positions = read_attribute_as_f32(&mesh, GeometryAttributeType::Position, 3);
+    let mut properties = Vec::new();
+    for att_id in 0..mesh.num_attributes() {
+        let unique_id = mesh.attribute(att_id).unique_id();
+        let Some(name) = mesh
+            .attribute_metadata_by_unique_id(unique_id)
+            .and_then(|metadata| metadata.metadata().get_string("name"))
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        if !names.contains(&name) {
+            continue;
+        }
+        let components = mesh.attribute(att_id).num_components() as usize;
+        properties.push((name, mesh.attribute(att_id).read_f32s(count, components)));
+    }
+    Ok(SelectedProperties {
+        count,
+        positions,
+        properties,
+    })
+}
+
+/// Parse a PLY and return the positions plus whichever named properties the
+/// caller asked for, each as its own plane of `f32`.
+///
+/// `parse_ply_bytes` carries what a mesh has slots for and reports the rest as
+/// lost, which is right for a mesh and useless for a file whose payload *is*
+/// the rest: a Gaussian splat keeps everything but its position in properties
+/// no mesh names. Handing all of them over is not the answer either — a splat
+/// scene of two million points has sixty-two, and crossing into JavaScript with
+/// all of them costs hundreds of megabytes to throw most of them away.
+///
+/// So the caller names what it needs. The convention that `f_dc_0` is a colour
+/// and `rot_0` a quaternion component lives with the caller, which is the only
+/// place that knows it; this stays a reader that fetches properties by name.
+///
+/// Returns `{ success, error, count, positions, properties: { name: Float32Array } }`.
+/// A name the file does not carry is simply absent from `properties`, so the
+/// caller can tell a missing property from an empty one.
+#[cfg(feature = "read")]
+#[wasm_bindgen]
+pub fn parse_ply_properties(data: &[u8], names: Vec<String>) -> JsValue {
+    let obj = Object::new();
+    let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        selected_properties(data, &names)
+    }));
+    let selected = match read {
+        Ok(Ok(selected)) => selected,
+        Ok(Err(error)) => {
+            set_bool(&obj, "success", false);
+            set_js(&obj, "error", &JsValue::from_str(&error));
+            return obj.into();
+        }
+        Err(_) => {
+            set_bool(&obj, "success", false);
+            set_js(
+                &obj,
+                "error",
+                &JsValue::from_str("panic while reading the PLY"),
+            );
+            return obj.into();
+        }
+    };
+
+    set_bool(&obj, "success", true);
+    set_js(&obj, "count", &JsValue::from_f64(selected.count as f64));
+    set_js(&obj, "positions", &f32_array_to_js(&selected.positions));
+    let properties = Object::new();
+    for (name, values) in &selected.properties {
+        set_js(&properties, name, &f32_array_to_js(values));
+    }
+    set_js(&obj, "properties", &properties.into());
+    obj.into()
+}
+
 #[cfg(feature = "read")]
 fn read_attribute_as_f32(
     mesh: &Mesh,
@@ -1049,5 +1145,90 @@ mod writer_tests {
             .nth(data.lines().position(|line| line == "end_header").unwrap() + 1)
             .unwrap();
         assert!(first.contains("255 0 0"), "{first}");
+    }
+
+    /// A splat PLY in miniature: the properties 3DGS writes, in the order it
+    /// writes them, with values that are distinguishable per point and per
+    /// property so a mix-up cannot pass.
+    #[cfg(feature = "read")]
+    fn tiny_splat_ply(points: usize) -> Vec<u8> {
+        let mut names: Vec<String> = vec!["x", "y", "z", "nx", "ny", "nz"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        names.extend((0..3).map(|i| format!("f_dc_{i}")));
+        names.extend((0..45).map(|i| format!("f_rest_{i}")));
+        names.push("opacity".to_string());
+        names.extend((0..3).map(|i| format!("scale_{i}")));
+        names.extend((0..4).map(|i| format!("rot_{i}")));
+
+        let mut header = String::from("ply\nformat binary_little_endian 1.0\n");
+        header.push_str(&format!("element vertex {points}\n"));
+        for name in &names {
+            header.push_str(&format!("property float {name}\n"));
+        }
+        header.push_str("end_header\n");
+
+        let mut bytes = header.into_bytes();
+        for point in 0..points {
+            for (index, _) in names.iter().enumerate() {
+                let value = point as f32 + index as f32 / 100.0;
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        bytes
+    }
+
+    /// The selecting reader fetches what it is asked for, by name, and nothing
+    /// else -- which is the whole point of it against `parse_ply_bytes`, where
+    /// all of this is dropped and reported as lost.
+    #[test]
+    #[cfg(feature = "read")]
+    fn selected_properties_fetches_the_named_planes() {
+        let points = 8usize;
+        let bytes = tiny_splat_ply(points);
+        let wanted: Vec<String> = ["opacity", "scale_0", "rot_3", "f_dc_1", "nothing_like_this"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+
+        let selected = selected_properties(&bytes, &wanted).expect("the PLY reads");
+        assert_eq!(selected.count, points);
+        assert_eq!(selected.positions.len(), points * 3);
+
+        let found: Vec<&str> = selected
+            .properties
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        // Absent rather than empty, so a caller can tell the two apart.
+        assert!(!found.contains(&"nothing_like_this"), "{found:?}");
+        for name in ["opacity", "scale_0", "rot_3", "f_dc_1"] {
+            assert!(found.contains(&name), "{name} missing from {found:?}");
+        }
+        assert_eq!(found.len(), 4, "{found:?}");
+
+        // The planes hold their own property's values and not a neighbour's:
+        // the fixture writes `point + index / 100`, and `opacity` is the 54th
+        // property of the 62.
+        let opacity = &selected
+            .properties
+            .iter()
+            .find(|(name, _)| name == "opacity")
+            .expect("opacity")
+            .1;
+        assert_eq!(opacity.len(), points);
+        for (point, value) in opacity.iter().enumerate() {
+            assert!(
+                (value - (point as f32 + 0.54)).abs() < 1e-4,
+                "opacity[{point}] is {value}"
+            );
+        }
+
+        // And the positions are the first three, not something shifted.
+        for point in 0..points {
+            assert!((selected.positions[point * 3] - point as f32).abs() < 1e-4);
+            assert!((selected.positions[point * 3 + 1] - (point as f32 + 0.01)).abs() < 1e-4);
+        }
     }
 }
