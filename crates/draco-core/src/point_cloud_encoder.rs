@@ -162,7 +162,7 @@ fn point_order(pc: &PointCloud, options: &EncoderOptions) -> Vec<PointIndex> {
     if !options.spatial_point_order() {
         return identity();
     }
-    let Some(order) = morton_point_order(pc, options) else {
+    let Some(order) = spatial_point_order(pc, options, Curve::from_env()) else {
         return identity();
     };
     order
@@ -196,13 +196,37 @@ fn curve_axis_bits(options: &EncoderOptions, att_id: i32) -> u32 {
     quantization.min(MAX_AXIS_BITS) as u32
 }
 
-/// Point indices sorted along a Morton curve over the position attribute.
+/// Which space-filling curve the points are strung onto.
+///
+/// EXPERIMENT: selected by `DRACO_SPATIAL_CURVE`, defaulting to the shipped
+/// Morton order. Both curves read the same quantized coordinates, so the only
+/// difference between the two arms is the curve itself.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Curve {
+    Morton,
+    Hilbert,
+}
+
+impl Curve {
+    fn from_env() -> Self {
+        match std::env::var("DRACO_SPATIAL_CURVE").as_deref() {
+            Ok("hilbert") => Curve::Hilbert,
+            _ => Curve::Morton,
+        }
+    }
+}
+
+/// Point indices sorted along a space-filling curve over the position attribute.
 ///
 /// `None` where there is nothing to sort by: no position attribute, or one
 /// whose values this cannot read. Returning the caller's order unchanged is the
 /// only honest answer there — a spatial order derived from values that were not
 /// the positions would be worse than none.
-fn morton_point_order(pc: &PointCloud, options: &EncoderOptions) -> Option<Vec<PointIndex>> {
+fn spatial_point_order(
+    pc: &PointCloud,
+    options: &EncoderOptions,
+    curve: Curve,
+) -> Option<Vec<PointIndex>> {
     let att_id = (0..pc.num_attributes())
         .find(|id| pc.attribute(*id).attribute_type() == GeometryAttributeType::Position)?;
     let attribute = pc.attribute(att_id);
@@ -245,7 +269,7 @@ fn morton_point_order(pc: &PointCloud, options: &EncoderOptions) -> Option<Vec<P
 
     let mut keyed: Vec<(u64, u32)> = (0..num_points)
         .map(|point| {
-            let mut key = 0u64;
+            let mut axes = [0u32; 3];
             for (axis, (low, high)) in min.iter().zip(max.iter()).enumerate() {
                 let span = high - low;
                 let normalized = if span > 0.0 {
@@ -253,8 +277,18 @@ fn morton_point_order(pc: &PointCloud, options: &EncoderOptions) -> Option<Vec<P
                 } else {
                     0.0
                 };
-                key |= spread((normalized * levels) as u32) << axis;
+                axes[axis] = (normalized * levels) as u32;
             }
+            let key = match curve {
+                Curve::Morton => {
+                    let mut key = 0u64;
+                    for (axis, &value) in axes.iter().enumerate() {
+                        key |= spread(value) << axis;
+                    }
+                    key
+                }
+                Curve::Hilbert => hilbert_key(axes[0], axes[1], axes[2], axis_bits),
+            };
             (key, point as u32)
         })
         .collect();
@@ -267,6 +301,88 @@ fn morton_point_order(pc: &PointCloud, options: &EncoderOptions) -> Option<Vec<P
             .map(|(_, point)| PointIndex(point))
             .collect(),
     )
+}
+
+/// The index of `(x, y, z)` along a 3D Hilbert curve of `bits` levels.
+///
+/// Walks one level per bit through a 24-state automaton: eight octants times
+/// three axis rotations, each entry giving the octant's position on the curve
+/// and the state the next level starts in. Ported from
+/// `packed_spatial_index`'s `sort3d`, minus its coarsened lookup tables, which
+/// trade 384 KiB of table for four steps instead of sixteen.
+fn hilbert_key(x: u32, y: u32, z: u32, bits: u32) -> u64 {
+    let mut key = 0u64;
+    let mut state = 0usize;
+    let mut shift = bits;
+    while shift > 0 {
+        shift -= 1;
+        let octant = (((x >> shift) & 1) << 2) | (((y >> shift) & 1) << 1) | ((z >> shift) & 1);
+        let entry = HILBERT3_STEP_LUT[state * 8 + octant as usize];
+        key = (key << 3) | u64::from(entry & 7);
+        state = (entry >> 3) as usize;
+    }
+    key
+}
+
+/// 24 states x 8 octants: the low three bits are the octant's index along the
+/// curve, the rest is the next state.
+const HILBERT3_STEP_LUT: [u8; 192] = build_hilbert3_step_lut();
+
+const fn build_hilbert3_step_lut() -> [u8; 192] {
+    let mut table = [0u8; 192];
+    let mut state = 0usize;
+    while state < 24 {
+        let c = (state & 7) as u32;
+        let n = (state / 8) as u32;
+        let mut m = 0u32;
+        while m < 8 {
+            let gray = rotate_right_3(c ^ m, n);
+            let i = gray_to_integer_3(gray);
+            let without_high_bit = gray & 0b011;
+            let next_rotation = if without_high_bit == 0 {
+                1
+            } else if (without_high_bit & 1) != 0 {
+                2
+            } else {
+                3
+            };
+            let transform = if i == 0 {
+                0
+            } else {
+                let low_bit = i & 0u32.wrapping_sub(i);
+                gray ^ (low_bit | 1)
+            };
+            let next_c = c ^ rotate_left_3(transform, n);
+            let next_n = (n + next_rotation) % 3;
+            let next_state = next_n * 8 + next_c;
+            table[state * 8 + m as usize] = ((next_state as u8) << 3) | (i as u8);
+            m += 1;
+        }
+        state += 1;
+    }
+    table
+}
+
+const fn rotate_left_3(value: u32, shift: u32) -> u32 {
+    match shift {
+        0 => value & 7,
+        1 => ((value << 1) | (value >> 2)) & 7,
+        _ => ((value << 2) | (value >> 1)) & 7,
+    }
+}
+
+const fn rotate_right_3(value: u32, shift: u32) -> u32 {
+    match shift {
+        0 => value & 7,
+        1 => ((value >> 1) | (value << 2)) & 7,
+        _ => ((value >> 2) | (value << 1)) & 7,
+    }
+}
+
+const fn gray_to_integer_3(mut gray: u32) -> u32 {
+    gray ^= gray >> 1;
+    gray ^= gray >> 2;
+    gray & 7
 }
 
 /// One component of one value, as an `f64`, or `None` for a type this does not
@@ -946,5 +1062,45 @@ mod curve_grid_tests {
         // finest grid is the one that matches them.
         let options = EncoderOptions::new();
         assert_eq!(curve_axis_bits(&options, 0), 21);
+    }
+}
+
+#[cfg(test)]
+mod hilbert_tests {
+    use super::hilbert_key;
+
+    /// The curve is a curve: it visits every cell once, and each step is to a
+    /// face neighbour. Both halves matter -- a broken state table can still
+    /// produce a bijection while jumping across the grid, which is exactly the
+    /// property the experiment is trying to buy.
+    #[test]
+    fn the_hilbert_key_walks_every_cell_once_without_jumping() {
+        const BITS: u32 = 4;
+        let side = 1u32 << BITS;
+        let cells = (side * side * side) as usize;
+
+        let mut position_of = vec![None; cells];
+        for x in 0..side {
+            for y in 0..side {
+                for z in 0..side {
+                    let key = hilbert_key(x, y, z, BITS) as usize;
+                    assert!(key < cells, "key {key} outside the grid");
+                    assert!(
+                        position_of[key].replace((x, y, z)).is_none(),
+                        "two cells share key {key}"
+                    );
+                }
+            }
+        }
+
+        let mut previous = position_of[0].expect("cell 0 is visited");
+        for (key, cell) in position_of.iter().enumerate().skip(1) {
+            let cell = cell.expect("every cell is visited");
+            let step = previous.0.abs_diff(cell.0)
+                + previous.1.abs_diff(cell.1)
+                + previous.2.abs_diff(cell.2);
+            assert_eq!(step, 1, "step {key} jumps from {previous:?} to {cell:?}");
+            previous = cell;
+        }
     }
 }
