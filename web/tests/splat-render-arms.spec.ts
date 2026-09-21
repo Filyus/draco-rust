@@ -43,45 +43,61 @@ const armsDir = process.env.DRACO_SPLAT_ARMS
 /**
  * Where the cameras stand, given a scene none of them has seen.
  *
- * Four of them, a quarter turn apart, rather than one. A reconstruction has no
- * front, and every single view that could be written down here frames one
- * scene and misses the next — the first attempt put the camera inside the
- * cloud on two scenes out of three. Four views do not need to be right; they
- * need to not all be wrong at once, and an arm that survives all four has been
- * asked about the back of the scene as well as the front.
+ * Four azimuths a quarter turn apart, each shot twice: once from the middle of
+ * the cloud looking out, and once from outside it looking in. A reconstruction
+ * has no front, and no single rule frames both kinds of scene in this corpus.
+ * A room's splats face inwards, so a camera outside the cloud is behind the
+ * walls and sees their backs; a forward-facing capture of a street has no
+ * middle to stand in, and from inside it the camera is under the foliage. Each
+ * framing works on one and fails on the other, and which scene is which is not
+ * something a percentile box can be asked.
  *
- * The look-at point and the distance are solved from the cloud, per view, once
- * on the `source` arm, and every later arm stands in the same places. Solving
- * per arm would fold the encoder's own shift of the cloud into the camera, and
- * then each arm is compared against a slightly different view — which is how
- * four very different budgets once came out with the same score.
+ * So both are shot. The metrics pool over the pixels the source drew on, so
+ * the views that actually show the scene are the ones that carry the numbers,
+ * and the coverage line says how much each one showed.
+ *
+ * Every stand is solved from the cloud once, on the `source` arm, and every
+ * later arm stands in the same places. Solving per arm would fold the
+ * encoder's own shift of the cloud into the camera, and then each arm is
+ * compared against a slightly different view -- which is how four very
+ * different budgets once came out with the same score.
  */
-const VIEWS = [0, 0.25, 0.5, 0.75].map((turn) => ({
-  azimuth: Math.PI * 2 * turn,
-  // Low, because these scenes are strips of ground: from above, most of the
-  // frame is sky and most of the splats are seen edge-on.
-  elevation: Math.PI * 0.08,
-}));
+const VIEWS = [0, 0.25, 0.5, 0.75].flatMap((turn) => [
+  // Level from the middle: a room or a street is around the camera, not below.
+  { azimuth: Math.PI * 2 * turn, elevation: 0, from: 'inside' as const },
+  // And low from outside, because from above most of the frame is sky.
+  { azimuth: Math.PI * 2 * turn, elevation: Math.PI * 0.08, from: 'outside' as const },
+]);
 
 const CAMERA = {
   fov: (44.2141 * Math.PI) / 180,
   /**
-   * How much wider than the subject the frame is.
+   * For a view from inside: how far into the scene it looks, as a share of how
+   * far the cloud reaches that way.
    *
-   * Applied to the percentile box as each camera actually sees it, not to its
-   * diagonal: these scenes are long strips, so a diagonal is mostly length,
-   * and a distance scaled from it either buries the camera inside the cloud or
-   * leaves the subject a few pixels wide in a mostly empty frame. Both
-   * happened before this was worked out, and the first reads as a pass,
-   * because a camera inside the cloud renders a flat wash every arm
-   * reproduces.
+   * The eye sits at the middle of the box; this only sets where it focuses,
+   * which is what the viewer's orbit distance means. Under one, so the look-at
+   * point is inside the cloud rather than out past its far wall.
+   */
+  reach: 0.45,
+  /**
+   * For a view from outside: how much wider than the subject the frame is.
    *
-   * The box is 2nd-to-98th percentile rather than the full bounds: a
-   * reconstruction keeps a handful of splats far outside the scene, and
-   * fitting to those pushes every camera back until the subject is specks.
+   * Applied to the box as that camera sees it, not to its diagonal. These
+   * scenes are long strips, so a diagonal is mostly length, and a distance
+   * scaled from it buries the eye inside the cloud -- which renders a flat
+   * wash that every arm reproduces exactly, and reads as a pass.
    */
   margin: 1.15,
 };
+
+/**
+ * The box both framings are solved from: 2nd to 98th percentile, not the full
+ * bounds. A reconstruction keeps a handful of splats far outside the scene;
+ * fitting to those pushes every outside camera back until the subject is
+ * specks, and the middle of the full bounds is not the middle of anything.
+ */
+const PERCENTILE = 0.02;
 
 /**
  * A single camera to use instead of the four, as JSON.
@@ -101,7 +117,11 @@ const override: Record<string, any> = process.env.DRACO_SPLAT_CAMERA
   ? JSON.parse(process.env.DRACO_SPLAT_CAMERA)
   : {};
 const views = Object.keys(override).length > 0
-  ? [{ azimuth: override.azimuth ?? VIEWS[0].azimuth, elevation: override.elevation ?? VIEWS[0].elevation }]
+  ? [{
+    azimuth: override.azimuth ?? VIEWS[0].azimuth,
+    elevation: override.elevation ?? VIEWS[0].elevation,
+    from: (override.from ?? 'outside') as 'inside' | 'outside',
+  }]
   : VIEWS;
 
 const WIDTH = 900;
@@ -150,7 +170,7 @@ async function shoot(page: Page, file: string, stands: Stand[] | null) {
     { timeout: 300_000, polling: 250 },
   );
 
-  const shot = await page.evaluate(({ camera, views, width, height, stands }) => {
+  const shot = await page.evaluate(({ camera, views, width, height, stands, percentile }) => {
     const viewer = window.__splatState.viewer;
 
     // The cloud's shape, once: the same box serves every view.
@@ -165,13 +185,13 @@ async function shoot(page: Page, file: string, stands: Stand[] | null) {
       const values: number[] = [];
       for (let splat = 0; splat < count; splat += step) values.push(positions[splat * 3 + axis]);
       values.sort((a, b) => a - b);
-      const low = values[Math.floor(values.length * 0.02)];
-      const high = values[Math.floor(values.length * 0.98)];
+      const low = values[Math.floor(values.length * percentile)];
+      const high = values[Math.floor(values.length * (1 - percentile))];
       centre.push((low + high) / 2);
       span.push(high - low);
     }
 
-    const solve = (view: { azimuth: number; elevation: number }): Stand => {
+    const solve = (view: { azimuth: number; elevation: number; from: string }): Stand => {
       // Where the eye is, relative to what it looks at: the viewer's own
       // spherical terms, with azimuth 0 putting it on +z.
       const cosElevation = Math.cos(view.elevation);
@@ -180,6 +200,7 @@ async function shoot(page: Page, file: string, stands: Stand[] | null) {
         Math.sin(view.elevation),
         Math.cos(view.azimuth) * cosElevation,
       ];
+
       const right = [Math.cos(view.azimuth), 0, -Math.sin(view.azimuth)];
       const up = [
         dir[1] * right[2] - dir[2] * right[1],
@@ -188,7 +209,7 @@ async function shoot(page: Page, file: string, stands: Stand[] | null) {
       ];
 
       // The box as this camera sees it: how far its corners reach across the
-      // frame, up it, and towards the eye.
+      // frame, up it, and back along the view.
       let across = 0;
       let tall = 0;
       let deep = 0;
@@ -205,6 +226,22 @@ async function shoot(page: Page, file: string, stands: Stand[] | null) {
         tall = Math.max(tall, along(up));
         deep = Math.max(deep, along(dir));
       }
+
+      if (view.from === 'inside') {
+        // The eye is `distance` along `dir` from the target, so putting the
+        // target that far the other side of the middle stands the eye exactly
+        // at the middle, looking out.
+        const distance = camera.reach * deep;
+        return {
+          target: [
+            centre[0] - dir[0] * distance,
+            centre[1] - dir[1] * distance,
+            centre[2] - dir[2] * distance,
+          ],
+          distance,
+        };
+      }
+
       const halfVertical = Math.tan(camera.fov / 2);
       // The frame is wider than it is tall, so the horizontal half-angle is
       // the vertical one scaled by the aspect.
@@ -241,14 +278,14 @@ async function shoot(page: Page, file: string, stands: Stand[] | null) {
       frames.push(Array.from(rgba));
     }
     return { frames, places };
-  }, { camera: CAMERA, views, width: WIDTH, height: HEIGHT, stands });
+  }, { camera: CAMERA, views, width: WIDTH, height: HEIGHT, stands, percentile: PERCENTILE });
 
   const frames = shot.frames.map((frame) => Uint8Array.from(frame));
   if (shotsDir) {
     const arm = path.basename(file, '.ply');
     for (const [view, pixels] of frames.entries()) {
       await writeFile(
-        path.join(shotsDir, `${arm}-view${view}.png`),
+        path.join(shotsDir, `${arm}-${views[view].from}${view}.png`),
         encodePng(pixels, WIDTH, HEIGHT),
       );
     }
@@ -390,12 +427,18 @@ test('encoding arms render within the difference their budget buys', async ({ pa
         // so: a camera standing inside the cloud renders a flat wash that
         // every arm reproduces exactly, and the table reads as a pass. What a
         // drawn scene has and a flat frame does not is variation.
-        expect(spread(pixels), `view ${view} of the source arm is a flat frame`).toBeGreaterThan(8);
-        // And a frame the scene barely reaches makes every later number a
-        // measurement of a few hundred pixels.
-        expect(coverage(pixels), `view ${view} barely shows the scene`).toBeGreaterThan(5);
+        expect(spread(pixels), `${views[view].from} view ${view} of the source arm is a flat frame`).toBeGreaterThan(8);
       }
-      console.log(`\ncoverage: ${shot.frames.map((f) => `${coverage(f).toFixed(0)}%`).join('  ')}`);
+      // One framing or the other is expected to do badly on any given scene --
+      // that is why both are shot -- so the guard is on the set rather than on
+      // each view: enough of them have to show the scene for the pooled
+      // numbers to be about the scene.
+      const shown = shot.frames.map(coverage);
+      expect(
+        shown.filter((share) => share > 15).length,
+        'too few views show the scene',
+      ).toBeGreaterThan(2);
+      console.log(`\ncoverage: ${shot.frames.map((f, view) => `${views[view].from.slice(0, 3)} ${coverage(f).toFixed(0)}%`).join('  ')}`);
       continue;
     }
     const difference = new Difference();
