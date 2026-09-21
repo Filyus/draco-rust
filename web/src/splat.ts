@@ -47,6 +47,63 @@ export interface SplatCloud {
    * expected to bring it back.
    */
   dc: Float32Array;
+  /**
+   * The higher bands, `3 * coefficientsFor(shDegree)` floats a splat, ordered
+   * coefficient-major with rgb inside — the transpose of the file's layout.
+   *
+   * **In the file's frame, not the turned one.** The positions are turned
+   * upright on the way out and these are not, because rotating a harmonic
+   * basis is a different and heavier job than negating two coordinates. A
+   * renderer asks this function for a direction, so it is the direction that
+   * gets turned back, which costs two sign flips at the point of use. See
+   * `viewDirectionForSh`.
+   */
+  sh: Float32Array;
+  /** 0 when the file carried no usable `f_rest`, up to 3. */
+  shDegree: number;
+}
+
+/** Coefficients per colour channel at each degree, excluding the DC term. */
+export function coefficientsFor(degree: number): number {
+  return degree <= 0 ? 0 : (degree + 1) * (degree + 1) - 1;
+}
+
+/**
+ * The degree a count of `f_rest` values describes, as Blender reads it.
+ *
+ * `ply_import_gsplat.cc` turns the count into a dimension and puts it through
+ * `degree_for_dimension`, a staircase with thresholds at 3 / 8 / 15 / 24. Both
+ * steps lose data and both are deliberate here rather than repaired: a count
+ * that is not a multiple of three collapses to degree 0, and one between
+ * thresholds is floored to the degree below. Matching the importer matters
+ * more than salvaging the odd file, because the importer is the oracle this
+ * module is checked against.
+ */
+export function degreeForRestCount(count: number): number {
+  if (count <= 0 || count % 3 !== 0) return 0;
+  const dimension = count / 3;
+  if (dimension >= 15) return 3;
+  if (dimension >= 8) return 2;
+  if (dimension >= 3) return 1;
+  return 0;
+}
+
+/**
+ * The direction to ask a splat's harmonics about.
+ *
+ * `from` and `to` are in the turned frame the rest of `SplatCloud` uses; the
+ * harmonics are in the file's. The turn is its own inverse, so undoing it is
+ * the same two sign flips that applied it.
+ */
+export function viewDirectionForSh(
+  from: readonly [number, number, number],
+  to: readonly [number, number, number],
+): [number, number, number] {
+  const x = to[0] - from[0];
+  const y = to[1] - from[1];
+  const z = to[2] - from[2];
+  const length = Math.hypot(x, y, z) || 1;
+  return [x / length, -y / length, -z / length];
 }
 
 /**
@@ -62,9 +119,13 @@ export function isSplatPly(properties: readonly string[]): boolean {
   return REQUIRED_SPLAT_PROPERTIES.every((name) => present.has(name));
 }
 
-/** Every property name the first stage of drawing a splat needs. */
-export function splatPropertyNames(): string[] {
-  return [...REQUIRED_SPLAT_PROPERTIES];
+/** Every property name drawing a splat needs, up to the degree asked for. */
+export function splatPropertyNames(maxDegree = 3): string[] {
+  const names: string[] = [...REQUIRED_SPLAT_PROPERTIES];
+  // The harmonics are optional and the file may carry fewer, so ask for every
+  // name a full degree-3 splat would have and read back what arrives.
+  for (let i = 0; i < 3 * coefficientsFor(maxDegree); i += 1) names.push(`f_rest_${i}`);
+  return names;
 }
 
 /** What `parse_ply_properties` hands back. */
@@ -131,6 +192,13 @@ export function readSplatCloud(selected: SelectedProperties): SplatCloud | null 
     if (properties[name].length < count) return null;
   }
 
+  // How many harmonics the file actually carried, as Blender would count them.
+  let restCount = 0;
+  while (properties[`f_rest_${restCount}`]?.length >= count) restCount += 1;
+  const shDegree = degreeForRestCount(restCount);
+  const perChannel = coefficientsFor(shDegree);
+  const sh = new Float32Array(count * perChannel * 3);
+
   const scales = new Float32Array(count * 3);
   const rotations = new Float32Array(count * 4);
   const alphas = new Float32Array(count);
@@ -147,6 +215,17 @@ export function readSplatCloud(selected: SelectedProperties): SplatCloud | null 
       dc[splat * 3 + axis] = dcPlanes[axis][splat];
     }
     alphas[splat] = sigmoid(opacity[splat]);
+
+    // The file is channel-major: every coefficient of red, then of green, then
+    // of blue. What a renderer wants is one coefficient at a time with rgb
+    // together, which is the transpose — and getting it backwards does not
+    // fail, it tints.
+    for (let k = 0; k < perChannel; k += 1) {
+      const at = (splat * perChannel + k) * 3;
+      sh[at] = properties[`f_rest_${k}`][splat];
+      sh[at + 1] = properties[`f_rest_${k + perChannel}`][splat];
+      sh[at + 2] = properties[`f_rest_${k + 2 * perChannel}`][splat];
+    }
 
     // Normalized on import, as Blender does. A zero quaternion has no rotation
     // to recover, so it becomes the identity rather than a NaN that would take
@@ -171,5 +250,5 @@ export function readSplatCloud(selected: SelectedProperties): SplatCloud | null 
   // them, so take a copy rather than reach back into what the caller holds.
   const positions = selected.positions.slice(0, count * 3);
 
-  return turnUpright({ count, positions, scales, rotations, alphas, dc });
+  return turnUpright({ count, positions, scales, rotations, alphas, dc, sh, shDegree });
 }

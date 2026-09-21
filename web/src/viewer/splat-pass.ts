@@ -26,6 +26,7 @@
  *     instead of fifty-six.
  */
 
+import { coefficientsFor } from '../splat.ts';
 import type { SplatCloud } from '../splat.ts';
 
 /** The degree-0 harmonic to a colour, which is the renderer's conversion. */
@@ -46,6 +47,15 @@ layout(location = 1) in uint aIndex;
 // Four texels a splat: centre and alpha, the scale, the rotation, the colour.
 uniform highp sampler2D uSplats;
 uniform int uTextureWidth;
+
+// The higher harmonics, one texel a coefficient with rgb inside. Empty and
+// unread when the file carried none.
+uniform highp sampler2D uHarmonics;
+uniform int uHarmonicsWidth;
+uniform int uShDegree;
+// Where the eye is, in the frame the harmonics were written in — which is the
+// file's, not the turned one the positions use.
+uniform vec3 uEyeInShFrame;
 
 uniform mat4 uView;
 uniform mat4 uProjection;
@@ -72,6 +82,55 @@ mat3 rotationOf(vec4 q) {
 vec4 splatTexel(uint splat, int which) {
   int texel = int(splat) * 4 + which;
   return texelFetch(uSplats, ivec2(texel % uTextureWidth, texel / uTextureWidth), 0);
+}
+
+vec3 harmonic(uint splat, int coefficients, int k) {
+  int texel = int(splat) * coefficients + k;
+  return texelFetch(uHarmonics, ivec2(texel % uHarmonicsWidth, texel / uHarmonicsWidth), 0).rgb;
+}
+
+// The real spherical harmonics of the 3DGS reference, up to degree 3. The
+// constants and the term order are that implementation's; a different order
+// would still be a basis, just not the one the file's coefficients were
+// trained against.
+const float C1 = 0.4886025119029199;
+const float C2[5] = float[5](
+  1.0925484305920792, -1.0925484305920792, 0.31539156525252005,
+  -1.0925484305920792, 0.5462742152960396
+);
+const float C3[7] = float[7](
+  -0.5900435899266435, 2.890611442640554, -0.4570457994644658,
+  0.3731763325901154, -0.4570457994644658, 1.445305721320277,
+  -0.5900435899266435
+);
+
+vec3 evaluateHarmonics(uint splat, vec3 dir, int degree) {
+  if (degree <= 0) return vec3(0.0);
+  int coefficients = (degree + 1) * (degree + 1) - 1;
+  float x = dir.x, y = dir.y, z = dir.z;
+
+  vec3 result = C1 * (-y * harmonic(splat, coefficients, 0)
+                      + z * harmonic(splat, coefficients, 1)
+                      - x * harmonic(splat, coefficients, 2));
+  if (degree < 2) return result;
+
+  float xx = x * x, yy = y * y, zz = z * z;
+  float xy = x * y, yz = y * z, xz = x * z;
+  result += C2[0] * xy * harmonic(splat, coefficients, 3)
+          + C2[1] * yz * harmonic(splat, coefficients, 4)
+          + C2[2] * (2.0 * zz - xx - yy) * harmonic(splat, coefficients, 5)
+          + C2[3] * xz * harmonic(splat, coefficients, 6)
+          + C2[4] * (xx - yy) * harmonic(splat, coefficients, 7);
+  if (degree < 3) return result;
+
+  result += C3[0] * y * (3.0 * xx - yy) * harmonic(splat, coefficients, 8)
+          + C3[1] * xy * z * harmonic(splat, coefficients, 9)
+          + C3[2] * y * (4.0 * zz - xx - yy) * harmonic(splat, coefficients, 10)
+          + C3[3] * z * (2.0 * zz - 3.0 * xx - 3.0 * yy) * harmonic(splat, coefficients, 11)
+          + C3[4] * x * (4.0 * zz - xx - yy) * harmonic(splat, coefficients, 12)
+          + C3[5] * z * (xx - yy) * harmonic(splat, coefficients, 13)
+          + C3[6] * x * (xx - 3.0 * yy) * harmonic(splat, coefficients, 14);
+  return result;
 }
 
 void main() {
@@ -158,7 +217,13 @@ void main() {
               + aCorner.y * minorAxis * minorLength;
 
   vLocal = aCorner * uExtent;
-  vColour = vec4(SH_C0_CONST * aDc + 0.5, aAlpha);
+  // The harmonics are a function of direction in the file's frame, so the
+  // direction is asked there: the centre is turned back by the same two sign
+  // flips that turned the cloud upright, and the eye arrives already turned.
+  vec3 shCentre = vec3(aCenter.x, -aCenter.y, -aCenter.z);
+  vec3 dir = normalize(shCentre - uEyeInShFrame);
+  vec3 colour = SH_C0_CONST * aDc + evaluateHarmonics(aIndex, dir, uShDegree) + 0.5;
+  vColour = vec4(colour, aAlpha);
   gl_Position = vec4(
     clip.xy / clip.w + offset / uViewport * 2.0,
     clip.z / clip.w,
@@ -208,6 +273,10 @@ export interface SplatResources {
   /** Four RGBA32F texels a splat; this never changes after upload. */
   texture: WebGLTexture;
   textureHeight: number;
+  /** One RGB32F texel a harmonic coefficient, or null when there are none. */
+  harmonics: WebGLTexture | null;
+  harmonicsWidth: number;
+  shDegree: number;
   cloud: SplatCloud;
   scratch: SortScratch;
   /** The view direction the order was made for. */
@@ -220,6 +289,10 @@ export interface SplatResources {
     maxAxis: WebGLUniformLocation | null;
     splats: WebGLUniformLocation | null;
     textureWidth: WebGLUniformLocation | null;
+    harmonics: WebGLUniformLocation | null;
+    harmonicsWidth: WebGLUniformLocation | null;
+    shDegree: WebGLUniformLocation | null;
+    eyeInShFrame: WebGLUniformLocation | null;
   };
 }
 
@@ -403,6 +476,31 @@ export function uploadSplats(gl: WebGL2RenderingContext, cloud: SplatCloud): Spl
   );
   gl.bindTexture(gl.TEXTURE_2D, null);
 
+  // The harmonics, one RGB32F texel a coefficient. Degree 3 is fifteen of them
+  // a splat, which for a million-splat scene is 180 MB on the card -- the
+  // honest price of colour that changes with the view, and the reason this is
+  // a second texture rather than more channels on the first.
+  let harmonics: WebGLTexture | null = null;
+  let harmonicsWidth = 1;
+  const perChannel = coefficientsFor(cloud.shDegree);
+  if (perChannel > 0 && cloud.sh.length >= cloud.count * perChannel * 3) {
+    harmonicsWidth = TEXTURE_WIDTH;
+    const coefficientTexels = cloud.count * perChannel;
+    const shHeight = Math.max(1, Math.ceil(coefficientTexels / harmonicsWidth));
+    const shPadded = new Float32Array(harmonicsWidth * shHeight * 3);
+    shPadded.set(cloud.sh.subarray(0, coefficientTexels * 3));
+    harmonics = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, harmonics);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(
+      gl.TEXTURE_2D, 0, gl.RGB32F, harmonicsWidth, shHeight, 0, gl.RGB, gl.FLOAT, shPadded,
+    );
+    gl.bindTexture(gl.TEXTURE_2D, null);
+  }
+
   return {
     program,
     vao,
@@ -410,6 +508,9 @@ export function uploadSplats(gl: WebGL2RenderingContext, cloud: SplatCloud): Spl
     instances,
     texture,
     textureHeight: height,
+    harmonics,
+    harmonicsWidth,
+    shDegree: harmonics ? cloud.shDegree : 0,
     cloud,
     scratch: makeSortScratch(cloud.count),
     // No direction yet, so the first frame always sorts.
@@ -422,6 +523,10 @@ export function uploadSplats(gl: WebGL2RenderingContext, cloud: SplatCloud): Spl
       maxAxis: gl.getUniformLocation(program, 'uMaxAxis'),
       splats: gl.getUniformLocation(program, 'uSplats'),
       textureWidth: gl.getUniformLocation(program, 'uTextureWidth'),
+      harmonics: gl.getUniformLocation(program, 'uHarmonics'),
+      harmonicsWidth: gl.getUniformLocation(program, 'uHarmonicsWidth'),
+      shDegree: gl.getUniformLocation(program, 'uShDegree'),
+      eyeInShFrame: gl.getUniformLocation(program, 'uEyeInShFrame'),
     },
   };
 }
@@ -456,6 +561,8 @@ export function drawSplats(
   projection: Float32Array,
   viewportWidth: number,
   viewportHeight: number,
+  /** The eye, in the file's frame; the harmonics are a function of it. */
+  eyeInShFrame: readonly [number, number, number] = [0, 0, 0],
   extent = 3,
   /** The longest ellipse axis to draw, in pixels; the reference uses 1024. */
   maxAxis = 1024,
@@ -467,6 +574,15 @@ export function drawSplats(
   gl.bindTexture(gl.TEXTURE_2D, splats.texture);
   gl.uniform1i(splats.uniforms.splats, 0);
   gl.uniform1i(splats.uniforms.textureWidth, TEXTURE_WIDTH);
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, splats.harmonics);
+  gl.uniform1i(splats.uniforms.harmonics, 1);
+  gl.uniform1i(splats.uniforms.harmonicsWidth, splats.harmonicsWidth);
+  gl.uniform1i(splats.uniforms.shDegree, splats.shDegree);
+  gl.uniform3f(
+    splats.uniforms.eyeInShFrame, eyeInShFrame[0], eyeInShFrame[1], eyeInShFrame[2],
+  );
+  gl.activeTexture(gl.TEXTURE0);
   gl.uniformMatrix4fv(splats.uniforms.view, false, view);
   gl.uniformMatrix4fv(splats.uniforms.projection, false, projection);
   gl.uniform2f(splats.uniforms.viewport, viewportWidth, viewportHeight);
@@ -490,5 +606,6 @@ export function disposeSplats(gl: WebGL2RenderingContext, splats: SplatResources
   gl.deleteBuffer(splats.corners);
   gl.deleteBuffer(splats.instances);
   gl.deleteTexture(splats.texture);
+  if (splats.harmonics) gl.deleteTexture(splats.harmonics);
   gl.deleteProgram(splats.program);
 }

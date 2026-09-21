@@ -21,7 +21,10 @@
  */
 import assert from 'node:assert/strict';
 
-import { isSplatPly, readSplatCloud, splatPropertyNames } from '../src/splat.ts';
+import {
+  coefficientsFor, degreeForRestCount, isSplatPly, readSplatCloud, splatPropertyNames,
+  viewDirectionForSh,
+} from '../src/splat.ts';
 import type { SelectedProperties } from '../src/splat.ts';
 
 /**
@@ -47,8 +50,12 @@ function sameNumbers(actual: ArrayLike<number>, expected: number[], what: string
 // ---------------------------------------------------------------------------
 
 {
-  const required = splatPropertyNames();
+  // The eleven that decide, and the harmonics that are only asked for.
+  const required = splatPropertyNames(0);
   assert.equal(required.length, 11);
+  assert.equal(splatPropertyNames(1).length, 11 + 9);
+  assert.equal(splatPropertyNames(2).length, 11 + 24);
+  assert.equal(splatPropertyNames().length, 11 + 45, 'degree 3 by default');
   assert.ok(isSplatPly(required), 'the eleven on their own are a splat');
   assert.ok(
     isSplatPly([...required, 'f_rest_0', 'f_rest_1', 'x', 'y', 'z']),
@@ -238,4 +245,68 @@ function matrixOf(q: readonly number[]): number[][] {
   );
 }
 
-console.log('splat dialect: recognition and activations match the measured rows');
+// ---------------------------------------------------------------------------
+// The harmonics: the staircase, and the transpose
+// ---------------------------------------------------------------------------
+
+// Blender floors the degree rather than salvaging the remainder, and this has
+// to floor it the same way or the two disagree about what a file contains.
+{
+  for (const [count, degree] of [
+    [0, 0], [3, 0], [4, 0], [6, 0], [9, 1], [12, 1], [15, 1],
+    [24, 2], [30, 2], [45, 3], [72, 3],
+  ] as const) {
+    assert.equal(degreeForRestCount(count), degree, `${count} f_rest values`);
+  }
+  // A count that is not a multiple of three loses everything, which is the
+  // importer's behaviour and not a rounding of it.
+  assert.equal(degreeForRestCount(46), 0, '46 is not three channels of anything');
+  assert.deepEqual([0, 1, 2, 3].map(coefficientsFor), [0, 3, 8, 15]);
+}
+
+// The file stores every coefficient of red, then of green, then of blue. The
+// cloud stores one coefficient at a time with rgb inside. Getting that
+// backwards does not fail, it tints — so the row from the note is asserted
+// directly: f_rest .10 .11 .12 | .20 .21 .22 | .30 .31 .32 reads back as
+// (.10,.20,.30), (.11,.21,.31), (.12,.22,.32).
+{
+  const rest: Record<string, number[]> = {};
+  const values = [0.10, 0.11, 0.12, 0.20, 0.21, 0.22, 0.30, 0.31, 0.32];
+  values.forEach((v, i) => { rest[`f_rest_${i}`] = [v]; });
+  const cloud = readSplatCloud(selected({
+    f_dc_0: [0], f_dc_1: [0], f_dc_2: [0],
+    opacity: [0],
+    scale_0: [0], scale_1: [0], scale_2: [0],
+    rot_0: [1], rot_1: [0], rot_2: [0], rot_3: [0],
+    ...rest,
+  }, 1));
+  assert.ok(cloud);
+  assert.equal(cloud.shDegree, 1, 'nine values are degree 1');
+  sameNumbers(cloud.sh, [0.10, 0.20, 0.30, 0.11, 0.21, 0.31, 0.12, 0.22, 0.32], 'transposed sh');
+}
+
+// A file with no harmonics is still a splat, and says it carries none.
+{
+  const cloud = readSplatCloud(selected({
+    f_dc_0: [0], f_dc_1: [0], f_dc_2: [0],
+    opacity: [0],
+    scale_0: [0], scale_1: [0], scale_2: [0],
+    rot_0: [1], rot_1: [0], rot_2: [0], rot_3: [0],
+  }, 1));
+  assert.ok(cloud);
+  assert.equal(cloud.shDegree, 0);
+  assert.equal(cloud.sh.length, 0);
+}
+
+// The harmonics stay in the file's frame while the positions are turned, so
+// the direction asked of them has to be turned back. It is the same two signs.
+{
+  const dir = viewDirectionForSh([0, 0, 0], [0, 2, 0]);
+  sameNumbers(dir, [0, -1, 0], 'y flips back');
+  const away = viewDirectionForSh([1, 1, 1], [1, 1, 4]);
+  sameNumbers(away, [0, 0, -1], 'z flips back');
+  const unit = viewDirectionForSh([0, 0, 0], [3, 4, 0]);
+  assert.ok(Math.abs(Math.hypot(...unit) - 1) < 1e-6, 'and it comes back normalized');
+}
+
+console.log('splat dialect: recognition, activations and harmonics match the measured rows');

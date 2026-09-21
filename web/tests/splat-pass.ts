@@ -22,6 +22,10 @@ function cloudOf(positions: number[][]): SplatCloud {
     rotations: new Float32Array(count * 4),
     alphas: new Float32Array(count),
     dc: new Float32Array(count * 3),
+    // The harmonics are the shader's business; nothing packed or sorted here
+    // touches them, so these arms carry none.
+    sh: new Float32Array(0),
+    shDegree: 0,
   };
   // Values that name their own splat, so a reorder that shuffles fields rather
   // than splats is visible.
