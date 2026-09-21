@@ -565,6 +565,32 @@ pub struct ExportOptions {
     /// payload is per-point attributes -- a Gaussian splat, a scan -- actually
     /// is.
     pub point_cloud: Option<bool>,
+    /// Lets the encoder choose each attribute's prediction scheme by the
+    /// estimated cost of the candidates rather than by upstream's fixed rule.
+    ///
+    /// Off by default, because this crate's output is otherwise byte-identical
+    /// to C++ Draco's for the same input. It costs encode time and nothing
+    /// else, and every stream it can produce is one an ordinary decoder reads.
+    /// On a Gaussian splat it is worth about 8%, and on data whose attributes
+    /// already correlate with their neighbours it finds nothing.
+    ///
+    /// Acts on the point-cloud coder only, so it does nothing unless
+    /// `point_cloud` is on.
+    pub prediction_search: Option<bool>,
+    /// Emits the points in Morton order rather than in the order they were
+    /// handed in, which gives the difference predictor a spatial neighbour to
+    /// predict from.
+    ///
+    /// Off by default, for the same byte-parity reason, and it is the larger
+    /// of the two: 14% on a splat, 32% on a photogrammetry capture. **It
+    /// reorders the decoded points**, so anything outside the file that
+    /// indexes into it by point number is pointing elsewhere afterwards. It
+    /// can also make a file bigger, when an attribute varies along the order
+    /// it came in rather than through space.
+    ///
+    /// Acts on the point-cloud coder only, so it does nothing unless
+    /// `point_cloud` is on.
+    pub spatial_point_order: Option<bool>,
 }
 
 /// Export result. `binary_data` is the payload; `.drc` has no text container.
@@ -801,6 +827,8 @@ fn export_options_from_js(value: &JsValue) -> ExportOptions {
         include_colors: opt_bool_from_js(value, "include_colors"),
         encoding_method: opt_i32_from_js(value, "encoding_method"),
         point_cloud: opt_bool_from_js(value, "point_cloud"),
+        prediction_search: opt_bool_from_js(value, "prediction_search"),
+        spatial_point_order: opt_bool_from_js(value, "spatial_point_order"),
     }
 }
 
@@ -837,6 +865,11 @@ fn create_drc_internal(input: &MeshInput, options: &ExportOptions) -> ExportResu
     for (attribute_id, bits) in quantization {
         settings.set_attribute_int(attribute_id, "quantization_bits", bits);
     }
+    // Both are read only by the point-cloud coder, so setting them on the way
+    // past costs a mesh encode nothing and keeps the one place options are
+    // assembled from the caller's in one piece.
+    settings.set_prediction_search(options.prediction_search.unwrap_or(false));
+    settings.set_spatial_point_order(options.spatial_point_order.unwrap_or(false));
 
     if options.point_cloud.unwrap_or(false) {
         return encode_as_point_cloud(mesh, &settings, speed);
@@ -1295,6 +1328,92 @@ mod tests {
                 values: vec![-3.0, -2.0, -1.0, 0.0],
             }]),
         }
+    }
+
+    /// The two point-cloud options reach the encoder, and only when asked.
+    ///
+    /// Both are worth whole percents on real data and nothing at all on four
+    /// points, so the test that they arrived cannot be a size comparison. It
+    /// is a byte comparison instead: off, the stream must be exactly what the
+    /// crate wrote before these existed; on, the spatial order must move the
+    /// points, which the tag attribute follows.
+    #[test]
+    fn test_the_point_cloud_options_reach_the_encoder() {
+        let points = || MeshInput {
+            // Deliberately handed in against the grain of space, so a spatial
+            // order has something to change.
+            positions: vec![
+                0.0, 0.0, 0.0, 9.0, 9.0, 9.0, 1.0, 0.0, 0.0, 9.0, 8.0, 9.0, 0.0, 1.0, 0.0, 8.0,
+                9.0, 9.0,
+            ],
+            indices: vec![],
+            normals: None,
+            uvs: None,
+            colors: None,
+            extras: Some(vec![ExtraAttribute {
+                attribute_type: "GENERIC".to_string(),
+                components: 1,
+                data_type: "float32".to_string(),
+                unique_id: 7,
+                normalized: false,
+                values: vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+            }]),
+        };
+        let encode = |configure: fn(&mut ExportOptions)| {
+            let mut options = ExportOptions {
+                point_cloud: Some(true),
+                encoding_method: Some(1),
+                ..Default::default()
+            };
+            configure(&mut options);
+            let exported = create_drc_internal(&points(), &options);
+            assert!(exported.success, "{:?}", exported.error);
+            exported.binary_data.expect("a payload")
+        };
+
+        let plain = encode(|_| {});
+        assert_eq!(
+            plain,
+            encode(|options| {
+                options.prediction_search = Some(false);
+                options.spatial_point_order = Some(false);
+            }),
+            "asking for the defaults must write what asking for nothing writes"
+        );
+
+        let sorted = encode(|options| options.spatial_point_order = Some(true));
+        assert_ne!(plain, sorted, "the spatial order never reached the encoder");
+
+        // And it reordered rather than corrupting: the tags come back as a
+        // permutation of what went in.
+        let mut decoded = draco_core::PointCloud::new();
+        draco_core::PointCloudDecoder::new()
+            .decode(&mut draco_core::DecoderBuffer::new(&sorted), &mut decoded)
+            .expect("a stream this module wrote must decode");
+        assert_eq!(decoded.num_points(), 6);
+        let tag = decoded.attribute(1);
+        let stride = tag.byte_stride() as usize;
+        let mut tags: Vec<i64> = (0..6)
+            .map(|point| {
+                let mut bytes = [0u8; 4];
+                tag.buffer().read(point * stride, &mut bytes);
+                f32::from_le_bytes(bytes).round() as i64
+            })
+            .collect();
+        tags.sort_unstable();
+        assert_eq!(
+            tags,
+            vec![0, 1, 2, 3, 4, 5],
+            "the reorder lost or duplicated a point"
+        );
+
+        // The search is asserted to arrive, not to pay: on six points there is
+        // nothing for it to find, so it must leave the stream alone.
+        assert_eq!(
+            plain,
+            encode(|options| options.prediction_search = Some(true)),
+            "the search changed a stream it had nothing to improve"
+        );
     }
 
     #[test]

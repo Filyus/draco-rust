@@ -18,6 +18,20 @@ only anchor a shipping without a version of its own has.
   file whose payload is per-point attributes actually is -- a scan, or a
   Gaussian splat read with the PLY reader's generic attributes turned on.
 
+- `create_drc` takes the two point-cloud encoder options as well:
+  `prediction_search` lets the encoder choose each attribute's prediction
+  scheme by the estimated cost of the candidates instead of by upstream's
+  fixed rule, and `spatial_point_order` emits the points in Morton order so
+  the difference predictor has a spatial neighbour to predict from. Both act
+  on the point-cloud coder only, so they need `point_cloud` on, and both are
+  off by default because the module's output is otherwise byte-identical to
+  C++ Draco's for the same input. Together they take a Gaussian splat scene
+  from 53.02 to 45.43 bytes per point and a photogrammetry capture of eight
+  million coloured points from 6.26 to 4.23. The order one reorders the
+  decoded points, which matters to anything outside the file that indexes into
+  it by point number, and it can make a file bigger when an attribute varies
+  along the order it came in rather than through space.
+
 - `parse_ply_bytes` reports the vertex properties, face properties and whole
   elements the reader could not carry, through the `warnings` array it already
   returned. A Gaussian-splat PLY keeps everything but the position in
