@@ -10,8 +10,9 @@
 //!
 //! Verified 2026-09-18 against Draco 1.5.7 built from
 //! `draco-build-trees/1.5.7`: all three generic attributes came back with
-//! their names, their component counts and their unique ids. The reader used
-//! is `dev/cpp-probes/read_names.cc`, which also records how to build it.
+//! their names, their component counts and their unique ids. The reader was a
+//! short C++ program against that build, asking each generic attribute for its
+//! `"name"` entry and printing it beside the component count and the id.
 //!
 //! ```text
 //! cargo test -p draco-core --features encoder,decoder \

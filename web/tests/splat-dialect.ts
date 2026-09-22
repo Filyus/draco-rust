@@ -1,11 +1,11 @@
 /**
  * The splat dialect, against the rows measured from Blender's importer.
  *
- * `dev/docs/format-research/notes/blender-gsplat.md` records what Blender's
- * `convert_gsplat_ply_to_point_cloud` produces for values picked so that each
- * one reads off a distinct number. Those rows are the oracle here: if this
- * module and that table ever disagree, one of them is wrong about the dialect
- * and the disagreement is the finding.
+ * Each row is what Blender's `convert_gsplat_ply_to_point_cloud` produced for
+ * a value picked so that it reads off a distinct number, measured against a
+ * daily build. Those rows are the oracle here: if this module and them ever
+ * disagree, one of them is wrong about the dialect and the disagreement is the
+ * finding.
  *
  * The rows:
  *

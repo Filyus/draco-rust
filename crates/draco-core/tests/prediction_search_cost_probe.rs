@@ -12,7 +12,7 @@
 //! Needs a scene, a splat PLY or any point cloud the PLY reader carries whole:
 //!
 //! ```text
-//! DRACO_SPLAT_PLY=/path/to/point_cloud.ply DRACO_PROBE_OUT=/tmp/probe \
+//! DRACO_SPLAT_PLY=<point_cloud.ply> DRACO_PROBE_OUT=<output directory> \
 //!   cargo test --manifest-path crates/Cargo.toml -p draco-core --release \
 //!   --features encoder --test prediction_search_cost_probe -- --ignored --nocapture
 //! ```

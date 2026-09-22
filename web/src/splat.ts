@@ -9,9 +9,9 @@
  * else in the pipeline is allowed to know it: the wasm reader fetches
  * properties by name, and everything downstream sees the typed result below.
  *
- * The rules here are not invented. They are measured against Blender's
- * importer in `dev/docs/format-research/notes/blender-gsplat.md`, one row per
- * value, and the activation functions are named in Blender's own
+ * The rules here are not invented. They were measured against Blender's
+ * importer one row per value -- the rows are in `tests/splat-dialect.ts` --
+ * and the activation functions are named in Blender's own
  * `io/common/IO_gsplat.hh` crediting the 3DGS supplemental code — so they
  * belong to the dialect rather than to Blender.
  */

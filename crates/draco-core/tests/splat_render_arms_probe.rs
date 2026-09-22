@@ -14,8 +14,11 @@
 //! writer does differently into every measurement; comparing against a written
 //! copy of the source leaves only the encode and decode.
 //!
+//! Both paths absolute: cargo runs a test from its own crate's directory, so a
+//! relative one resolves somewhere other than where it was typed.
+//!
 //! ```text
-//! DRACO_SPLAT_PLY=../../dev/splat-corpus/train_7000.ply DRACO_PROBE_OUT=/tmp/arms \
+//! DRACO_SPLAT_PLY=<scene.ply> DRACO_PROBE_OUT=<output directory> \
 //!   cargo test --manifest-path crates/Cargo.toml -p draco-core --release \
 //!   --features encoder,decoder --test splat_render_arms_probe -- --ignored --nocapture
 //! ```
@@ -129,7 +132,9 @@ fn percentile_window(cloud: &PointCloud, targets: &[i32], fraction: f64) -> (f32
 /// The cloud with `keep` applied to every point, and the rest gone.
 fn select(cloud: &PointCloud, keep: &[bool]) -> PointCloud {
     let names = attribute_names(cloud);
-    let kept: Vec<usize> = (0..cloud.num_points()).filter(|&point| keep[point]).collect();
+    let kept: Vec<usize> = (0..cloud.num_points())
+        .filter(|&point| keep[point])
+        .collect();
     let mut out = PointCloud::new();
     out.set_num_points(kept.len());
     for id in 0..cloud.num_attributes() {
@@ -563,10 +568,7 @@ fn write_the_arms() {
         match arm.encode {
             None => {
                 write_ply(&file, &cloud, &names).expect("writes");
-                println!(
-                    "{:<14} {:>14} {:>12} {num_points:>12}",
-                    arm.name, "-", "-"
-                );
+                println!("{:<14} {:>14} {:>12} {num_points:>12}", arm.name, "-", "-");
             }
             Some(budget) => {
                 let (decoded, bytes, points, stream) = round_trip(&cloud, &names, budget);
@@ -583,8 +585,7 @@ fn write_the_arms() {
                 // real limit of that arm and not a gap here: its PLY is its
                 // renderable form, and the missing `.drc` is what says so.
                 if !matches!(budget.change, Change::Alpha(_)) {
-                    std::fs::write(out.join(format!("{}.drc", arm.name)), &stream)
-                        .expect("writes");
+                    std::fs::write(out.join(format!("{}.drc", arm.name)), &stream).expect("writes");
                 }
                 // Bytes per point is the wrong ruler for an arm that removes
                 // points -- it can rise while the file shrinks -- so the count
