@@ -7,7 +7,7 @@
 
 use wasm_bindgen::prelude::*;
 
-#[cfg(feature = "read")]
+#[cfg(any(feature = "read", feature = "write"))]
 use js_sys::Array;
 use js_sys::Object;
 
@@ -18,8 +18,8 @@ use js_sys::Object;
 use wasm_bridge::{f32_array_to_js, f64_array_to_js, set_string_array, u32_array_to_js};
 #[cfg(feature = "write")]
 use wasm_bridge::{
-    opt_bool_from_js, opt_string_from_js, opt_u32_from_js, optional_f32_array, optional_u8_array,
-    required_f32_array, required_u32_array,
+    f64_array_from_js, get_field, opt_bool_from_js, opt_string_from_js, opt_u32_from_js,
+    optional_f32_array, optional_u8_array, required_f32_array, required_u32_array,
 };
 use wasm_bridge::{set_bool, set_js, set_opt_string, u8_array_to_js};
 
@@ -705,6 +705,8 @@ use draco_core::geometry_attribute::PointAttribute;
 #[cfg(any(feature = "read", feature = "write"))]
 use draco_core::geometry_indices::PointIndex;
 #[cfg(feature = "write")]
+use draco_core::metadata::Metadata;
+#[cfg(feature = "write")]
 use draco_io::{PlyFormat, PlyWriter, Writer};
 
 /// Input mesh data consumed by the PLY writer, from JavaScript.
@@ -720,6 +722,61 @@ pub struct MeshInput {
     pub colors: Option<Vec<u8>>,
     /// Per-vertex texture coordinates as [u0, v0, u1, v1, ...] (optional)
     pub uvs: Option<Vec<f32>>,
+    /// Attributes to write as vertex properties of their own, by name.
+    pub extras: Vec<NamedExtra>,
+}
+
+/// An attribute the source carried by name, written back under that name.
+///
+/// The writing half of `PlyExtra`: what a PLY read carried here, or a Draco
+/// payload carried in its attribute metadata, goes out as a property of the
+/// same name and type. An attribute that arrived without a name is not one of
+/// these -- there is nothing to call it in a header -- and is dropped before
+/// it reaches the module.
+#[cfg(feature = "write")]
+pub struct NamedExtra {
+    pub name: String,
+    pub data_type: DataType,
+    pub components: u8,
+    /// One tuple per vertex, `components` long.
+    pub values: Vec<f64>,
+}
+
+/// The component type the rest of the pipeline names this way.
+#[cfg(feature = "write")]
+fn data_type_from_name(name: &str) -> Option<DataType> {
+    Some(match name {
+        "int8" => DataType::Int8,
+        "uint8" => DataType::Uint8,
+        "int16" => DataType::Int16,
+        "uint16" => DataType::Uint16,
+        "int32" => DataType::Int32,
+        "uint32" => DataType::Uint32,
+        "int64" => DataType::Int64,
+        "uint64" => DataType::Uint64,
+        "float32" => DataType::Float32,
+        "float64" => DataType::Float64,
+        "bool" => DataType::Bool,
+        _ => return None,
+    })
+}
+
+/// A value in the given component type, little-endian, appended to `out`.
+#[cfg(feature = "write")]
+fn write_scalar_le(data_type: DataType, value: f64, out: &mut Vec<u8>) {
+    match data_type {
+        DataType::Float32 => out.extend_from_slice(&(value as f32).to_le_bytes()),
+        DataType::Float64 => out.extend_from_slice(&value.to_le_bytes()),
+        DataType::Int8 => out.push(value as i8 as u8),
+        DataType::Uint8 | DataType::Bool => out.push(value as u8),
+        DataType::Int16 => out.extend_from_slice(&(value as i16).to_le_bytes()),
+        DataType::Uint16 => out.extend_from_slice(&(value as u16).to_le_bytes()),
+        DataType::Int32 => out.extend_from_slice(&(value as i32).to_le_bytes()),
+        DataType::Uint32 => out.extend_from_slice(&(value as u32).to_le_bytes()),
+        DataType::Int64 => out.extend_from_slice(&(value as i64).to_le_bytes()),
+        DataType::Uint64 => out.extend_from_slice(&(value as u64).to_le_bytes()),
+        DataType::Invalid => {}
+    }
 }
 
 /// Export options.
@@ -787,7 +844,44 @@ fn mesh_input_from_js(value: &JsValue) -> Result<MeshInput, String> {
         normals: optional_f32_array(value, "normals")?,
         colors: optional_u8_array(value, "colors")?,
         uvs: optional_f32_array(value, "uvs")?,
+        extras: named_extras_from_js(value)?,
     })
+}
+
+/// The named attributes in `extras`; unnamed ones are left behind.
+#[cfg(feature = "write")]
+fn named_extras_from_js(value: &JsValue) -> Result<Vec<NamedExtra>, String> {
+    let Some(list) =
+        get_field(value, "extras").filter(|list| !list.is_undefined() && !list.is_null())
+    else {
+        return Ok(Vec::new());
+    };
+    let array = list
+        .dyn_ref::<Array>()
+        .ok_or_else(|| "extras must be an array".to_string())?;
+    let mut out = Vec::new();
+    for index in 0..array.length() {
+        let item = array.get(index);
+        let Some(name) = opt_string_from_js(&item, "name").filter(|name| !name.is_empty()) else {
+            continue;
+        };
+        let type_name = opt_string_from_js(&item, "dataType")
+            .ok_or_else(|| format!("extra \"{name}\" must have a dataType"))?;
+        let data_type = data_type_from_name(&type_name)
+            .ok_or_else(|| format!("extra \"{name}\" has an unknown dataType {type_name}"))?;
+        let components = opt_u32_from_js(&item, "components")
+            .unwrap_or(1)
+            .clamp(1, 255) as u8;
+        let values = get_field(&item, "values")
+            .ok_or_else(|| format!("extra \"{name}\" must have values"))?;
+        out.push(NamedExtra {
+            name,
+            data_type,
+            components,
+            values: f64_array_from_js(&values, "values")?,
+        });
+    }
+    Ok(out)
 }
 
 #[cfg(feature = "write")]
@@ -860,7 +954,9 @@ fn create_ply_with_core(
     format: PlyFormat,
 ) -> Result<Vec<u8>, String> {
     let mesh = mesh_input_to_core_mesh(input, options)?;
-    let mut writer = PlyWriter::new().with_format(format);
+    let mut writer = PlyWriter::new()
+        .with_format(format)
+        .with_generic_attributes(true);
     Writer::add_mesh(&mut writer, &mesh, None).map_err(|error| error.to_string())?;
     writer.write_to_vec().map_err(|error| error.to_string())
 }
@@ -945,6 +1041,39 @@ fn mesh_input_to_core_mesh(input: &MeshInput, options: &ExportOptions) -> Result
                 mesh.add_attribute(uv_att);
             }
         }
+    }
+
+    for extra in &input.extras {
+        let components = extra.components as usize;
+        if extra.values.len() < vertex_count * components {
+            return Err(format!(
+                "extra \"{}\" has {} values for {vertex_count} vertices of {components}",
+                extra.name,
+                extra.values.len(),
+            ));
+        }
+        let mut attribute = PointAttribute::new();
+        attribute.init(
+            GeometryAttributeType::Generic,
+            extra.components,
+            extra.data_type,
+            false,
+            vertex_count,
+        );
+        let mut bytes =
+            Vec::with_capacity(vertex_count * components * extra.data_type.byte_length());
+        for value in &extra.values[..vertex_count * components] {
+            write_scalar_le(extra.data_type, *value, &mut bytes);
+        }
+        attribute.buffer_mut().write(0, &bytes);
+        let id = mesh.add_attribute(attribute);
+        let unique_id = mesh.attribute(id).unique_id();
+        let mut metadata = Metadata::new();
+        metadata
+            .set_string("name", extra.name.clone())
+            .map_err(|error| format!("attribute name {}: {error}", extra.name))?;
+        mesh.metadata_or_insert()
+            .set_attribute_metadata(unique_id, metadata);
     }
 
     mesh.set_num_faces(input.indices.len() / 3);
@@ -1283,6 +1412,7 @@ mod writer_tests {
             normals: None,
             colors: None,
             uvs: None,
+            extras: Vec::new(),
         };
 
         let result = create_ply_internal(&mesh, &ExportOptions::default());
@@ -1305,6 +1435,7 @@ mod writer_tests {
             normals: None,
             colors: Some(vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255]),
             uvs: Some(vec![0.0, 0.0, 1.0, 0.0, 0.5, 1.0]),
+            extras: Vec::new(),
         };
 
         let result = create_ply_internal(&mesh, &ExportOptions::default());
@@ -1318,5 +1449,83 @@ mod writer_tests {
             .nth(data.lines().position(|line| line == "end_header").unwrap() + 1)
             .unwrap();
         assert!(first.contains("255 0 0"), "{first}");
+    }
+
+    /// What a read carried by name, a write puts back by name: the property
+    /// comes back out under its own name and type, and reads in again as the
+    /// same extra.
+    #[test]
+    #[cfg(feature = "read")]
+    fn named_extras_are_written_back_by_name() {
+        let mesh = MeshInput {
+            positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            indices: vec![],
+            normals: None,
+            colors: None,
+            uvs: None,
+            extras: vec![
+                NamedExtra {
+                    name: "opacity".to_string(),
+                    data_type: DataType::Float32,
+                    components: 1,
+                    values: vec![-3.25, 0.000123456],
+                },
+                NamedExtra {
+                    name: "segment".to_string(),
+                    data_type: DataType::Uint8,
+                    components: 1,
+                    values: vec![7.0, 200.0],
+                },
+            ],
+        };
+        let options = ExportOptions {
+            format: Some("binary_little_endian".to_string()),
+            ..Default::default()
+        };
+        let result = create_ply_internal(&mesh, &options);
+        assert!(result.success, "{:?}", result.error);
+
+        let read = parse_ply_with_core(&result.binary_data.unwrap()).expect("it reads back");
+        let extras = &read.meshes[0].extras;
+        let find = |name: &str| {
+            extras
+                .iter()
+                .find(|extra| extra.name == name)
+                .unwrap_or_else(|| panic!("{name} did not come back"))
+        };
+        let PlyExtraValues::F32(opacity) = &find("opacity").values else {
+            panic!("a float property reads back as f32");
+        };
+        assert_eq!(opacity, &[-3.25, 0.000123456]);
+        assert_eq!(find("segment").data_type, DataType::Uint8);
+        let PlyExtraValues::F64(segment) = &find("segment").values else {
+            panic!("an integer property reads back as f64");
+        };
+        assert_eq!(segment, &[7.0, 200.0]);
+    }
+
+    /// A property PLY has no type for is refused rather than narrowed.
+    #[test]
+    fn an_extra_ply_cannot_hold_is_refused() {
+        let mesh = MeshInput {
+            positions: vec![0.0, 0.0, 0.0],
+            indices: vec![],
+            normals: None,
+            colors: None,
+            uvs: None,
+            extras: vec![NamedExtra {
+                name: "id".to_string(),
+                data_type: DataType::Int64,
+                components: 1,
+                values: vec![1.0],
+            }],
+        };
+        let result = create_ply_internal(&mesh, &ExportOptions::default());
+        assert!(!result.success);
+        assert!(
+            result.error.as_deref().unwrap_or("").contains("no type"),
+            "{:?}",
+            result.error
+        );
     }
 }

@@ -457,12 +457,14 @@ async function exportFlattenedMeshes(settings: ExportSettings, loaded: LoadedFil
       `${format.toUpperCase()} holds one mesh: ${meshes.length} meshes were merged into one`,
     );
   }
-  // Uninterpreted attributes exist because a .drc or a PLY brought them, and
-  // only a .drc can take them back. Every other target drops them, and that is
-  // worth one line rather than a silent difference in the file that comes out.
-  // Named where the source named them, and capped: a splat carries fifty-six,
-  // and a line listing all of them is a line nobody reads.
-  const opaque = meshes.flatMap((mesh) => mesh.extras);
+  // Uninterpreted attributes exist because a .drc or a PLY brought them. A
+  // .drc takes all of them back, and a PLY the ones with a name to put in its
+  // header. Every other target drops them, and that is worth one line rather
+  // than a silent difference in the file that comes out. Named where the
+  // source named them, and capped: a splat carries fifty-six, and a line
+  // listing all of them is a line nobody reads.
+  const opaque = meshes.flatMap((mesh) => mesh.extras)
+    .filter((extra) => format !== 'ply' || !extra.name);
   if (format !== 'drc' && opaque.length > 0) {
     const shown = 8;
     const named = opaque.slice(0, shown)
@@ -670,12 +672,16 @@ export async function exportToPly(
   }
   // PLY only supports single mesh, merge if multiple
   const merged = mergeMeshes(meshes);
+  // A splat goes out binary, as every splat tool writes it. Sixty floats a
+  // point in text is several times the size, and for a scene of a few million
+  // points a string past what a browser will hold.
+  const splat = isSplatPly((merged.extras || []).map((extra) => extra.name || ''));
   const options = {
     include_normals: settings.includeNormals,
     include_uvs: settings.includeUvs,
     include_colors: true,
     precision: 6,
-    format: 'ascii',
+    format: splat ? 'binary_little_endian' : 'ascii',
   };
   return modules.ply.module.create_ply(merged, options);
 }

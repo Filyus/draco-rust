@@ -984,6 +984,48 @@ test('a Gaussian splat survives a .drc export and opens as a splat again', async
   expect(shError).toBeGreaterThan(0.0015);
 });
 
+test('a Gaussian splat survives a PLY export exactly', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+
+  // Every property of every splat, keyed by position, as the page read it.
+  const splats = () => page.evaluate(async () => {
+    const { state } = await import('/app/state.js' as string);
+    const cloud = state.currentMeshData?.splats;
+    if (!cloud) return null;
+    return {
+      count: cloud.count,
+      shDegree: cloud.shDegree,
+      values: [cloud.positions, cloud.scales, cloud.rotations, cloud.alphas, cloud.dc, cloud.sh]
+        .map((array: Float32Array) => Array.from(array)),
+    };
+  });
+
+  const { bytes } = tinySplatPly(64);
+  await page.locator('#file-input').setInputFiles({
+    name: 'tiny-splat.ply', mimeType: 'application/octet-stream', buffer: bytes,
+  });
+  await expect.poll(async () => (await splats())?.count ?? 0).toBe(64);
+  const source = (await splats())!;
+
+  await page.locator('[data-choice-for="export-format"] [data-value="ply"]').click();
+  const downloadPromise = page.waitForEvent('download');
+  await page.locator('#export-btn').click();
+  const written = await readFile((await (await downloadPromise).path())!);
+  // Binary, and nothing reported as dropped: every property had a name.
+  expect(written.subarray(0, 64).toString('latin1')).toContain('binary_little_endian');
+  await expect(page.locator('#console')).not.toContainText('has nowhere for');
+
+  await page.locator('#file-input').setInputFiles({
+    name: 'tiny-splat-out.ply', mimeType: 'application/octet-stream', buffer: written,
+  });
+  await expect(page.locator('#file-name')).toContainText('tiny-splat-out.ply');
+  await expect.poll(async () => (await splats())?.count ?? 0).toBe(64);
+  // PLY is not quantized and does not reorder, so this is equality, not a
+  // tolerance: the splat that went out is the splat that came back.
+  expect(await splats()).toEqual(source);
+});
+
 test('converter resolves glTF companions and reports decoded geometry', async ({ page }) => {
   await page.goto('/index.html');
   await waitForConverterReady(page);
