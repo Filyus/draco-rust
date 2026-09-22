@@ -499,7 +499,11 @@ test('encoding arms render within the difference their budget buys', async ({ pa
   );
   const files = armFiles();
 
-  test.setTimeout(60 * 60_000);
+  // Generous, and it has been hit: eleven arms of a three-million-splat scene
+  // over eight views is an hour and a half of software rasterizing, and an
+  // hour was not enough. A run that dies here loses everything it drew, so the
+  // limit is set for the largest scene rather than for a typical one.
+  test.setTimeout(4 * 60 * 60_000);
   await page.setViewportSize({ width: WIDTH + 400, height: HEIGHT + 200 });
   await page.goto('/index.html');
   await expect(page.locator('#console')).toContainText('Ready to convert 3D files!');
