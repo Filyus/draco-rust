@@ -28,10 +28,12 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
+use draco_core::mesh::Mesh;
 use draco_core::{
     DecoderBuffer, EncoderBuffer, EncoderOptions, GeometryAttributeType, Metadata, PointAttribute,
     PointCloud, PointCloudDecoder, PointCloudEncoder, PointIndex,
 };
+use draco_io::{PlyWriter, Writer};
 
 const SEQUENTIAL: i32 = 0;
 
@@ -281,66 +283,32 @@ fn opacity_id(names: &[Option<String>]) -> Option<i32> {
         .map(|id| id as i32)
 }
 
-/// The cloud as a binary little-endian PLY of float properties.
+/// The cloud as a binary little-endian PLY, every named property carried.
 ///
-/// Written here rather than with `PlyWriter` because that one carries the
-/// named types a mesh has -- position, normal, colour, texture coordinate --
-/// and a splat's payload is none of those. The reader has carried arbitrary
-/// named properties since `with_generic_attributes`; the writer has no matching
-/// half, which is a real gap in `draco-io` and is worked around rather than
-/// fixed from a probe.
-fn write_ply(path: &Path, cloud: &PointCloud, names: &[Option<String>]) -> std::io::Result<()> {
-    let num_points = cloud.num_points();
-
-    // One column per component, in the order the properties were declared.
-    let mut columns: Vec<(String, i32, usize)> = Vec::new();
+/// Through `PlyWriter` with generic attributes on, which writes each named
+/// generic back under its own name and type: the writing half of the
+/// reader's `with_generic_attributes`.
+fn write_ply(path: &Path, cloud: &PointCloud) -> std::io::Result<()> {
+    // The writer takes a mesh, and a point cloud is a mesh without faces. The
+    // attributes keep their ids, because that is what their names are keyed
+    // by in the metadata.
+    let mut mesh = Mesh::new();
+    mesh.set_num_points(cloud.num_points());
     for id in 0..cloud.num_attributes() {
         let attribute = cloud.attribute(id);
-        let components = attribute.num_components() as usize;
-        match attribute.attribute_type() {
-            GeometryAttributeType::Position => {
-                for (component, axis) in ["x", "y", "z"].iter().enumerate() {
-                    columns.push(((*axis).to_string(), id, component));
-                }
-            }
-            GeometryAttributeType::Normal => {
-                for (component, axis) in ["nx", "ny", "nz"].iter().enumerate() {
-                    columns.push(((*axis).to_string(), id, component));
-                }
-            }
-            _ => {
-                let base = names[id as usize]
-                    .clone()
-                    .unwrap_or_else(|| format!("attribute_{id}"));
-                for component in 0..components {
-                    let name = if components == 1 {
-                        base.clone()
-                    } else {
-                        format!("{base}_{component}")
-                    };
-                    columns.push((name, id, component));
-                }
-            }
+        let unique_id = attribute.unique_id();
+        mesh.add_attribute_preserve_unique_id(attribute.clone());
+        if let Some(metadata) = cloud.attribute_metadata_by_unique_id(unique_id) {
+            mesh.metadata_or_insert()
+                .set_attribute_metadata(unique_id, metadata.metadata().clone());
         }
     }
 
-    let mut header = String::from("ply\nformat binary_little_endian 1.0\n");
-    header.push_str(&format!("element vertex {num_points}\n"));
-    for (name, _, _) in &columns {
-        header.push_str(&format!("property float {name}\n"));
-    }
-    header.push_str("end_header\n");
-
-    let mut bytes = Vec::with_capacity(header.len() + num_points * columns.len() * 4);
-    bytes.extend_from_slice(header.as_bytes());
-    for point in 0..num_points {
-        for (_, id, component) in &columns {
-            let attribute = cloud.attribute(*id);
-            let value_index = attribute.mapped_index(PointIndex(point as u32));
-            let value = read_f32(attribute, value_index.0 as usize, *component);
-            bytes.extend_from_slice(&value.to_le_bytes());
-        }
-    }
+    let mut writer = PlyWriter::new()
+        .with_binary_little_endian()
+        .with_generic_attributes(true);
+    Writer::add_mesh(&mut writer, &mesh, None)?;
+    let bytes = writer.write_to_vec()?;
 
     // Written and synced through the one handle: a renderer reads this next,
     // and on Windows a reopened read-only handle cannot be synced.
@@ -567,14 +535,13 @@ fn write_the_arms() {
         let file = out.join(format!("{}.ply", arm.name));
         match arm.encode {
             None => {
-                write_ply(&file, &cloud, &names).expect("writes");
+                write_ply(&file, &cloud).expect("writes");
                 println!("{:<14} {:>14} {:>12} {num_points:>12}", arm.name, "-", "-");
             }
             Some(budget) => {
                 let (decoded, bytes, points, stream) = round_trip(&cloud, &names, budget);
                 // The decoded cloud carries the names through its own metadata.
-                let decoded_names = attribute_names(&decoded);
-                write_ply(&file, &decoded, &decoded_names).expect("writes");
+                write_ply(&file, &decoded).expect("writes");
                 // And the stream itself, so a consumer can be handed the
                 // product rather than a PLY rewritten from it.
                 //
