@@ -30,6 +30,16 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   changes what a read produces. A property carried this way leaves the loss
   report in the same breath, because it is no longer lost; list properties
   cannot become attributes and stay dropped and reported.
+- `PlyWriter::with_generic_attributes` is the writing half: a `Generic`
+  attribute named through its metadata under `"name"` is written as a vertex
+  property of that name, in the type it holds, so a Gaussian-splat PLY read
+  with generics on writes back out whole instead of as bare positions. Float
+  values are written exactly in ASCII too, rather than at the six places
+  positions get. Off by default, since it changes what a write produces. On,
+  a mesh whose generics cannot be written faithfully -- a 64-bit integer PLY
+  has no type for, a name holding whitespace or reusing one of the writer's
+  own properties, or a name an earlier mesh gave another type -- is refused
+  before any of it is added.
 - `PlyDroppedItem` implements `Display`, so a wrapper can hand these to a
   caller as plain strings without restating the wording.
 

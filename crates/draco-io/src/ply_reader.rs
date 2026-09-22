@@ -280,6 +280,9 @@ impl PlyReader {
     /// upstream Draco writes and reads. List properties stay behind — an
     /// attribute has one width per point and a list does not — and remain in
     /// the loss report, which never names anything this carries.
+    ///
+    /// The writing half is
+    /// [`PlyWriter::with_generic_attributes`](crate::PlyWriter::with_generic_attributes).
     pub fn with_generic_attributes(mut self, enabled: bool) -> Self {
         self.carry_generics = enabled;
         self

@@ -8,6 +8,8 @@
 //! - Vertex normals (if present)
 //! - Vertex colors (if present)
 //! - Per-vertex texture coordinates (if present)
+//! - Named `Generic` attributes as vertex properties of their own, when asked
+//!   for with [`PlyWriter::with_generic_attributes`]
 //! - Triangle faces (for meshes)
 //!
 //! # Example
@@ -70,6 +72,76 @@ pub struct PlyWriter {
     texcoords: Vec<[f32; 2]>,
     /// Collected faces (0-based indices)
     faces: Vec<[u32; 3]>,
+    /// Whether named `Generic` attributes are written.
+    carry_generics: bool,
+    /// Collected named `Generic` attributes, one column per property.
+    generics: Vec<GenericColumn>,
+}
+
+/// One vertex property written from a named `Generic` attribute.
+#[derive(Debug, Clone)]
+struct GenericColumn {
+    /// The property name in the header.
+    name: String,
+    /// The component type, which decides both the PLY type and the width.
+    data_type: DataType,
+    /// One little-endian value per vertex added so far.
+    bytes: Vec<u8>,
+}
+
+/// The PLY scalar type a component type is written as, if it has one.
+///
+/// PLY has no 64-bit integers, so those have none and are refused rather than
+/// narrowed: a writer asked to carry a value should not change it on the way.
+/// A `Bool` is a byte in Draco and goes out as one.
+fn ply_scalar_type(data_type: DataType) -> Option<&'static str> {
+    Some(match data_type {
+        DataType::Int8 => "char",
+        DataType::Uint8 | DataType::Bool => "uchar",
+        DataType::Int16 => "short",
+        DataType::Uint16 => "ushort",
+        DataType::Int32 => "int",
+        DataType::Uint32 => "uint",
+        DataType::Float32 => "float",
+        DataType::Float64 => "double",
+        _ => return None,
+    })
+}
+
+/// Property names this writer declares itself, which a generic cannot reuse.
+const RESERVED_PROPERTY_NAMES: [&str; 12] = [
+    "x",
+    "y",
+    "z",
+    "nx",
+    "ny",
+    "nz",
+    "red",
+    "green",
+    "blue",
+    "alpha",
+    "texture_u",
+    "texture_v",
+];
+
+/// A little-endian value of the given type, as ASCII PLY spells it.
+///
+/// Floats are written in the shortest form that reads back to the same value,
+/// not to the six places positions get: a splat's harmonics sit around a
+/// thousandth, where six places would keep three significant digits.
+fn ascii_scalar(data_type: DataType, bytes: &[u8]) -> String {
+    let mut wide = [0u8; 8];
+    wide[..bytes.len()].copy_from_slice(bytes);
+    match data_type {
+        DataType::Int8 => (wide[0] as i8).to_string(),
+        DataType::Uint8 | DataType::Bool => wide[0].to_string(),
+        DataType::Int16 => i16::from_le_bytes([wide[0], wide[1]]).to_string(),
+        DataType::Uint16 => u16::from_le_bytes([wide[0], wide[1]]).to_string(),
+        DataType::Int32 => i32::from_le_bytes([wide[0], wide[1], wide[2], wide[3]]).to_string(),
+        DataType::Uint32 => u32::from_le_bytes([wide[0], wide[1], wide[2], wide[3]]).to_string(),
+        DataType::Float32 => f32::from_le_bytes([wide[0], wide[1], wide[2], wide[3]]).to_string(),
+        _ => f64::from_le_bytes(wide).to_string(),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -195,6 +267,98 @@ impl PlyWriter {
         self.format == PlyFormat::BinaryLittleEndian
     }
 
+    /// Write named `Generic` attributes as vertex properties of their own.
+    ///
+    /// The writing half of
+    /// [`PlyReader::with_generic_attributes`](crate::PlyReader::with_generic_attributes):
+    /// a `Generic` attribute whose metadata carries a `"name"` entry -- the key
+    /// upstream Draco writes and reads -- becomes a property under that name,
+    /// in the type it holds. A Gaussian-splat PLY read with that option on
+    /// writes back out whole rather than as bare positions.
+    ///
+    /// A multi-component attribute is spread into `name_0`, `name_1`, ...,
+    /// since a PLY property holds one value. A generic without a name is not
+    /// written, because nothing says what to call it.
+    ///
+    /// Off by default, because it changes what a write produces. On, a mesh
+    /// whose generics cannot be written faithfully is refused before anything
+    /// of it is added: a 64-bit integer, which PLY has no type for; a name
+    /// that is empty or holds whitespace, which would break the header; a name
+    /// this writer already declares, such as `x` or `red`; and a name an
+    /// earlier mesh gave a different type.
+    pub fn with_generic_attributes(mut self, enabled: bool) -> Self {
+        self.carry_generics = enabled;
+        self
+    }
+
+    /// The mutable form of [`with_generic_attributes`](Self::with_generic_attributes).
+    pub fn set_generic_attributes(&mut self, enabled: bool) -> &mut Self {
+        self.carry_generics = enabled;
+        self
+    }
+
+    /// The named generics `mesh` would add, checked, without adding anything.
+    ///
+    /// Each entry is the property name, the attribute id and the component.
+    fn plan_generics(&self, mesh: &Mesh) -> io::Result<Vec<(String, i32, usize)>> {
+        let mut planned: Vec<(String, i32, usize)> = Vec::new();
+        if !self.carry_generics {
+            return Ok(planned);
+        }
+        let refuse = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
+        for id in 0..mesh.num_attributes() {
+            let attribute = mesh.attribute(id);
+            if attribute.attribute_type() != GeometryAttributeType::Generic {
+                continue;
+            }
+            let Some(name) = mesh
+                .attribute_metadata_by_unique_id(attribute.unique_id())
+                .and_then(|metadata| metadata.metadata().get_string("name"))
+            else {
+                continue;
+            };
+            let data_type = attribute.data_type();
+            if ply_scalar_type(data_type).is_none() {
+                return Err(refuse(format!(
+                    "PLY has no type for the {data_type:?} attribute \"{name}\""
+                )));
+            }
+            if name.is_empty() || name.chars().any(char::is_whitespace) {
+                return Err(refuse(format!(
+                    "\"{name}\" cannot name a PLY property: it is empty or holds whitespace"
+                )));
+            }
+            let components = attribute.num_components() as usize;
+            for component in 0..components {
+                let property = if components == 1 {
+                    name.to_string()
+                } else {
+                    format!("{name}_{component}")
+                };
+                if RESERVED_PROPERTY_NAMES.contains(&property.as_str()) {
+                    return Err(refuse(format!(
+                        "the attribute \"{property}\" would reuse a property this writer declares"
+                    )));
+                }
+                if planned.iter().any(|(taken, _, _)| *taken == property) {
+                    return Err(refuse(format!(
+                        "two attributes of one mesh would both write \"{property}\""
+                    )));
+                }
+                if let Some(column) = self.generics.iter().find(|column| column.name == property) {
+                    if column.data_type != data_type {
+                        return Err(refuse(format!(
+                            "\"{property}\" is {:?} in an earlier mesh and {data_type:?} here",
+                            column.data_type
+                        )));
+                    }
+                }
+                planned.push((property, id, component));
+            }
+        }
+        Ok(planned)
+    }
+
     /// Add raw point positions (for point cloud output).
     pub fn add_points(&mut self, points: &[[f32; 3]]) {
         self.positions.push_f32_slice(points);
@@ -262,6 +426,11 @@ impl PlyWriter {
         if !self.texcoords.is_empty() {
             self.texcoords.resize(vertex_count, [0.0, 0.0]);
         }
+        for column in &mut self.generics {
+            column
+                .bytes
+                .resize(vertex_count * column.data_type.byte_length(), 0);
+        }
     }
 
     /// Write the PLY data to a writer.
@@ -324,6 +493,12 @@ impl PlyWriter {
             writeln!(writer, "property float texture_v")?;
         }
 
+        for column in &self.generics {
+            let ply_type = ply_scalar_type(column.data_type)
+                .expect("a column is only created for a type PLY has");
+            writeln!(writer, "property {ply_type} {}", column.name)?;
+        }
+
         if !self.faces.is_empty() {
             writeln!(writer, "element face {}", self.faces.len())?;
             writeln!(writer, "property list uchar int vertex_indices")?;
@@ -376,6 +551,14 @@ impl PlyWriter {
             if has_texcoords {
                 let [u, v] = self.texcoords[i];
                 write!(writer, " {:.6} {:.6}", u, v)?;
+            }
+
+            for column in &self.generics {
+                write!(
+                    writer,
+                    " {}",
+                    ascii_scalar(column.data_type, &generic_value(column, i))
+                )?;
             }
 
             writeln!(writer)?;
@@ -474,6 +657,14 @@ impl PlyWriter {
                     v.to_le_bytes()
                 })?;
             }
+
+            for column in &self.generics {
+                let mut value = generic_value(column, i);
+                if big_endian {
+                    value.reverse();
+                }
+                writer.write_all(&value)?;
+            }
         }
 
         for face in &self.faces {
@@ -495,6 +686,19 @@ impl PlyWriter {
 
         Ok(())
     }
+}
+
+/// A generic column's value for one vertex, little-endian.
+///
+/// Zero for a vertex added after the column's last mesh -- `add_points` does
+/// not pad the columns -- which is what an absent value is everywhere else in
+/// this writer.
+fn generic_value(column: &GenericColumn, vertex: usize) -> Vec<u8> {
+    let width = column.data_type.byte_length();
+    column
+        .bytes
+        .get(vertex * width..(vertex + 1) * width)
+        .map_or_else(|| vec![0; width], <[u8]>::to_vec)
 }
 
 /// Read a float3 from an attribute at a given point index.
@@ -567,6 +771,9 @@ impl Writer for PlyWriter {
 
     fn add_mesh(&mut self, mesh: &Mesh, _name: Option<&str>) -> io::Result<()> {
         crate::traits::ensure_attributes_cover_points(mesh, "PLY")?;
+        // Checked before anything is added, so a refused mesh leaves the
+        // writer as it found it.
+        let planned_generics = self.plan_generics(mesh)?;
         // PLY format doesn't support mesh names
         let vertex_offset = self.positions.len() as u32;
 
@@ -621,6 +828,39 @@ impl Writer for PlyWriter {
                 for i in 0..mesh.num_points() {
                     self.texcoords.push(read_float2(mesh, texcoord_att_id, i));
                 }
+            }
+        }
+
+        for (property, att_id, component) in planned_generics {
+            let attribute = mesh.attribute(att_id);
+            let data_type = attribute.data_type();
+            let width = data_type.byte_length();
+            let index = match self
+                .generics
+                .iter()
+                .position(|column| column.name == property)
+            {
+                Some(index) => index,
+                None => {
+                    self.generics.push(GenericColumn {
+                        name: property,
+                        data_type,
+                        bytes: Vec::new(),
+                    });
+                    self.generics.len() - 1
+                }
+            };
+            let column = &mut self.generics[index];
+            // Up to where this mesh starts: a property first seen now reads as
+            // zero for every vertex an earlier mesh added.
+            column.bytes.resize(vertex_offset as usize * width, 0);
+            for point in 0..mesh.num_points() {
+                let mut value = vec![0u8; width];
+                let offset = crate::traits::value_offset(attribute, point) + component * width;
+                if !attribute.buffer().try_read(offset, &mut value) {
+                    value.fill(0);
+                }
+                column.bytes.extend_from_slice(&value);
             }
         }
 
@@ -741,6 +981,246 @@ mod tests {
         mesh.set_face(FaceIndex(0), [PointIndex(0), PointIndex(1), PointIndex(2)]);
 
         mesh
+    }
+
+    /// A point cloud of `points` points with the given named generics, each a
+    /// single component of the given type, values handed in as `f64`.
+    fn with_named_generics(points: usize, generics: &[(&str, DataType, &[f64])]) -> Mesh {
+        let mut mesh = Mesh::new();
+        let mut position = PointAttribute::new();
+        position.init(
+            GeometryAttributeType::Position,
+            3,
+            DataType::Float32,
+            false,
+            points,
+        );
+        for point in 0..points {
+            let bytes: Vec<u8> = [point as f32, 0.0, 0.0]
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect();
+            position.buffer_mut().write(point * 12, &bytes);
+        }
+        mesh.add_attribute(position);
+        for (name, data_type, values) in generics {
+            let mut attribute = PointAttribute::new();
+            attribute.init(GeometryAttributeType::Generic, 1, *data_type, false, points);
+            let bytes: Vec<u8> = values
+                .iter()
+                .flat_map(|value| match data_type {
+                    DataType::Float32 => (*value as f32).to_le_bytes().to_vec(),
+                    DataType::Float64 => value.to_le_bytes().to_vec(),
+                    DataType::Uint8 => vec![*value as u8],
+                    DataType::Int16 => (*value as i16).to_le_bytes().to_vec(),
+                    DataType::Uint32 => (*value as u32).to_le_bytes().to_vec(),
+                    DataType::Int64 => (*value as i64).to_le_bytes().to_vec(),
+                    other => panic!("no fixture encoding for {other:?}"),
+                })
+                .collect();
+            attribute.buffer_mut().write(0, &bytes);
+            let id = mesh.add_attribute(attribute);
+            if !name.is_empty() {
+                let unique_id = mesh.attribute(id).unique_id();
+                let mut metadata = draco_core::metadata::Metadata::new();
+                metadata.set_string("name", *name).unwrap();
+                mesh.metadata_or_insert()
+                    .set_attribute_metadata(unique_id, metadata);
+            }
+        }
+        mesh
+    }
+
+    /// The values of the generic named `name`, widened to `f64`.
+    #[cfg(feature = "ply-reader")]
+    fn read_generic(mesh: &Mesh, name: &str) -> Option<(DataType, Vec<f64>)> {
+        (0..mesh.num_attributes()).find_map(|id| {
+            let attribute = mesh.attribute(id);
+            let named = mesh
+                .attribute_metadata_by_unique_id(attribute.unique_id())
+                .and_then(|metadata| metadata.metadata().get_string("name"))
+                .is_some_and(|found| found == name);
+            if !named {
+                return None;
+            }
+            let data_type = attribute.data_type();
+            let width = data_type.byte_length();
+            let values = (0..mesh.num_points())
+                .map(|point| {
+                    let mut bytes = vec![0u8; width];
+                    attribute
+                        .buffer()
+                        .read(crate::traits::value_offset(attribute, point), &mut bytes);
+                    match data_type {
+                        DataType::Float32 => f32::from_le_bytes(bytes.try_into().unwrap()) as f64,
+                        DataType::Float64 => f64::from_le_bytes(bytes.try_into().unwrap()),
+                        DataType::Uint8 => bytes[0] as f64,
+                        DataType::Int16 => i16::from_le_bytes(bytes.try_into().unwrap()) as f64,
+                        DataType::Uint32 => u32::from_le_bytes(bytes.try_into().unwrap()) as f64,
+                        other => panic!("no fixture decoding for {other:?}"),
+                    }
+                })
+                .collect();
+            Some((data_type, values))
+        })
+    }
+
+    /// What the reader carries with generics on, this writes back out: names,
+    /// declared types and exact values, in all three encodings.
+    ///
+    /// The float values are chosen to need more than six decimal places,
+    /// which is where a splat's harmonics sit and where positions' fixed
+    /// ASCII precision would already have rounded them away.
+    #[test]
+    #[cfg(feature = "ply-reader")]
+    fn named_generics_round_trip_through_the_reader() {
+        let opacity = [-3.25, 0.000123456, 13.3246];
+        let segment = [0.0, 200.0, 255.0];
+        let weight = [1.0e-9, -2.5, 0.1];
+        let offset = [-300.0, 0.0, 32767.0];
+        let label = [0.0, 16_777_217.0, 4_000_000_000.0];
+        let mesh = with_named_generics(
+            3,
+            &[
+                ("opacity", DataType::Float32, &opacity),
+                ("segment", DataType::Uint8, &segment),
+                ("weight", DataType::Float64, &weight),
+                ("offset", DataType::Int16, &offset),
+                ("label", DataType::Uint32, &label),
+            ],
+        );
+
+        for format in [
+            PlyFormat::Ascii,
+            PlyFormat::BinaryLittleEndian,
+            PlyFormat::BinaryBigEndian,
+        ] {
+            let mut writer = PlyWriter::new()
+                .with_format(format)
+                .with_generic_attributes(true);
+            Writer::add_mesh(&mut writer, &mesh, None).unwrap();
+            let bytes = writer.write_to_vec().unwrap();
+
+            let read = PlyReader::from_bytes(bytes)
+                .with_generic_attributes(true)
+                .read_mesh()
+                .unwrap();
+            let expect = |name: &str, data_type: DataType, values: &[f64]| {
+                let (found_type, found) = read_generic(&read, name)
+                    .unwrap_or_else(|| panic!("{format:?}: {name} did not come back"));
+                assert_eq!(found_type, data_type, "{format:?}: {name}");
+                assert_eq!(found, values, "{format:?}: {name}");
+            };
+            expect(
+                "opacity",
+                DataType::Float32,
+                &opacity.map(|value| value as f32 as f64),
+            );
+            expect("segment", DataType::Uint8, &segment);
+            expect("weight", DataType::Float64, &weight);
+            expect("offset", DataType::Int16, &offset);
+            expect("label", DataType::Uint32, &label);
+        }
+    }
+
+    /// Off unless asked for, so an existing caller's output does not change.
+    #[test]
+    fn named_generics_are_not_written_by_default() {
+        let mesh = with_named_generics(2, &[("opacity", DataType::Float32, &[1.0, 2.0])]);
+        let mut writer = PlyWriter::new();
+        Writer::add_mesh(&mut writer, &mesh, None).unwrap();
+        let text = String::from_utf8(writer.write_to_vec().unwrap()).unwrap();
+        assert!(!text.contains("opacity"), "{text}");
+    }
+
+    /// A generic with no name has nothing to be called in a header, so it is
+    /// the one kind left out.
+    #[test]
+    fn an_unnamed_generic_is_not_written() {
+        let mesh = with_named_generics(
+            2,
+            &[
+                ("", DataType::Float32, &[1.0, 2.0]),
+                ("opacity", DataType::Float32, &[3.0, 4.0]),
+            ],
+        );
+        let mut writer = PlyWriter::new().with_generic_attributes(true);
+        Writer::add_mesh(&mut writer, &mesh, None).unwrap();
+        let text = String::from_utf8(writer.write_to_vec().unwrap()).unwrap();
+        let properties = text
+            .lines()
+            .filter(|line| line.starts_with("property"))
+            .count();
+        assert_eq!(properties, 4, "x, y, z and opacity:\n{text}");
+    }
+
+    /// Meshes are merged the way every other per-vertex property is: a mesh
+    /// without the property reads as zero for it, whichever order they come in.
+    #[test]
+    #[cfg(feature = "ply-reader")]
+    fn a_mesh_without_the_property_reads_as_zero_for_it() {
+        let with = with_named_generics(2, &[("opacity", DataType::Float32, &[5.0, 6.0])]);
+        let without = with_named_generics(2, &[]);
+        for (first, second, expected) in [
+            (&with, &without, [5.0, 6.0, 0.0, 0.0]),
+            (&without, &with, [0.0, 0.0, 5.0, 6.0]),
+        ] {
+            let mut writer = PlyWriter::new().with_generic_attributes(true);
+            Writer::add_mesh(&mut writer, first, None).unwrap();
+            Writer::add_mesh(&mut writer, second, None).unwrap();
+            let read = PlyReader::from_bytes(writer.write_to_vec().unwrap())
+                .with_generic_attributes(true)
+                .read_mesh()
+                .unwrap();
+            assert_eq!(read_generic(&read, "opacity").unwrap().1, expected);
+        }
+    }
+
+    /// A mesh whose generics cannot be written faithfully is refused whole,
+    /// and the writer keeps what it had rather than half of the mesh.
+    #[test]
+    fn unwritable_generics_are_refused_before_anything_is_added() {
+        let refused = |mesh: Mesh, why: &str| {
+            let mut writer = PlyWriter::new().with_generic_attributes(true);
+            let error = Writer::add_mesh(&mut writer, &mesh, None)
+                .expect_err(why)
+                .to_string();
+            assert_eq!(
+                writer.vertex_count(),
+                0,
+                "{why}: the writer took part of it"
+            );
+            error
+        };
+
+        let error = refused(
+            with_named_generics(1, &[("id", DataType::Int64, &[7.0])]),
+            "PLY has no 64-bit integer type",
+        );
+        assert!(error.contains("no type"), "{error}");
+
+        let error = refused(
+            with_named_generics(1, &[("my weight", DataType::Float32, &[1.0])]),
+            "whitespace would split the header line",
+        );
+        assert!(error.contains("whitespace"), "{error}");
+
+        let error = refused(
+            with_named_generics(1, &[("red", DataType::Float32, &[1.0])]),
+            "red is a colour channel this writer declares",
+        );
+        assert!(error.contains("reuse"), "{error}");
+
+        // The same name in a later mesh with a different type.
+        let mut writer = PlyWriter::new().with_generic_attributes(true);
+        let first = with_named_generics(1, &[("opacity", DataType::Float32, &[1.0])]);
+        Writer::add_mesh(&mut writer, &first, None).unwrap();
+        let second = with_named_generics(1, &[("opacity", DataType::Float64, &[1.0])]);
+        let error = Writer::add_mesh(&mut writer, &second, None)
+            .expect_err("one property cannot hold two types")
+            .to_string();
+        assert!(error.contains("earlier mesh"), "{error}");
+        assert_eq!(writer.vertex_count(), 1, "the refused mesh was not added");
     }
 
     #[test]
