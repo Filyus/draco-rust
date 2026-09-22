@@ -137,6 +137,44 @@ export interface SelectedProperties {
   properties: Record<string, Float32Array>;
 }
 
+/** One decoded Draco attribute, as `parse_drc_bytes` hands it over. */
+export interface DracoExtra {
+  name?: string | null;
+  components: number;
+  /** One tuple per point, `components` long. */
+  values: ArrayLike<number>;
+}
+
+/**
+ * A Draco payload's attributes as the splat reader's input.
+ *
+ * Draco attaches no meaning to a generic attribute, so a splat payload says
+ * what its columns are in attribute metadata and this is where that name is
+ * read back. A multi-component attribute is spread into `name_0`, `name_1`,
+ * ... because that is how the same values appear in a PLY, and every rule in
+ * this module is written against the PLY's names.
+ */
+export function selectedFromDracoExtras(
+  count: number,
+  positions: ArrayLike<number>,
+  extras: readonly DracoExtra[],
+): SelectedProperties {
+  const properties: Record<string, Float32Array> = {};
+  for (const extra of extras) {
+    if (!extra.name) continue;
+    const components = Math.max(1, extra.components);
+    for (let component = 0; component < components; component += 1) {
+      const name = components === 1 ? extra.name : `${extra.name}_${component}`;
+      const column = new Float32Array(count);
+      for (let point = 0; point < count; point += 1) {
+        column[point] = extra.values[point * components + component];
+      }
+      properties[name] = column;
+    }
+  }
+  return { success: true, count, positions: Float32Array.from(positions), properties };
+}
+
 function sigmoid(x: number): number {
   return 1 / (1 + Math.exp(-x));
 }

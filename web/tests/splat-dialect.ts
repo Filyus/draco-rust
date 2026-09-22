@@ -22,8 +22,8 @@
 import assert from 'node:assert/strict';
 
 import {
-  coefficientsFor, degreeForRestCount, isSplatPly, readSplatCloud, splatPropertyNames,
-  viewDirectionForSh,
+  coefficientsFor, degreeForRestCount, isSplatPly, readSplatCloud,
+  selectedFromDracoExtras, splatPropertyNames, viewDirectionForSh,
 } from '../src/splat.ts';
 import type { SelectedProperties } from '../src/splat.ts';
 
@@ -307,6 +307,46 @@ function matrixOf(q: readonly number[]): number[][] {
   sameNumbers(away, [0, 0, -1], 'z flips back');
   const unit = viewDirectionForSh([0, 0, 0], [3, 4, 0]);
   assert.ok(Math.abs(Math.hypot(...unit) - 1) < 1e-6, 'and it comes back normalized');
+}
+
+// ---------------------------------------------------------------------------
+// The same dialect, arriving from a Draco payload instead of a PLY header
+// ---------------------------------------------------------------------------
+
+// Draco says nothing about what a generic attribute means, so a splat payload
+// carries its column names in attribute metadata. A multi-component attribute
+// has to be spread back into the PLY's numbered names, because every rule in
+// the module is written against those.
+{
+  const extras = [
+    { name: 'f_dc', components: 3, values: [0.1, 0.2, 0.3, 1.1, 1.2, 1.3] },
+    { name: 'opacity', components: 1, values: [0, 0] },
+    { name: 'scale', components: 3, values: [0, 0, 0, 0, 0, 0] },
+    { name: 'rot', components: 4, values: [1, 0, 0, 0, 1, 0, 0, 0] },
+    // Unnamed attributes are the ones Draco could not label, and they cannot
+    // be guessed at: a payload with these alone is not a splat.
+    { name: null, components: 1, values: [9, 9] },
+  ];
+  const selected = selectedFromDracoExtras(2, [0, 0, 0, 1, 1, 1], extras);
+  assert.ok(isSplatPly(Object.keys(selected.properties)), 'the names come back numbered');
+  sameNumbers([...selected.properties.f_dc_1], [0.2, 1.2], 'and the components are un-interleaved');
+
+  const cloud = readSplatCloud(selected);
+  assert.ok(cloud, 'and it reads as a splat cloud');
+  assert.equal(cloud.count, 2);
+  // The same activations as from a PLY: sigmoid(0), exp(0).
+  assert.equal(cloud.alphas[0], 0.5);
+  assert.equal(cloud.scales[0], 1);
+}
+
+// A payload whose attributes carry no names is ordinary geometry, not a splat
+// with missing labels.
+{
+  const selected = selectedFromDracoExtras(1, [0, 0, 0], [
+    { name: null, components: 3, values: [1, 2, 3] },
+  ]);
+  assert.equal(Object.keys(selected.properties).length, 0);
+  assert.equal(readSplatCloud(selected), null);
 }
 
 console.log('splat dialect: recognition, activations and harmonics match the measured rows');

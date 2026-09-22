@@ -149,10 +149,26 @@ const DRAWN_ON = 0.0003;
  */
 const MOVED_BY = 0.001;
 
-/** `source.ply` first: every other arm is measured against it. */
+/**
+ * The file to shoot for each arm, `source.ply` first.
+ *
+ * The `.drc` when the probe wrote one, because that is the product: a PLY
+ * rewritten from the decoded cloud is a faithful proxy but still a proxy, and
+ * the point of the payload carrying its own attribute names is that a consumer
+ * can read it directly. An arm with no `.drc` is one whose stream a reader
+ * cannot be given -- the probe says which and why -- and its PLY stands in.
+ */
 function armFiles(): string[] {
-  const files = readdirSync(armsDir).filter((name) => name.endsWith('.ply'));
-  return files.sort((a, b) => Number(b === 'source.ply') - Number(a === 'source.ply'));
+  const present = new Set(readdirSync(armsDir));
+  const arms = [...present]
+    .filter((name) => name.endsWith('.ply'))
+    .map((name) => path.basename(name, '.ply'))
+    .filter((arm) => arm !== 'source')
+    .sort();
+  return [
+    'source.ply',
+    ...arms.map((arm) => (present.has(`${arm}.drc`) ? `${arm}.drc` : `${arm}.ply`)),
+  ];
 }
 
 /**
@@ -333,7 +349,7 @@ async function shoot(page: Page, file: string, stands: Stand[] | null) {
   });
   const [width, height] = shot.size;
   if (shotsDir) {
-    const arm = path.basename(file, '.ply');
+    const arm = path.basename(file).replace(/\.(ply|drc)$/, '');
     for (const [view, pixels] of frames.entries()) {
       await writeFile(
         path.join(shotsDir, `${arm}-${views[view].from}${view}.png`),
@@ -477,8 +493,11 @@ class Difference {
 
 test('encoding arms render within the difference their budget buys', async ({ page }) => {
   test.skip(!existsSync(armsDir), `no arms in ${armsDir}: run splat_render_arms_probe first`);
+  test.skip(
+    !existsSync(path.join(armsDir, 'source.ply')),
+    `${armsDir} has no source.ply to measure against`,
+  );
   const files = armFiles();
-  test.skip(files[0] !== 'source.ply', `${armsDir} has no source.ply to measure against`);
 
   test.setTimeout(60 * 60_000);
   await page.setViewportSize({ width: WIDTH + 400, height: HEIGHT + 200 });
@@ -521,7 +540,7 @@ test('encoding arms render within the difference their budget buys', async ({ pa
     const difference = new Difference();
     for (const [view, pixels] of shot.frames.entries()) difference.add(reference[view], pixels);
     rows.push(
-      `${path.basename(name, '.ply').padEnd(14)}`
+      `${path.basename(name).replace(/\.(ply|drc)$/, '').padEnd(14)}`
       + `${difference.psnr.toFixed(2).padStart(9)}`
       + `${difference.rmse.toFixed(5).padStart(10)}`
       + `${difference.worst.toFixed(3).padStart(9)}`

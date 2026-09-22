@@ -49,6 +49,8 @@ use draco_core::draco_types::DataType;
 use draco_core::geometry_attribute::GeometryAttributeType;
 #[cfg(feature = "write")]
 use draco_core::geometry_attribute::PointAttribute;
+#[cfg(feature = "write")]
+use draco_core::metadata::Metadata;
 use draco_core::geometry_indices::{FaceIndex, PointIndex};
 use draco_core::mesh::Mesh;
 
@@ -98,6 +100,14 @@ pub struct ExtraAttribute {
     pub unique_id: u32,
     /// Whether integer values are to be read as normalized.
     pub normalized: bool,
+    /// The name the payload's metadata gives it, when it gives one.
+    ///
+    /// Draco itself attaches no meaning to a generic attribute -- the type
+    /// says `GENERIC` and nothing more -- so a producer that wants one named
+    /// puts the name in attribute metadata. That is how a Gaussian-splat
+    /// payload says which of its sixty-odd generics is `opacity`, and without
+    /// it a consumer has a list of unlabelled columns.
+    pub name: Option<String>,
     /// One tuple per point, `components` long.
     pub values: Vec<f64>,
 }
@@ -157,6 +167,7 @@ fn extra_attribute_to_js(extra: &ExtraAttribute) -> JsValue {
     set_js(&obj, "dataType", &JsValue::from_str(&extra.data_type));
     set_js(&obj, "uniqueId", &JsValue::from(extra.unique_id));
     set_bool(&obj, "normalized", extra.normalized);
+    set_opt_string(&obj, "name", &extra.name);
     set_js(&obj, "values", &f64_array_to_js(&extra.values));
     obj.into()
 }
@@ -361,10 +372,20 @@ fn read_extra_attributes(mesh: &Mesh) -> Vec<ExtraAttribute> {
             data_type: data_type_name(attribute.data_type()).to_string(),
             unique_id: attribute.unique_id(),
             normalized: attribute.normalized(),
+            name: attribute_name(mesh, attribute.unique_id()),
             values,
         });
     }
     extras
+}
+
+/// The name a payload's metadata gives an attribute, if any.
+#[cfg(feature = "read")]
+fn attribute_name(mesh: &Mesh, unique_id: u32) -> Option<String> {
+    mesh.attribute_metadata_by_unique_id(unique_id)?
+        .metadata()
+        .get_string("name")
+        .map(str::to_string)
 }
 
 /// Read an attribute as one float tuple per point, whatever it decoded to.
@@ -801,6 +822,7 @@ fn extra_attribute_from_js(value: &JsValue) -> Result<ExtraAttribute, String> {
     let normalized = get_field(value, "normalized")
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
+    let name = get_field(value, "name").and_then(|value| value.as_string());
     let values = get_field(value, "values")
         .ok_or_else(|| "an extra attribute must have values".to_string())?;
     let values = f64_array_from_js(&values, "values")?;
@@ -810,6 +832,7 @@ fn extra_attribute_from_js(value: &JsValue) -> Result<ExtraAttribute, String> {
         data_type,
         unique_id,
         normalized,
+        name,
         values,
     })
 }
@@ -1099,6 +1122,18 @@ fn mesh_input_to_core_mesh(
         attribute.set_unique_id(unique_id);
         taken.push(unique_id);
         mesh.add_attribute_preserve_unique_id(attribute);
+        // The name goes back into metadata under the id the attribute ended
+        // up with, which is not always the one it arrived with. Dropping it
+        // here would make an export lossy in exactly the way that matters to a
+        // payload whose meaning is in its names.
+        if let Some(name) = &extra.name {
+            let mut metadata = Metadata::new();
+            metadata
+                .set_string("name", name.clone())
+                .map_err(|error| format!("attribute name {name}: {error}"))?;
+            mesh.metadata_or_insert()
+                .set_attribute_metadata(unique_id, metadata);
+        }
     }
 
     mesh.set_num_faces(input.indices.len() / 3);

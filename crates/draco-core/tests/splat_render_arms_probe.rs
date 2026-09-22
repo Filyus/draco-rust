@@ -351,7 +351,7 @@ fn round_trip(
     cloud: &PointCloud,
     names: &[Option<String>],
     budget: Budget,
-) -> (PointCloud, usize, usize) {
+) -> (PointCloud, usize, usize, Vec<u8>) {
     // Every change happens around the encode, not inside the file. What is
     // written back out is what the dialect says the property holds -- a logit
     // in `opacity`, a log in `scale_*` -- because that is what a renderer will
@@ -448,6 +448,8 @@ fn round_trip(
     encoder.encode(&options, &mut buffer).expect("encodes");
     let bytes = buffer.data().len();
 
+    let stream = buffer.data().to_vec();
+
     let mut decoded = PointCloud::new();
     PointCloudDecoder::new()
         .decode(&mut DecoderBuffer::new(buffer.data()), &mut decoded)
@@ -467,7 +469,7 @@ fn round_trip(
             with_values(&decoded, id, &logits)
         }
     };
-    (decoded, bytes, points)
+    (decoded, bytes, points, stream)
 }
 
 #[test]
@@ -567,10 +569,23 @@ fn write_the_arms() {
                 );
             }
             Some(budget) => {
-                let (decoded, bytes, points) = round_trip(&cloud, &names, budget);
+                let (decoded, bytes, points, stream) = round_trip(&cloud, &names, budget);
                 // The decoded cloud carries the names through its own metadata.
                 let decoded_names = attribute_names(&decoded);
                 write_ply(&file, &decoded, &decoded_names).expect("writes");
+                // And the stream itself, so a consumer can be handed the
+                // product rather than a PLY rewritten from it.
+                //
+                // Not for an alpha arm. Its stream holds alpha in `opacity`,
+                // where the dialect says a logit lives, so any reader that
+                // follows the dialect puts a second sigmoid through it. The
+                // domain change is not expressible in the file, which is a
+                // real limit of that arm and not a gap here: its PLY is its
+                // renderable form, and the missing `.drc` is what says so.
+                if !matches!(budget.change, Change::Alpha(_)) {
+                    std::fs::write(out.join(format!("{}.drc", arm.name)), &stream)
+                        .expect("writes");
+                }
                 // Bytes per point is the wrong ruler for an arm that removes
                 // points -- it can rise while the file shrinks -- so the count
                 // is printed beside it and the total is what to read.

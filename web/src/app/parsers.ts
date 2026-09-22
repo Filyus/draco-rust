@@ -70,7 +70,9 @@ export function parseObjMaterials(objText: string, resources: ResourceMap, warni
 // would answer differently the first time either was corrected.
 export { mtlMapPath } from './model-intake.ts';
 
-import { isSplatPly, readSplatCloud, splatPropertyNames } from '../splat.ts';
+import {
+  isSplatPly, readSplatCloud, selectedFromDracoExtras, splatPropertyNames,
+} from '../splat.ts';
 import type { SelectedProperties } from '../splat.ts';
 
 // Parse PLY file
@@ -138,6 +140,27 @@ export async function parseDrcFile(data: Uint8Array) {
   try {
     const result = modules.drc.module.parse_drc_bytes(data);
     debugLog('DRC parse result:', result);
+
+    // The same recognition the PLY path does, one layer lower. A splat payload
+    // is an ordinary point cloud to the decoder and a scene to a renderer, and
+    // what tells them apart is attribute names -- which Draco carries in
+    // metadata rather than in the attribute type, so they arrive with the
+    // extras rather than with the geometry.
+    const mesh = result?.meshes?.[0];
+    const extras = mesh?.extras ?? [];
+    if (mesh && extras.length > 0) {
+      const count = (mesh.positions?.length ?? 0) / 3;
+      const selected = selectedFromDracoExtras(count, mesh.positions ?? [], extras);
+      if (isSplatPly(Object.keys(selected.properties))) {
+        const cloud = readSplatCloud(selected);
+        if (cloud) {
+          result.splats = cloud;
+          debugLog('DRC splat cloud:', cloud.count, 'splats');
+        } else {
+          debugLog('DRC carried the splat names but did not read as one');
+        }
+      }
+    }
     return result;
   } catch (error) {
     return {
