@@ -22,8 +22,8 @@
 import assert from 'node:assert/strict';
 
 import {
-  coefficientsFor, degreeForRestCount, isSplatPly, readSplatCloud,
-  selectedFromDracoExtras, splatPropertyNames, viewDirectionForSh,
+  REQUIRED_SPLAT_PROPERTIES, SPLAT_BUDGET, coefficientsFor, degreeForRestCount, isSplatPly,
+  readSplatCloud, selectedFromNamedAttributes, splatBitsFor, viewDirectionForSh,
 } from '../src/splat.ts';
 import type { SelectedProperties } from '../src/splat.ts';
 
@@ -50,12 +50,9 @@ function sameNumbers(actual: ArrayLike<number>, expected: number[], what: string
 // ---------------------------------------------------------------------------
 
 {
-  // The eleven that decide, and the harmonics that are only asked for.
-  const required = splatPropertyNames(0);
+  // The eleven that decide; the harmonics are optional.
+  const required = [...REQUIRED_SPLAT_PROPERTIES];
   assert.equal(required.length, 11);
-  assert.equal(splatPropertyNames(1).length, 11 + 9);
-  assert.equal(splatPropertyNames(2).length, 11 + 24);
-  assert.equal(splatPropertyNames().length, 11 + 45, 'degree 3 by default');
   assert.ok(isSplatPly(required), 'the eleven on their own are a splat');
   assert.ok(
     isSplatPly([...required, 'f_rest_0', 'f_rest_1', 'x', 'y', 'z']),
@@ -327,7 +324,7 @@ function matrixOf(q: readonly number[]): number[][] {
     // be guessed at: a payload with these alone is not a splat.
     { name: null, components: 1, values: [9, 9] },
   ];
-  const selected = selectedFromDracoExtras(2, [0, 0, 0, 1, 1, 1], extras);
+  const selected = selectedFromNamedAttributes(2, [0, 0, 0, 1, 1, 1], extras);
   assert.ok(isSplatPly(Object.keys(selected.properties)), 'the names come back numbered');
   sameNumbers([...selected.properties.f_dc_1], [0.2, 1.2], 'and the components are un-interleaved');
 
@@ -342,11 +339,34 @@ function matrixOf(q: readonly number[]): number[][] {
 // A payload whose attributes carry no names is ordinary geometry, not a splat
 // with missing labels.
 {
-  const selected = selectedFromDracoExtras(1, [0, 0, 0], [
+  const selected = selectedFromNamedAttributes(1, [0, 0, 0], [
     { name: null, components: 3, values: [1, 2, 3] },
   ]);
   assert.equal(Object.keys(selected.properties).length, 0);
   assert.equal(readSplatCloud(selected), null);
+}
+
+// A splat PLY's properties arrive as one Float32Array each and are taken as
+// they are: copying them would briefly double a payload of hundreds of
+// megabytes.
+{
+  const opacity = new Float32Array([0, 1]);
+  const selected = selectedFromNamedAttributes(2, [0, 0, 0, 1, 1, 1], [
+    { name: 'opacity', components: 1, values: opacity },
+  ]);
+  assert.equal(selected.properties.opacity, opacity, 'the same array, not a copy');
+}
+
+// The budget a splat is written with: harmonics coarser than everything else,
+// and nothing about the name decided by accident -- `f_dc` is colour, not a
+// harmonic band, however alike the names look.
+{
+  assert.equal(splatBitsFor('f_rest_0'), SPLAT_BUDGET.harmonics);
+  assert.equal(splatBitsFor('f_rest_44'), SPLAT_BUDGET.harmonics);
+  for (const name of ['f_dc_0', 'opacity', 'scale_1', 'rot_3']) {
+    assert.equal(splatBitsFor(name), SPLAT_BUDGET.other, name);
+  }
+  assert.ok(SPLAT_BUDGET.harmonics < SPLAT_BUDGET.other);
 }
 
 console.log('splat dialect: recognition, activations and harmonics match the measured rows');

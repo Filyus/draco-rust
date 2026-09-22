@@ -49,10 +49,10 @@ use draco_core::draco_types::DataType;
 use draco_core::geometry_attribute::GeometryAttributeType;
 #[cfg(feature = "write")]
 use draco_core::geometry_attribute::PointAttribute;
-#[cfg(feature = "write")]
-use draco_core::metadata::Metadata;
 use draco_core::geometry_indices::{FaceIndex, PointIndex};
 use draco_core::mesh::Mesh;
+#[cfg(feature = "write")]
+use draco_core::metadata::Metadata;
 
 // ===========================================================================
 // Reader
@@ -108,6 +108,17 @@ pub struct ExtraAttribute {
     /// payload says which of its sixty-odd generics is `opacity`, and without
     /// it a consumer has a list of unlabelled columns.
     pub name: Option<String>,
+    /// How many bits to quantize it to when it is written, or `None` to keep
+    /// its values exact.
+    ///
+    /// Only a writer reads this; a decoded attribute always reports `None`.
+    /// The named attributes have one slider each in the export panel, and a
+    /// payload of sixty generics needs a budget per attribute instead -- a
+    /// splat's harmonics and its opacity are not worth the same bits, and the
+    /// measurement that says so is the caller's to apply. Without a budget a
+    /// float attribute never reaches Draco's integer coder at all, so no
+    /// prediction runs on it and it is stored at full width.
+    pub quantization_bits: Option<i32>,
     /// One tuple per point, `components` long.
     pub values: Vec<f64>,
 }
@@ -373,6 +384,7 @@ fn read_extra_attributes(mesh: &Mesh) -> Vec<ExtraAttribute> {
             unique_id: attribute.unique_id(),
             normalized: attribute.normalized(),
             name: attribute_name(mesh, attribute.unique_id()),
+            quantization_bits: None,
             values,
         });
     }
@@ -823,6 +835,7 @@ fn extra_attribute_from_js(value: &JsValue) -> Result<ExtraAttribute, String> {
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
     let name = get_field(value, "name").and_then(|value| value.as_string());
+    let quantization_bits = opt_i32_from_js(value, "quantizationBits");
     let values = get_field(value, "values")
         .ok_or_else(|| "an extra attribute must have values".to_string())?;
     let values = f64_array_from_js(&values, "values")?;
@@ -833,6 +846,7 @@ fn extra_attribute_from_js(value: &JsValue) -> Result<ExtraAttribute, String> {
         unique_id,
         normalized,
         name,
+        quantization_bits,
         values,
     })
 }
@@ -1121,7 +1135,20 @@ fn mesh_input_to_core_mesh(
         };
         attribute.set_unique_id(unique_id);
         taken.push(unique_id);
-        mesh.add_attribute_preserve_unique_id(attribute);
+        let id = mesh.add_attribute_preserve_unique_id(attribute);
+        if let Some(bits) = extra.quantization_bits {
+            // Quantization maps a float range onto integers. An attribute that
+            // already is integers has nothing to map, and taking the request
+            // silently would hand back a file that ignored it.
+            if !matches!(data_type, DataType::Float32 | DataType::Float64) {
+                return Err(format!(
+                    "attribute {} is {} and cannot be quantized",
+                    extra.name.as_deref().unwrap_or("without a name"),
+                    extra.data_type,
+                ));
+            }
+            quantization.push((id, bits));
+        }
         // The name goes back into metadata under the id the attribute ended
         // up with, which is not always the one it arrived with. Dropping it
         // here would make an export lossy in exactly the way that matters to a
@@ -1360,9 +1387,85 @@ mod tests {
                 data_type: "float32".to_string(),
                 unique_id: 7,
                 normalized: false,
+                name: None,
+                quantization_bits: None,
                 values: vec![-3.0, -2.0, -1.0, 0.0],
             }]),
         }
+    }
+
+    /// A named generic keeps its name through a write and a read, and takes the
+    /// bits it asks for rather than being stored at full width.
+    ///
+    /// Both halves are what a splat payload depends on: the name is the only
+    /// thing that says which of sixty generics is `opacity`, and the bits are
+    /// the only way a generic reaches the integer coder at all.
+    #[test]
+    fn test_a_named_extra_keeps_its_name_and_takes_its_own_bits() {
+        let input = |bits: Option<i32>| {
+            let mut input = splat_points();
+            let extra = &mut input.extras.as_mut().unwrap()[0];
+            extra.name = Some("opacity".to_string());
+            extra.quantization_bits = bits;
+            // Off a two-bit grid on purpose, so quantizing has to move them.
+            extra.values = vec![-3.0, -2.2, -0.9, 0.0];
+            input
+        };
+        let options = ExportOptions {
+            point_cloud: Some(true),
+            ..Default::default()
+        };
+        let read_back = |input: MeshInput| {
+            let exported = create_drc_internal(&input, &options);
+            assert!(exported.success, "{:?}", exported.error);
+            let parsed = parse_drc_internal(&exported.binary_data.expect("a payload"));
+            assert!(parsed.success, "{:?}", parsed.error);
+            let extra = parsed.meshes[0].extras[0].clone();
+            assert_eq!(extra.name.as_deref(), Some("opacity"), "the name was lost");
+            extra.values
+        };
+
+        assert_eq!(
+            read_back(input(None)),
+            vec![-3.0, -2.2f32 as f64, -0.9f32 as f64, 0.0],
+            "without a budget the values come back exactly"
+        );
+        let quantized = read_back(input(Some(2)));
+        // Two bits over [-3, 0] is a step of one.
+        for (value, expected) in quantized.iter().zip([-3.0, -2.0, -1.0, 0.0]) {
+            assert!(
+                (value - expected).abs() < 1e-6,
+                "{quantized:?} is not on the two-bit grid"
+            );
+        }
+    }
+
+    /// Quantization maps floats onto integers, so asking it of an integer
+    /// attribute is refused rather than ignored.
+    #[test]
+    fn test_quantizing_an_integer_extra_is_refused() {
+        let mut input = splat_points();
+        let extra = &mut input.extras.as_mut().unwrap()[0];
+        extra.data_type = "uint16".to_string();
+        extra.values = vec![0.0, 1.0, 2.0, 3.0];
+        extra.quantization_bits = Some(4);
+        let exported = create_drc_internal(
+            &input,
+            &ExportOptions {
+                point_cloud: Some(true),
+                ..Default::default()
+            },
+        );
+        assert!(!exported.success);
+        assert!(
+            exported
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("cannot be quantized"),
+            "{:?}",
+            exported.error
+        );
     }
 
     /// The two point-cloud options reach the encoder, and only when asked.
@@ -1391,6 +1494,8 @@ mod tests {
                 data_type: "float32".to_string(),
                 unique_id: 7,
                 normalized: false,
+                name: None,
+                quantization_bits: None,
                 values: vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
             }]),
         };

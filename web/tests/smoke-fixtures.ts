@@ -554,3 +554,54 @@ export function basisTexturedGlb(ktx2Bytes: Uint8Array): Uint8Array {
   glb.set(binary, 28 + jsonPadded.length);
   return glb;
 }
+
+/**
+ * A Gaussian-splat PLY in miniature: the properties 3DGS writes, in the order
+ * it writes them, over a small grid of points.
+ *
+ * The values sit in the ranges a trained scene has -- logit opacity, log
+ * scale, a unit quaternion, small harmonics -- and differ from point to point,
+ * so a writer that dropped, reordered or flattened a property cannot pass by
+ * accident. `values` returns what was written, per property, for comparison.
+ */
+export function tinySplatPly(points = 64): { bytes: Buffer; values: Record<string, number[]> } {
+  const names = [
+    'x', 'y', 'z', 'nx', 'ny', 'nz',
+    ...[0, 1, 2].map((i) => `f_dc_${i}`),
+    ...Array.from({ length: 45 }, (_, i) => `f_rest_${i}`),
+    'opacity',
+    ...[0, 1, 2].map((i) => `scale_${i}`),
+    ...[0, 1, 2, 3].map((i) => `rot_${i}`),
+  ];
+  const values: Record<string, number[]> = Object.fromEntries(names.map((name) => [name, []]));
+  for (let point = 0; point < points; point += 1) {
+    const t = point / Math.max(1, points - 1);
+    values.x.push(point % 8);
+    values.y.push(Math.floor(point / 8));
+    values.z.push(Math.sin(point));
+    for (const name of ['nx', 'ny', 'nz']) values[name].push(0);
+    for (let i = 0; i < 3; i += 1) values[`f_dc_${i}`].push(Math.sin(point + i) * 1.5);
+    for (let i = 0; i < 45; i += 1) values[`f_rest_${i}`].push(Math.cos(point * 0.7 + i) * 0.2);
+    values.opacity.push(-2 + 7 * t);
+    for (let i = 0; i < 3; i += 1) values[`scale_${i}`].push(-4 + 3 * ((point + i) % 5) / 4);
+    const half = (point % 12) * 0.1;
+    const quaternion = [Math.cos(half), Math.sin(half), 0, 0];
+    for (let i = 0; i < 4; i += 1) values[`rot_${i}`].push(quaternion[i]);
+  }
+
+  const header = [
+    'ply',
+    'format binary_little_endian 1.0',
+    `element vertex ${points}`,
+    ...names.map((name) => `property float ${name}`),
+    'end_header',
+    '',
+  ].join('\n');
+  const body = Buffer.alloc(points * names.length * 4);
+  for (let point = 0; point < points; point += 1) {
+    names.forEach((name, index) => {
+      body.writeFloatLE(values[name][point], (point * names.length + index) * 4);
+    });
+  }
+  return { bytes: Buffer.concat([Buffer.from(header, 'ascii'), body]), values };
+}

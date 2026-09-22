@@ -119,16 +119,7 @@ export function isSplatPly(properties: readonly string[]): boolean {
   return REQUIRED_SPLAT_PROPERTIES.every((name) => present.has(name));
 }
 
-/** Every property name drawing a splat needs, up to the degree asked for. */
-export function splatPropertyNames(maxDegree = 3): string[] {
-  const names: string[] = [...REQUIRED_SPLAT_PROPERTIES];
-  // The harmonics are optional and the file may carry fewer, so ask for every
-  // name a full degree-3 splat would have and read back what arrives.
-  for (let i = 0; i < 3 * coefficientsFor(maxDegree); i += 1) names.push(`f_rest_${i}`);
-  return names;
-}
-
-/** What `parse_ply_properties` hands back. */
+/** The splat's properties by name, as the reader below takes them. */
 export interface SelectedProperties {
   success: boolean;
   error?: string;
@@ -137,8 +128,15 @@ export interface SelectedProperties {
   properties: Record<string, Float32Array>;
 }
 
-/** One decoded Draco attribute, as `parse_drc_bytes` hands it over. */
-export interface DracoExtra {
+/**
+ * One attribute a reader carried without interpreting it, by name.
+ *
+ * The PLY reader hands these over for every property a mesh has no slot for,
+ * and the Draco reader for every generic attribute whose name travelled in
+ * metadata. A splat is nothing but these, which is why both formats reach the
+ * splat reader the same way.
+ */
+export interface NamedAttribute {
   name?: string | null;
   components: number;
   /** One tuple per point, `components` long. */
@@ -146,23 +144,32 @@ export interface DracoExtra {
 }
 
 /**
- * A Draco payload's attributes as the splat reader's input.
+ * Carried attributes as the splat reader's input.
  *
- * Draco attaches no meaning to a generic attribute, so a splat payload says
- * what its columns are in attribute metadata and this is where that name is
- * read back. A multi-component attribute is spread into `name_0`, `name_1`,
- * ... because that is how the same values appear in a PLY, and every rule in
- * this module is written against the PLY's names.
+ * A multi-component attribute is spread into `name_0`, `name_1`, ... because
+ * that is how the same values appear in a PLY, and every rule in this module
+ * is written against the PLY's names. An attribute without a name is skipped:
+ * nothing here can guess what it was.
+ *
+ * A single-component `Float32Array` of the right length is taken as it is
+ * rather than copied. That is every property of a splat PLY, and copying them
+ * would briefly hold a second copy of a payload that runs to hundreds of
+ * megabytes.
  */
-export function selectedFromDracoExtras(
+export function selectedFromNamedAttributes(
   count: number,
   positions: ArrayLike<number>,
-  extras: readonly DracoExtra[],
+  attributes: readonly NamedAttribute[],
 ): SelectedProperties {
   const properties: Record<string, Float32Array> = {};
-  for (const extra of extras) {
+  for (const extra of attributes) {
     if (!extra.name) continue;
     const components = Math.max(1, extra.components);
+    if (components === 1 && extra.values instanceof Float32Array
+      && extra.values.length === count) {
+      properties[extra.name] = extra.values;
+      continue;
+    }
     for (let component = 0; component < components; component += 1) {
       const name = components === 1 ? extra.name : `${extra.name}_${component}`;
       const column = new Float32Array(count);
@@ -173,6 +180,28 @@ export function selectedFromDracoExtras(
     }
   }
   return { success: true, count, positions: Float32Array.from(positions), properties };
+}
+
+/**
+ * The bit budget a splat is written with, per attribute.
+ *
+ * Measured rather than chosen: each setting here was encoded, decoded, drawn
+ * from eight cameras and compared against the unquantized scene, on a street
+ * capture and two interiors, in linear radiance.
+ *
+ * - **Positions at 16.** Three per cent of the file, and the largest damage of
+ *   anything tried when coarsened: 12 bits cost 5 to 15 dB.
+ * - **Harmonics at 6.** A quarter of the file for 0.1 dB on the street and
+ *   about 1 dB on an interior -- the best trade measured by a distance. Four
+ *   bits halve the file again and cost an interior 10 dB.
+ * - **Everything else at 8.** Colour, opacity, scale, rotation. Opacity stays a
+ *   logit: storing alpha instead was measured as a small loss, not a gain.
+ */
+export const SPLAT_BUDGET = { positions: 16, harmonics: 6, other: 8 } as const;
+
+/** The bits a splat property is written with, by its name in the file. */
+export function splatBitsFor(name: string): number {
+  return name.startsWith('f_rest_') ? SPLAT_BUDGET.harmonics : SPLAT_BUDGET.other;
 }
 
 function sigmoid(x: number): number {

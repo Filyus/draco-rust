@@ -42,6 +42,16 @@ export interface OpaqueAttribute {
   dataType: string;
   uniqueId: number;
   normalized: boolean;
+  /**
+   * The name the source gave it -- a PLY property name, or the name a Draco
+   * payload carried in attribute metadata. Absent when the source had none.
+   */
+  name?: string | null;
+  /**
+   * Bits to quantize it to when it is written to a `.drc`. Set by the export
+   * route, never by a reader.
+   */
+  quantizationBits?: number;
   /** One tuple per vertex, `components` long. */
   values: ArrayLike<number>;
 }

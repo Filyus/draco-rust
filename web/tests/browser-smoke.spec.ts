@@ -15,6 +15,7 @@ import {
   multiUvEmissiveQuad,
   normalMappedQuad,
   solidColorPng,
+  tinySplatPly,
   triangleBytes,
   vertexColoredTriangle,
 } from './smoke-fixtures.ts';
@@ -914,6 +915,73 @@ test('scaled cube fixture uses valid node instances of one mesh', async ({ page 
   }, { source, buffer });
 
   expect(result).toEqual({ roots: [0], meshNodes: 4, meshes: 1 });
+});
+
+test('a Gaussian splat survives a .drc export and opens as a splat again', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+
+  // Every splat the page holds, keyed by where it stands. The export writes
+  // the points in spatial order, so they come back in a different order, and
+  // position -- written at 16 bits over a grid -- is what identifies them.
+  const splatsByPosition = () => page.evaluate(async () => {
+    const { state } = await import('/app/state.js' as string);
+    const cloud = state.currentMeshData?.splats;
+    if (!cloud) return null;
+    const perSh = cloud.sh.length / cloud.count;
+    const byKey: Record<string, { alpha: number; sh: number[] }> = {};
+    for (let splat = 0; splat < cloud.count; splat += 1) {
+      const key = [0, 1].map((axis) => Math.round(cloud.positions[splat * 3 + axis])).join(',');
+      byKey[key] = {
+        alpha: cloud.alphas[splat],
+        sh: Array.from(cloud.sh.subarray(splat * perSh, (splat + 1) * perSh)),
+      };
+    }
+    return { count: cloud.count, shDegree: cloud.shDegree, byKey };
+  });
+
+  const { bytes } = tinySplatPly(64);
+  await page.locator('#file-input').setInputFiles({
+    name: 'tiny-splat.ply', mimeType: 'application/octet-stream', buffer: bytes,
+  });
+  await expect.poll(async () => (await splatsByPosition())?.count ?? 0).toBe(64);
+  const source = (await splatsByPosition())!;
+  expect(source.shDegree).toBe(3);
+
+  await page.locator('[data-choice-for="export-format"] [data-value="drc"]').click();
+  const downloadPromise = page.waitForEvent('download');
+  await page.locator('#export-btn').click();
+  const payload = await readFile((await (await downloadPromise).path())!);
+  await expect(page.locator('#console')).toContainText('written with its own measured budget');
+
+  await page.locator('#file-input').setInputFiles({
+    name: 'tiny-splat.drc', mimeType: 'application/octet-stream', buffer: payload,
+  });
+  await expect(page.locator('#file-name')).toContainText('tiny-splat.drc');
+  await expect.poll(async () => (await splatsByPosition())?.count ?? 0).toBe(64);
+  const decoded = (await splatsByPosition())!;
+  expect(decoded.shDegree).toBe(3);
+  expect(Object.keys(decoded.byKey).sort()).toEqual(Object.keys(source.byKey).sort());
+
+  let alphaError = 0;
+  let shError = 0;
+  for (const [key, original] of Object.entries(source.byKey)) {
+    const back = decoded.byKey[key];
+    alphaError = Math.max(alphaError, Math.abs(back.alpha - original.alpha));
+    original.sh.forEach((value, index) => {
+      shError = Math.max(shError, Math.abs(back.sh[index] - value));
+    });
+  }
+  // Opacity at eight bits of a seven-unit logit range: well under a percent
+  // of alpha anywhere.
+  expect(alphaError).toBeLessThan(0.01);
+  // The harmonics at six bits of a 0.4-wide range are a step of 0.0063, so
+  // nothing may move by more than half of one, 0.0032. And something must
+  // move by clearly more than eight bits would allow -- whose half-step here
+  // is 0.0008 -- or the budget never reached them and they went out at the
+  // same bits as everything else.
+  expect(shError).toBeLessThan(0.0035);
+  expect(shError).toBeGreaterThan(0.0015);
 });
 
 test('converter resolves glTF companions and reports decoded geometry', async ({ page }) => {

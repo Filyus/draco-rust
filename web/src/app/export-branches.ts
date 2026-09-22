@@ -8,6 +8,7 @@ import { buildFbxSceneFromGltf, buildFlatSceneMeshesFromGltf } from '../gltf-loa
 import { glbToEmbeddedGltf, serializeSceneDocumentToGlb } from '../scene-document-gltf.ts';
 import type { FbxSceneData, LoadedFile } from './state.ts';
 import { modules, state } from './state.ts';
+import { SPLAT_BUDGET, isSplatPly, splatBitsFor } from '../splat.ts';
 
 /**
  * Which route a loaded file takes to a downloadable one, and what that route
@@ -456,14 +457,21 @@ async function exportFlattenedMeshes(settings: ExportSettings, loaded: LoadedFil
       `${format.toUpperCase()} holds one mesh: ${meshes.length} meshes were merged into one`,
     );
   }
-  // Uninterpreted attributes only exist because a .drc brought them, and only
-  // a .drc can take them back. Every other target drops them, and that is worth
-  // one line rather than a silent difference in the file that comes out.
+  // Uninterpreted attributes exist because a .drc or a PLY brought them, and
+  // only a .drc can take them back. Every other target drops them, and that is
+  // worth one line rather than a silent difference in the file that comes out.
+  // Named where the source named them, and capped: a splat carries fifty-six,
+  // and a line listing all of them is a line nobody reads.
   const opaque = meshes.flatMap((mesh) => mesh.extras);
   if (format !== 'drc' && opaque.length > 0) {
+    const shown = 8;
+    const named = opaque.slice(0, shown)
+      .map((extra) => extra.name || `${extra.type} (id ${extra.uniqueId})`)
+      .join(', ');
+    const rest = opaque.length > shown ? `, and ${opaque.length - shown} more` : '';
     warnings.push(
       `${format.toUpperCase()} has nowhere for ${opaque.length} attribute(s) the source carried `
-      + `without interpreting: ${opaque.map((extra) => `${extra.type} (id ${extra.uniqueId})`).join(', ')}`,
+      + `without interpreting: ${named}${rest}`,
     );
   }
   if (format === 'stl' && (settings.includeNormals || settings.includeUvs)) {
@@ -481,7 +489,7 @@ async function exportFlattenedMeshes(settings: ExportSettings, loaded: LoadedFil
     case 'stl':
       return { result: await exportToStl(meshes), warnings };
     case 'drc':
-      return { result: await exportToDrc(meshes, settings), warnings };
+      return { result: await exportToDrc(meshes, settings, warnings), warnings };
     case 'gltf':
     case 'glb': {
       // The document route reports its own warnings, and the flattening ones
@@ -700,11 +708,37 @@ export async function exportToStl(meshes: PreparedMesh[]) {
  * mean the same thing to the same encoder: this route just addresses the
  * attributes directly instead of through a primitive.
  */
-export async function exportToDrc(meshes: PreparedMesh[], settings: ExportSettings) {
+export async function exportToDrc(
+  meshes: PreparedMesh[],
+  settings: ExportSettings,
+  warnings: string[] = [],
+) {
   if (!modules.drc.loaded) {
     return { success: false, error: 'DRC module not loaded' };
   }
   const merged = mergeMeshes(meshes);
+  const names = (merged.extras || []).map((extra) => extra.name || '');
+  if (isSplatPly(names)) {
+    warnings.push(
+      `A Gaussian splat is written with its own measured budget -- positions at `
+      + `${SPLAT_BUDGET.positions} bits, harmonics at ${SPLAT_BUDGET.harmonics}, everything `
+      + `else at ${SPLAT_BUDGET.other} -- and the quantization sliders do not apply to it`,
+    );
+    return modules.drc.module.create_drc(splatForDrc(merged), {
+      encoding_speed: settings.encodingSpeed,
+      // Sequential, as measured. The kd-tree coder imposes one bit depth on
+      // every dimension, which is exactly what a per-attribute budget is not.
+      encoding_method: 1,
+      point_cloud: true,
+      prediction_search: true,
+      spatial_point_order: true,
+      position_bits: SPLAT_BUDGET.positions,
+      // A splat's normals are zeros every writer emits and no reader reads.
+      include_normals: false,
+      include_uvs: false,
+      include_colors: false,
+    });
+  }
   return modules.drc.module.create_drc(merged, {
     encoding_speed: settings.encodingSpeed,
     encoding_method: settings.encodingMethod,
@@ -715,6 +749,26 @@ export async function exportToDrc(meshes: PreparedMesh[], settings: ExportSettin
     include_uvs: settings.includeUvs,
     include_colors: true,
   });
+}
+
+/**
+ * A splat mesh as the `.drc` writer should take it: no connectivity, and every
+ * property carrying the bits the splat budget gives its name.
+ *
+ * The points go through Draco's point-cloud coder with its spatial order,
+ * which reorders them. Nothing outside the file addresses a splat by point
+ * number, so that costs nothing here -- it is why the option is on for a splat
+ * and off by default everywhere else.
+ */
+function splatForDrc(mesh: ReturnType<typeof mergeMeshes>) {
+  return {
+    ...mesh,
+    indices: [],
+    extras: (mesh.extras || []).map((extra) => ({
+      ...extra,
+      quantizationBits: extra.name ? splatBitsFor(extra.name) : undefined,
+    })),
+  };
 }
 
 /**

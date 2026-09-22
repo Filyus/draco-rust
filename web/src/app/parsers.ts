@@ -70,10 +70,7 @@ export function parseObjMaterials(objText: string, resources: ResourceMap, warni
 // would answer differently the first time either was corrected.
 export { mtlMapPath } from './model-intake.ts';
 
-import {
-  isSplatPly, readSplatCloud, selectedFromDracoExtras, splatPropertyNames,
-} from '../splat.ts';
-import type { SelectedProperties } from '../splat.ts';
+import { isSplatPly, readSplatCloud, selectedFromNamedAttributes } from '../splat.ts';
 
 // Parse PLY file
 export async function parsePlyFile(data: Uint8Array) {
@@ -86,13 +83,15 @@ export async function parsePlyFile(data: Uint8Array) {
 
   // A Gaussian splat is an ordinary point cloud to the reader above and a
   // scene to a renderer, and the difference is entirely in property names it
-  // has no slot for. When the header says this is one, fetch exactly the
-  // properties the splat pass draws from -- not all sixty-two, which for a
-  // real scene is hundreds of megabytes to throw most of away.
+  // has no slot for. The reader carries those as named extras -- which is also
+  // what lets an export keep them -- so the splat is read from the same parse
+  // rather than from a second pass over the file.
   const properties: string[] = result?.header?.properties ?? [];
-  if (isSplatPly(properties)) {
-    const selected = modules.ply.module.parse_ply_properties(data, splatPropertyNames());
-    const cloud = readSplatCloud(selected as SelectedProperties);
+  const plyMesh = result?.meshes?.[0];
+  if (isSplatPly(properties) && plyMesh) {
+    const count = (plyMesh.positions?.length ?? 0) / 3;
+    const selected = selectedFromNamedAttributes(count, plyMesh.positions ?? [], plyMesh.extras ?? []);
+    const cloud = readSplatCloud(selected);
     if (cloud) {
       result.splats = cloud;
       debugLog('PLY splat cloud:', cloud.count, 'splats');
@@ -150,7 +149,7 @@ export async function parseDrcFile(data: Uint8Array) {
     const extras = mesh?.extras ?? [];
     if (mesh && extras.length > 0) {
       const count = (mesh.positions?.length ?? 0) / 3;
-      const selected = selectedFromDracoExtras(count, mesh.positions ?? [], extras);
+      const selected = selectedFromNamedAttributes(count, mesh.positions ?? [], extras);
       if (isSplatPly(Object.keys(selected.properties))) {
         const cloud = readSplatCloud(selected);
         if (cloud) {
