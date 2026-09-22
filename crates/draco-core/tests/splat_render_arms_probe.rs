@@ -26,7 +26,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use draco_core::{
-    DecoderBuffer, EncoderBuffer, EncoderOptions, GeometryAttributeType, PointAttribute,
+    DecoderBuffer, EncoderBuffer, EncoderOptions, GeometryAttributeType, Metadata, PointAttribute,
     PointCloud, PointCloudDecoder, PointCloudEncoder, PointIndex,
 };
 
@@ -48,6 +48,29 @@ struct Budget {
     rest: i32,
     search: bool,
     spatial: bool,
+    /// `Some(bits)` quantizes `sigmoid(opacity)` at that many bits instead of
+    /// the logit at `rest`.
+    ///
+    /// `splat_opacity_domain_probe` found alpha at six bits both smaller than
+    /// the logit at eight and finer where alpha is visible, and left the
+    /// question of whether that is worth doing to a renderer. This is the arm
+    /// that asks one.
+    alpha: Option<i32>,
+}
+
+fn sigmoid(x: f32) -> f32 {
+    1.0 / (1.0 + (-x).exp())
+}
+
+/// The inverse, with the ends pulled in.
+///
+/// Quantizing alpha puts values at exactly 0 and 1, whose logits are infinite,
+/// and a PLY of infinities renders nothing. The clamp is a quarter of a step
+/// of a six-bit alpha from each end -- far finer than the quantizer that
+/// produced the value, so it cannot be what the arm is measuring.
+fn logit(a: f32) -> f32 {
+    let a = a.clamp(1.0 / 256.0, 1.0 - 1.0 / 256.0);
+    (a / (1.0 - a)).ln()
 }
 
 fn attribute_names(cloud: &PointCloud) -> Vec<Option<String>> {
@@ -70,6 +93,58 @@ fn read_f32(attribute: &PointAttribute, value: usize, component: usize) -> f32 {
         .buffer()
         .read(value * stride + component * 4, &mut bytes);
     f32::from_le_bytes(bytes)
+}
+
+/// The cloud with one attribute's values replaced, everything else copied.
+fn with_values(cloud: &PointCloud, target: i32, values: &[f32]) -> PointCloud {
+    let names = attribute_names(cloud);
+    let mut out = PointCloud::new();
+    out.set_num_points(cloud.num_points());
+    for id in 0..cloud.num_attributes() {
+        let source = cloud.attribute(id);
+        let components = source.num_components() as usize;
+        let mut attribute = PointAttribute::new();
+        attribute.init(
+            source.attribute_type(),
+            source.num_components(),
+            source.data_type(),
+            source.normalized(),
+            cloud.num_points(),
+        );
+        let buffer = attribute.buffer_mut();
+        // The index addresses three different things -- the replacement
+        // values, the source's point mapping, and the write offset -- so it
+        // stays an index.
+        #[allow(clippy::needless_range_loop)]
+        for point in 0..cloud.num_points() {
+            let value_index = source.mapped_index(PointIndex(point as u32));
+            for component in 0..components {
+                let value = if id == target {
+                    values[point]
+                } else {
+                    read_f32(source, value_index.0 as usize, component)
+                };
+                buffer.write((point * components + component) * 4, &value.to_le_bytes());
+            }
+        }
+        let new_id = out.add_attribute(attribute);
+        if let Some(name) = names[id as usize].clone() {
+            let unique_id = out.attribute(new_id).unique_id();
+            let mut metadata = Metadata::new();
+            metadata.set_string("name", name).expect("string entry");
+            out.metadata_or_insert()
+                .set_attribute_metadata(unique_id, metadata);
+        }
+    }
+    out
+}
+
+/// Which attribute carries `opacity`, if any.
+fn opacity_id(names: &[Option<String>]) -> Option<i32> {
+    names
+        .iter()
+        .position(|name| name.as_deref() == Some("opacity"))
+        .map(|id| id as i32)
 }
 
 /// The cloud as a binary little-endian PLY of float properties.
@@ -144,6 +219,28 @@ fn write_ply(path: &Path, cloud: &PointCloud, names: &[Option<String>]) -> std::
 
 /// The scene through the encoder and back, at the given budget.
 fn round_trip(cloud: &PointCloud, names: &[Option<String>], budget: Budget) -> (PointCloud, usize) {
+    // The domain change happens around the encode, not inside the file: what
+    // is written back out is a logit either way, because that is what the
+    // dialect says `opacity` holds and what a renderer will put a sigmoid
+    // through. An arm that handed the viewer alpha in that property would be
+    // measuring a second sigmoid, not a bit budget.
+    let alpha_id = budget.alpha.and(opacity_id(names));
+    let owned;
+    let cloud = match alpha_id {
+        None => cloud,
+        Some(id) => {
+            let attribute = cloud.attribute(id);
+            let alphas: Vec<f32> = (0..cloud.num_points())
+                .map(|point| {
+                    let value = attribute.mapped_index(PointIndex(point as u32));
+                    sigmoid(read_f32(attribute, value.0 as usize, 0))
+                })
+                .collect();
+            owned = with_values(cloud, id, &alphas);
+            &owned
+        }
+    };
+
     let mut options = EncoderOptions::new();
     options.set_encoding_method(SEQUENTIAL);
     options.set_prediction_search(budget.search);
@@ -151,6 +248,7 @@ fn round_trip(cloud: &PointCloud, names: &[Option<String>], budget: Budget) -> (
     for id in 0..cloud.num_attributes() {
         let bits = match cloud.attribute(id).attribute_type() {
             GeometryAttributeType::Position => budget.positions,
+            _ if Some(id) == alpha_id => budget.alpha.expect("an alpha arm named the attribute"),
             _ => {
                 let harmonic = names[id as usize]
                     .as_deref()
@@ -175,6 +273,20 @@ fn round_trip(cloud: &PointCloud, names: &[Option<String>], budget: Budget) -> (
     PointCloudDecoder::new()
         .decode(&mut DecoderBuffer::new(buffer.data()), &mut decoded)
         .expect("a stream this crate wrote must decode");
+
+    let decoded = match alpha_id.and_then(|_| opacity_id(&attribute_names(&decoded))) {
+        None => decoded,
+        Some(id) => {
+            let attribute = decoded.attribute(id);
+            let logits: Vec<f32> = (0..decoded.num_points())
+                .map(|point| {
+                    let value = attribute.mapped_index(PointIndex(point as u32));
+                    logit(read_f32(attribute, value.0 as usize, 0))
+                })
+                .collect();
+            with_values(&decoded, id, &logits)
+        }
+    };
     (decoded, bytes)
 }
 
@@ -211,6 +323,7 @@ fn write_the_arms() {
         rest: 8,
         search: true,
         spatial: true,
+        alpha: None,
     };
     let arms = [
         Arm {
@@ -239,6 +352,13 @@ fn write_the_arms() {
             name: "positions12",
             encode: Some(Budget {
                 positions: 12,
+                ..full
+            }),
+        },
+        Arm {
+            name: "alpha6",
+            encode: Some(Budget {
+                alpha: Some(6),
                 ..full
             }),
         },

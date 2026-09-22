@@ -230,7 +230,7 @@ fn which_byte_opacity_should_be() {
             only_bytes as f64 / num_points as f64,
             whole as f64 / num_points as f64,
             if step <= logit_step {
-                "  <- at least as accurate"
+                "  <- finer at a = 0.5"
             } else {
                 ""
             }
@@ -238,6 +238,10 @@ fn which_byte_opacity_should_be() {
     }
 
     println!();
-    println!("  sizes and a resolution, not a rendering: which error matters");
-    println!("  is a question for a renderer, and nothing here renders");
+    println!("  the marked rows are finer than the logit at a = 0.5, and coarser");
+    println!("  than it everywhere near a = 1: a uniform step in alpha is uniform,");
+    println!("  where the logit's step in alpha is a(1-a) and vanishes at the ends.");
+    println!("  A rendered surface is made of the opaque end, which is why the");
+    println!("  render arm scores alpha at 6 bits below the logit at 8 despite");
+    println!("  this column -- see splat_render_arms_probe.");
 }
