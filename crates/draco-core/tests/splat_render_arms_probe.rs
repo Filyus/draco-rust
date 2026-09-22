@@ -48,14 +48,37 @@ struct Budget {
     rest: i32,
     search: bool,
     spatial: bool,
-    /// `Some(bits)` quantizes `sigmoid(opacity)` at that many bits instead of
-    /// the logit at `rest`.
-    ///
-    /// `splat_opacity_domain_probe` found alpha at six bits both smaller than
-    /// the logit at eight and finer where alpha is visible, and left the
-    /// question of whether that is worth doing to a renderer. This is the arm
-    /// that asks one.
-    alpha: Option<i32>,
+    /// What this arm does to the values before they are encoded, beyond the
+    /// bit budget above.
+    change: Change,
+}
+
+/// A change to the scene itself rather than to how many bits describe it.
+///
+/// Every one of these was measured in bytes by another probe here, and every
+/// one of those measurements ended at "and whether that is worth doing is a
+/// rendering question". These are the arms that ask a renderer.
+#[derive(Clone, Copy)]
+enum Change {
+    /// The bit budget and nothing else.
+    None,
+    /// Quantize `sigmoid(opacity)` at this many bits instead of the logit at
+    /// `rest`. From `splat_opacity_domain_probe`.
+    Alpha(i32),
+    /// Drop every gaussian whose alpha is below this. From
+    /// `splat_invisible_splats_probe` -- the one lever that removes points
+    /// rather than bits, so the arm's cost is a point count as well as a
+    /// picture.
+    Prune(f32),
+    /// Clamp `f_dc_*` to this window before encoding. SPZ's is
+    /// `[-3.33, 3.33]`; the reason to ask a renderer is that a colour outside
+    /// it is not necessarily wrong, being what the higher bands correct.
+    ClampColour(f32, f32),
+    /// Clamp `scale_*` to this window. SPZ's is `[-10, 5.94]` in the log.
+    ClampScale(f32, f32),
+    /// Clip colour and scale to their own two-sided percentile window.
+    /// Worth about 2% of the file, at a displacement the sizes cannot judge.
+    Percentile(f64),
 }
 
 fn sigmoid(x: f32) -> f32 {
@@ -71,6 +94,112 @@ fn sigmoid(x: f32) -> f32 {
 fn logit(a: f32) -> f32 {
     let a = a.clamp(1.0 / 256.0, 1.0 - 1.0 / 256.0);
     (a / (1.0 - a)).ln()
+}
+
+/// Which attributes carry properties whose names begin with `prefix`.
+fn attributes_named(names: &[Option<String>], prefix: &str) -> Vec<i32> {
+    names
+        .iter()
+        .enumerate()
+        .filter(|(_, name)| name.as_deref().is_some_and(|name| name.starts_with(prefix)))
+        .map(|(id, _)| id as i32)
+        .collect()
+}
+
+/// The two-sided `fraction` percentile of everything in `targets`, together.
+///
+/// Together rather than per component, because the three components of a
+/// colour share a scale and clipping them to different windows would tint.
+fn percentile_window(cloud: &PointCloud, targets: &[i32], fraction: f64) -> (f32, f32) {
+    let mut values: Vec<f32> = Vec::new();
+    for &id in targets {
+        let attribute = cloud.attribute(id);
+        for point in 0..cloud.num_points() {
+            let value = attribute.mapped_index(PointIndex(point as u32));
+            for component in 0..attribute.num_components() as usize {
+                values.push(read_f32(attribute, value.0 as usize, component));
+            }
+        }
+    }
+    values.sort_by(f32::total_cmp);
+    let at = |q: f64| values[((values.len() - 1) as f64 * q).round() as usize];
+    (at(fraction), at(1.0 - fraction))
+}
+
+/// The cloud with `keep` applied to every point, and the rest gone.
+fn select(cloud: &PointCloud, keep: &[bool]) -> PointCloud {
+    let names = attribute_names(cloud);
+    let kept: Vec<usize> = (0..cloud.num_points()).filter(|&point| keep[point]).collect();
+    let mut out = PointCloud::new();
+    out.set_num_points(kept.len());
+    for id in 0..cloud.num_attributes() {
+        let source = cloud.attribute(id);
+        let components = source.num_components() as usize;
+        let mut attribute = PointAttribute::new();
+        attribute.init(
+            source.attribute_type(),
+            source.num_components(),
+            source.data_type(),
+            source.normalized(),
+            kept.len(),
+        );
+        let buffer = attribute.buffer_mut();
+        for (at, &point) in kept.iter().enumerate() {
+            let value_index = source.mapped_index(PointIndex(point as u32));
+            for component in 0..components {
+                let value = read_f32(source, value_index.0 as usize, component);
+                buffer.write((at * components + component) * 4, &value.to_le_bytes());
+            }
+        }
+        let new_id = out.add_attribute(attribute);
+        if let Some(name) = names[id as usize].clone() {
+            let unique_id = out.attribute(new_id).unique_id();
+            let mut metadata = Metadata::new();
+            metadata.set_string("name", name).expect("string entry");
+            out.metadata_or_insert()
+                .set_attribute_metadata(unique_id, metadata);
+        }
+    }
+    out
+}
+
+/// The cloud with every value of `targets` put through `transform`.
+fn mapped(cloud: &PointCloud, targets: &[i32], transform: impl Fn(f32) -> f32) -> PointCloud {
+    let names = attribute_names(cloud);
+    let mut out = PointCloud::new();
+    out.set_num_points(cloud.num_points());
+    for id in 0..cloud.num_attributes() {
+        let source = cloud.attribute(id);
+        let components = source.num_components() as usize;
+        let mut attribute = PointAttribute::new();
+        attribute.init(
+            source.attribute_type(),
+            source.num_components(),
+            source.data_type(),
+            source.normalized(),
+            cloud.num_points(),
+        );
+        let buffer = attribute.buffer_mut();
+        let touched = targets.contains(&id);
+        #[allow(clippy::needless_range_loop)]
+        for point in 0..cloud.num_points() {
+            let value_index = source.mapped_index(PointIndex(point as u32));
+            for component in 0..components {
+                let value = read_f32(source, value_index.0 as usize, component);
+                let value = if touched { transform(value) } else { value };
+                buffer.write((point * components + component) * 4, &value.to_le_bytes());
+            }
+        }
+        let new_id = out.add_attribute(attribute);
+        if let Some(name) = names[id as usize].clone() {
+            let unique_id = out.attribute(new_id).unique_id();
+            let mut metadata = Metadata::new();
+            metadata.set_string("name", name).expect("string entry");
+            out.metadata_or_insert()
+                .set_attribute_metadata(unique_id, metadata);
+        }
+    }
+    out
 }
 
 fn attribute_names(cloud: &PointCloud) -> Vec<Option<String>> {
@@ -218,17 +347,25 @@ fn write_ply(path: &Path, cloud: &PointCloud, names: &[Option<String>]) -> std::
 }
 
 /// The scene through the encoder and back, at the given budget.
-fn round_trip(cloud: &PointCloud, names: &[Option<String>], budget: Budget) -> (PointCloud, usize) {
-    // The domain change happens around the encode, not inside the file: what
-    // is written back out is a logit either way, because that is what the
-    // dialect says `opacity` holds and what a renderer will put a sigmoid
-    // through. An arm that handed the viewer alpha in that property would be
-    // measuring a second sigmoid, not a bit budget.
-    let alpha_id = budget.alpha.and(opacity_id(names));
+fn round_trip(
+    cloud: &PointCloud,
+    names: &[Option<String>],
+    budget: Budget,
+) -> (PointCloud, usize, usize) {
+    // Every change happens around the encode, not inside the file. What is
+    // written back out is what the dialect says the property holds -- a logit
+    // in `opacity`, a log in `scale_*` -- because that is what a renderer will
+    // apply its activation to. An arm that handed the viewer alpha in
+    // `opacity` would be measuring a second sigmoid, not a bit budget.
+    let alpha_id = match budget.change {
+        Change::Alpha(_) => opacity_id(names),
+        _ => None,
+    };
     let owned;
-    let cloud = match alpha_id {
-        None => cloud,
-        Some(id) => {
+    let cloud = match budget.change {
+        Change::None => cloud,
+        Change::Alpha(_) => {
+            let id = alpha_id.expect("an alpha arm needs an opacity attribute");
             let attribute = cloud.attribute(id);
             let alphas: Vec<f32> = (0..cloud.num_points())
                 .map(|point| {
@@ -239,7 +376,44 @@ fn round_trip(cloud: &PointCloud, names: &[Option<String>], budget: Budget) -> (
             owned = with_values(cloud, id, &alphas);
             &owned
         }
+        Change::Prune(threshold) => {
+            let id = opacity_id(names).expect("a prune arm needs an opacity attribute");
+            let attribute = cloud.attribute(id);
+            let keep: Vec<bool> = (0..cloud.num_points())
+                .map(|point| {
+                    let value = attribute.mapped_index(PointIndex(point as u32));
+                    sigmoid(read_f32(attribute, value.0 as usize, 0)) >= threshold
+                })
+                .collect();
+            owned = select(cloud, &keep);
+            &owned
+        }
+        Change::ClampColour(low, high) => {
+            owned = mapped(cloud, &attributes_named(names, "f_dc_"), |v| {
+                v.clamp(low, high)
+            });
+            &owned
+        }
+        Change::ClampScale(low, high) => {
+            owned = mapped(cloud, &attributes_named(names, "scale_"), |v| {
+                v.clamp(low, high)
+            });
+            &owned
+        }
+        Change::Percentile(fraction) => {
+            // Colour and scale take their own windows: they are different
+            // quantities and share nothing but the idea.
+            let colour = attributes_named(names, "f_dc_");
+            let scale = attributes_named(names, "scale_");
+            let (colour_low, colour_high) = percentile_window(cloud, &colour, fraction);
+            let (scale_low, scale_high) = percentile_window(cloud, &scale, fraction);
+            let clipped = mapped(cloud, &colour, |v| v.clamp(colour_low, colour_high));
+            owned = mapped(&clipped, &scale, |v| v.clamp(scale_low, scale_high));
+            &owned
+        }
     };
+    let names = &attribute_names(cloud);
+    let points = cloud.num_points();
 
     let mut options = EncoderOptions::new();
     options.set_encoding_method(SEQUENTIAL);
@@ -248,7 +422,12 @@ fn round_trip(cloud: &PointCloud, names: &[Option<String>], budget: Budget) -> (
     for id in 0..cloud.num_attributes() {
         let bits = match cloud.attribute(id).attribute_type() {
             GeometryAttributeType::Position => budget.positions,
-            _ if Some(id) == alpha_id => budget.alpha.expect("an alpha arm named the attribute"),
+            _ if alpha_id.is_some() && names[id as usize].as_deref() == Some("opacity") => {
+                match budget.change {
+                    Change::Alpha(bits) => bits,
+                    _ => unreachable!("alpha_id is set only for an alpha arm"),
+                }
+            }
             _ => {
                 let harmonic = names[id as usize]
                     .as_deref()
@@ -276,6 +455,7 @@ fn round_trip(cloud: &PointCloud, names: &[Option<String>], budget: Budget) -> (
 
     let decoded = match alpha_id.and_then(|_| opacity_id(&attribute_names(&decoded))) {
         None => decoded,
+        // The alpha arm alone comes back in the wrong domain, and goes home.
         Some(id) => {
             let attribute = decoded.attribute(id);
             let logits: Vec<f32> = (0..decoded.num_points())
@@ -287,7 +467,7 @@ fn round_trip(cloud: &PointCloud, names: &[Option<String>], budget: Budget) -> (
             with_values(&decoded, id, &logits)
         }
     };
-    (decoded, bytes)
+    (decoded, bytes, points)
 }
 
 #[test]
@@ -323,7 +503,11 @@ fn write_the_arms() {
         rest: 8,
         search: true,
         spatial: true,
-        alpha: None,
+        change: Change::None,
+    };
+    let arm = |name, change| Arm {
+        name,
+        encode: Some(Budget { change, ..full }),
     };
     let arms = [
         Arm {
@@ -355,33 +539,45 @@ fn write_the_arms() {
                 ..full
             }),
         },
-        Arm {
-            name: "alpha6",
-            encode: Some(Budget {
-                alpha: Some(6),
-                ..full
-            }),
-        },
+        arm("alpha6", Change::Alpha(6)),
+        // The one lever that removes points. 1/255 is where this trainer
+        // already pruned, so the arms above it are the ones with anything to
+        // take: 0.05 is what the size measurement found worth asking about.
+        arm("prune005", Change::Prune(0.05)),
+        arm("prune01", Change::Prune(0.1)),
+        // SPZ's windows, in this crate's quantizer rather than theirs.
+        arm("colourspz", Change::ClampColour(-3.33, 3.33)),
+        arm("scalespz", Change::ClampScale(-10.0, 5.94)),
+        arm("percentile2", Change::Percentile(0.02)),
     ];
 
     println!();
-    println!("{:<14} {:>14} {:>12}", "arm", "encoded bytes", "B/point");
+    println!(
+        "{:<14} {:>14} {:>12} {:>12}",
+        "arm", "encoded bytes", "B/point", "splats"
+    );
     for arm in &arms {
         let file = out.join(format!("{}.ply", arm.name));
         match arm.encode {
             None => {
                 write_ply(&file, &cloud, &names).expect("writes");
-                println!("{:<14} {:>14} {:>12}", arm.name, "-", "-");
+                println!(
+                    "{:<14} {:>14} {:>12} {num_points:>12}",
+                    arm.name, "-", "-"
+                );
             }
             Some(budget) => {
-                let (decoded, bytes) = round_trip(&cloud, &names, budget);
+                let (decoded, bytes, points) = round_trip(&cloud, &names, budget);
                 // The decoded cloud carries the names through its own metadata.
                 let decoded_names = attribute_names(&decoded);
                 write_ply(&file, &decoded, &decoded_names).expect("writes");
+                // Bytes per point is the wrong ruler for an arm that removes
+                // points -- it can rise while the file shrinks -- so the count
+                // is printed beside it and the total is what to read.
                 println!(
-                    "{:<14} {bytes:>14} {:>12.3}",
+                    "{:<14} {bytes:>14} {:>12.3} {points:>12}",
                     arm.name,
-                    bytes as f64 / num_points as f64
+                    bytes as f64 / points as f64
                 );
             }
         }
