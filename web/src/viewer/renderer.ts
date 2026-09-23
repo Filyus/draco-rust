@@ -370,9 +370,8 @@ function drawSplatCloud(host: RenderHost) {
   if (!splats) return;
   const forward: [number, number, number] = [-host._view[2], -host._view[6], -host._view[10]];
   ensureOrder(host.gl, splats, forward);
-  // The harmonics live in the file's frame while everything else has been
-  // turned upright, so the eye goes to them turned back: the same two sign
-  // flips, undone.
+  // The eye in the world; the pass turns directions into the harmonics' own
+  // frame with the cloud's `shFrame`.
   const eye = cameraPosition(host, host._eye || (host._eye = vec3.create()));
   drawSplats(
     host.gl,
@@ -381,7 +380,7 @@ function drawSplatCloud(host: RenderHost) {
     host._projection as unknown as Float32Array,
     host.canvas.width,
     host.canvas.height,
-    [eye[0], -eye[1], -eye[2]],
+    [eye[0], eye[1], eye[2]],
   );
 }
 

@@ -26,6 +26,8 @@ function cloudOf(positions: number[][]): SplatCloud {
     // touches them, so these arms carry none.
     sh: new Float32Array(0),
     shDegree: 0,
+    shFrame: new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]),
+    colorSpace: 'srgb',
   };
   // Values that name their own splat, so a reorder that shuffles fields rather
   // than splats is visible.

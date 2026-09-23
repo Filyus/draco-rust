@@ -25,19 +25,19 @@ export const REQUIRED_SPLAT_PROPERTIES = [
 ] as const;
 
 /**
- * A splat cloud, with the dialect's activations already applied — which is
- * what Blender's importer hands its renderer, and the only form in which the
- * numbers mean what their names say.
+ * A splat cloud, with every activation already applied — the only form in
+ * which the numbers mean what their names say, and the one every reader
+ * produces whatever its file stored.
  */
 export interface SplatCloud {
   count: number;
-  /** `xyz` per splat, as the file stores them. */
+  /** `xyz` per splat, in the viewer's world: Y up. */
   positions: Float32Array;
-  /** The gaussian's axes in metres: `exp` of the log the file stores. */
+  /** The gaussian's axes as lengths, not the log a PLY stores. */
   scales: Float32Array;
-  /** Normalized, `(w, x, y, z)` — the order the file writes, not `xyzw`. */
+  /** Normalized, `(w, x, y, z)` — not glTF's `xyzw`. */
   rotations: Float32Array;
-  /** `sigmoid(opacity)`, which is the alpha a renderer multiplies by. */
+  /** The alpha a renderer multiplies by, not the logit a PLY stores. */
   alphas: Float32Array;
   /**
    * The degree-0 harmonic, raw and untouched, three per splat.
@@ -49,19 +49,40 @@ export interface SplatCloud {
   dc: Float32Array;
   /**
    * The higher bands, `3 * coefficientsFor(shDegree)` floats a splat, ordered
-   * coefficient-major with rgb inside — the transpose of the file's layout.
+   * coefficient-major with rgb inside -- which is a PLY's layout transposed,
+   * and exactly glTF's `SH_DEGREE_l_COEF_m` in order.
    *
-   * **In the file's frame, not the turned one.** The positions are turned
-   * upright on the way out and these are not, because rotating a harmonic
-   * basis is a different and heavier job than negating two coordinates. A
-   * renderer asks this function for a direction, so it is the direction that
-   * gets turned back, which costs two sign flips at the point of use. See
-   * `viewDirectionForSh`.
+   * **In the frame the file stored them in, not the world's.** Positions and
+   * orientations are moved into the world on the way in, and these are not,
+   * because rotating a harmonic basis is a much heavier job than rotating a
+   * direction. So the renderer turns the view direction into this frame
+   * instead, through `shFrame`.
    */
   sh: Float32Array;
-  /** 0 when the file carried no usable `f_rest`, up to 3. */
+  /** 0 when the file carried no usable harmonics, up to 3. */
   shDegree: number;
+  /**
+   * Takes a direction in the world into the frame `sh` is stored in: nine
+   * numbers, row-major. What the harmonics are asked about is this times the
+   * direction from the eye to the splat.
+   *
+   * A PLY's is the upright turn, which is its own inverse; a glTF splat's is
+   * the inverse of the rotation of the node that placed it.
+   */
+  shFrame: Float32Array;
+  /**
+   * What the reconstructed colour means. `srgb` is display-encoded, as 3DGS
+   * trains, and is decoded to light before blending; `linear` already is
+   * light. glTF names which one a splat is in `colorSpace`.
+   */
+  colorSpace: 'srgb' | 'linear';
 }
+
+/**
+ * The half turn about X that stands a 3DGS PLY upright: `y` and `z` change
+ * sign. Row-major, and its own inverse.
+ */
+export const UPRIGHT_TURN: readonly number[] = [1, 0, 0, 0, -1, 0, 0, 0, -1];
 
 /** Coefficients per colour channel at each degree, excluding the DC term. */
 export function coefficientsFor(degree: number): number {
@@ -89,21 +110,26 @@ export function degreeForRestCount(count: number): number {
 }
 
 /**
- * The direction to ask a splat's harmonics about.
+ * The direction to ask a splat's harmonics about: from the eye to the splat,
+ * normalized, turned into the harmonics' own frame.
  *
- * `from` and `to` are in the turned frame the rest of `SplatCloud` uses; the
- * harmonics are in the file's. The turn is its own inverse, so undoing it is
- * the same two sign flips that applied it.
+ * `from` and `to` are in the world, where the rest of `SplatCloud` lives;
+ * `shFrame` is the cloud's. What the renderer computes, in one place a test
+ * can reach.
  */
 export function viewDirectionForSh(
   from: readonly [number, number, number],
   to: readonly [number, number, number],
+  shFrame: ArrayLike<number> = UPRIGHT_TURN,
 ): [number, number, number] {
   const x = to[0] - from[0];
   const y = to[1] - from[1];
   const z = to[2] - from[2];
   const length = Math.hypot(x, y, z) || 1;
-  return [x / length, -y / length, -z / length];
+  const turned = [0, 1, 2].map((row) => (
+    shFrame[row * 3] * x + shFrame[row * 3 + 1] * y + shFrame[row * 3 + 2] * z
+  ) / length);
+  return [turned[0], turned[1], turned[2]];
 }
 
 /**
@@ -317,5 +343,9 @@ export function readSplatCloud(selected: SelectedProperties): SplatCloud | null 
   // them, so take a copy rather than reach back into what the caller holds.
   const positions = selected.positions.slice(0, count * 3);
 
-  return turnUpright({ count, positions, scales, rotations, alphas, dc, sh, shDegree });
+  return turnUpright({
+    count, positions, scales, rotations, alphas, dc, sh, shDegree,
+    shFrame: Float32Array.from(UPRIGHT_TURN),
+    colorSpace: 'srgb',
+  });
 }

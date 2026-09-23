@@ -53,9 +53,12 @@ uniform int uTextureWidth;
 uniform highp sampler2D uHarmonics;
 uniform int uHarmonicsWidth;
 uniform int uShDegree;
-// Where the eye is, in the frame the harmonics were written in — which is the
-// file's, not the turned one the positions use.
-uniform vec3 uEyeInShFrame;
+// The eye, in the world the positions are in, and the rotation that takes a
+// world direction into the frame the harmonics were stored in -- which for a
+// PLY is the upright turn and for a glTF splat the inverse of its node's
+// rotation. The harmonics are a function of direction in their own frame.
+uniform vec3 uEye;
+uniform mat3 uShFrame;
 
 uniform mat4 uView;
 uniform mat4 uProjection;
@@ -217,11 +220,9 @@ void main() {
               + aCorner.y * minorAxis * minorLength;
 
   vLocal = aCorner * uExtent;
-  // The harmonics are a function of direction in the file's frame, so the
-  // direction is asked there: the centre is turned back by the same two sign
-  // flips that turned the cloud upright, and the eye arrives already turned.
-  vec3 shCentre = vec3(aCenter.x, -aCenter.y, -aCenter.z);
-  vec3 dir = normalize(shCentre - uEyeInShFrame);
+  // From the eye to the splat, as the reference and glTF both define it, and
+  // turned into the harmonics' frame rather than turning the harmonics.
+  vec3 dir = normalize(uShFrame * (aCenter - uEye));
   vec3 colour = SH_C0_CONST * aDc + evaluateHarmonics(aIndex, dir, uShDegree) + 0.5;
   vColour = vec4(colour, aAlpha);
   gl_Position = vec4(
@@ -239,6 +240,10 @@ in vec2 vLocal;
 in vec4 vColour;
 out vec4 outColour;
 
+// Whether the reconstructed colour is already light, rather than the display
+// encoding 3DGS trains in.
+uniform bool uLinearColour;
+
 void main() {
   // The gaussian, in the quad's own coordinates. vLocal is already in
   // standard deviations, so this is exp(-r*r/2) and nothing else.
@@ -246,17 +251,18 @@ void main() {
   float weight = exp(power) * vColour.a;
   if (weight < 1.0 / 255.0) discard;
 
-  // A splat's colour is what a splat renderer would put on the screen, which
-  // is display-referred; this frame is linear and tone mapped on the way out.
-  // Writing the one into the other without converting is what turns a lit
-  // scene into a white one.
+  // A splat's colour is usually what a splat renderer would put on the
+  // screen, which is display-referred; this frame is linear and tone mapped
+  // on the way out. Writing the one into the other without converting is what
+  // turns a lit scene into a white one. A splat that says its colour is
+  // already linear skips the decode.
   //
   // The clamp comes first and is not a detail: a degree-0 harmonic reaches
-  // outside [0, 1] for about a third of the values in a real scene, because
-  // the higher bands are expected to bring it back. Nothing here carries those
-  // bands yet, so the colour has to be clamped rather than allowed to shine.
+  // outside [0, 1] for about a third of the values in a real scene, and the
+  // higher bands do not always bring it back, so the colour has to be clamped
+  // rather than allowed to shine.
   vec3 display = clamp(vColour.rgb, 0.0, 1.0);
-  vec3 linear = pow(display, vec3(2.2));
+  vec3 linear = uLinearColour ? display : pow(display, vec3(2.2));
 
   // Premultiplied: the blend adds, so the colour arrives already weighted and
   // the destination keeps what is left.
@@ -293,7 +299,9 @@ export interface SplatResources {
     harmonics: WebGLUniformLocation | null;
     harmonicsWidth: WebGLUniformLocation | null;
     shDegree: WebGLUniformLocation | null;
-    eyeInShFrame: WebGLUniformLocation | null;
+    eye: WebGLUniformLocation | null;
+    shFrame: WebGLUniformLocation | null;
+    linearColour: WebGLUniformLocation | null;
   };
 }
 
@@ -550,7 +558,9 @@ export function uploadSplats(gl: WebGL2RenderingContext, cloud: SplatCloud): Spl
       harmonics: gl.getUniformLocation(program, 'uHarmonics'),
       harmonicsWidth: gl.getUniformLocation(program, 'uHarmonicsWidth'),
       shDegree: gl.getUniformLocation(program, 'uShDegree'),
-      eyeInShFrame: gl.getUniformLocation(program, 'uEyeInShFrame'),
+      eye: gl.getUniformLocation(program, 'uEye'),
+      shFrame: gl.getUniformLocation(program, 'uShFrame'),
+      linearColour: gl.getUniformLocation(program, 'uLinearColour'),
     },
   };
 }
@@ -585,8 +595,8 @@ export function drawSplats(
   projection: Float32Array,
   viewportWidth: number,
   viewportHeight: number,
-  /** The eye, in the file's frame; the harmonics are a function of it. */
-  eyeInShFrame: readonly [number, number, number] = [0, 0, 0],
+  /** The eye, in the world; the harmonics are a function of it. */
+  eye: readonly [number, number, number] = [0, 0, 0],
   extent = 3,
   /** The longest ellipse axis to draw, in pixels; the reference uses 1024. */
   maxAxis = 1024,
@@ -603,9 +613,15 @@ export function drawSplats(
   gl.uniform1i(splats.uniforms.harmonics, 1);
   gl.uniform1i(splats.uniforms.harmonicsWidth, splats.harmonicsWidth);
   gl.uniform1i(splats.uniforms.shDegree, splats.shDegree);
-  gl.uniform3f(
-    splats.uniforms.eyeInShFrame, eyeInShFrame[0], eyeInShFrame[1], eyeInShFrame[2],
-  );
+  gl.uniform3f(splats.uniforms.eye, eye[0], eye[1], eye[2]);
+  // Row-major in the cloud, column-major in GLSL.
+  const frame = splats.cloud.shFrame;
+  gl.uniformMatrix3fv(splats.uniforms.shFrame, false, [
+    frame[0], frame[3], frame[6],
+    frame[1], frame[4], frame[7],
+    frame[2], frame[5], frame[8],
+  ]);
+  gl.uniform1i(splats.uniforms.linearColour, splats.cloud.colorSpace === 'linear' ? 1 : 0);
   gl.activeTexture(gl.TEXTURE0);
   gl.uniformMatrix4fv(splats.uniforms.view, false, view);
   gl.uniformMatrix4fv(splats.uniforms.projection, false, projection);
