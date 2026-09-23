@@ -56,16 +56,10 @@ pub fn encode_symbols(
     // Estimate bits for tagged scheme.
     let tagged_bits = compute_tagged_scheme_bits(symbols, num_components, &bit_lengths, max_value);
 
-    let max_value_bit_length = if max_value == 0 {
-        0
-    } else {
-        32 - max_value.leading_zeros()
-    };
-
     // If max value can't be represented efficiently by RAW, always use TAGGED.
     // (This matches Draco's decision rule, but avoids doing unnecessary RAW
     // estimation work.)
-    if max_value_bit_length > K_MAX_RAW_ENCODING_BIT_LENGTH {
+    if bit_length(max_value) > K_MAX_RAW_ENCODING_BIT_LENGTH {
         // Draco bitstream scheme ids (see C++ SymbolCodingMethod):
         //   0 = TAGGED
         //   1 = RAW
@@ -137,8 +131,16 @@ pub fn plan_symbols(symbols: &[u32], num_components: usize) -> SymbolPlan {
 
     let (bit_lengths, max_value) = compute_bit_lengths(symbols, num_components);
     let tagged_bits = compute_tagged_scheme_bits(symbols, num_components, &bit_lengths, max_value);
+    // RAW is not a candidate past its bit-length limit, so it gets no estimate
+    // there: its histogram has one entry per value up to `max_value`, which a
+    // single 32-bit symbol would make 32 GiB. Pricing it out keeps
+    // `estimated_bits` equal to what the coder will actually write.
     let (raw_bits, raw_frequencies, raw_num_unique) =
-        compute_raw_scheme_bits_and_frequencies(symbols, max_value);
+        if bit_length(max_value) > K_MAX_RAW_ENCODING_BIT_LENGTH {
+            (u64::MAX, Vec::new(), 0)
+        } else {
+            compute_raw_scheme_bits_and_frequencies(symbols, max_value)
+        };
 
     SymbolPlan {
         bit_lengths,
@@ -164,13 +166,9 @@ pub fn encode_symbols_with_plan(
         return Ok(());
     }
 
-    let max_value_bit_length = if plan.max_value == 0 {
-        0
-    } else {
-        32 - plan.max_value.leading_zeros()
-    };
-
-    if max_value_bit_length > K_MAX_RAW_ENCODING_BIT_LENGTH || plan.tagged_bits < plan.raw_bits {
+    if bit_length(plan.max_value) > K_MAX_RAW_ENCODING_BIT_LENGTH
+        || plan.tagged_bits < plan.raw_bits
+    {
         target_buffer.encode_u8(0); // TAGGED
         encode_tagged_symbols(symbols, num_components, &plan.bit_lengths, target_buffer)
     } else {
@@ -184,6 +182,12 @@ pub fn encode_symbols_with_plan(
             options.compression_level,
         )
     }
+}
+
+/// Bits needed to hold `value`, zero for zero.
+#[cfg(feature = "encoder")]
+fn bit_length(value: u32) -> u32 {
+    32 - value.leading_zeros()
 }
 
 /// The number of bits each chunk of components needs, and the largest symbol.
@@ -996,5 +1000,28 @@ mod roundtrip_tests {
         let mut out = Vec::new();
         decode_symbols(5, 1, &options, &mut source, &mut out).unwrap();
         assert_eq!(out, symbols);
+    }
+
+    /// Planning is sized by the scheme the coder can use, not by the largest
+    /// symbol: RAW's histogram has an entry per value, so pricing it for a
+    /// symbol past its limit would allocate in proportion to that symbol --
+    /// 32 GiB for one near `u32::MAX`. `1 << 24` keeps a regression at 128 MiB.
+    #[test]
+    fn a_plan_past_the_raw_limit_builds_no_histogram() {
+        let symbols = [0u32, 1 << 24, 7];
+        let plan = plan_symbols(&symbols, 1);
+        assert!(
+            plan.raw_frequencies.is_empty(),
+            "planned a {}-entry RAW histogram for a scheme the coder cannot pick",
+            plan.raw_frequencies.len()
+        );
+        assert_eq!(plan.estimated_bits(), plan.tagged_bits);
+
+        let options = SymbolEncodingOptions::default();
+        let mut planned = EncoderBuffer::new();
+        encode_symbols_with_plan(&symbols, 1, &options, &plan, &mut planned).unwrap();
+        let mut direct = EncoderBuffer::new();
+        encode_symbols(&symbols, 1, &options, &mut direct).unwrap();
+        assert_eq!(planned.data(), direct.data());
     }
 }

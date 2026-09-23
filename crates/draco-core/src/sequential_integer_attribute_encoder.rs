@@ -1283,7 +1283,14 @@ impl SequentialIntegerAttributeEncoder {
                 selected_transform_type
             );
         }
-        self.selected_prediction = Some((selected_method, selected_transform_type));
+        // Reported as the stream has it: `None` writes no transform byte, so it
+        // has no transform, whatever the variable was initialised to.
+        let reported_transform = if selected_method == PredictionSchemeMethod::None {
+            PredictionSchemeTransformType::None
+        } else {
+            selected_transform_type
+        };
+        self.selected_prediction = Some((selected_method, reported_transform));
         out_buffer.encode_u8(selected_method as u8);
 
         if selected_method != PredictionSchemeMethod::None {

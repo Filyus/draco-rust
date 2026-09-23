@@ -12,6 +12,7 @@
 
 #![cfg(all(feature = "encoder", feature = "decoder"))]
 
+use draco_core::prediction_scheme::{PredictionSchemeMethod, PredictionSchemeTransformType};
 use draco_core::{
     DataType, DecoderBuffer, EncoderBuffer, EncoderOptions, GeometryAttributeType, PointAttribute,
     PointCloud, PointCloudDecoder, PointCloudEncoder,
@@ -222,4 +223,76 @@ fn an_attribute_told_which_scheme_to_use_is_not_searched() {
         unsearched, searched,
         "the search overrode a scheme the caller named"
     );
+}
+
+#[test]
+fn a_scheme_that_writes_no_transform_is_reported_without_one() {
+    let cloud = cloud(Shape::Concentrated);
+    let report = |configure: &dyn Fn(&mut EncoderOptions)| {
+        let mut options = EncoderOptions::new();
+        options.set_encoding_method(0);
+        for id in 0..cloud.num_attributes() {
+            options.set_attribute_int(id, "quantization_bits", 8);
+        }
+        configure(&mut options);
+        let mut encoder = PointCloudEncoder::new();
+        encoder.set_point_cloud(cloud.clone());
+        encoder
+            .encode(&options, &mut EncoderBuffer::new())
+            .expect("encode");
+        encoder.encoded_point_cloud_info().expect("info").attributes[1].prediction
+    };
+    let none = Some((
+        PredictionSchemeMethod::None,
+        PredictionSchemeTransformType::None,
+    ));
+    assert_eq!(
+        report(&|options| options.set_prediction_search(true)),
+        none,
+        "the search chose PREDICTION_NONE but reported a transform"
+    );
+    assert_eq!(
+        report(&|options| options.set_attribute_int(1, "prediction_scheme", -2)),
+        none,
+        "a named PREDICTION_NONE reported a transform"
+    );
+}
+
+/// Values spanning the whole 32-bit range, as timestamps and identifiers do.
+/// Planning the symbol coder's RAW scheme for these would allocate a histogram
+/// sized by the largest value, gigabytes for three points; the search must
+/// cost what the plain encode costs.
+#[test]
+fn the_search_handles_full_width_integers() {
+    let wide: [u32; 4] = [0, 1 << 31, 7, u32::MAX];
+    let mut attribute = PointAttribute::new();
+    attribute.init(
+        GeometryAttributeType::Generic,
+        1,
+        DataType::Uint32,
+        false,
+        wide.len(),
+    );
+    for (index, value) in wide.iter().enumerate() {
+        attribute
+            .buffer_mut()
+            .write(index * 4, &value.to_le_bytes());
+    }
+    let mut source = PointCloud::new();
+    source.set_num_points(wide.len());
+    source.add_attribute(attribute);
+
+    let mut options = EncoderOptions::new();
+    options.set_encoding_method(0);
+    options.set_prediction_search(true);
+    let mut encoder = PointCloudEncoder::new();
+    encoder.set_point_cloud(source.clone());
+    let mut buffer = EncoderBuffer::new();
+    encoder.encode(&options, &mut buffer).expect("encode");
+
+    let mut decoded = PointCloud::new();
+    PointCloudDecoder::new()
+        .decode(&mut DecoderBuffer::new(buffer.data()), &mut decoded)
+        .expect("decode");
+    assert_eq!(values(&decoded, 0), values(&source, 0));
 }

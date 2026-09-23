@@ -58,6 +58,14 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   off the encode of a splat scene with `set_prediction_search` on, and leave
   every stream byte-for-byte what it was.
 
+### Fixed
+
+- The encode report names no transform for an attribute coded with
+  `PREDICTION_NONE`. It reported `Wrap`, the transform the encoder starts from,
+  although the stream carries no transform byte for such an attribute; the
+  `prediction` field of `EncodedAttributeInfo` now reads
+  `(None, None)`, as the bitstream does.
+
 ## [2.1.0](https://github.com/Filyus/draco-rust/compare/draco-core-v2.0.0...draco-core-v2.1.0) - 2026-09-15
 
 ### Added
