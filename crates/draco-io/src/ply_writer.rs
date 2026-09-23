@@ -108,12 +108,14 @@ fn ply_scalar_type(data_type: DataType) -> Option<&'static str> {
     })
 }
 
-/// Property names a generic cannot take: every name the reader claims.
+/// Property names a generic cannot take: every name the reader can claim.
 ///
-/// Not only the names this writer declares. The reader also takes `u`/`v` and
-/// `s`/`t` as texture coordinates, and refuses a whole file whose pair is
-/// incomplete or not `float` -- so a generic written as `v` would come back as
-/// half a texture coordinate, or not come back at all.
+/// Not only the names this writer declares. The reader also takes a `u`/`v` or
+/// `s`/`t` pair as texture coordinates when both halves are `float` -- so two
+/// generics written as `u` and `v` would come back as a texture coordinate
+/// rather than as themselves. A lone one would survive, but whether it stays
+/// lone depends on the other generics of the mesh, and a name that is safe or
+/// not depending on its neighbours is not one to hand out.
 const RESERVED_PROPERTY_NAMES: [&str; 16] = [
     "x",
     "y",

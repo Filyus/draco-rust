@@ -791,7 +791,20 @@ fn scalar_property_type(header: &PlyHeader, name: &str) -> Option<DataType> {
     })
 }
 
-fn detect_texcoord_pair(header: &PlyHeader) -> io::Result<Option<TexcoordPropertyPair>> {
+/// The texture-coordinate pair a file carries, if it carries one.
+///
+/// A pair counts only when both halves are declared and both are `float`.
+/// Anything short of that is not a malformed texture coordinate but an
+/// ordinary property that happens to share a name -- carried as a generic
+/// attribute when asked, reported as dropped otherwise. The PLY format gives
+/// these names no meaning; upstream Draco reads no texture coordinates from a
+/// PLY at all; and a lone `t` is as often a timestamp as half of anything.
+/// Refusing the file over it, as this once did, turned away a valid file that
+/// both upstream and `plyfile` read.
+///
+/// When more than one spelling is complete, the first in this order wins, and
+/// the others are ordinary properties too.
+fn detect_texcoord_pair(header: &PlyHeader) -> Option<TexcoordPropertyPair> {
     const PAIRS: [TexcoordPropertyPair; 3] = [
         TexcoordPropertyPair {
             u: "texture_u",
@@ -801,21 +814,10 @@ fn detect_texcoord_pair(header: &PlyHeader) -> io::Result<Option<TexcoordPropert
         TexcoordPropertyPair { u: "s", v: "t" },
     ];
 
-    for pair in PAIRS {
-        let u_type = scalar_property_type(header, pair.u);
-        let v_type = scalar_property_type(header, pair.v);
-        if u_type.is_some() || v_type.is_some() {
-            if u_type == Some(DataType::Float32) && v_type == Some(DataType::Float32) {
-                return Ok(Some(pair));
-            }
-            return Err(invalid_ply(format!(
-                "Texture coordinate properties {} and {} must both be float",
-                pair.u, pair.v
-            )));
-        }
-    }
-
-    Ok(None)
+    PAIRS.into_iter().find(|pair| {
+        scalar_property_type(header, pair.u) == Some(DataType::Float32)
+            && scalar_property_type(header, pair.v) == Some(DataType::Float32)
+    })
 }
 
 fn build_read_schema(header: &PlyHeader) -> io::Result<PlyReadSchema> {
@@ -888,7 +890,7 @@ fn build_read_schema(header: &PlyHeader) -> io::Result<PlyReadSchema> {
         position_data_type,
         has_normals,
         color_components,
-        texcoord_pair: detect_texcoord_pair(header)?,
+        texcoord_pair: detect_texcoord_pair(header),
     })
 }
 
@@ -2492,6 +2494,93 @@ end_header
                     data_type: Some(DataType::Float32),
                 },
             ]
+        );
+    }
+
+    /// A property that shares a name with half of a texture-coordinate pair
+    /// is an ordinary property unless the whole pair is there, as `float`.
+    ///
+    /// The reader used to refuse these files outright. Upstream Draco reads
+    /// no texture coordinates from a PLY at all, and `plyfile` reads the file
+    /// as it stands, so the refusal turned away valid files -- a lidar cloud
+    /// with a `t` for time, for one.
+    #[test]
+    fn test_an_incomplete_texcoord_pair_is_an_ordinary_property() {
+        let lone = r#"ply
+format ascii 1.0
+element vertex 2
+property float x
+property float y
+property float z
+property float t
+end_header
+0 0 0 0.5
+1 0 0 1.5
+"#;
+        let (mesh, report) = PlyReader::from_bytes(lone.as_bytes().to_vec())
+            .read_mesh_reporting_loss()
+            .expect("a lone t is not a malformed texture coordinate");
+        assert_eq!(mesh.num_points(), 2);
+        assert!(mesh.named_attribute_id(GeometryAttributeType::TexCoord) < 0);
+        assert_eq!(
+            report.dropped(),
+            [PlyDroppedItem::VertexProperty {
+                name: "t".to_string(),
+                data_type: Some(DataType::Float32),
+            }]
+        );
+
+        // Carried under its own name when generics are asked for.
+        let mesh = PlyReader::from_bytes(lone.as_bytes().to_vec())
+            .with_generic_attributes(true)
+            .read_mesh()
+            .unwrap();
+        assert_eq!(generic_values(&mesh, "t"), Some(vec![0.5, 1.5]));
+    }
+
+    /// A complete pair that is not `float` is not a texture coordinate either,
+    /// and a complete spelling still wins over an incomplete one beside it.
+    #[test]
+    fn test_only_a_complete_float_pair_is_read_as_texture_coordinates() {
+        let doubles = r#"ply
+format ascii 1.0
+element vertex 1
+property float x
+property float y
+property float z
+property double u
+property double v
+end_header
+0 0 0 0.25 0.75
+"#;
+        let (mesh, report) = PlyReader::from_bytes(doubles.as_bytes().to_vec())
+            .read_mesh_reporting_loss()
+            .expect("a double pair reads as two ordinary properties");
+        assert!(mesh.named_attribute_id(GeometryAttributeType::TexCoord) < 0);
+        assert_eq!(report.dropped().len(), 2, "{:?}", report.dropped());
+
+        let mixed = r#"ply
+format ascii 1.0
+element vertex 1
+property float x
+property float y
+property float z
+property float s
+property float u
+property float v
+end_header
+0 0 0 9 0.25 0.75
+"#;
+        let (mesh, report) = PlyReader::from_bytes(mixed.as_bytes().to_vec())
+            .read_mesh_reporting_loss()
+            .unwrap();
+        assert!(mesh.named_attribute_id(GeometryAttributeType::TexCoord) >= 0);
+        assert_eq!(
+            report.dropped(),
+            [PlyDroppedItem::VertexProperty {
+                name: "s".to_string(),
+                data_type: Some(DataType::Float32),
+            }]
         );
     }
 

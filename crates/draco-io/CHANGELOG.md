@@ -44,6 +44,16 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `PlyDroppedItem` implements `Display`, so a wrapper can hand these to a
   caller as plain strings without restating the wording.
 
+### Fixed
+
+- `PlyReader` no longer refuses a file in which `u`, `v`, `s` or `t` appears
+  without its partner, or as a pair that is not `float`. Only a complete
+  `float` pair is read as texture coordinates; anything else is an ordinary
+  property -- carried under `with_generic_attributes`, reported as dropped
+  otherwise. The PLY format gives these names no meaning, upstream Draco reads
+  no texture coordinates from a PLY at all, and a lone `t` is often a
+  timestamp: such files were valid, and other readers open them.
+
 ## [0.5.0](https://github.com/Filyus/draco-rust/compare/draco-io-v0.4.0...draco-io-v0.5.0) - 2026-09-15
 
 A breaking release that moves glTF out. What is left is the set of formats that
