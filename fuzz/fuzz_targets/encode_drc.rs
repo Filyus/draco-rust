@@ -111,6 +111,8 @@ struct GeometrySpec {
     faces: Vec<[u32; 3]>,
     attributes: Vec<AttributeSpec>,
     deduplicate: bool,
+    prediction_search: bool,
+    spatial_point_order: bool,
     encoding_method: i32,
     prediction_scheme: i32,
     encoding_speed: i32,
@@ -162,12 +164,19 @@ fn read_spec(reader: &mut Reader) -> GeometrySpec {
         attributes.push(read_attribute_spec(reader, num_points));
     }
 
+    // One byte, three switches. The opt-in encoder options ride in the bits
+    // `deduplicate` never read, so adding them left every other field -- and
+    // where the payload starts -- where the committed corpus has it.
+    let switches = reader.u8();
+
     GeometrySpec {
         as_point_cloud,
         num_points,
         faces,
         attributes,
-        deduplicate: reader.bool(),
+        deduplicate: switches & 1 != 0,
+        prediction_search: switches & 2 != 0,
+        spatial_point_order: switches & 4 != 0,
         // -1 leaves the encoder's own choice in play; 0/1 force sequential and
         // EdgeBreaker; 2 and 3 are out of range and must be refused.
         encoding_method: reader.in_range(-1, 3),
@@ -308,6 +317,8 @@ fn build_options(spec: &GeometrySpec) -> EncoderOptions {
     if let Some((major, minor)) = spec.version {
         options.set_version(major, minor);
     }
+    options.set_prediction_search(spec.prediction_search);
+    options.set_spatial_point_order(spec.spatial_point_order);
     for (id, attribute) in spec.attributes.iter().enumerate() {
         let id = id as i32;
         options.set_attribute_int(id, "quantization_bits", attribute.quantization_bits);
@@ -448,11 +459,13 @@ fn describe(spec: &GeometrySpec) -> String {
         })
         .collect();
     format!(
-        "points={} faces={} dedup={} method={} pred={} speed={}/{} seams={} store_faces={} predictive={} version={:?}
+        "points={} faces={} dedup={} search={} spatial={} method={} pred={} speed={}/{} seams={} store_faces={} predictive={} version={:?}
 attributes: [{}]",
         spec.num_points,
         spec.faces.len(),
         spec.deduplicate,
+        spec.prediction_search,
+        spec.spatial_point_order,
         spec.encoding_method,
         spec.prediction_scheme,
         spec.encoding_speed,
