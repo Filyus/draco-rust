@@ -32,4 +32,12 @@ fuzz_target!(|data: &[u8]| {
     let _ = ObjReader::read_from_bytes(data);
     let _ = PlyReader::read_from_bytes(data);
     let _ = StlReader::read_from_bytes(data);
+
+    // The PLY reader's opt-in path: every leftover vertex property becomes an
+    // attribute typed and named by the header, which is a second parser of
+    // the same untrusted declarations. The loss report comes from the same
+    // parse, so its bookkeeping over those declarations is covered too.
+    let _ = PlyReader::from_bytes(data)
+        .with_generic_attributes(true)
+        .read_mesh_reporting_loss();
 });

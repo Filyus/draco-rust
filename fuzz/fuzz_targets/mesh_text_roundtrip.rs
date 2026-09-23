@@ -51,18 +51,46 @@ use libfuzzer_sys::fuzz_target;
 
 /// One writer plus the container it writes, since a format's text and binary
 /// spellings are different code.
+///
+/// A PLY spelling also says whether generic attributes travel: reading and
+/// writing them is opt-in on both halves, and the round trip is only claimed
+/// with both halves on, so the flag belongs to the spelling rather than to
+/// either call.
 #[derive(Debug, Clone, Copy)]
 enum Spelling {
     Obj,
-    Ply(PlyFormat),
+    Ply { format: PlyFormat, generics: bool },
     Stl(StlFormat),
 }
 
 const SPELLINGS: &[Spelling] = &[
     Spelling::Obj,
-    Spelling::Ply(PlyFormat::Ascii),
-    Spelling::Ply(PlyFormat::BinaryLittleEndian),
-    Spelling::Ply(PlyFormat::BinaryBigEndian),
+    Spelling::Ply {
+        format: PlyFormat::Ascii,
+        generics: false,
+    },
+    Spelling::Ply {
+        format: PlyFormat::BinaryLittleEndian,
+        generics: false,
+    },
+    Spelling::Ply {
+        format: PlyFormat::BinaryBigEndian,
+        generics: false,
+    },
+    // Generic values are written exactly, ASCII included, so idempotence
+    // holds them to the bit rather than to six decimal places.
+    Spelling::Ply {
+        format: PlyFormat::Ascii,
+        generics: true,
+    },
+    Spelling::Ply {
+        format: PlyFormat::BinaryLittleEndian,
+        generics: true,
+    },
+    Spelling::Ply {
+        format: PlyFormat::BinaryBigEndian,
+        generics: true,
+    },
     Spelling::Stl(StlFormat::Ascii),
     Spelling::Stl(StlFormat::Binary),
 ];
@@ -74,8 +102,10 @@ fn write(spelling: Spelling, mesh: &Mesh) -> io::Result<Vec<u8>> {
             writer.add_mesh(mesh, Some("m"))?;
             writer.write_to_vec()
         }
-        Spelling::Ply(format) => {
-            let mut writer = PlyWriter::new().with_format(format);
+        Spelling::Ply { format, generics } => {
+            let mut writer = PlyWriter::new()
+                .with_format(format)
+                .with_generic_attributes(generics);
             writer.add_mesh(mesh, Some("m"))?;
             writer.write_to_vec()
         }
@@ -90,7 +120,9 @@ fn write(spelling: Spelling, mesh: &Mesh) -> io::Result<Vec<u8>> {
 fn read(spelling: Spelling, bytes: &[u8]) -> io::Result<Mesh> {
     match spelling {
         Spelling::Obj => ObjReader::read_from_bytes(bytes),
-        Spelling::Ply(_) => PlyReader::read_from_bytes(bytes),
+        Spelling::Ply { generics, .. } => PlyReader::from_bytes(bytes)
+            .with_generic_attributes(generics)
+            .read_mesh(),
         Spelling::Stl(_) => StlReader::read_from_bytes(bytes),
     }
 }
@@ -203,11 +235,16 @@ fn write_again(spelling: Spelling, mesh: &Mesh) -> Option<Vec<u8>> {
 
 fuzz_target!(|data: &[u8]| {
     // Every reader sees every input, as in `mesh_text_readers`: whichever one
-    // recognises it hands a mesh to all six spellings, so a PLY file exercises
+    // recognises it hands a mesh to every spelling, so a PLY file exercises
     // the OBJ and STL writers too.
+    // A PLY read with generics on is a fourth source: it is the only one whose
+    // meshes carry named generic attributes into the writers.
     for parsed in [
         ObjReader::read_from_bytes(data),
         PlyReader::read_from_bytes(data),
+        PlyReader::from_bytes(data)
+            .with_generic_attributes(true)
+            .read_mesh(),
         StlReader::read_from_bytes(data),
     ] {
         let Ok(mesh) = parsed else {

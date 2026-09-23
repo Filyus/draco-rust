@@ -1,0 +1,18 @@
+ply
+format ascii 1.0
+element vertex 3
+property float x
+property float y
+property float z
+property float opacity
+property uchar label
+property float t
+property int f_rest_0
+property double scale_0
+element face 1
+property list uchar int vertex_indices
+end_header
+0 0 0 0.5 1 0.25 -7 1.5
+1 0 0 0.125 2 1e-40 2147483647 -0.0
+0 1 0 -3.5 255 3.4028235e38 -2147483648 1e300
+3 0 1 2
