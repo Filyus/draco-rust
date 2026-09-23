@@ -29,7 +29,10 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `"name"` -- the key upstream Draco writes and reads. Off by default, since it
   changes what a read produces. A property carried this way leaves the loss
   report in the same breath, because it is no longer lost; list properties
-  cannot become attributes and stay dropped and reported.
+  cannot become attributes and stay dropped and reported. A `double` property
+  is carried on a mesh as well as on a point cloud, which needs the
+  `draco-core` release after 2.1.0: finalizing a mesh merges each attribute's
+  repeated values, and 2.1.0 refuses to do that for 64-bit ones.
 - `PlyWriter::with_generic_attributes` is the writing half: a `Generic`
   attribute named through its metadata under `"name"` is written as a vertex
   property of that name, in the type it holds, so a Gaussian-splat PLY read
