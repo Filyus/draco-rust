@@ -411,14 +411,17 @@ impl PointAttribute {
     /// same width before hashing, so `-0.0` and `0.0` are distinct values on
     /// both sides and two `NaN`s merge exactly when their payloads match.
     ///
-    /// Refuses the types upstream refuses -- everything 64 bits wide -- and
-    /// component counts outside `1..=4`, rather than silently doing something
-    /// upstream does not.
+    /// Upstream's switch stops at 32 bits and refuses anything wider; this one
+    /// also takes the 64-bit types. Nothing upstream accepts comes out
+    /// differently, and the wider types are ones Draco encodes, so a reader
+    /// carrying a PLY `double` property onto a mesh would otherwise fail on a
+    /// value it can store. Component counts outside `1..=4` are refused.
     pub(crate) fn deduplicate_values(&mut self) -> Result<usize, DracoError> {
         let stride = match self.data_type() {
             DataType::Int8 | DataType::Uint8 | DataType::Bool => 1,
             DataType::Int16 | DataType::Uint16 => 2,
             DataType::Int32 | DataType::Uint32 | DataType::Float32 => 4,
+            DataType::Int64 | DataType::Uint64 | DataType::Float64 => 8,
             other => {
                 return Err(DracoError::unsupported_feature(format!(
                     "deduplicating {other:?} attribute values"
@@ -433,31 +436,14 @@ impl PointAttribute {
         }
 
         let count = self.num_unique_entries;
-        // Widest supported value is four 32-bit components, so the key is
-        // inline and the map allocates nothing per entry.
-        let mut seen: std::collections::HashMap<[u8; 16], u32> =
-            std::collections::HashMap::with_capacity(count);
-        let mut value_map: Vec<u32> = Vec::with_capacity(count);
-        let mut unique = 0usize;
         let data = self.buffer.data_mut();
-        for i in 0..count {
-            let at = i * stride;
-            let mut key = [0u8; 16];
-            key[..stride].copy_from_slice(&data[at..at + stride]);
-            match seen.entry(key) {
-                std::collections::hash_map::Entry::Occupied(entry) => {
-                    value_map.push(*entry.get());
-                }
-                std::collections::hash_map::Entry::Vacant(entry) => {
-                    entry.insert(unique as u32);
-                    // Survivors are packed forward as they are found, so the
-                    // buffer needs no second pass and no second allocation.
-                    data.copy_within(at..at + stride, unique * stride);
-                    value_map.push(unique as u32);
-                    unique += 1;
-                }
-            }
-        }
+        // Everything 32 bits wide fits the narrow key, and hashing it costs
+        // half what the wide one does.
+        let (value_map, unique) = if stride <= 16 {
+            pack_unique_values::<16>(data, count, stride)
+        } else {
+            pack_unique_values::<32>(data, count, stride)
+        };
         if unique == count {
             return Ok(unique);
         }
@@ -721,6 +707,42 @@ impl PointAttribute {
     pub fn byte_stride(&self) -> i64 {
         self.base.byte_stride()
     }
+}
+
+/// Merges bit-identical values of `stride` bytes among the first `count` in
+/// `data`, packing the survivors to the front in arrival order. Returns each
+/// old value's new index and how many survive.
+///
+/// `N` is the hash key's width and must be at least `stride`; the key is
+/// inline, so the map allocates nothing per entry.
+fn pack_unique_values<const N: usize>(
+    data: &mut [u8],
+    count: usize,
+    stride: usize,
+) -> (Vec<u32>, usize) {
+    let mut seen: std::collections::HashMap<[u8; N], u32> =
+        std::collections::HashMap::with_capacity(count);
+    let mut value_map: Vec<u32> = Vec::with_capacity(count);
+    let mut unique = 0usize;
+    for i in 0..count {
+        let at = i * stride;
+        let mut key = [0u8; N];
+        key[..stride].copy_from_slice(&data[at..at + stride]);
+        match seen.entry(key) {
+            std::collections::hash_map::Entry::Occupied(entry) => {
+                value_map.push(*entry.get());
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(unique as u32);
+                // Survivors are packed forward as they are found, so the
+                // buffer needs no second pass and no second allocation.
+                data.copy_within(at..at + stride, unique * stride);
+                value_map.push(unique as u32);
+                unique += 1;
+            }
+        }
+    }
+    (value_map, unique)
 }
 
 #[cfg(test)]

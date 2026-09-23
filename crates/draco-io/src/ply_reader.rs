@@ -2746,6 +2746,69 @@ end_header
         assert_eq!(confidence.num_components(), 1);
     }
 
+    /// A mesh is finalized, and finalizing merges each attribute's repeated
+    /// values, so a `double` property has to survive that merge rather than
+    /// fail the whole file. Read back through the point map, each vertex keeps
+    /// its own value, the repeat included.
+    #[test]
+    fn test_a_double_property_is_carried_onto_a_mesh() {
+        let ply = r#"ply
+format ascii 1.0
+element vertex 4
+property float x
+property float y
+property float z
+property double gps_time
+element face 2
+property list uchar int vertex_indices
+end_header
+0 0 0 1e300
+1 0 0 0.5
+0 1 0 1e300
+1 1 0 -0.0
+3 0 1 2
+3 1 3 2
+"#;
+
+        let mesh = PlyReader::from_bytes(ply.as_bytes().to_vec())
+            .with_generic_attributes(true)
+            .read_mesh()
+            .unwrap();
+
+        let attribute = (0..mesh.num_attributes())
+            .map(|id| mesh.attribute(id))
+            .find(|attribute| attribute.data_type() == DataType::Float64)
+            .expect("the double property stays a double");
+        assert_eq!(attribute.size(), 3, "the repeated value is stored once");
+        let positions = mesh
+            .named_attribute(GeometryAttributeType::Position)
+            .unwrap();
+        let mut by_position: Vec<([f32; 3], u64)> = (0..mesh.num_points())
+            .map(|point| {
+                let point = draco_core::geometry_indices::PointIndex(point as u32);
+                let mut position = [0.0f32; 3];
+                let at = positions.mapped_index(point).0 as usize * 12;
+                for (axis, value) in position.iter_mut().enumerate() {
+                    let bytes = &positions.buffer().data()[at + axis * 4..at + axis * 4 + 4];
+                    *value = f32::from_le_bytes(bytes.try_into().unwrap());
+                }
+                let at = attribute.mapped_index(point).0 as usize * 8;
+                let bytes = &attribute.buffer().data()[at..at + 8];
+                (position, u64::from_le_bytes(bytes.try_into().unwrap()))
+            })
+            .collect();
+        by_position.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        assert_eq!(
+            by_position,
+            [
+                ([0.0, 0.0, 0.0], 1e300f64.to_bits()),
+                ([0.0, 1.0, 0.0], 1e300f64.to_bits()),
+                ([1.0, 0.0, 0.0], 0.5f64.to_bits()),
+                ([1.0, 1.0, 0.0], (-0.0f64).to_bits()),
+            ]
+        );
+    }
+
     #[test]
     fn test_carrying_removes_the_properties_from_the_loss_report() {
         let dropped_by_default = PlyReader::from_bytes(SPLAT_PLY.as_bytes().to_vec())

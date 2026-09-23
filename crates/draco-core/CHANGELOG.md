@@ -60,6 +60,13 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `Mesh::finalize` and `PointCloud::deduplicate_attribute_values` merge the
+  repeated values of 64-bit attributes (`Float64`, `Int64`, `Uint64`) instead
+  of failing. The refusal copied upstream's `DeduplicateValues`, whose switch
+  stops at 32 bits, but these are types Draco encodes, so a mesh carrying one
+  could be encoded and could not be finalized. A reader finalizes every mesh it
+  builds, so a PLY with a `double` vertex property read into a mesh failed
+  whole. Attributes upstream deduplicates come out exactly as before.
 - The encode report names no transform for an attribute coded with
   `PREDICTION_NONE`. It reported `Wrap`, the transform the encoder starts from,
   although the stream carries no transform byte for such an attribute; the

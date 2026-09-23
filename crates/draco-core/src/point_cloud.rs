@@ -514,17 +514,58 @@ mod tests {
         );
     }
 
-    /// Upstream's switch covers nothing 64 bits wide, and returns an error
-    /// rather than leaving the values alone. So does this.
+    /// A four-component `f64` value is 32 bytes, and two values that differ
+    /// only in the last component differ only past byte 16. Both stay; the
+    /// exact repeat merges.
     #[test]
-    fn a_width_upstream_does_not_deduplicate_is_refused() {
+    fn wide_values_are_compared_over_their_whole_width() {
         use crate::draco_types::DataType;
 
         let mut attribute = PointAttribute::new();
         attribute.init(
-            GeometryAttributeType::Position,
-            3,
+            GeometryAttributeType::Generic,
+            4,
             DataType::Float64,
+            false,
+            3,
+        );
+        let bytes: Vec<u8> = [
+            [1.0f64, 2.0, 3.0, 4.0],
+            [1.0, 2.0, 3.0, 5.0],
+            [1.0, 2.0, 3.0, 4.0],
+        ]
+        .iter()
+        .flatten()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+        attribute.buffer_mut().data_mut().copy_from_slice(&bytes);
+        attribute.set_identity_mapping();
+
+        let mut point_cloud = PointCloud::new();
+        point_cloud.set_num_points(3);
+        point_cloud.add_attribute(attribute);
+        point_cloud.deduplicate_attribute_values().unwrap();
+
+        let attribute = point_cloud.attribute(0);
+        assert_eq!(attribute.size(), 2);
+        assert_eq!(attribute.buffer().data(), &bytes[..64]);
+        let mapped: Vec<u32> = (0..3)
+            .map(|point| attribute.mapped_index(PointIndex(point)).0)
+            .collect();
+        assert_eq!(mapped, [0, 1, 0]);
+    }
+
+    /// Upstream's switch covers one to four components, and returns an error
+    /// rather than leaving the values alone. So does this.
+    #[test]
+    fn a_component_count_upstream_does_not_deduplicate_is_refused() {
+        use crate::draco_types::DataType;
+
+        let mut attribute = PointAttribute::new();
+        attribute.init(
+            GeometryAttributeType::Generic,
+            5,
+            DataType::Float32,
             false,
             2,
         );
