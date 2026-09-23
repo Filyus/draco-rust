@@ -45,6 +45,11 @@ const KNOWN = new Map(Object.entries({
   'testdata/bun_zipper.glb': 'primitive uses Draco compression',
   'testdata/SphereTwoMaterials/sphere_two_materials_mesh_and_point_cloud.gltf': 'only TRIANGLES',
   'testdata/SphereTwoMaterials/sphere_two_materials_point_cloud.gltf': 'only TRIANGLES',
+  // A Gaussian splat is a POINTS primitive, and KHR_draco_mesh_compression
+  // admits only triangles and triangle strips, so the refusal is the
+  // specification's own. A splat beside ordinary geometry leaves the geometry
+  // compressible; a file of nothing but splats has nothing Draco may touch.
+  'testdata/GaussianSplats/tiny-splat.gltf': 'only TRIANGLES',
   // Two compressions describing the same bytes. Import decodes meshopt into
   // the fallback buffers, but the compressed ranges stay in the document and
   // the writer rebases them, so a re-export comes out compressed again -- the

@@ -39,6 +39,11 @@ export const GLTF_INTERPRETED_EXTENSIONS: ReadonlySet<string> = new Set([
   'KHR_lights_punctual',
   'KHR_materials_variants',
   'EXT_mesh_gpu_instancing',
+  // Read off the primitive into `ScenePrimitive.gaussianSplatting`; the
+  // payload rides in the primitive's own attributes. The preview draws the
+  // splat through the splat pass instead of as the point cloud a reader
+  // without the extension would fall back to.
+  'KHR_gaussian_splatting',
 ]);
 
 /**

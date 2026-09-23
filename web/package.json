@@ -20,6 +20,7 @@
     "test:viewer-shared-buffers": "node tests/viewer-shared-buffers.ts",
     "test:splat-dialect": "node tests/splat-dialect.ts",
     "test:splat-pass": "node tests/splat-pass.ts",
+    "test:gltf-splat": "node tests/gltf-splat.ts",
     "test:viewer-point-clouds": "node tests/viewer-point-clouds.ts",
     "test:viewer-framing": "node tests/viewer-framing.ts",
     "test:viewer-texture-units": "node tests/viewer-texture-units.ts",

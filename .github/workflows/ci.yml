@@ -398,6 +398,9 @@ jobs:
           npm run test:export-helpers
           npm run test:scene-document-attributes
           npm run test:scene-document-fbx
+          npm run test:splat-dialect
+          npm run test:splat-pass
+          npm run test:gltf-splat
         working-directory: web
 
       # The gates compare against the reference Basis transcoder built in

@@ -128,6 +128,27 @@ export interface ScenePrimitive {
    * carries every alternative rather than a selected one.
    */
   variantMaterials?: Record<number, number>;
+  /**
+   * What `KHR_gaussian_splatting` says about this primitive, when it is a
+   * Gaussian splat.
+   *
+   * The payload itself rides in `attributes` under the extension's own
+   * semantics (`KHR_gaussian_splatting:ROTATION` and the rest), which the
+   * document already carries by name. What does not ride there is how to read
+   * it: `colorSpace` says whether the reconstructed colour is display-encoded
+   * or already light, and a reader that guesses turns one into the other.
+   * Kept as the four strings the extension defines, unknown values included,
+   * so a writer can put back what it was given.
+   */
+  gaussianSplatting?: SceneGaussianSplatting;
+}
+
+/** The `KHR_gaussian_splatting` object of one primitive. */
+export interface SceneGaussianSplatting {
+  kernel: string;
+  colorSpace: string;
+  projection?: string;
+  sortingMethod?: string;
 }
 
 export interface SceneMesh {

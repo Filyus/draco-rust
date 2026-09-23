@@ -11,7 +11,8 @@ import {
 } from './scene-document.ts';
 import type {
   AnimationChannel, AnimationSampler, AttributeMap, ComponentType, SceneAccessor, SceneDocument,
-  SceneInstancing, SceneLight, SceneMaterial, SceneNode, ScenePrimitive, TextureInfo,
+  SceneGaussianSplatting, SceneInstancing, SceneLight, SceneMaterial, SceneNode, ScenePrimitive,
+  TextureInfo,
 } from './scene-document.ts';
 import {
   GLTF_TEXTURE_SOURCE_EXTENSIONS,
@@ -245,6 +246,8 @@ function collectMeshes(
         };
         const variants = variantMaterials(primitive, document.variants?.length ?? 0);
         if (variants) result.variantMaterials = variants;
+        const splatting = gaussianSplatting(primitive);
+        if (splatting) result.gaussianSplatting = splatting;
         if (packed.hasIndices()) {
           result.indices = reuseAccessor(
             document,
@@ -592,6 +595,28 @@ function extensionWarnings(manifest: GltfJson): string[] {
       required: 'glTF requires extensions outside the portable SceneDocument subset',
     },
   );
+}
+
+/**
+ * The primitive's `KHR_gaussian_splatting` object, as its four strings.
+ *
+ * Only the strings: the extension object names no accessor and no buffer, and
+ * anything nested under it belongs to a companion extension, which the
+ * required-extension check has already refused if the file needs it.
+ */
+function gaussianSplatting(primitive: GltfJson): SceneGaussianSplatting | null {
+  const declared = primitive?.extensions?.KHR_gaussian_splatting;
+  if (!declared || typeof declared !== 'object') return null;
+  const text = (value: unknown) => (typeof value === 'string' ? value : undefined);
+  const result: SceneGaussianSplatting = {
+    kernel: text(declared.kernel) ?? '',
+    colorSpace: text(declared.colorSpace) ?? '',
+  };
+  const projection = text(declared.projection);
+  if (projection !== undefined) result.projection = projection;
+  const sortingMethod = text(declared.sortingMethod);
+  if (sortingMethod !== undefined) result.sortingMethod = sortingMethod;
+  return result;
 }
 
 function rootNodes(nodes: SceneNode[]): number[] {

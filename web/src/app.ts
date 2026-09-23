@@ -72,6 +72,7 @@ import {
 } from './app/warnings.ts';
 import { loadAllModules, updateDracoEncoderAvailability } from './app/modules.ts';
 import { parseDrcFile, parseFbxFile, parseGltfFile, parseObjFile, parsePlyFile, parseStlFile } from './app/parsers.ts';
+import { splatCloudFromSceneDocument } from './gltf-splat.ts';
 import {
   describeSceneCapabilities,
   displayMeshInfo,
@@ -542,6 +543,12 @@ async function handleModel(model: IntakeEntry, entries: IntakeEntry[]) {
             // second walk of the same asset; when it could not be built there
             // is nothing to count, and the panel says so below.
             Object.assign(result, summarizeSceneDocumentGeometry(state.currentSceneDocument));
+            // A KHR_gaussian_splatting primitive is a point cloud to every
+            // other reader of the document and a scene to the splat pass, the
+            // same way a splat PLY is; it reaches the preview the same way.
+            const splats = splatCloudFromSceneDocument(state.currentSceneDocument);
+            for (const warning of splats.warnings) log(warning, 'warning');
+            if (splats.cloud) result.splats = splats.cloud;
           } catch (error) {
             // A document that merely fails the portability rules still
             // previews, so that stays a warning. Missing companion files are

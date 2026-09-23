@@ -15,6 +15,7 @@ import {
   multiUvEmissiveQuad,
   normalMappedQuad,
   solidColorPng,
+  tinySplatGltf,
   tinySplatPly,
   triangleBytes,
   vertexColoredTriangle,
@@ -1024,6 +1025,118 @@ test('a Gaussian splat survives a PLY export exactly', async ({ page }) => {
   // PLY is not quantized and does not reorder, so this is equality, not a
   // tolerance: the splat that went out is the splat that came back.
   expect(await splats()).toEqual(source);
+});
+
+/** The splat cloud the page holds, every field as plain numbers. */
+async function loadedSplatCloud(page: Page) {
+  return page.evaluate(async () => {
+    const { state } = await import('/app/state.js' as string);
+    const cloud = state.currentMeshData?.splats;
+    if (!cloud) return null;
+    const plain = (array: Float32Array) => Array.from(array);
+    return {
+      count: cloud.count,
+      shDegree: cloud.shDegree,
+      colorSpace: cloud.colorSpace,
+      positions: plain(cloud.positions),
+      scales: plain(cloud.scales),
+      rotations: plain(cloud.rotations),
+      alphas: plain(cloud.alphas),
+      dc: plain(cloud.dc),
+      sh: plain(cloud.sh),
+      shFrame: plain(cloud.shFrame),
+    };
+  });
+}
+
+test('a KHR_gaussian_splatting glTF reads as the same splats as the PLY it came from', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+
+  await page.locator('#file-input').setInputFiles({
+    name: 'tiny-splat.ply', mimeType: 'application/octet-stream', buffer: tinySplatPly(64).bytes,
+  });
+  await expect.poll(async () => (await loadedSplatCloud(page))?.count ?? 0).toBe(64);
+  const fromPly = (await loadedSplatCloud(page))!;
+
+  await page.locator('#file-input').setInputFiles({
+    name: 'tiny-splat.gltf', mimeType: 'model/gltf+json', buffer: Buffer.from(tinySplatGltf(64)),
+  });
+  await expect(page.locator('#file-name')).toContainText('tiny-splat.gltf');
+  await expect.poll(async () => (await loadedSplatCloud(page))?.count ?? 0).toBe(64);
+  const fromGltf = (await loadedSplatCloud(page))!;
+  await expect(page.locator('#console')).not.toContainText('Unsupported glTF extensions');
+
+  expect(fromGltf.shDegree).toBe(3);
+  expect(fromGltf.colorSpace).toBe('srgb');
+  // The node's half turn is the PLY reader's own, so every field agrees --
+  // to float32 rounding of a quaternion renormalized on the way in, and
+  // nothing else.
+  for (const field of ['positions', 'scales', 'rotations', 'alphas', 'dc', 'sh', 'shFrame'] as const) {
+    const worst = fromPly[field].reduce((max, value, index) =>
+      Math.max(max, Math.abs(value - fromGltf[field][index])), 0);
+    expect(fromGltf[field].length, field).toBe(fromPly[field].length);
+    expect(worst, field).toBeLessThan(1e-6);
+  }
+});
+
+test('a splat node rotated by a quarter turn draws what a camera turned by it sees', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+
+  // The same scene twice: once under a node with no rotation, once under a
+  // node turned a quarter about Y. Seen from a camera orbited by that same
+  // quarter, the second must look like the first -- positions, orientations
+  // and the harmonics' frame all included.
+  //
+  // Neither is turned upright, on purpose. Every half turn is a symmetric
+  // matrix, and so is a half turn about X followed by any turn about Y, so a
+  // test built on the upright turn cannot tell a harmonic frame from its
+  // transpose. A quarter turn about Y alone can: measured, the transposed frame
+  // moves a channel by up to 47 and ten thousand channels by more than 8.
+  const s = Math.SQRT1_2;
+  const quarterAboutY = [0, s, 0, s];
+  const shoot = async (gltf: string, azimuth: number) => {
+    await page.locator('#file-input').setInputFiles({
+      name: `splat-${azimuth.toFixed(3)}.gltf`, mimeType: 'model/gltf+json', buffer: Buffer.from(gltf),
+    });
+    await expect.poll(async () => (await loadedSplatCloud(page))?.count ?? 0).toBe(64);
+    return page.evaluate((azimuth) => new Promise<number[]>((resolve) => {
+      requestAnimationFrame(async () => {
+        const { state } = await import('/app/state.js' as string);
+        const viewer = state.viewer;
+        viewer.showGrid = false;
+        viewer.autoRotate = false;
+        viewer.camera.target.set([0, 0, 0]);
+        viewer.camera.distance = 14;
+        viewer.camera.azimuth = azimuth;
+        viewer.camera.elevation = 0.3;
+        viewer._render();
+        const { gl } = viewer;
+        const pixels = new Uint8Array(gl.drawingBufferWidth * gl.drawingBufferHeight * 4);
+        gl.readPixels(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+        resolve(Array.from(pixels));
+      });
+    }), azimuth);
+  };
+
+  const azimuth = 0.7;
+  const plain = await shoot(tinySplatGltf(64, [0, 0, 0, 1]), azimuth);
+  const turned = await shoot(tinySplatGltf(64, quarterAboutY), azimuth + Math.PI / 2);
+
+  // A frame with nothing in it would match anything.
+  const drawn = plain.filter((value, index) => index % 4 !== 3 && value > 16).length;
+  expect(drawn).toBeGreaterThan(plain.length / 50);
+  let worst = 0;
+  for (let index = 0; index < plain.length; index += 1) {
+    if (index % 4 === 3) continue;
+    worst = Math.max(worst, Math.abs(plain[index] - turned[index]));
+  }
+  // Not zero: a quarter turn is exact on paper and not in floating point, and
+  // splats of nearly equal depth can trade places in the bucketed sort, which
+  // moves a channel by up to 6 where they overlap. The transposed frame moves
+  // one by 47.
+  expect(worst).toBeLessThanOrEqual(8);
 });
 
 test('converter resolves glTF companions and reports decoded geometry', async ({ page }) => {

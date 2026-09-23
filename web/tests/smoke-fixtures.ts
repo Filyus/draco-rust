@@ -605,3 +605,96 @@ export function tinySplatPly(points = 64): { bytes: Buffer; values: Record<strin
   }
   return { bytes: Buffer.concat([Buffer.from(header, 'ascii'), body]), values };
 }
+
+/**
+ * The same splats as `tinySplatPly`, as a `KHR_gaussian_splatting` glTF.
+ *
+ * Stored in the PLY's own frame, as trained data is, and placed by a node
+ * whose rotation (`x, y, z, w`) turns it: `[1, 0, 0, 0]` is the half turn about
+ * X that the PLY reader applies itself, so with that rotation the two files
+ * describe one scene. Every domain is converted the way the reader converts a
+ * PLY -- from the same float32 inputs, by the same formulas -- so the two
+ * clouds can be compared value for value rather than to a tolerance chosen to
+ * make them pass.
+ */
+export function tinySplatGltf(points = 64, nodeRotation: number[] = [1, 0, 0, 0]): string {
+  const { values } = tinySplatPly(points);
+  const f32 = (value: number) => Math.fround(value);
+  const planes: Record<string, { type: string; data: number[] }> = {
+    POSITION: { type: 'VEC3', data: [] },
+    'KHR_gaussian_splatting:ROTATION': { type: 'VEC4', data: [] },
+    'KHR_gaussian_splatting:SCALE': { type: 'VEC3', data: [] },
+    'KHR_gaussian_splatting:OPACITY': { type: 'SCALAR', data: [] },
+    'KHR_gaussian_splatting:SH_DEGREE_0_COEF_0': { type: 'VEC3', data: [] },
+  };
+  const bands = [3, 5, 7];
+  bands.forEach((count, band) => {
+    for (let coefficient = 0; coefficient < count; coefficient += 1) {
+      planes[`KHR_gaussian_splatting:SH_DEGREE_${band + 1}_COEF_${coefficient}`] = { type: 'VEC3', data: [] };
+    }
+  });
+  for (let point = 0; point < points; point += 1) {
+    const at = (name: string) => f32(values[name][point]);
+    planes.POSITION.data.push(at('x'), at('y'), at('z'));
+    const [w, x, y, z] = [at('rot_0'), at('rot_1'), at('rot_2'), at('rot_3')];
+    const length = Math.hypot(w, x, y, z);
+    planes['KHR_gaussian_splatting:ROTATION'].data.push(x / length, y / length, z / length, w / length);
+    for (let axis = 0; axis < 3; axis += 1) {
+      planes['KHR_gaussian_splatting:SCALE'].data.push(Math.exp(at(`scale_${axis}`)));
+    }
+    planes['KHR_gaussian_splatting:OPACITY'].data.push(1 / (1 + Math.exp(-at('opacity'))));
+    planes['KHR_gaussian_splatting:SH_DEGREE_0_COEF_0'].data.push(at('f_dc_0'), at('f_dc_1'), at('f_dc_2'));
+    // f_rest is channel-major; glTF's coefficient k is (red k, green k, blue k).
+    let k = 0;
+    bands.forEach((count, band) => {
+      for (let coefficient = 0; coefficient < count; coefficient += 1, k += 1) {
+        planes[`KHR_gaussian_splatting:SH_DEGREE_${band + 1}_COEF_${coefficient}`].data
+          .push(at(`f_rest_${k}`), at(`f_rest_${k + 15}`), at(`f_rest_${k + 30}`));
+      }
+    });
+  }
+
+  const chunks: Buffer[] = [];
+  const bufferViews: object[] = [];
+  const accessors: object[] = [];
+  const attributes: Record<string, number> = {};
+  let offset = 0;
+  for (const [semantic, plane] of Object.entries(planes)) {
+    const bytes = Buffer.from(new Float32Array(plane.data).buffer);
+    chunks.push(bytes);
+    bufferViews.push({ buffer: 0, byteOffset: offset, byteLength: bytes.length });
+    const accessor: Record<string, unknown> = {
+      bufferView: bufferViews.length - 1,
+      componentType: 5126,
+      count: points,
+      type: plane.type,
+    };
+    if (semantic === 'POSITION') {
+      accessor.min = [0, 1, 2].map((axis) => Math.min(...plane.data.filter((_, i) => i % 3 === axis)));
+      accessor.max = [0, 1, 2].map((axis) => Math.max(...plane.data.filter((_, i) => i % 3 === axis)));
+    }
+    accessors.push(accessor);
+    attributes[semantic] = accessors.length - 1;
+    offset += bytes.length;
+  }
+  const buffer = Buffer.concat(chunks);
+  return JSON.stringify({
+    asset: { version: '2.0' },
+    extensionsUsed: ['KHR_gaussian_splatting'],
+    scene: 0,
+    scenes: [{ nodes: [0] }],
+    nodes: [{ mesh: 0, rotation: nodeRotation }],
+    meshes: [{
+      primitives: [{
+        mode: 0,
+        attributes,
+        extensions: {
+          KHR_gaussian_splatting: { kernel: 'ellipse', colorSpace: 'srgb_rec709_display' },
+        },
+      }],
+    }],
+    buffers: [{ byteLength: buffer.length, uri: `data:application/octet-stream;base64,${buffer.toString('base64')}` }],
+    bufferViews,
+    accessors,
+  });
+}

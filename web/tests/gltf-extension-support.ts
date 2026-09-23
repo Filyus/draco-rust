@@ -233,6 +233,34 @@ const INTERPRETED: Record<string, {
       assert.equal(built.nodes[0].light, 0, 'the node that placed it must keep pointing at it');
     },
   },
+  KHR_gaussian_splatting: {
+    // A primitive extension: its object holds how to read the splat, and the
+    // payload rides in the primitive's own attributes, which the document
+    // already carries by name. What the reading gains is that object, kept on
+    // the primitive -- `colorSpace` above all, since it decides whether the
+    // colour is decoded.
+    material: null,
+    effect: () => {},
+    document: {
+      meshes: [{
+        primitives: [{
+          attributes: { POSITION: 0 },
+          mode: 0,
+          extensions: {
+            KHR_gaussian_splatting: { kernel: 'ellipse', colorSpace: 'lin_rec709_display', projection: 'perspective' },
+          },
+        }],
+      }],
+    },
+    documentEffect: (built) => {
+      assert.deepEqual(
+        built.meshes[0].primitives[0].gaussianSplatting,
+        { kernel: 'ellipse', colorSpace: 'lin_rec709_display', projection: 'perspective' },
+        'the extension object must reach the primitive',
+      );
+      assert.equal(built.meshes[0].primitives[0].mode, 0, 'and the primitive stays POINTS');
+    },
+  },
   KHR_texture_transform: {
     material: {
       pbrMetallicRoughness: {
