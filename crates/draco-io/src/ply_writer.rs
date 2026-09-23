@@ -108,8 +108,13 @@ fn ply_scalar_type(data_type: DataType) -> Option<&'static str> {
     })
 }
 
-/// Property names this writer declares itself, which a generic cannot reuse.
-const RESERVED_PROPERTY_NAMES: [&str; 12] = [
+/// Property names a generic cannot take: every name the reader claims.
+///
+/// Not only the names this writer declares. The reader also takes `u`/`v` and
+/// `s`/`t` as texture coordinates, and refuses a whole file whose pair is
+/// incomplete or not `float` -- so a generic written as `v` would come back as
+/// half a texture coordinate, or not come back at all.
+const RESERVED_PROPERTY_NAMES: [&str; 16] = [
     "x",
     "y",
     "z",
@@ -122,6 +127,10 @@ const RESERVED_PROPERTY_NAMES: [&str; 12] = [
     "alpha",
     "texture_u",
     "texture_v",
+    "u",
+    "v",
+    "s",
+    "t",
 ];
 
 /// A little-endian value of the given type, as ASCII PLY spells it.
@@ -283,9 +292,10 @@ impl PlyWriter {
     /// Off by default, because it changes what a write produces. On, a mesh
     /// whose generics cannot be written faithfully is refused before anything
     /// of it is added: a 64-bit integer, which PLY has no type for; a name
-    /// that is empty or holds whitespace, which would break the header; a name
-    /// this writer already declares, such as `x` or `red`; and a name an
-    /// earlier mesh gave a different type.
+    /// that is not one token of printable ASCII, which the header cannot
+    /// hold; a name the reader claims for something else, such as `x`, `red`
+    /// or the texture coordinates `u`/`v` and `s`/`t`; and a name an earlier
+    /// mesh gave a different type.
     pub fn with_generic_attributes(mut self, enabled: bool) -> Self {
         self.carry_generics = enabled;
         self
@@ -323,9 +333,12 @@ impl PlyWriter {
                     "PLY has no type for the {data_type:?} attribute \"{name}\""
                 )));
             }
-            if name.is_empty() || name.chars().any(char::is_whitespace) {
+            // A PLY header is ASCII text split on whitespace, so a name has to
+            // be one token of printable ASCII to be a name at all.
+            if name.is_empty() || !name.chars().all(|c| c.is_ascii_graphic()) {
                 return Err(refuse(format!(
-                    "\"{name}\" cannot name a PLY property: it is empty or holds whitespace"
+                    "\"{name}\" cannot name a PLY property: a name is one token of \
+                     printable ASCII, without whitespace"
                 )));
             }
             let components = attribute.num_components() as usize;
@@ -1123,6 +1136,35 @@ mod tests {
         }
     }
 
+    /// Values PLY's text form has no spelling for in its specification --
+    /// not-a-number and the infinities -- still go out as tokens a C `strtod`
+    /// accepts, and read back as themselves.
+    #[test]
+    #[cfg(feature = "ply-reader")]
+    fn non_finite_floats_survive_ascii() {
+        let values = [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1e-45, 3.0e38];
+        let mesh = with_named_generics(5, &[("weight", DataType::Float32, &values)]);
+        let mut writer = PlyWriter::new()
+            .with_format(PlyFormat::Ascii)
+            .with_generic_attributes(true);
+        Writer::add_mesh(&mut writer, &mesh, None).unwrap();
+        let read = PlyReader::from_bytes(writer.write_to_vec().unwrap())
+            .with_generic_attributes(true)
+            .read_mesh()
+            .unwrap();
+        let (_, back) = read_generic(&read, "weight").unwrap();
+        assert!(back[0].is_nan());
+        assert_eq!(
+            back[1..],
+            [
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                1e-45f32 as f64,
+                3.0e38f32 as f64
+            ]
+        );
+    }
+
     /// Off unless asked for, so an existing caller's output does not change.
     #[test]
     fn named_generics_are_not_written_by_default() {
@@ -1204,6 +1246,20 @@ mod tests {
             "whitespace would split the header line",
         );
         assert!(error.contains("whitespace"), "{error}");
+
+        let error = refused(
+            with_named_generics(1, &[("непрозрачность", DataType::Float32, &[1.0])]),
+            "a PLY header is ASCII",
+        );
+        assert!(error.contains("ASCII"), "{error}");
+
+        // Claimed by the reader as a texture coordinate, though this writer
+        // never declares it: written, it would not read back as itself.
+        let error = refused(
+            with_named_generics(1, &[("v", DataType::Float32, &[1.0])]),
+            "the reader takes v as a texture coordinate",
+        );
+        assert!(error.contains("reuse"), "{error}");
 
         let error = refused(
             with_named_generics(1, &[("red", DataType::Float32, &[1.0])]),
