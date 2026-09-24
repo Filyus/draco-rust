@@ -104,7 +104,18 @@ impl Default for AstcConverter {
 }
 
 impl AstcConverter {
-    /// Derive everything that does not come out of the baked table.
+    /// The converter every decode uses, built on first use.
+    ///
+    /// Its tables depend on nothing but constants, so one copy serves every
+    /// file. Deriving them is about 600,000 candidate evaluations; done per
+    /// decode, that dominated turning a small image into ASTC.
+    pub fn shared() -> &'static Self {
+        static CONVERTER: std::sync::OnceLock<AstcConverter> = std::sync::OnceLock::new();
+        CONVERTER.get_or_init(Self::new)
+    }
+
+    /// Derive everything that does not come out of the baked table. Prefer
+    /// [`AstcConverter::shared`], which does it once.
     pub fn new() -> Self {
         let unquant = ise_to_unquant();
 

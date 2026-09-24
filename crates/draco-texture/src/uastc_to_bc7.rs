@@ -57,7 +57,18 @@ impl Default for Bc7Converter {
 }
 
 impl Bc7Converter {
-    /// Build the per-file tables.
+    /// The converter every decode uses, built on first use.
+    ///
+    /// Its tables depend on nothing but constants, so one copy serves every
+    /// file. A few milliseconds is cheap once and not per decode, where it
+    /// was most of what turning a small image into BC7 cost.
+    pub fn shared() -> &'static Self {
+        static CONVERTER: std::sync::OnceLock<Bc7Converter> = std::sync::OnceLock::new();
+        CONVERTER.get_or_init(Self::new)
+    }
+
+    /// Build the tables. Prefer [`Bc7Converter::shared`], which builds them
+    /// once.
     pub fn new() -> Self {
         // BC7 mode 6 stores seven bits and a shared low bit, so a candidate
         // endpoint is `(value << 1) | pbit`; mode 5 stores seven bits and

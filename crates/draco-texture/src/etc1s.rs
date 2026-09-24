@@ -386,7 +386,7 @@ impl Etc1sDecoder {
         width: u32,
         height: u32,
     ) -> Result<Vec<u8>, Etc1sError> {
-        let converter = crate::etc1s_to_bc1::Bc1Converter::new();
+        let converter = crate::etc1s_to_bc1::Bc1Converter::shared();
         let blocks_x = width.div_ceil(4) as usize;
         let total = blocks_x * height.div_ceil(4) as usize * 8;
         let mut blocks: Vec<u8> = Vec::new();
@@ -532,7 +532,7 @@ impl Etc1sDecoder {
         width: u32,
         height: u32,
     ) -> Result<Vec<u8>, Etc1sError> {
-        let converter = crate::etc1s_to_bc1::Bc1Converter::new();
+        let converter = crate::etc1s_to_bc1::Bc1Converter::shared();
         let blocks_x = width.div_ceil(4) as usize;
         let blocks_y = height.div_ceil(4) as usize;
         let total = blocks_x * blocks_y * 16;
@@ -808,7 +808,7 @@ impl Etc1sDecoder {
     ) -> Result<Vec<u8>, Etc1sError> {
         use crate::etc1s_to_astc::{AstcConverter, Block};
 
-        let converter = AstcConverter::new();
+        let converter = AstcConverter::shared();
         let blocks_x = width.div_ceil(4) as usize;
         let blocks_y = height.div_ceil(4) as usize;
         let total = blocks_x * blocks_y * 16;

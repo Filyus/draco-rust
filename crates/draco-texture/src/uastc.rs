@@ -564,7 +564,7 @@ pub fn decode_bc7(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Uastc
         return Err(UastcError::Truncated(data.len()));
     }
 
-    let converter = crate::uastc_to_bc7::Bc7Converter::new();
+    let converter = crate::uastc_to_bc7::Bc7Converter::shared();
     let mut blocks = zeroed(blocks_x * blocks_y * 16)?;
     for index in 0..blocks_x * blocks_y {
         let block = &data[index * BLOCK_SIZE..index * BLOCK_SIZE + BLOCK_SIZE];

@@ -197,7 +197,18 @@ impl Default for Bc1Converter {
 }
 
 impl Bc1Converter {
-    /// Build the per-file tables.
+    /// The converter every decode uses, built on first use.
+    ///
+    /// Its tables depend on nothing but constants, so one copy serves every
+    /// file. Building them is about 1.3 million candidate evaluations; done per
+    /// decode, that dominated turning a small image into BC1 or BC3.
+    pub fn shared() -> &'static Self {
+        static CONVERTER: std::sync::OnceLock<Bc1Converter> = std::sync::OnceLock::new();
+        CONVERTER.get_or_init(Self::new)
+    }
+
+    /// Build the tables. Prefer [`Bc1Converter::shared`], which builds them
+    /// once.
     pub fn new() -> Self {
         // BC1 numbers its four colours low, high, then the two interpolants,
         // so a selector in ordinary dark-to-light order has to be permuted.
