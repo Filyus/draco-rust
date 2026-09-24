@@ -70,6 +70,10 @@ Point/attribute access comes from `PointCloud` via `Deref`: `num_points`,
 Topology cleanup: `deduplicate_point_ids` rebuilds point and attribute maps
 with duplicate point IDs collapsed.
 
+Conversion: `into_point_cloud` takes the underlying `PointCloud` and drops the
+faces, so geometry read as a mesh from a file with none can go to
+`PointCloudEncoder` without its attributes being rebuilt.
+
 ---
 
 ### PointCloud
@@ -499,6 +503,26 @@ Common knobs: `get_encoding_speed`, `get_decoding_speed`, `get_speed`,
 CLI-equivalent convenience: `set_compression_level`, `get_compression_level`,
 `set_attribute_quantization`, and `get_attribute_quantization`.
 
+Point-cloud options upstream does not have: `set_prediction_search`,
+`prediction_search`, `set_spatial_point_order`, and `spatial_point_order`.
+Both are off by default, and left off the output is byte-identical to C++
+Draco's. Turned on, the stream differs from what upstream writes for the same
+input but stays one every Draco decoder reads, C++ included:
+
+- `set_prediction_search` chooses each point-cloud attribute's prediction
+  scheme, `Difference` or none, by the symbol coder's own bit estimate, where
+  upstream always differences. It pays where consecutive values do not
+  correlate, such as a Gaussian splat's harmonics, and finds nothing on a
+  scanned surface. An attribute with an explicit `prediction_scheme` is left
+  alone.
+- `set_spatial_point_order` writes the points of a sequential point cloud in
+  Morton order over the positions, so the difference predictor predicts from a
+  spatial neighbour. It reorders the decoded points, and it can make a file
+  bigger when an attribute varies along the input order, such as an index or a
+  timestamp. The kd-tree coder chooses its own order and is unaffected.
+
+The rustdoc of each carries the measurements.
+
 `set_version` accepts any `(major, minor)`, but the encode does not: each
 geometry/coder combination claims the bitstream versions that have an
 encode/decode round-trip test, listed by `version::EncodeTarget::claimed_versions`
@@ -513,6 +537,8 @@ the target does claim. `(0, 0)` means "use the default".
 | `encoding_speed` | i32 | 5 | 0=best compression, 10=fastest |
 | `decoding_speed` | i32 | 5 | 0=best compression, 10=fastest |
 | `quantization_bits` | i32 | unset (no quantization) | Bits per component, 1..=30 for position/generic attributes, 2..=30 for normals |
+| `prediction_scheme_search` | i32 | 0 | Non-zero: `set_prediction_search`. Not an upstream key |
+| `spatial_point_order` | i32 | 0 | Non-zero: `set_spatial_point_order`. Not an upstream key |
 
 #### Relationship to the `draco_encoder` CLI
 

@@ -21,6 +21,11 @@ options give the same bytes, and each implementation reads what the other
 writes. The deliberate exceptions are in
 [`COMPATIBILITY.md`](https://github.com/Filyus/draco-rust/blob/main/COMPATIBILITY.md).
 
+Two point-cloud encoder options go past upstream on request:
+`set_prediction_search` and `set_spatial_point_order` make smaller files that
+any Draco decoder reads, but not the bytes C++ Draco writes. Both are off by
+default.
+
 The crate encodes and decodes:
 
 - EdgeBreaker standard meshes: speeds 5 to 9.

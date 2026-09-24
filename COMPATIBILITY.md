@@ -288,6 +288,44 @@ A file with a *duplicated* vertex, rather than an unused one, encodes byte for
 byte the same on both sides. That case is upstream's rule faithfully ported, and
 the merge is what makes triangles that share a position share an edge.
 
+## Two point-cloud encoder options upstream does not have
+
+### What this means for a file
+
+Nothing, unless you turn them on. `EncoderOptions::set_prediction_search` and
+`set_spatial_point_order` are off by default, and with them off a point cloud
+encodes to the same bytes as in C++ Draco.
+
+Turned on, they write smaller files than upstream would for the same input,
+and different bytes. Every such file is one an ordinary Draco decoder reads,
+C++ Draco's included:
+
+- The prediction search can write `PREDICTION_NONE` for an attribute. Upstream's
+  encoder never picks it for a point cloud; its decoder has read it since
+  bitstream 1.1.
+- The spatial order changes no element of the format, only which point comes
+  first. The decoded cloud has the same points in a different order, which
+  matters to anything outside the file that indexes it by point number.
+
+### What pins it
+
+`parity_point_cloud_options.rs` in `draco-cpp-test-bridge` decodes streams
+written with each option in upstream's own decoder and compares every value of
+every attribute. Each case first asserts that the option changed the bytes, so
+a quietly inert option cannot pass as compatible.
+
+## 64-bit attribute values are deduplicated
+
+`Mesh::finalize` merges each attribute's bit-identical values, as the readers
+of both implementations do before encoding. Upstream's `DeduplicateValues`
+covers types up to 32 bits and fails on `DT_FLOAT64`, `DT_INT64` and
+`DT_UINT64`. This port merges those too.
+
+No file changes: upstream's readers never produce a 64-bit attribute to merge,
+and for every type upstream accepts the result is the same. What it allows is a
+reader that carries a PLY `double` property onto a mesh, which failed here
+before for the same reason it would in upstream.
+
 ## Smaller divergences in the same family
 
 - **A pre-2.0 `uint32` parent is read signed.** Below bitstream 2.0 upstream

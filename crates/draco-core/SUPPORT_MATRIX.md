@@ -42,6 +42,12 @@ All decode and encode in `draco-core`.
 | Triangle mesh, EdgeBreaker valence | yes | yes | Behind `edgebreaker_valence_*`; decode covers every version, encode writes current streams by default and, with `legacy_bitstream_encode`, round-trips at 2.2, 2.1, 2.0, 1.2 and 1.1. See [Legacy & compatibility](#legacy--compatibility) for why encode is an enumeration and decode is not. |
 | Triangle mesh, EdgeBreaker predictive (type `1`) | yes (≤ `0.9.1`) | decode yes, encode explicit | Legacy connectivity; behind the legacy features. See [Legacy & compatibility](#legacy--compatibility). |
 
+The point-cloud byte parity above is with the options at their defaults.
+`EncoderOptions::set_prediction_search` and `set_spatial_point_order`, both
+off by default, write streams upstream's encoder does not: `PREDICTION_NONE`
+for an attribute, and points in Morton order. Upstream's decoder reads both,
+checked value for value in `parity_point_cloud_options.rs`.
+
 ## Attribute encoders & semantics
 
 All four sequential attribute encoders decode and encode in `draco-core`:
