@@ -220,14 +220,26 @@ export function selectedFromNamedAttributes(
  * - **Harmonics at 6.** A quarter of the file for 0.1 dB on the street and
  *   about 1 dB on an interior -- the best trade measured by a distance. Four
  *   bits halve the file again and cost an interior 10 dB.
- * - **Everything else at 8.** Colour, opacity, scale, rotation. Opacity stays a
- *   logit: storing alpha instead was measured as a small loss, not a gain.
+ * - **Colour, opacity and scale at 10.** With the harmonics at 6 these carry
+ *   most of what error is left, and the errors of different properties add,
+ *   so each is worth its own bits: 1.7 bytes a splat buy 2.8 to 3.3 dB. Twelve
+ *   bits buy another 0.3 for the same again. Opacity stays a logit: storing
+ *   alpha instead was measured as a small loss, not a gain.
+ * - **Everything else at 8.** Rotation, and whatever else the file carries.
+ *
+ * At this budget the street and an interior render better than SPZ's at 8/8
+ * does, in 8 and 21 per cent fewer bytes.
  */
-export const SPLAT_BUDGET = { positions: 16, harmonics: 6, other: 8 } as const;
+export const SPLAT_BUDGET = { positions: 16, harmonics: 6, appearance: 10, other: 8 } as const;
+
+/** The properties written at `SPLAT_BUDGET.appearance`, by name prefix. */
+const APPEARANCE_PREFIXES = ['f_dc_', 'opacity', 'scale_'];
 
 /** The bits a splat property is written with, by its name in the file. */
 export function splatBitsFor(name: string): number {
-  return name.startsWith('f_rest_') ? SPLAT_BUDGET.harmonics : SPLAT_BUDGET.other;
+  if (name.startsWith('f_rest_')) return SPLAT_BUDGET.harmonics;
+  if (APPEARANCE_PREFIXES.some((prefix) => name.startsWith(prefix))) return SPLAT_BUDGET.appearance;
+  return SPLAT_BUDGET.other;
 }
 
 function sigmoid(x: number): number {

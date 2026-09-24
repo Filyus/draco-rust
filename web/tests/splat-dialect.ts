@@ -357,16 +357,20 @@ function matrixOf(q: readonly number[]): number[][] {
   assert.equal(selected.properties.opacity, opacity, 'the same array, not a copy');
 }
 
-// The budget a splat is written with: harmonics coarser than everything else,
-// and nothing about the name decided by accident -- `f_dc` is colour, not a
-// harmonic band, however alike the names look.
+// The budget a splat is written with: harmonics coarsest, colour, opacity and
+// scale finest, and nothing about the name decided by accident -- `f_dc` is
+// colour, not a harmonic band, however alike the names look.
 {
   assert.equal(splatBitsFor('f_rest_0'), SPLAT_BUDGET.harmonics);
   assert.equal(splatBitsFor('f_rest_44'), SPLAT_BUDGET.harmonics);
-  for (const name of ['f_dc_0', 'opacity', 'scale_1', 'rot_3']) {
+  for (const name of ['f_dc_0', 'f_dc_2', 'opacity', 'scale_1']) {
+    assert.equal(splatBitsFor(name), SPLAT_BUDGET.appearance, name);
+  }
+  for (const name of ['rot_0', 'rot_3', 'confidence']) {
     assert.equal(splatBitsFor(name), SPLAT_BUDGET.other, name);
   }
   assert.ok(SPLAT_BUDGET.harmonics < SPLAT_BUDGET.other);
+  assert.ok(SPLAT_BUDGET.other < SPLAT_BUDGET.appearance);
 }
 
 console.log('splat dialect: recognition, activations and harmonics match the measured rows');

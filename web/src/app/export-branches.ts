@@ -727,8 +727,9 @@ export async function exportToDrc(
   if (isSplatPly(names)) {
     warnings.push(
       `A Gaussian splat is written with its own measured budget -- positions at `
-      + `${SPLAT_BUDGET.positions} bits, harmonics at ${SPLAT_BUDGET.harmonics}, everything `
-      + `else at ${SPLAT_BUDGET.other} -- and the quantization sliders do not apply to it`,
+      + `${SPLAT_BUDGET.positions} bits, harmonics at ${SPLAT_BUDGET.harmonics}, colour, `
+      + `opacity and scale at ${SPLAT_BUDGET.appearance}, everything else at `
+      + `${SPLAT_BUDGET.other} -- and the quantization sliders do not apply to it`,
     );
     return modules.drc.module.create_drc(splatForDrc(merged), {
       encoding_speed: settings.encodingSpeed,

@@ -973,9 +973,11 @@ test('a Gaussian splat survives a .drc export and opens as a splat again', async
       shError = Math.max(shError, Math.abs(back.sh[index] - value));
     });
   }
-  // Opacity at eight bits of a seven-unit logit range: well under a percent
-  // of alpha anywhere.
-  expect(alphaError).toBeLessThan(0.01);
+  // Opacity at ten bits of a seven-unit logit range is a half-step of 0.0034
+  // in the logit, and alpha moves by at most a quarter of that: 0.00086. At
+  // eight bits the same bound is 0.0034, so this also says the budget reached
+  // opacity.
+  expect(alphaError).toBeLessThan(0.0009);
   // The harmonics at six bits of a 0.4-wide range are a step of 0.0063, so
   // nothing may move by more than half of one, 0.0032. And something must
   // move by clearly more than eight bits would allow -- whose half-step here
