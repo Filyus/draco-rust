@@ -29,19 +29,21 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `PREDICTION_NONE` having been in the bitstream since version 1.1.
   It is narrow: on a photogrammetry capture of eight million coloured points it
   finds nothing, because differencing serves both attributes well there.
-- `EncoderOptions::set_spatial_point_order` emits a point cloud's points in
-  Morton order rather than in the order they were handed in, which gives the
-  difference predictor a spatial neighbour to predict from. A point cloud's
-  point order carries no meaning — nothing refers to it and every attribute is
-  read through the same index — so an encoder may choose it. Off by default,
-  for the same byte-parity reason. It reorders the decoded points, and it can
-  make a file bigger when an attribute varies along the order it came in rather
-  than through space; both are measured in `spatial_point_order_test`. It is
-  the general one of the two: 53.02 to 45.47 bytes per point on the splat scene
+- `EncoderOptions::set_spatial_point_order` emits a point cloud's points in a
+  spatial order rather than in the order they were handed in, which gives the
+  difference predictor a spatial neighbour to predict from. The order is a
+  Morton curve for now and is not part of the option's contract, so a later
+  release may pick a better one. A point cloud's point order carries no
+  meaning — nothing refers to it and every attribute is read through the same
+  index — so an encoder may choose it. Off by default, for the same
+  byte-parity reason. It reorders the decoded points, and it can make a file
+  bigger when an attribute varies along the order it came in rather than
+  through space; both are measured in `spatial_point_order_test`. It is the
+  general one of the two: 53.02 to 45.47 bytes per point on the splat scene
   (45.43 with the prediction search), and 6.26 to 4.23 — 32% — on a 223 MB
-  photogrammetry capture of eight million coloured points. The curve is laid
-  over a grid as fine as the positions' own `quantization_bits`, capped at the
-  21 bits an axis that still interleave into a `u64` key.
+  photogrammetry capture of eight million coloured points. The Morton curve is
+  laid over a grid as fine as the positions' own `quantization_bits`, capped at
+  the 21 bits an axis that still interleave into a `u64` key.
 
 ### Changed
 

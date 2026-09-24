@@ -202,8 +202,14 @@ impl EncoderOptions {
         self.get_global_int("spatial_point_order", 0) != 0
     }
 
-    /// Lets the encoder emit a point cloud's points in Morton order rather than
-    /// in the order they were handed in.
+    /// Lets the encoder emit a point cloud's points in a spatial order rather
+    /// than in the order they were handed in.
+    ///
+    /// Which spatial order is the encoder's choice and not part of this
+    /// option's contract: today it is a Morton curve, and a later version may
+    /// use a better curve, or spend more encode time on the order at slower
+    /// `encoding_speed` settings. Every such stream decodes the same way; only
+    /// the order of the decoded points and the size differ.
     ///
     /// A point cloud's point order carries no meaning: no connectivity refers
     /// to it, every attribute is read through the same point index, and a
@@ -220,7 +226,7 @@ impl EncoderOptions {
     /// cloud whose attributes vary through space rather than along its file
     /// order should expect something in that range.
     ///
-    /// The curve is laid over a grid as fine as the positions' own
+    /// The Morton curve is laid over a grid as fine as the positions' own
     /// `quantization_bits`, up to 21 bits an axis. Both halves of that are
     /// measured: a coarser grid puts points the stream will distinguish into
     /// one cell, where their order is whatever the sort left them in, and a

@@ -277,7 +277,7 @@ file:
 | option | what the encoder does differently | why upstream's decoder reads it |
 | --- | --- | --- |
 | `set_prediction_search` | May code an attribute with no prediction (`PREDICTION_NONE`) where upstream always uses `Difference`. | Upstream's decoder has read `PREDICTION_NONE` since bitstream 1.1; its encoder just never picks it for a point cloud. |
-| `set_spatial_point_order` | Writes the points in Morton order over their positions instead of input order. | The format is unchanged; only the point order differs. |
+| `set_spatial_point_order` | Writes the points in a spatial order over their positions instead of input order; a Morton curve today, open to change. | The format is unchanged; only the point order differs. |
 
 The spatial order also changes the order of the decoded points. That matters
 only to data outside the file that refers to points by index.

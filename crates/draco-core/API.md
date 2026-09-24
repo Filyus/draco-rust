@@ -516,10 +516,12 @@ input but stays one every Draco decoder reads, C++ included:
   scanned surface. An attribute with an explicit `prediction_scheme` is left
   alone.
 - `set_spatial_point_order` writes the points of a sequential point cloud in
-  Morton order over the positions, so the difference predictor predicts from a
-  spatial neighbour. It reorders the decoded points, and it can make a file
-  bigger when an attribute varies along the input order, such as an index or a
-  timestamp. The kd-tree coder chooses its own order and is unaffected.
+  a spatial order over the positions, so the difference predictor predicts from
+  a spatial neighbour. Which order is not part of the contract: today it is a
+  Morton curve, and a later version may choose a better one. It reorders the
+  decoded points, and it can make a file bigger when an attribute varies along
+  the input order, such as an index or a timestamp. The kd-tree coder chooses
+  its own order and is unaffected.
 
 The rustdoc of each carries the measurements.
 
