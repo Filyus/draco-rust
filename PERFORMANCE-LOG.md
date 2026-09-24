@@ -36,7 +36,7 @@ figure at all.
 `rejected` -- tried, deliberately not kept. `retracted` -- an earlier claim
 here was withdrawn. `diagnostic` -- measured only, no change proposed.
 
-67 rounds: 37 landed, 10 diagnostic, 10 null, 8 retracted, 2 rejected.
+68 rounds: 38 landed, 10 diagnostic, 10 null, 8 retracted, 2 rejected.
 
 | Round | Verdict | Headline |
 | --- | --- | ---: |
@@ -107,6 +107,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [The Reuse Two Items Proposed, Which Was A Correctness Bug](#the-reuse-two-items-proposed-which-was-a-correctness-bug) | retracted | `0.72x` |
 | [The Attribute Storage, Kept -- And It Pays](#the-attribute-storage-kept-and-it-pays) | landed | `4-5%` |
 | [A Refresh, No Change Since The Attribute-Storage Round](#a-refresh-no-change-since-the-attribute-storage-round) | diagnostic | `<=0.03x` |
+| [KTX2: Constant Tables, Built Per Decode](#ktx2-constant-tables-built-per-decode) | landed | `3.04x -> 1.27x` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -4069,6 +4070,49 @@ reported, not a regression. The full figures are folded into the Named
 Models table above rather than kept separately, per this document's own
 practice of quoting absolutes from one run rather than carrying them between
 snapshots.
+
+### KTX2: Constant Tables, Built Per Decode
+
+2026-09-24, `draco-texture`, Windows, against the vendored reference in
+`tools/basis-cpp-oracle` (revision `9bebe16`, built by its own `build.rs`).
+
+Found through the fuzzer rather than a profile. `ktx2_transcode` ran at 12
+executions a second on CI where its own comment recorded fifty, and at 2.8 ms a
+file without instrumentation. Three converters built lookup tables that depend
+on nothing but constants, and each decode built them again:
+
+| converter | per-decode work | used by |
+| --- | ---: | --- |
+| `Bc1Converter` | ~1.3 million candidates | ETC1S to BC1, and to BC3's colour half |
+| `AstcConverter` | ~600,000 candidates | ETC1S to ASTC |
+| `Bc7Converter` | ~12.6 million candidates | UASTC to BC7 |
+
+Each now has `shared()`, a `OnceLock` built on first use, and every decode path
+takes it. Output is unchanged: `parity.rs` still agrees with the reference on
+every fixture, level and target.
+
+`cargo run --release --manifest-path tools/basis-cpp-oracle/Cargo.toml
+--example speed`, which times a whole call per image on both sides (parse,
+codebooks, decode) over every fixture, level and target, best of seven:
+
+| target | before | after | reference | after / reference |
+| --- | ---: | ---: | ---: | ---: |
+| Bc1 | 86.4 ms | 15.3 ms | 14.3 ms | 1.07 |
+| Bc3 | 89.7 ms | 17.6 ms | 15.6 ms | 1.13 |
+| Bc7 | 191.3 ms | 13.0 ms | 8.1 ms | 1.61 |
+| Astc | 48.8 ms | 27.1 ms | 20.3 ms | 1.33 |
+| all eleven | 591.3 ms | 247.0 ms | 195.0 ms | 1.27 |
+
+The other seven targets did not move and sit at 1.19-1.38x.
+
+Under the fuzzer's own build (ASan and coverage, in WSL) on a 721-file local
+corpus, `ktx2_transcode` went from 222 to 555 executions a second. A lower
+`MAX_TEXELS` was measured first and rejected: 2^12 loses 407 edges of the
+corpus's coverage and 2^10 loses 1,375, so the cost was never the image size.
+
+What is left against the reference is a flat 1.2-1.4x on every target,
+including those that were never slow, which points at the per-call part both
+sides share rather than at any one converter. Not investigated.
 
 ## Unexplored
 
