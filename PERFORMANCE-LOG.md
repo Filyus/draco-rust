@@ -36,7 +36,7 @@ figure at all.
 `rejected` -- tried, deliberately not kept. `retracted` -- an earlier claim
 here was withdrawn. `diagnostic` -- measured only, no change proposed.
 
-68 rounds: 38 landed, 10 diagnostic, 10 null, 8 retracted, 2 rejected.
+69 rounds: 39 landed, 10 diagnostic, 10 null, 8 retracted, 2 rejected.
 
 | Round | Verdict | Headline |
 | --- | --- | ---: |
@@ -108,6 +108,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [The Attribute Storage, Kept -- And It Pays](#the-attribute-storage-kept-and-it-pays) | landed | `4-5%` |
 | [A Refresh, No Change Since The Attribute-Storage Round](#a-refresh-no-change-since-the-attribute-storage-round) | diagnostic | `<=0.03x` |
 | [KTX2: Constant Tables, Built Per Decode](#ktx2-constant-tables-built-per-decode) | landed | `3.04x -> 1.27x` |
+| [KTX2: Bit Reading, And Solid UASTC Blocks](#ktx2-bit-reading-and-solid-uastc-blocks) | landed | `1.27x -> 0.74x` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -4113,6 +4114,65 @@ corpus's coverage and 2^10 loses 1,375, so the cost was never the image size.
 What is left against the reference is a flat 1.2-1.4x on every target,
 including those that were never slow, which points at the per-call part both
 sides share rather than at any one converter. Not investigated.
+
+### KTX2: Bit Reading, And Solid UASTC Blocks
+
+2026-09-24, `draco-texture`, Windows, against the same vendored reference,
+continuing the round above from its `1.27x`. Commits `437dc83e`, `b1704365`
+and `c88311c7`. The `speed` example now reports ETC1S and UASTC separately:
+a target is two different paths from the two codecs, and the combined figure
+hid that ETC1S was already level while UASTC was `1.92x`.
+
+**ETC1S: the Huffman decoder.** Every symbol was read a bit at a time, up to
+sixteen single-bit reads with a table check after each, where the reference
+resolves `cHuffmanFastLookupBits` bits in one lookup. A 1024-entry table of
+symbol and length now does the same, built from the same canonical
+assignment, with the bit-at-a-time walk kept for longer codes and for the gaps
+a one-symbol table leaves. The bit reader stages 64 bits and refills with one
+eight-byte load, the arrangement `zlite`'s DEFLATE decoder uses (DEFLATE and
+Basis share the bit order, so its decode-table layout carries over). ETC1S
+went from level with the reference to `0.71x`.
+
+**UASTC: reading blocks, and not reading solid ones.** Callgrind on the large
+UASTC fixture put the cost in `unpack_block` and in packing colours nothing
+needed packed. 88% of that fixture's blocks are solid-colour. In order of
+effect:
+
+- a solid block is recognised from its first byte and written from its
+  first 64 bits, colour and ETC hints, without a block description at all,
+  as the reference's per-target solid paths do (BC4, BC5, EAC, ASTC void
+  extent, BC7 mode 5/6, ETC1 from hints); this alone took UASTC from `1.07x`
+  to `0.86x`
+- other blocks read every field as one unaligned load out of a zero-padded
+  copy, the reference's fast path made safe everywhere, instead of a byte
+  loop and then a `u128` shift
+- the ETC hints are read only by the ETC targets
+- endpoint values live inline instead of a `Vec` per block, unquantization
+  is a table built once, BC4 gathers its selectors in one word, and ASTC
+  reverses weights with `u32::reverse_bits`
+
+Result, best of seven, whole calls over every fixture, level and target:
+
+| | before this round | after |
+| --- | ---: | ---: |
+| ETC1S, all targets | `~1.0x` | `0.71x` |
+| UASTC, all targets | `1.92x` | `0.87x` |
+| both codecs | `1.27x` | `0.74x` |
+
+Every target is now level with the reference or faster; the slowest is BC7
+from UASTC at `1.02-1.04x`. `parity.rs` agrees on all 346 images throughout,
+and `ktx2_transcode` ran 200,000 and then 138,000 executions under ASan
+without a finding.
+
+Measured nulls on the way: an inline array instead of the per-block
+`Vec` moved UASTC by the noise (`1.92x` to `1.83x`), as did the
+unquantization table (`1.79x`), and zeroing the output buffer turned out not
+to matter either. What did matter every time was something callgrind named,
+which is the lesson this round keeps.
+
+**Caveat.** The fixtures' UASTC blocks are mostly solid, so the solid path
+weighs heavily in these ratios. A texture of busy detail spends its time in
+the full unpack, which this round sped up but did not measure on its own.
 
 ## Unexplored
 
