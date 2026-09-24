@@ -434,7 +434,11 @@ Package: `basis-cpp-oracle`, which builds Binomial's transcoder from the
 vendored source at revision `9bebe16`
 
 Purpose: `draco-texture` against the reference it was ported from, per codec
-and per target. Every fixture, every level, every target both sides reach;
+and per target. Transcoding only -- `draco-texture` has no Basis encoder --
+and without Zstd supercompression, which the reference is built without and
+which is undone for both sides before timing; a Zstd file's `ruzstd` pass comes
+on top of these figures and is compared with nothing. Every fixture, every
+level, every target both sides reach;
 each side makes a whole call per image -- parse, codebooks, decode -- because
 that is what the reference does on every call, and one-time tables are warmed
 on both first. Best of seven rounds. ETC1S and UASTC are reported apart: a
