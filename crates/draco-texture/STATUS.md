@@ -30,6 +30,12 @@ Build slices are by hardware family — `bc`, `etc`, `astc` — because that is 
 axis along which a target goes out of date. There is no `legacy` flag: one was
 built and removed, see below.
 
+It transcodes faster than the reference it was ported from, on every target:
+about `0.74x` of the vendored build's time across both codecs as of
+2026-09-24, `0.70x` for ETC1S and `0.85x` for UASTC. The figures and the harness are in
+[`PERFORMANCE.md`](../../PERFORMANCE.md), under *KTX2 Transcode Against The
+Reference*.
+
 ### What backs that up
 
 Everything is gated byte for byte against Binomial's own build, the one three.js

@@ -426,6 +426,39 @@ against its parent commit.
 cargo run --release --manifest-path crates/Cargo.toml   -p draco-cpp-test-bridge --example dump_decoded -- grid_s5.drc out.bin
 ```
 
+### KTX2 Transcode Against The Reference
+
+File: `tools/basis-cpp-oracle/examples/speed.rs`
+
+Package: `basis-cpp-oracle`, which builds Binomial's transcoder from the
+vendored source at revision `9bebe16`
+
+Purpose: `draco-texture` against the reference it was ported from, per codec
+and per target. Every fixture, every level, every target both sides reach;
+each side makes a whole call per image -- parse, codebooks, decode -- because
+that is what the reference does on every call, and one-time tables are warmed
+on both first. Best of seven rounds. ETC1S and UASTC are reported apart: a
+target is two different paths from the two codecs, and one total hid which
+was slow.
+
+```sh
+cargo run --release --manifest-path tools/basis-cpp-oracle/Cargo.toml --example speed
+```
+
+Where it stands, 2026-09-24 on Windows, as time against the reference's, over
+the last two runs:
+
+| codec | all targets | slowest target |
+| --- | ---: | ---: |
+| ETC1S | `0.70-0.71x` | ASTC and RGBA8, about `0.8x` |
+| UASTC | `0.85-0.86x` | BC7, `0.91-0.94x` |
+| both | `0.73-0.74x` | |
+
+Every target is faster than the reference. The fixtures' UASTC blocks are 88%
+solid-colour, which weights the UASTC figure toward that path; how a busy
+UASTC texture stands has not been measured. The rounds behind these figures
+are in `PERFORMANCE-LOG.md`, from *KTX2: Constant Tables, Built Per Decode*.
+
 ## Profiling And Micro-Benchmarks
 
 ### Sequential Pipeline Profile
