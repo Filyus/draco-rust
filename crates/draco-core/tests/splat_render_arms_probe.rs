@@ -645,6 +645,25 @@ fn write_the_arms() {
                 ..full
             }),
         },
+        // The web preset with the points left in file order. The viewer sorts
+        // on depth quantized to sixteen bits and keeps file order within a
+        // bucket, so a reordered file blends ties the other way round -- a
+        // difference no bit depth can reach.
+        Arm {
+            name: "rebalance6at10pos18rot10inorder",
+            encode: Some(Budget {
+                harmonics: 6,
+                raise: &[
+                    ("position", 18),
+                    ("rot_", 10),
+                    ("scale_", 10),
+                    ("f_dc_", 10),
+                    ("opacity", 10),
+                ],
+                spatial: false,
+                ..full
+            }),
+        },
         Arm {
             name: "rebalance6at10both",
             encode: Some(Budget {
