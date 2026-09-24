@@ -624,6 +624,28 @@ fn write_the_arms() {
             }),
         },
         Arm {
+            name: "rebalance6at10rot10",
+            encode: Some(Budget {
+                harmonics: 6,
+                raise: &[("rot_", 10), ("scale_", 10), ("f_dc_", 10), ("opacity", 10)],
+                ..full
+            }),
+        },
+        Arm {
+            name: "rebalance6at10pos18rot10",
+            encode: Some(Budget {
+                harmonics: 6,
+                raise: &[
+                    ("position", 18),
+                    ("rot_", 10),
+                    ("scale_", 10),
+                    ("f_dc_", 10),
+                    ("opacity", 10),
+                ],
+                ..full
+            }),
+        },
+        Arm {
             name: "rebalance6at10both",
             encode: Some(Budget {
                 harmonics: 6,
