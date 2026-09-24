@@ -17,6 +17,9 @@
 //! Both paths absolute: cargo runs a test from its own crate's directory, so a
 //! relative one resolves somewhere other than where it was typed.
 //!
+//! `DRACO_PROBE_ARMS=budget,raiseall` writes only the arms it names, plus
+//! `source`.
+//!
 //! ```text
 //! DRACO_SPLAT_PLY=<scene.ply> DRACO_PROBE_OUT=<output directory> \
 //!   cargo test --manifest-path crates/Cargo.toml -p draco-core --release \
@@ -51,6 +54,10 @@ struct Budget {
     harmonics: i32,
     /// Everything that is neither a position nor a harmonic.
     rest: i32,
+    /// Overrides by group: a property-name prefix, or `position`, and its
+    /// bits. Raising one group while the rest stay at the budget finds which
+    /// of them caps the picture.
+    raise: &'static [(&'static str, i32)],
     search: bool,
     spatial: bool,
     /// What this arm does to the values before they are encoded, beyond the
@@ -412,6 +419,19 @@ fn round_trip(
                 }
             }
         };
+        let is_position = cloud.attribute(id).attribute_type() == GeometryAttributeType::Position;
+        let name = names[id as usize].as_deref().unwrap_or("");
+        let bits = budget
+            .raise
+            .iter()
+            .find(|(group, _)| {
+                if *group == "position" {
+                    is_position
+                } else {
+                    !is_position && name.starts_with(group)
+                }
+            })
+            .map_or(bits, |(_, raised)| *raised);
         options.set_attribute_int(id, "quantization_bits", bits);
     }
 
@@ -479,6 +499,11 @@ fn write_the_arms() {
         search: true,
         spatial: true,
         change: Change::None,
+        raise: &[],
+    };
+    let raised = |name, raise| Arm {
+        name,
+        encode: Some(Budget { raise, ..full }),
     };
     let arm = |name, change| Arm {
         name,
@@ -524,7 +549,81 @@ fn write_the_arms() {
         arm("colourspz", Change::ClampColour(-3.33, 3.33)),
         arm("scalespz", Change::ClampScale(-10.0, 5.94)),
         arm("percentile2", Change::Percentile(0.02)),
+        // One group raised at a time, the rest at the budget: whichever lifts
+        // the picture toward `raiseall` is what caps it.
+        raised("raiseposition", &[("position", 20)]),
+        raised("raiserotation", &[("rot_", 12)]),
+        raised("raisescale", &[("scale_", 12)]),
+        raised("raiseopacity", &[("opacity", 12)]),
+        raised("raisecolour", &[("f_dc_", 12)]),
+        raised("raiseharmonics", &[("f_rest_", 12)]),
+        raised(
+            "raiseall",
+            &[
+                ("position", 20),
+                ("rot_", 12),
+                ("scale_", 12),
+                ("opacity", 12),
+                ("f_dc_", 12),
+                ("f_rest_", 12),
+            ],
+        ),
+        // The harmonics saturate at 8 bits while scale, colour and opacity
+        // carry most of the error for a byte or two each, so these move the
+        // bits from the first to the others.
+        Arm {
+            name: "rebalance6",
+            encode: Some(Budget {
+                harmonics: 6,
+                raise: &[("scale_", 12), ("f_dc_", 12), ("opacity", 12)],
+                ..full
+            }),
+        },
+        Arm {
+            name: "rebalance7",
+            encode: Some(Budget {
+                harmonics: 7,
+                raise: &[("scale_", 12), ("f_dc_", 12), ("opacity", 12)],
+                ..full
+            }),
+        },
+        Arm {
+            name: "rebalance6all",
+            encode: Some(Budget {
+                harmonics: 6,
+                raise: &[
+                    ("position", 20),
+                    ("rot_", 12),
+                    ("scale_", 12),
+                    ("f_dc_", 12),
+                    ("opacity", 12),
+                ],
+                ..full
+            }),
+        },
+        Arm {
+            name: "rebalance4",
+            encode: Some(Budget {
+                harmonics: 4,
+                raise: &[("scale_", 12), ("f_dc_", 12), ("opacity", 12)],
+                ..full
+            }),
+        },
     ];
+    // A comma-separated list writes only those arms, since the renderer shoots
+    // every one it finds. `source` is always written: it is the reference.
+    let wanted: Option<Vec<String>> = std::env::var("DRACO_PROBE_ARMS")
+        .ok()
+        .map(|list| list.split(',').map(|arm| arm.trim().to_string()).collect());
+    let arms: Vec<Arm> = arms
+        .into_iter()
+        .filter(|arm| {
+            arm.encode.is_none()
+                || wanted
+                    .as_ref()
+                    .is_none_or(|wanted| wanted.iter().any(|name| name == arm.name))
+        })
+        .collect();
 
     println!();
     println!(
