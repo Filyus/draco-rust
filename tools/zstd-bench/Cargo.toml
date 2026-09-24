@@ -1,0 +1,17 @@
+[package]
+name = "zstd-bench"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "draco-texture's Zstd level decompression timed against C zstd"
+license = "Apache-2.0"
+
+# Its own workspace, like basis-cpp-oracle: it compiles C that nothing in the
+# ordinary build should wait for, from a checkout outside this repository.
+[workspace]
+
+[dependencies]
+draco-texture = { path = "../../crates/draco-texture" }
+
+[build-dependencies]
+cc = "1.0"

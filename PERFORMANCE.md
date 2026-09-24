@@ -463,6 +463,29 @@ solid-colour, which weights the UASTC figure toward that path; how a busy
 UASTC texture stands has not been measured. The rounds behind these figures
 are in `PERFORMANCE-LOG.md`, from *KTX2: Constant Tables, Built Per Decode*.
 
+### Zstd Decompression Against C zstd
+
+File: `tools/zstd-bench/src/main.rs`
+
+Package: `zstd-bench`, its own workspace
+
+Purpose: the part the transcode harness above leaves out. Every
+Zstd-supercompressed KTX2 fixture, every level, through `Ktx2::level_bytes`
+exactly as the transcoder calls it, against C zstd's `ZSTD_decompress` into a
+buffer of the level's size; outputs are compared byte for byte first. C zstd
+is compiled from the checkout `ZSTD_SOURCE_DIR` names, without its assembly
+Huffman loops, as Windows builds are. Without the variable it times this
+crate alone.
+
+```sh
+ZSTD_SOURCE_DIR=<a facebook/zstd checkout> cargo run --release --manifest-path tools/zstd-bench/Cargo.toml
+```
+
+Where it stands, 2026-09-24 on Windows against zstd 1.5.6: about `3.5x` C's
+time over the four fixtures (3.2 MB out). The decoder is `ruzstd`; the
+candidates measured against it, and why none was taken, are in
+`PERFORMANCE-LOG.md` under *KTX2: Zstd, And Which Decoder*.
+
 ## Profiling And Micro-Benchmarks
 
 ### Sequential Pipeline Profile

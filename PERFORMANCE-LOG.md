@@ -4233,8 +4233,9 @@ fed untrusted files, and are at 0.0.x and pre-release. Worth re-measuring
 when either matures; `libzstd-rs-sys` is Trifecta's, whose `zlib-rs` took the
 same road to C parity.
 
-The harness is a standalone Cargo project that links C zstd from `_refs`; it
-was run from a scratch directory and is not in the repository.
+The comparison of the candidates was run from a scratch project that is not
+in the repository. The part worth repeating -- this crate's `level_bytes`
+against C zstd -- is `tools/zstd-bench`.
 
 ## Unexplored
 
