@@ -576,17 +576,24 @@ pub fn decode_bc7(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Uastc
 }
 
 /// Read a bit field out of the block, least significant bit first.
+///
+/// The field's bytes are gathered whole -- at most five, for 32 bits at any
+/// alignment -- rather than a bit at a time. A field reaching past the block
+/// panics on the slice, where reading it bit by bit would have panicked on the
+/// same byte.
 fn read_bits(block: &[u8], offset: &mut usize, count: u32) -> u32 {
     if count == 0 {
         return 0;
     }
-    let mut value = 0u32;
-    for bit in 0..count as usize {
-        let at = *offset + bit;
-        value |= (((block[at >> 3] >> (at & 7)) & 1) as u32) << bit;
+    let start = *offset >> 3;
+    let end = (*offset + count as usize + 7) >> 3;
+    let mut word = 0u64;
+    for (index, byte) in block[start..end].iter().enumerate() {
+        word |= u64::from(*byte) << (8 * index);
     }
+    let value = (word >> (*offset & 7)) & ((1u64 << count) - 1);
     *offset += count as usize;
-    value
+    value as u32
 }
 
 /// One block read out of its 128 bits, before anything is done with it.

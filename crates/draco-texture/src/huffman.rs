@@ -7,9 +7,16 @@
 //! The bit order is the part that has to be exact. Bits leave the stream least
 //! significant first, and a Huffman code is stored bit-reversed, so reading one
 //! bit at a time and shifting it in from the right rebuilds the code in its
-//! original order — which is why this decodes canonically instead of copying
-//! the reference's fast-lookup table. The table is a speed device; the code
-//! assignment is the format.
+//! original order. That canonical walk is what defines a symbol here, and it
+//! is what [`BitReader::decode`] falls back to.
+//!
+//! The common case goes through a table instead, the reference's
+//! `cHuffmanFastLookupBits` arrangement and DEFLATE's before it: the next
+//! `FAST_BITS` bits of the stream, read as they arrive, index the symbol and
+//! its length directly, because a code reversed into stream order is exactly
+//! those low bits. Only a code longer than the table, or a pattern no code
+//! owns, takes the walk -- and the walk has consumed nothing when it starts, so
+//! both paths read the same symbol from the same bits.
 
 /// The stream carries at most 2^14 symbols per table.
 const MAX_SYMS_LOG2: u32 = 14;
@@ -53,14 +60,35 @@ pub enum HuffmanError {
     EmptyTable,
 }
 
+/// How many stream bits the lookup table resolves at once: the reference's
+/// `cHuffmanFastLookupBits`.
+const FAST_BITS: u32 = 10;
+const FAST_SIZE: usize = 1 << FAST_BITS;
+
 /// A decoded Huffman table: which symbol each code stands for.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct HuffmanTable {
     /// Codes of each length, in the order the symbols were assigned them.
     symbols_by_length: Vec<Vec<u16>>,
     /// First code value of each length.
     first_code: [u32; MAX_CODE_SIZE + 2],
     used_symbols: u32,
+    /// Indexed by the next [`FAST_BITS`] stream bits: `symbol << 16 | length`
+    /// for a code that fits, zero where the canonical walk has to decide -- a
+    /// longer code, or a pattern no code owns, which only a one-symbol table
+    /// leaves. A length is never zero, so zero is free to mean that.
+    fast: Box<[u32; FAST_SIZE]>,
+}
+
+impl Default for HuffmanTable {
+    fn default() -> Self {
+        HuffmanTable {
+            symbols_by_length: Vec::new(),
+            first_code: [0; MAX_CODE_SIZE + 2],
+            used_symbols: 0,
+            fast: Box::new([0; FAST_SIZE]),
+        }
+    }
 }
 
 impl HuffmanTable {
@@ -71,8 +99,7 @@ impl HuffmanTable {
     pub fn new(code_sizes: &[u8]) -> Result<Self, HuffmanError> {
         let mut table = HuffmanTable {
             symbols_by_length: vec![Vec::new(); MAX_CODE_SIZE + 1],
-            first_code: [0; MAX_CODE_SIZE + 2],
-            used_symbols: 0,
+            ..HuffmanTable::default()
         };
         if code_sizes.is_empty() {
             return Ok(table);
@@ -111,6 +138,29 @@ impl HuffmanTable {
             }
             table.symbols_by_length[length].push(symbol as u16);
         }
+
+        // The same assignment again, spread over the lookup table. A code of
+        // `length` bits arrives low bit first as its own reversal, so every
+        // FAST_BITS-bit pattern whose low `length` bits are that reversal
+        // decodes to it: one entry every `2^length` slots.
+        let mut next_code = table.first_code;
+        for (symbol, size) in code_sizes.iter().enumerate() {
+            let length = *size as u32;
+            if length == 0 {
+                continue;
+            }
+            let code = next_code[length as usize];
+            next_code[length as usize] += 1;
+            if length > FAST_BITS {
+                continue;
+            }
+            let entry = ((symbol as u32) << 16) | length;
+            let mut slot = (code.reverse_bits() >> (32 - length)) as usize;
+            while slot < FAST_SIZE {
+                table.fast[slot] = entry;
+                slot += 1 << length;
+            }
+        }
         Ok(table)
     }
 
@@ -120,12 +170,20 @@ impl HuffmanTable {
     }
 }
 
+/// Bits the staging buffer holds.
+const STAGE_BITS: u32 = 64;
+
 /// Reads bits least significant first, the way Basis writes them.
+///
+/// A 64-bit stage refilled by one unaligned eight-byte load, so that a refill
+/// serves several symbols and costs no loop away from the end of the data.
 pub struct BitReader<'a> {
     data: &'a [u8],
+    /// The next byte to pull into `bits`.
     position: usize,
-    bit_buffer: u32,
-    bit_count: u32,
+    /// Bits pulled and not yet consumed, in the low `count` positions.
+    bits: u64,
+    count: u32,
 }
 
 impl<'a> BitReader<'a> {
@@ -134,55 +192,65 @@ impl<'a> BitReader<'a> {
         BitReader {
             data,
             position: 0,
-            bit_buffer: 0,
-            bit_count: 0,
+            bits: 0,
+            count: 0,
         }
     }
 
-    /// Bits past the end read as zero, exactly as the reference's do.
+    /// Top the stage up to at least 57 bits.
     ///
-    /// This is not laxness: the reference relies on it, because the last symbol
-    /// of a stream can need more bits than the final byte holds.
-    fn fill(&mut self, wanted: u32) {
-        while self.bit_count < wanted {
-            let byte = if self.position < self.data.len() {
-                let byte = self.data[self.position];
+    /// Away from the end this is one load: whatever is staged sits in the low
+    /// `count` bits, the load shifted up by `count` lands against it, and the
+    /// whole bytes that fitted are `(63 - count) / 8`, so the byte that only
+    /// partly fitted is read again next time. What that leaves above `count`
+    /// is the stream's own continuation from `position`, the same bits the next
+    /// refill ORs into the same places, so the overlap is idempotent.
+    ///
+    /// Bits past the end read as zero, exactly as the reference's do. This is
+    /// not laxness: the reference relies on it, because the last symbol of a
+    /// stream can need more bits than the final byte holds.
+    #[inline(always)]
+    fn refill(&mut self) {
+        if self.count > STAGE_BITS - 8 {
+            return;
+        }
+        if let Some(chunk) = self.data.get(self.position..self.position + 8) {
+            let word = u64::from_le_bytes([
+                chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
+            ]);
+            self.bits |= word << self.count;
+            self.position += ((STAGE_BITS - 1 - self.count) / 8) as usize;
+            self.count = (self.count & 7) | (STAGE_BITS - 8);
+            return;
+        }
+        // Fewer than eight bytes left: a byte at a time, and zeros past the end.
+        while self.count <= STAGE_BITS - 8 {
+            if let Some(byte) = self.data.get(self.position) {
+                self.bits |= u64::from(*byte) << self.count;
                 self.position += 1;
-                byte
-            } else {
-                0
-            };
-            self.bit_buffer |= (byte as u32) << self.bit_count;
-            self.bit_count += 8;
+            }
+            self.count += 8;
         }
     }
 
-    /// Look at the next `count` bits without consuming them. `count` <= 25.
-    fn peek_bits(&mut self, count: u32) -> u32 {
-        if count == 0 {
-            return 0;
-        }
-        self.fill(count);
-        self.bit_buffer & ((1u32 << count) - 1)
-    }
-
-    fn remove_bits(&mut self, count: u32) {
-        self.bit_buffer >>= count;
-        self.bit_count -= count;
+    /// Drop `count` bits already staged.
+    #[inline(always)]
+    fn consume(&mut self, count: u32) {
+        self.bits >>= count;
+        self.count -= count;
     }
 
     /// Read and consume `count` bits, up to 32.
     pub fn get_bits(&mut self, count: u32) -> u32 {
-        if count > 25 {
-            let low = self.peek_bits(25);
-            self.remove_bits(25);
-            let high = self.peek_bits(count - 25);
-            self.remove_bits(count - 25);
-            return low | (high << 25);
+        if count == 0 {
+            return 0;
         }
-        let bits = self.peek_bits(count);
-        self.remove_bits(count);
-        bits
+        if self.count < count {
+            self.refill();
+        }
+        let value = (self.bits & ((1u64 << count) - 1)) as u32;
+        self.consume(count);
+        value
     }
 
     /// The chunked variable-length integer Basis uses for run lengths.
@@ -207,6 +275,23 @@ impl<'a> BitReader<'a> {
         if !table.is_valid() {
             return Err(HuffmanError::EmptyTable);
         }
+        if self.count < FAST_BITS {
+            self.refill();
+        }
+        let entry = table.fast[(self.bits as usize) & (FAST_SIZE - 1)];
+        if entry != 0 {
+            self.consume(entry & 0xFFFF);
+            return Ok(entry >> 16);
+        }
+        self.decode_canonical(table)
+    }
+
+    /// Read one symbol by walking the canonical code a bit at a time.
+    ///
+    /// What the lookup table in [`Self::decode`] stands in for, and what it
+    /// hands back to for a code longer than the table or a pattern no code
+    /// owns. Nothing has been consumed when it starts.
+    fn decode_canonical(&mut self, table: &HuffmanTable) -> Result<u32, HuffmanError> {
         // A code is stored reversed, so taking bits in stream order and
         // shifting them in from the right rebuilds it as it was assigned.
         let mut code = 0u32;
