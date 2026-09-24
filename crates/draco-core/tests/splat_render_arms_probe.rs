@@ -91,6 +91,11 @@ enum Change {
     /// Clip colour and scale to their own two-sided percentile window.
     /// Worth about 2% of the file, at a displacement the sizes cannot judge.
     Percentile(f64),
+    /// Scale each `rot_*` quaternion to unit length with `w >= 0`. A renderer
+    /// normalizes on import and `q`, `-q` are one rotation, so the picture
+    /// cannot change; what changes is the range each component is quantized
+    /// over, from whatever the trainer left to `[-1, 1]` and `[0, 1]`.
+    NormalizeRotation,
 }
 
 fn sigmoid(x: f32) -> f32 {
@@ -391,6 +396,38 @@ fn round_trip(
             owned = mapped(&clipped, &scale, |v| v.clamp(scale_low, scale_high));
             &owned
         }
+        Change::NormalizeRotation => {
+            let ids = ["rot_0", "rot_1", "rot_2", "rot_3"].map(|name| {
+                *attributes_named(names, name)
+                    .first()
+                    .expect("a rotation arm needs rot_0..3")
+            });
+            let mut planes: [Vec<f32>; 4] = Default::default();
+            for point in 0..cloud.num_points() {
+                let q = ids.map(|id| {
+                    let attribute = cloud.attribute(id);
+                    let value = attribute.mapped_index(PointIndex(point as u32));
+                    read_f32(attribute, value.0 as usize, 0)
+                });
+                let length = q.iter().map(|c| c * c).sum::<f32>().sqrt();
+                // `rot_0` is w. A zero quaternion is left for the renderer to
+                // treat as it always has.
+                let factor = if length > 0.0 {
+                    q[0].signum() / length
+                } else {
+                    1.0
+                };
+                for (plane, component) in planes.iter_mut().zip(q) {
+                    plane.push(component * factor);
+                }
+            }
+            let mut rotated = with_values(cloud, ids[0], &planes[0]);
+            for (id, plane) in ids.iter().zip(&planes).skip(1) {
+                rotated = with_values(&rotated, *id, plane);
+            }
+            owned = rotated;
+            &owned
+        }
     };
     let names = &attribute_names(cloud);
     let points = cloud.num_points();
@@ -662,6 +699,53 @@ fn write_the_arms() {
                     ("opacity", 10),
                 ],
                 spatial: false,
+                ..full
+            }),
+        },
+        // The web preset with its quaternions normalized before encoding, at
+        // the preset's rotation bits and below them.
+        Arm {
+            name: "presetunitrot10",
+            encode: Some(Budget {
+                harmonics: 6,
+                raise: &[
+                    ("position", 18),
+                    ("rot_", 10),
+                    ("scale_", 10),
+                    ("f_dc_", 10),
+                    ("opacity", 10),
+                ],
+                change: Change::NormalizeRotation,
+                ..full
+            }),
+        },
+        Arm {
+            name: "presetunitrot9",
+            encode: Some(Budget {
+                harmonics: 6,
+                raise: &[
+                    ("position", 18),
+                    ("rot_", 9),
+                    ("scale_", 10),
+                    ("f_dc_", 10),
+                    ("opacity", 10),
+                ],
+                change: Change::NormalizeRotation,
+                ..full
+            }),
+        },
+        Arm {
+            name: "presetunitrot8",
+            encode: Some(Budget {
+                harmonics: 6,
+                raise: &[
+                    ("position", 18),
+                    ("rot_", 8),
+                    ("scale_", 10),
+                    ("f_dc_", 10),
+                    ("opacity", 10),
+                ],
+                change: Change::NormalizeRotation,
                 ..full
             }),
         },
