@@ -304,6 +304,27 @@ mod hostile {
         );
     }
 
+    /// The other direction, on the path that does trust a plausible claim: a
+    /// level that decompresses to one byte more than it declared is an error,
+    /// not a level cut to the declared size.
+    #[test]
+    fn a_level_decompressing_past_its_plausible_claim_is_an_error() {
+        let bytes = std::fs::read(fixture("2d_uastc.ktx2")).expect("fixture");
+        let at = level_entry(0) + 16;
+        let actual = u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
+        let mut short = bytes.clone();
+        short[at..at + 8].copy_from_slice(&(actual - 1).to_le_bytes());
+
+        let file = Ktx2::parse(&short).expect("a smaller claim parses");
+        let error = file
+            .level_bytes(0)
+            .expect_err("the stream holds a byte more than the level claims");
+        assert!(
+            error.to_string().contains("decompress"),
+            "the mismatch should be a decompression error, got: {error}"
+        );
+    }
+
     /// The same shape one layer down: an ETC1S image is sized from the level's
     /// dimensions, which are the file's word.
     ///

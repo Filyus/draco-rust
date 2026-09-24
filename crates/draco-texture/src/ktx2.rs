@@ -536,33 +536,63 @@ impl<'a> Ktx2<'a> {
                 // with `layerCount`, which the header may set to 65535, so a
                 // 512x512 level may legitimately claim 275 GB and a 19 KB file
                 // was enough to reach `Vec::with_capacity(100_000_000_000)` --
-                // an abort, because that reserve cannot fail gracefully.
+                // an abort, because that reserve cannot fail gracefully. Nor
+                // from any multiple of the compressed size: Zstd can expand a
+                // few bytes into a whole block, so no ratio is both safe and
+                // never wrong.
                 //
-                // Decompressed through the streaming decoder instead, reading
-                // at most one byte past the claim: the vector grows on bytes
-                // the decoder actually produced, so a claim nothing backs costs
-                // nothing, and a stream that overruns its claim is caught by
-                // the length check below rather than by the allocator.
+                // Decompressed a block at a time instead, each block's output
+                // appended as it is produced: the vector grows on bytes the
+                // decoder actually made, so a claim nothing backs costs
+                // nothing, and a stream that overruns its claim is stopped
+                // within a block of it. The frame loop is `ruzstd`'s own
+                // `decode_all`, which takes every frame the way the
+                // reference's `ZSTD_decompress` does, but draining into a
+                // growing vector rather than a slice sized from the claim. It
+                // is a quarter quicker than reading the same frames through
+                // `StreamingDecoder`.
+                let failed = |reason: String| Ktx2Error::Decompress { level, reason };
+                let mut decoder = ruzstd::FrameDecoder::new();
+                let mut input = raw;
                 let mut out = Vec::new();
-                let decoder =
-                    ruzstd::StreamingDecoder::new(raw).map_err(|error| Ktx2Error::Decompress {
-                        level,
-                        reason: error.to_string(),
-                    })?;
-                use std::io::Read as _;
-                let overshoot = expected.saturating_add(1) as u64;
-                decoder
-                    .take(overshoot)
-                    .read_to_end(&mut out)
-                    .map_err(|error| Ktx2Error::Decompress {
-                        level,
-                        reason: error.to_string(),
-                    })?;
+                while !input.is_empty() {
+                    match decoder.init(&mut input) {
+                        Ok(()) => {}
+                        Err(ruzstd::frame_decoder::FrameDecoderError::ReadFrameHeaderError(
+                            ruzstd::frame::ReadFrameHeaderError::SkipFrame { length, .. },
+                        )) => {
+                            input = input.get(length as usize..).ok_or_else(|| {
+                                failed("a skippable frame runs past the level".into())
+                            })?;
+                            continue;
+                        }
+                        Err(error) => return Err(failed(error.to_string())),
+                    }
+                    loop {
+                        decoder
+                            .decode_blocks(
+                                &mut input,
+                                ruzstd::frame_decoder::BlockDecodingStrategy::UptoBlocks(1),
+                            )
+                            .map_err(|error| failed(error.to_string()))?;
+                        decoder
+                            .collect_to_writer(&mut out)
+                            .map_err(|error| failed(error.to_string()))?;
+                        if out.len() > expected {
+                            return Err(failed(format!(
+                                "expected {expected} bytes, decompressed more than that"
+                            )));
+                        }
+                        if decoder.is_finished() {
+                            break;
+                        }
+                    }
+                }
                 if out.len() != expected {
-                    return Err(Ktx2Error::Decompress {
-                        level,
-                        reason: format!("expected {expected} bytes, decompressed {}", out.len()),
-                    });
+                    return Err(failed(format!(
+                        "expected {expected} bytes, decompressed {}",
+                        out.len()
+                    )));
                 }
                 Ok(Cow::Owned(out))
             }
