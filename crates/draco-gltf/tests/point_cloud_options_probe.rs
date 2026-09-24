@@ -20,6 +20,10 @@
 //!   --test point_cloud_options_probe -- --ignored --nocapture
 //! ```
 
+// It reads primitives and encodes them, which the reduced feature sets CI
+// also tests this crate under do not provide.
+#![cfg(feature = "draco-encode")]
+
 use std::path::PathBuf;
 
 use draco_core::{
