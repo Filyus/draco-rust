@@ -587,6 +587,56 @@ fn write_the_arms() {
                 ..full
             }),
         },
+        // Position and rotation, each on its own, over the rebalance at ten
+        // bits: raised together they bought a street scene 6.6 dB.
+        Arm {
+            name: "rebalance6at10pos18",
+            encode: Some(Budget {
+                harmonics: 6,
+                raise: &[
+                    ("position", 18),
+                    ("scale_", 10),
+                    ("f_dc_", 10),
+                    ("opacity", 10),
+                ],
+                ..full
+            }),
+        },
+        Arm {
+            name: "rebalance6at10pos20",
+            encode: Some(Budget {
+                harmonics: 6,
+                raise: &[
+                    ("position", 20),
+                    ("scale_", 10),
+                    ("f_dc_", 10),
+                    ("opacity", 10),
+                ],
+                ..full
+            }),
+        },
+        Arm {
+            name: "rebalance6at10rot12",
+            encode: Some(Budget {
+                harmonics: 6,
+                raise: &[("rot_", 12), ("scale_", 10), ("f_dc_", 10), ("opacity", 10)],
+                ..full
+            }),
+        },
+        Arm {
+            name: "rebalance6at10both",
+            encode: Some(Budget {
+                harmonics: 6,
+                raise: &[
+                    ("position", 20),
+                    ("rot_", 12),
+                    ("scale_", 10),
+                    ("f_dc_", 10),
+                    ("opacity", 10),
+                ],
+                ..full
+            }),
+        },
         Arm {
             name: "rebalance7",
             encode: Some(Budget {
