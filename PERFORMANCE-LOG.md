@@ -36,7 +36,7 @@ figure at all.
 `rejected` -- tried, deliberately not kept. `retracted` -- an earlier claim
 here was withdrawn. `diagnostic` -- measured only, no change proposed.
 
-69 rounds: 39 landed, 10 diagnostic, 10 null, 8 retracted, 2 rejected.
+70 rounds: 40 landed, 10 diagnostic, 10 null, 8 retracted, 2 rejected.
 
 | Round | Verdict | Headline |
 | --- | --- | ---: |
@@ -109,6 +109,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [A Refresh, No Change Since The Attribute-Storage Round](#a-refresh-no-change-since-the-attribute-storage-round) | diagnostic | `<=0.03x` |
 | [KTX2: Constant Tables, Built Per Decode](#ktx2-constant-tables-built-per-decode) | landed | `3.04x -> 1.27x` |
 | [KTX2: Bit Reading, And Solid UASTC Blocks](#ktx2-bit-reading-and-solid-uastc-blocks) | landed | `1.27x -> 0.74x` |
+| [KTX2: The BC7 Block Writer](#ktx2-the-bc7-block-writer) | landed | `1.02x -> 0.93x` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -4174,6 +4175,23 @@ which is the lesson this round keeps.
 weighs heavily in these ratios. A texture of busy detail spends its time in
 the full unpack, which this round sped up but did not measure on its own.
 
+### KTX2: The BC7 Block Writer
+
+2026-09-24, `draco-texture`, the one target the round above left level with
+the reference rather than ahead: BC7 from UASTC at `1.02-1.04x`.
+
+Callgrind on the large UASTC fixture put 40% of the decode in `bc7.rs`,
+inlined: about a thousand instructions a block to serialize a BC7 block,
+because every one of its forty-odd fields went through a loop over the bytes
+it touched. The writer now accumulates the block in one `u128`, a mask and a
+shift per field, and hands back its sixteen bytes at the end. A value is cut
+to its field's width, which the reference's `set_block_bits` asserts is
+already true; `parity.rs` agrees on all 346 images.
+
+BC7 from UASTC went from `1.02-1.04x` the reference's time to `0.91-0.94x`,
+over three runs. `ktx2_transcode` ran 84,000 executions under ASan without a
+finding.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
@@ -4188,9 +4206,6 @@ one line.
   toward the solid path. The full unpack was sped up too, but never measured
   on its own; a busy UASTC texture is the fixture that would say how it
   stands.
-- **BC7 from UASTC is level, not ahead** (`1.02-1.04x`). Its solid path is
-  the reference's, so what is left is the per-block restatement in
-  `uastc_to_bc7.rs`, which callgrind has not been pointed at.
 - **The fuzz corpus on CI is heavier than any local copy.** `ktx2_transcode`
   ran at 12 executions a second there before the converter tables were
   shared; the next soaks say what it runs at now.

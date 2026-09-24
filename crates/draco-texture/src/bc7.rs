@@ -87,20 +87,29 @@ impl Default for Bc7Block {
 }
 
 /// Writes bits into a block, least significant first.
+///
+/// The block is accumulated in one `u128`, so a field is a mask and a shift
+/// rather than a loop over the bytes it touches -- which, over the forty-odd
+/// fields of a block, was most of what restating a UASTC block as BC7 cost.
+/// A value is cut to its field's width, as the reference's `set_block_bits`
+/// requires it to be already.
 struct BitWriter {
-    bytes: [u8; 16],
-    offset: usize,
+    bits: u128,
+    offset: u32,
 }
 
 impl BitWriter {
-    fn write(&mut self, mut value: u32, mut count: u32) {
-        while count > 0 {
-            let taken = (8 - (self.offset & 7) as u32).min(count);
-            self.bytes[self.offset >> 3] |= (value << (self.offset & 7)) as u8;
-            value >>= taken;
-            count -= taken;
-            self.offset += taken as usize;
+    fn write(&mut self, value: u32, count: u32) {
+        if count == 0 {
+            return;
         }
+        let field = u128::from(value) & ((1u128 << count) - 1);
+        self.bits |= field << self.offset;
+        self.offset += count;
+    }
+
+    fn into_bytes(self) -> [u8; 16] {
+        self.bits.to_le_bytes()
     }
 }
 
@@ -166,10 +175,7 @@ impl Bc7Block {
             }
         }
 
-        let mut writer = BitWriter {
-            bytes: [0; 16],
-            offset: 0,
-        };
+        let mut writer = BitWriter { bits: 0, offset: 0 };
         // The mode is written as a one preceded by that many zero bits.
         writer.write(1 << mode, mode as u32 + 1);
         if mode == 4 || mode == 5 {
@@ -243,6 +249,6 @@ impl Bc7Block {
         }
 
         debug_assert_eq!(writer.offset, 128, "a BC7 block is exactly 128 bits");
-        writer.bytes
+        writer.into_bytes()
     }
 }
