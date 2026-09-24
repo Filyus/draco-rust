@@ -1,6 +1,44 @@
 use draco_cpp_test_bridge::{
-    encode_cpp_mesh, encode_with_handles, is_available, profile_cpp_reencode_mesh, CppMesh,
+    cpp_attribute, decode_cpp_mesh_attribute, decode_cpp_mesh_fingerprint, encode_cpp_mesh,
+    is_available, profile_cpp_reencode_mesh, CppMesh,
 };
+
+/// A result is sized by the C++ side that made it, so its size has no ceiling
+/// on the Rust side. A mesh whose positions alone are 1.2M floats is past any
+/// fixed capacity a caller would think to allocate, and must come back whole
+/// rather than as a failure.
+#[test]
+fn test_large_attribute_comes_back_whole() {
+    if !is_available() {
+        println!("C++ test bridge disabled; skipping test");
+        return;
+    }
+
+    let side = 640u32;
+    let mut positions = Vec::with_capacity((side * side * 3) as usize);
+    for y in 0..side {
+        for x in 0..side {
+            positions.extend_from_slice(&[x as f32, y as f32, 0.0]);
+        }
+    }
+    let mut faces = Vec::new();
+    for y in 0..side - 1 {
+        for x in 0..side - 1 {
+            let i = y * side + x;
+            faces.extend_from_slice(&[i, i + 1, i + side, i + 1, i + side + 1, i + side]);
+        }
+    }
+
+    let encoded = encode_cpp_mesh(&positions, &faces, 10, 10, 14).expect("C++ encode failed");
+    let points = decode_cpp_mesh_fingerprint(&encoded)
+        .expect("C++ fingerprint failed")
+        .num_points as usize;
+    let values = decode_cpp_mesh_attribute(&encoded, cpp_attribute::POSITION)
+        .expect("a large attribute must not read as a failure");
+
+    assert!(values.len() > 1 << 20);
+    assert_eq!(values.len(), points * 3);
+}
 
 #[test]
 fn test_handle_encode_matches_single() {
@@ -25,7 +63,9 @@ fn test_handle_encode_matches_single() {
     mesh.set_num_faces(1);
     mesh.set_face(0, 0, 1, 2);
 
-    let handled = encode_with_handles(&mesh, 10, 10, 10).expect("handle-based encoding failed");
+    let handled = mesh
+        .encode(10, 10, 10)
+        .expect("handle-based encoding failed");
 
     assert_eq!(
         single, handled,

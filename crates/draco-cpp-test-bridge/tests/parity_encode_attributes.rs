@@ -385,11 +385,11 @@ fn decoders_agree_on_the_same_payload() {
             let rust_positions = read_rust(&rust_mesh, GeometryAttributeType::Position);
             let rust_normals = read_rust(&rust_mesh, GeometryAttributeType::Normal);
             let (Some(cpp_positions), Some(cpp_normals)) = (
-                draco_cpp_test_bridge::decode_cpp_attribute_values(
+                draco_cpp_test_bridge::decode_cpp_mesh_attribute(
                     &payload,
                     draco_cpp_test_bridge::cpp_attribute::POSITION,
                 ),
-                draco_cpp_test_bridge::decode_cpp_attribute_values(
+                draco_cpp_test_bridge::decode_cpp_mesh_attribute(
                     &payload,
                     draco_cpp_test_bridge::cpp_attribute::NORMAL,
                 ),
@@ -520,11 +520,11 @@ fn cpp_decoder_reads_rust_normals() {
         for speed in 0..=10 {
             let payload = encode_rust(sample, speed);
             let (Some(positions), Some(decoded)) = (
-                draco_cpp_test_bridge::decode_cpp_attribute_values(
+                draco_cpp_test_bridge::decode_cpp_mesh_attribute(
                     &payload,
                     draco_cpp_test_bridge::cpp_attribute::POSITION,
                 ),
-                draco_cpp_test_bridge::decode_cpp_attribute_values(
+                draco_cpp_test_bridge::decode_cpp_mesh_attribute(
                     &payload,
                     draco_cpp_test_bridge::cpp_attribute::NORMAL,
                 ),

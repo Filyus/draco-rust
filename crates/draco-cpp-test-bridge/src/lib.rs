@@ -51,7 +51,23 @@ mod ffi {
         pub canonical_corner_hash: u64,
     }
 
+    /// `draco::Mesh`, owned by the C++ side and only ever behind a pointer.
+    #[repr(C)]
+    pub struct DracoMesh {
+        _opaque: [u8; 0],
+    }
+
+    /// Bytes the C++ side made for Rust to take; see [`super::CppBytes`].
+    #[repr(C)]
+    pub struct DracoBytes {
+        _opaque: [u8; 0],
+    }
+
     extern "C" {
+        pub fn draco_bytes_size(bytes: *const DracoBytes) -> usize;
+        pub fn draco_bytes_data(bytes: *const DracoBytes) -> *const u8;
+        pub fn draco_bytes_free(bytes: *mut DracoBytes);
+
         /// Benchmark encoding: runs encoding multiple times and returns average time in microseconds
         pub fn draco_benchmark_encode_mesh(
             num_points: u32,
@@ -65,8 +81,7 @@ mod ffi {
             output_size: *mut usize,
         ) -> i64;
 
-        /// Single-shot encoding that returns encoded bytes
-        pub fn draco_encode_mesh_single(
+        pub fn draco_encode_mesh_positions(
             num_points: u32,
             positions: *const f32,
             num_faces: u32,
@@ -74,9 +89,7 @@ mod ffi {
             encoding_speed: c_int,
             decoding_speed: c_int,
             quantization_bits: c_int,
-            output_buffer: *mut u8,
-            output_buffer_size: usize,
-        ) -> usize;
+        ) -> *mut DracoBytes;
 
         #[allow(clippy::too_many_arguments)]
         pub fn draco_encode_mesh_attributed(
@@ -93,9 +106,7 @@ mod ffi {
             normal_bits: c_int,
             uv_bits: c_int,
             color_bits: c_int,
-            output_buffer: *mut u8,
-            output_buffer_size: usize,
-        ) -> usize;
+        ) -> *mut DracoBytes;
 
         /// Mesh whose attributes carry explicit point maps, so one vertex can
         /// hold several UVs and the encoder has to emit attribute seams.
@@ -114,9 +125,7 @@ mod ffi {
             decoding_speed: c_int,
             position_bits: c_int,
             uv_bits: c_int,
-            output_buffer: *mut u8,
-            output_buffer_size: usize,
-        ) -> usize;
+        ) -> *mut DracoBytes;
 
         /// Point cloud encoding. `encoding_method` is -1 to leave the choice to
         /// Draco's own selection rule, 0 for sequential, 1 for kd-tree.
@@ -132,9 +141,7 @@ mod ffi {
             position_bits: c_int,
             normal_bits: c_int,
             color_bits: c_int,
-            output_buffer: *mut u8,
-            output_buffer_size: usize,
-        ) -> usize;
+        ) -> *mut DracoBytes;
         /// A mesh or point cloud carrying one POSITION attribute plus one GENERIC
         /// attribute of an arbitrary `draco::DataType`. `generic_data` is already
         /// packed at `DataTypeLength(generic_data_type) * generic_num_components`
@@ -155,9 +162,7 @@ mod ffi {
             encoding_speed: c_int,
             decoding_speed: c_int,
             position_bits: c_int,
-            output_buffer: *mut u8,
-            output_buffer_size: usize,
-        ) -> usize;
+        ) -> *mut DracoBytes;
         /// Single-shot sequential mesh encoding with optional compressed connectivity.
         pub fn draco_encode_mesh_sequential(
             num_points: u32,
@@ -168,43 +173,23 @@ mod ffi {
             decoding_speed: c_int,
             quantization_bits: c_int,
             compress_connectivity: c_int,
-            output_buffer: *mut u8,
-            output_buffer_size: usize,
-        ) -> usize;
+        ) -> *mut DracoBytes;
 
-        /// Create/free mesh handles
-        pub fn draco_create_mesh() -> *mut ::std::ffi::c_void;
-        pub fn draco_free_mesh(handle: *mut ::std::ffi::c_void);
-
-        /// Mesh setup helpers
-        pub fn draco_mesh_set_num_faces(handle: *mut ::std::ffi::c_void, num_faces: u32);
-        pub fn draco_mesh_set_face(
-            handle: *mut ::std::ffi::c_void,
-            face_idx: u32,
-            v0: u32,
-            v1: u32,
-            v2: u32,
-        );
+        pub fn draco_mesh_new() -> *mut DracoMesh;
+        pub fn draco_mesh_free(mesh: *mut DracoMesh);
+        pub fn draco_mesh_set_num_faces(mesh: *mut DracoMesh, num_faces: u32);
+        pub fn draco_mesh_set_face(mesh: *mut DracoMesh, face_idx: u32, v0: u32, v1: u32, v2: u32);
         pub fn draco_mesh_add_position_attribute(
-            handle: *mut ::std::ffi::c_void,
+            mesh: *mut DracoMesh,
             num_points: u32,
             positions: *const f32,
         ) -> c_int;
-
-        /// Encoder buffer helpers
-        pub fn draco_create_encoder_buffer() -> *mut ::std::ffi::c_void;
-        pub fn draco_free_encoder_buffer(handle: *mut ::std::ffi::c_void);
-        pub fn draco_encoder_buffer_data(handle: *mut ::std::ffi::c_void) -> *const u8;
-        pub fn draco_encoder_buffer_size(handle: *mut ::std::ffi::c_void) -> usize;
-
-        /// Encode using handles (mesh -> encoder buffer)
-        pub fn draco_encode_mesh(
-            mesh_handle: *mut ::std::ffi::c_void,
-            buffer_handle: *mut ::std::ffi::c_void,
+        pub fn draco_mesh_encode(
+            mesh: *const DracoMesh,
             encoding_speed: c_int,
             decoding_speed: c_int,
             quantization_bits: c_int,
-        ) -> i64;
+        ) -> *mut DracoBytes;
 
         /// Get version info for verification
         pub fn draco_get_version(major: *mut c_int, minor: *mut c_int, revision: *mut c_int);
@@ -264,15 +249,21 @@ mod ffi {
             out_num_degenerated: *mut u32,
         ) -> c_int;
 
-        /// Decode a mesh once and return stable structural/data fingerprints.
-        pub fn draco_decode_attribute_values(
+        /// Decode a mesh and return one attribute's values as `f32` bytes.
+        pub fn draco_decode_mesh_attribute(
             encoded_data: *const u8,
             encoded_size: usize,
             attribute_type: c_int,
-            output: *mut f32,
-            output_capacity: usize,
-        ) -> usize;
+        ) -> *mut DracoBytes;
 
+        /// As `draco_decode_mesh_attribute`, for a point cloud.
+        pub fn draco_decode_point_cloud_attribute(
+            encoded_data: *const u8,
+            encoded_size: usize,
+            attribute_type: c_int,
+        ) -> *mut DracoBytes;
+
+        /// Decode a mesh once and return stable structural/data fingerprints.
         pub fn draco_decode_mesh_fingerprint(
             encoded_data: *const u8,
             encoded_size: usize,
@@ -285,20 +276,47 @@ mod ffi {
             encoded_size: usize,
             result: *mut DracoDecodeFingerprint,
         ) -> c_int;
+    }
+}
 
-        /// Decode a point cloud once and return one attribute's values.
-        pub fn draco_decode_point_cloud_attribute_values(
-            encoded_data: *const u8,
-            encoded_size: usize,
-            attribute_type: c_int,
-            output: *mut f32,
-            output_capacity: usize,
-        ) -> usize;
+/// Bytes the C++ side produced, taken over by Rust.
+///
+/// The C++ side owns the allocation until [`CppBytes::into_vec`] copies it out,
+/// so the result is sized by whoever made it: nothing guesses a capacity in
+/// advance, and a null handle is the only failure there is.
+#[cfg(not(cpp_test_bridge_disabled))]
+struct CppBytes(std::ptr::NonNull<ffi::DracoBytes>);
+
+#[cfg(not(cpp_test_bridge_disabled))]
+impl CppBytes {
+    /// Takes ownership of a handle a bridge function returned; `None` for null.
+    fn take(bytes: *mut ffi::DracoBytes) -> Option<Self> {
+        std::ptr::NonNull::new(bytes).map(Self)
+    }
+
+    fn into_vec(self) -> Vec<u8> {
+        unsafe {
+            let size = ffi::draco_bytes_size(self.0.as_ptr());
+            if size == 0 {
+                return Vec::new();
+            }
+            std::slice::from_raw_parts(ffi::draco_bytes_data(self.0.as_ptr()), size).to_vec()
+        }
+    }
+
+    fn into_f32s(self) -> Vec<f32> {
+        let bytes = self.into_vec();
+        let (values, _) = bytes.as_chunks::<4>();
+        values.iter().map(|b| f32::from_ne_bytes(*b)).collect()
     }
 }
 
 #[cfg(not(cpp_test_bridge_disabled))]
-pub use ffi::*;
+impl Drop for CppBytes {
+    fn drop(&mut self) {
+        unsafe { ffi::draco_bytes_free(self.0.as_ptr()) }
+    }
+}
 
 /// Detailed profiling result from C++ encoder
 #[derive(Debug, Clone)]
@@ -332,20 +350,20 @@ pub fn is_available() -> bool {
     return true;
 }
 
-/// Get Draco C++ library version
+/// The C++ Draco version the bridge reports, as `(major, minor, revision)`.
 #[cfg(not(cpp_test_bridge_disabled))]
-pub fn get_version() -> (i32, i32, i32) {
+pub fn cpp_version() -> (i32, i32, i32) {
     let mut major = 0;
     let mut minor = 0;
     let mut revision = 0;
     unsafe {
-        draco_get_version(&mut major, &mut minor, &mut revision);
+        ffi::draco_get_version(&mut major, &mut minor, &mut revision);
     }
     (major, minor, revision)
 }
 
 #[cfg(cpp_test_bridge_disabled)]
-pub fn get_version() -> (i32, i32, i32) {
+pub fn cpp_version() -> (i32, i32, i32) {
     (0, 0, 0)
 }
 
@@ -383,7 +401,7 @@ pub fn benchmark_cpp_encode(
     let mut output_size: usize = 0;
 
     let avg_time_us = unsafe {
-        draco_benchmark_encode_mesh(
+        ffi::draco_benchmark_encode_mesh(
             num_points,
             positions.as_ptr(),
             num_faces,
@@ -418,30 +436,6 @@ pub fn benchmark_cpp_encode(
     None
 }
 
-/// Stub for builds without the C++ Draco library, returning `-1`.
-///
-/// # Safety
-///
-/// This body dereferences nothing, but the signature mirrors the `extern "C"`
-/// declaration it stands in for, so callers must still uphold that contract:
-/// the pointers must be valid for the given counts. The argument count is the
-/// C function's, not a choice made here.
-#[cfg(cpp_test_bridge_disabled)]
-#[allow(clippy::too_many_arguments)]
-pub unsafe fn draco_benchmark_encode_mesh(
-    _num_points: u32,
-    _positions: *const f32,
-    _num_faces: u32,
-    _faces: *const u32,
-    _encoding_speed: i32,
-    _decoding_speed: i32,
-    _quantization_bits: i32,
-    _iterations: u32,
-    _output_size: *mut usize,
-) -> i64 {
-    -1
-}
-
 /// C++-side allocation counters since process start: `(count, bytes)`.
 ///
 /// Zeros unless the bridge was built with `DRACO_BRIDGE_COUNT_ALLOCS` set --
@@ -470,35 +464,18 @@ pub fn encode_cpp_mesh(
     decoding_speed: i32,
     quantization_bits: i32,
 ) -> Option<Vec<u8>> {
-    let num_points = (positions.len() / 3) as u32;
-    let num_faces = (faces.len() / 3) as u32;
-
-    // Allocate enough space for both compressed and fast sequential outputs.
-    // Fast sequential connectivity can be much larger than the compressed
-    // low-speed streams, especially on dense grids.
-    let buffer_size = (num_points as usize * 12 + faces.len() * 4 + 4096).max(65536);
-    let mut buffer = vec![0u8; buffer_size];
-
-    let encoded_size = unsafe {
-        ffi::draco_encode_mesh_single(
-            num_points,
+    let bytes = unsafe {
+        ffi::draco_encode_mesh_positions(
+            (positions.len() / 3) as u32,
             positions.as_ptr(),
-            num_faces,
+            (faces.len() / 3) as u32,
             faces.as_ptr(),
             encoding_speed,
             decoding_speed,
             quantization_bits,
-            buffer.as_mut_ptr(),
-            buffer_size,
         )
     };
-
-    if encoded_size == 0 {
-        return None;
-    }
-
-    buffer.truncate(encoded_size);
-    Some(buffer)
+    CppBytes::take(bytes).map(CppBytes::into_vec)
 }
 
 /// Draco's own attribute type numbering, for the decode helper below.
@@ -518,63 +495,36 @@ pub mod cpp_attribute {
 /// The fingerprint helpers answer "same or not". This answers "how far apart",
 /// which is what separates an encoder defect from a decoder one: read the same
 /// payload with both implementations and see which pair agrees.
+///
+/// Values come per point, `num_components` floats each. `None` when the
+/// payload does not decode as a mesh or has no attribute of that type.
 #[cfg(not(cpp_test_bridge_disabled))]
-pub fn decode_cpp_attribute_values(encoded: &[u8], attribute_type: i32) -> Option<Vec<f32>> {
-    // Generous: four components per point at the largest point count these
-    // tests build, and the call reports the true length back.
-    let mut values = vec![0.0f32; 1 << 20];
-    let written = unsafe {
-        ffi::draco_decode_attribute_values(
-            encoded.as_ptr(),
-            encoded.len(),
-            attribute_type,
-            values.as_mut_ptr(),
-            values.len(),
-        )
+pub fn decode_cpp_mesh_attribute(encoded: &[u8], attribute_type: i32) -> Option<Vec<f32>> {
+    let bytes = unsafe {
+        ffi::draco_decode_mesh_attribute(encoded.as_ptr(), encoded.len(), attribute_type)
     };
-    if written == 0 {
-        return None;
-    }
-    values.truncate(written);
-    Some(values)
+    CppBytes::take(bytes).map(CppBytes::into_f32s)
 }
 
 #[cfg(cpp_test_bridge_disabled)]
-pub fn decode_cpp_attribute_values(_encoded: &[u8], _attribute_type: i32) -> Option<Vec<f32>> {
+pub fn decode_cpp_mesh_attribute(_encoded: &[u8], _attribute_type: i32) -> Option<Vec<f32>> {
     None
 }
 
-/// As `decode_cpp_attribute_values`, for a payload holding a point cloud.
+/// As [`decode_cpp_mesh_attribute`], for a payload holding a point cloud.
 ///
 /// The two entry points differ only in which `Decode*FromBuffer` they call,
 /// and a point cloud decoded as a mesh fails outright, so the caller picks.
 #[cfg(not(cpp_test_bridge_disabled))]
-pub fn decode_cpp_point_cloud_attribute_values(
-    encoded: &[u8],
-    attribute_type: i32,
-) -> Option<Vec<f32>> {
-    let mut values = vec![0.0f32; 1 << 20];
-    let written = unsafe {
-        ffi::draco_decode_point_cloud_attribute_values(
-            encoded.as_ptr(),
-            encoded.len(),
-            attribute_type,
-            values.as_mut_ptr(),
-            values.len(),
-        )
+pub fn decode_cpp_point_cloud_attribute(encoded: &[u8], attribute_type: i32) -> Option<Vec<f32>> {
+    let bytes = unsafe {
+        ffi::draco_decode_point_cloud_attribute(encoded.as_ptr(), encoded.len(), attribute_type)
     };
-    if written == 0 {
-        return None;
-    }
-    values.truncate(written);
-    Some(values)
+    CppBytes::take(bytes).map(CppBytes::into_f32s)
 }
 
 #[cfg(cpp_test_bridge_disabled)]
-pub fn decode_cpp_point_cloud_attribute_values(
-    _encoded: &[u8],
-    _attribute_type: i32,
-) -> Option<Vec<f32>> {
+pub fn decode_cpp_point_cloud_attribute(_encoded: &[u8], _attribute_type: i32) -> Option<Vec<f32>> {
     None
 }
 
@@ -610,17 +560,11 @@ pub fn encode_cpp_mesh_attributed(
     decoding_speed: i32,
     position_bits: i32,
 ) -> Option<Vec<u8>> {
-    let num_points = (positions.len() / 3) as u32;
-    let num_faces = (faces.len() / 3) as u32;
-
-    let buffer_size = (num_points as usize * 32 + faces.len() * 4 + 4096).max(65536);
-    let mut buffer = vec![0u8; buffer_size];
-
-    let encoded_size = unsafe {
+    let bytes = unsafe {
         ffi::draco_encode_mesh_attributed(
-            num_points,
+            (positions.len() / 3) as u32,
             positions.as_ptr(),
-            num_faces,
+            (faces.len() / 3) as u32,
             faces.as_ptr(),
             attributes
                 .normals
@@ -637,17 +581,9 @@ pub fn encode_cpp_mesh_attributed(
             attributes.normal_bits,
             attributes.uv_bits,
             attributes.color_bits,
-            buffer.as_mut_ptr(),
-            buffer_size,
         )
     };
-
-    if encoded_size == 0 {
-        return None;
-    }
-
-    buffer.truncate(encoded_size);
-    Some(buffer)
+    CppBytes::take(bytes).map(CppBytes::into_vec)
 }
 
 #[cfg(cpp_test_bridge_disabled)]
@@ -683,33 +619,19 @@ pub fn encode_cpp_mesh_sequential(
     quantization_bits: i32,
     compress_connectivity: bool,
 ) -> Option<Vec<u8>> {
-    let num_points = (positions.len() / 3) as u32;
-    let num_faces = (faces.len() / 3) as u32;
-
-    let buffer_size = (num_points as usize * 12 + faces.len() * 4 + 4096).max(65536);
-    let mut buffer = vec![0u8; buffer_size];
-
-    let encoded_size = unsafe {
+    let bytes = unsafe {
         ffi::draco_encode_mesh_sequential(
-            num_points,
+            (positions.len() / 3) as u32,
             positions.as_ptr(),
-            num_faces,
+            (faces.len() / 3) as u32,
             faces.as_ptr(),
             encoding_speed,
             decoding_speed,
             quantization_bits,
             i32::from(compress_connectivity),
-            buffer.as_mut_ptr(),
-            buffer_size,
         )
     };
-
-    if encoded_size == 0 {
-        return None;
-    }
-
-    buffer.truncate(encoded_size);
-    Some(buffer)
+    CppBytes::take(bytes).map(CppBytes::into_vec)
 }
 
 #[cfg(cpp_test_bridge_disabled)]
@@ -1037,34 +959,36 @@ pub fn benchmark_cpp_decode(_encoded_data: &[u8], _iterations: u32) -> Option<(i
 
 // --- Safe RAII wrappers for C++ handles -------------------------------------------------
 
+/// A C++ `draco::Mesh` assembled one call at a time, the way an application
+/// builds one, rather than from the flat arrays the `encode_cpp_*` functions
+/// take.
 #[cfg(not(cpp_test_bridge_disabled))]
-/// RAII wrapper around a C++ Mesh handle
 pub struct CppMesh {
-    handle: *mut ::std::ffi::c_void,
+    mesh: std::ptr::NonNull<ffi::DracoMesh>,
 }
 
 #[cfg(not(cpp_test_bridge_disabled))]
 impl CppMesh {
     pub fn new() -> Option<Self> {
-        let h = unsafe { draco_create_mesh() };
-        if h.is_null() {
-            None
-        } else {
-            Some(CppMesh { handle: h })
-        }
+        let mesh = std::ptr::NonNull::new(unsafe { ffi::draco_mesh_new() })?;
+        Some(CppMesh { mesh })
     }
 
     pub fn set_num_faces(&mut self, num_faces: u32) {
-        unsafe { draco_mesh_set_num_faces(self.handle, num_faces) }
+        unsafe { ffi::draco_mesh_set_num_faces(self.mesh.as_ptr(), num_faces) }
     }
 
     pub fn set_face(&mut self, face_idx: u32, v0: u32, v1: u32, v2: u32) {
-        unsafe { draco_mesh_set_face(self.handle, face_idx, v0, v1, v2) }
+        unsafe { ffi::draco_mesh_set_face(self.mesh.as_ptr(), face_idx, v0, v1, v2) }
     }
 
     pub fn add_position_attribute(&mut self, num_points: u32, positions: &[f32]) -> Option<i32> {
         let ret = unsafe {
-            draco_mesh_add_position_attribute(self.handle, num_points, positions.as_ptr())
+            ffi::draco_mesh_add_position_attribute(
+                self.mesh.as_ptr(),
+                num_points,
+                positions.as_ptr(),
+            )
         };
         if ret < 0 {
             None
@@ -1072,12 +996,30 @@ impl CppMesh {
             Some(ret as i32)
         }
     }
+
+    /// Encodes the mesh, leaving the encoding method to Draco.
+    pub fn encode(
+        &self,
+        encoding_speed: i32,
+        decoding_speed: i32,
+        quantization_bits: i32,
+    ) -> Option<Vec<u8>> {
+        let bytes = unsafe {
+            ffi::draco_mesh_encode(
+                self.mesh.as_ptr(),
+                encoding_speed,
+                decoding_speed,
+                quantization_bits,
+            )
+        };
+        CppBytes::take(bytes).map(CppBytes::into_vec)
+    }
 }
 
 #[cfg(not(cpp_test_bridge_disabled))]
 impl Drop for CppMesh {
     fn drop(&mut self) {
-        unsafe { draco_free_mesh(self.handle) }
+        unsafe { ffi::draco_mesh_free(self.mesh.as_ptr()) }
     }
 }
 
@@ -1098,87 +1040,15 @@ impl CppMesh {
     pub fn add_position_attribute(&mut self, _num_points: u32, _positions: &[f32]) -> Option<i32> {
         None
     }
-}
 
-#[cfg(not(cpp_test_bridge_disabled))]
-/// RAII wrapper around a C++ EncoderBuffer handle
-pub struct CppEncoderBuffer {
-    handle: *mut ::std::ffi::c_void,
-}
-
-#[cfg(not(cpp_test_bridge_disabled))]
-impl CppEncoderBuffer {
-    pub fn new() -> Option<Self> {
-        let h = unsafe { draco_create_encoder_buffer() };
-        if h.is_null() {
-            None
-        } else {
-            Some(CppEncoderBuffer { handle: h })
-        }
-    }
-
-    pub fn data(&self) -> &[u8] {
-        unsafe {
-            let ptr = draco_encoder_buffer_data(self.handle);
-            let len = draco_encoder_buffer_size(self.handle);
-            std::slice::from_raw_parts(ptr, len)
-        }
-    }
-}
-
-#[cfg(not(cpp_test_bridge_disabled))]
-impl Drop for CppEncoderBuffer {
-    fn drop(&mut self) {
-        unsafe { draco_free_encoder_buffer(self.handle) }
-    }
-}
-
-#[cfg(cpp_test_bridge_disabled)]
-pub struct CppEncoderBuffer;
-
-#[cfg(cpp_test_bridge_disabled)]
-impl CppEncoderBuffer {
-    pub fn new() -> Option<Self> {
+    pub fn encode(
+        &self,
+        _encoding_speed: i32,
+        _decoding_speed: i32,
+        _quantization_bits: i32,
+    ) -> Option<Vec<u8>> {
         None
     }
-
-    pub fn data(&self) -> &[u8] {
-        &[]
-    }
-}
-
-/// Encode using the C++ handle-based API and return encoded bytes
-#[cfg(not(cpp_test_bridge_disabled))]
-pub fn encode_with_handles(
-    mesh: &CppMesh,
-    encoding_speed: i32,
-    decoding_speed: i32,
-    quantization_bits: i32,
-) -> Option<Vec<u8>> {
-    let buffer = CppEncoderBuffer::new()?;
-    let status = unsafe {
-        draco_encode_mesh(
-            mesh.handle,
-            buffer.handle,
-            encoding_speed,
-            decoding_speed,
-            quantization_bits,
-        )
-    };
-    if status < 0 {
-        return None;
-    }
-    Some(buffer.data().to_vec())
-}
-
-#[cfg(cpp_test_bridge_disabled)]
-pub fn encode_with_handles(
-    _mesh: &CppMesh,
-    _encoding_speed: i32,
-    _decoding_speed: i32,
-    _quantization_bits: i32,
-) -> Option<Vec<u8>> {
-    None
 }
 
 // --------------------------------------------------------------------------------------
@@ -1201,36 +1071,24 @@ pub fn encode_cpp_mesh_seamed(
     position_bits: i32,
     uv_bits: i32,
 ) -> Option<Vec<u8>> {
-    let num_points = position_map.len() as u32;
-    let num_faces = (faces.len() / 3) as u32;
-    let buffer_size = (num_points as usize * 32 + faces.len() * 4 + 4096).max(65536);
-    let mut buffer = vec![0u8; buffer_size];
-
-    let encoded_size = unsafe {
+    let bytes = unsafe {
         ffi::draco_encode_mesh_seamed(
-            num_points,
+            position_map.len() as u32,
             (positions.len() / 3) as u32,
             positions.as_ptr(),
             position_map.as_ptr(),
             (uvs.len() / 2) as u32,
             uvs.as_ptr(),
             uv_map.as_ptr(),
-            num_faces,
+            (faces.len() / 3) as u32,
             faces.as_ptr(),
             encoding_speed,
             decoding_speed,
             position_bits,
             uv_bits,
-            buffer.as_mut_ptr(),
-            buffer_size,
         )
     };
-
-    if encoded_size == 0 {
-        return None;
-    }
-    buffer.truncate(encoded_size);
-    Some(buffer)
+    CppBytes::take(bytes).map(CppBytes::into_vec)
 }
 
 #[cfg(cpp_test_bridge_disabled)]
@@ -1272,13 +1130,9 @@ pub fn encode_cpp_point_cloud(
     decoding_speed: i32,
     position_bits: i32,
 ) -> Option<Vec<u8>> {
-    let num_points = (positions.len() / 3) as u32;
-    let buffer_size = (num_points as usize * 32 + 4096).max(65536);
-    let mut buffer = vec![0u8; buffer_size];
-
-    let encoded_size = unsafe {
+    let bytes = unsafe {
         ffi::draco_encode_point_cloud(
-            num_points,
+            (positions.len() / 3) as u32,
             positions.as_ptr(),
             attributes
                 .normals
@@ -1292,16 +1146,9 @@ pub fn encode_cpp_point_cloud(
             position_bits,
             attributes.normal_bits,
             attributes.color_bits,
-            buffer.as_mut_ptr(),
-            buffer_size,
         )
     };
-
-    if encoded_size == 0 {
-        return None;
-    }
-    buffer.truncate(encoded_size);
-    Some(buffer)
+    CppBytes::take(bytes).map(CppBytes::into_vec)
 }
 
 #[cfg(cpp_test_bridge_disabled)]
@@ -1343,17 +1190,12 @@ pub fn encode_cpp_generic(
     decoding_speed: i32,
     position_bits: i32,
 ) -> Option<Vec<u8>> {
-    let num_points = (positions.len() / 3) as u32;
-    let num_faces = (faces.len() / 3) as u32;
-    let buffer_size = (num_points as usize * 32 + faces.len() * 4 + 4096).max(65536);
-    let mut buffer = vec![0u8; buffer_size];
-
-    let encoded_size = unsafe {
+    let bytes = unsafe {
         ffi::draco_encode_generic(
             i32::from(is_mesh),
-            num_points,
+            (positions.len() / 3) as u32,
             positions.as_ptr(),
-            num_faces,
+            (faces.len() / 3) as u32,
             faces.as_ptr(),
             attribute.data_type,
             attribute.num_components,
@@ -1363,16 +1205,9 @@ pub fn encode_cpp_generic(
             encoding_speed,
             decoding_speed,
             position_bits,
-            buffer.as_mut_ptr(),
-            buffer_size,
         )
     };
-
-    if encoded_size == 0 {
-        return None;
-    }
-    buffer.truncate(encoded_size);
-    Some(buffer)
+    CppBytes::take(bytes).map(CppBytes::into_vec)
 }
 
 #[cfg(cpp_test_bridge_disabled)]
@@ -1397,7 +1232,7 @@ mod tests {
     #[test]
     fn test_cpp_test_bridge_available() {
         if is_available() {
-            let (major, minor, revision) = get_version();
+            let (major, minor, revision) = cpp_version();
             println!("Draco C++ version: {}.{}.{}", major, minor, revision);
         } else {
             println!("C++ test bridge is disabled");

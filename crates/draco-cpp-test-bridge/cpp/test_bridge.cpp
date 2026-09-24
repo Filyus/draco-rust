@@ -63,29 +63,48 @@ static int64_t rounded_ns_to_us(int64_t ns) {
     return (ns + 500) / 1000;
 }
 
-// Opaque handle types
-typedef void* DracoMeshHandle;
-typedef void* DracoEncoderBufferHandle;
+// Bytes produced on the C++ side for Rust to take: the caller asks the size,
+// copies the data out and frees the handle. Nothing is sized in advance, so a
+// large result cannot be mistaken for a failure; a null handle is the only
+// failure there is.
+struct DracoBytes {
+    std::vector<uint8_t> data;
+};
 
-// Create a new mesh
-DracoMeshHandle draco_create_mesh() {
+static DracoBytes* bytes_from_buffer(const draco::EncoderBuffer& buffer) {
+    const auto* begin = reinterpret_cast<const uint8_t*>(buffer.data());
+    auto* bytes = new DracoBytes;
+    bytes->data.assign(begin, begin + buffer.size());
+    return bytes;
+}
+
+size_t draco_bytes_size(const DracoBytes* bytes) {
+    return bytes->data.size();
+}
+
+const uint8_t* draco_bytes_data(const DracoBytes* bytes) {
+    return bytes->data.data();
+}
+
+void draco_bytes_free(DracoBytes* bytes) {
+    delete bytes;
+}
+
+// A mesh assembled one call at a time, for tests that build it the way an
+// application would rather than from flat arrays.
+draco::Mesh* draco_mesh_new() {
     return new draco::Mesh();
 }
 
-// Free a mesh
-void draco_free_mesh(DracoMeshHandle handle) {
-    delete static_cast<draco::Mesh*>(handle);
+void draco_mesh_free(draco::Mesh* mesh) {
+    delete mesh;
 }
 
-// Set mesh face count
-void draco_mesh_set_num_faces(DracoMeshHandle handle, uint32_t num_faces) {
-    auto* mesh = static_cast<draco::Mesh*>(handle);
+void draco_mesh_set_num_faces(draco::Mesh* mesh, uint32_t num_faces) {
     mesh->SetNumFaces(num_faces);
 }
 
-// Add a face to the mesh
-void draco_mesh_set_face(DracoMeshHandle handle, uint32_t face_idx, uint32_t v0, uint32_t v1, uint32_t v2) {
-    auto* mesh = static_cast<draco::Mesh*>(handle);
+void draco_mesh_set_face(draco::Mesh* mesh, uint32_t face_idx, uint32_t v0, uint32_t v1, uint32_t v2) {
     draco::Mesh::Face face;
     face[0] = draco::PointIndex(v0);
     face[1] = draco::PointIndex(v1);
@@ -94,9 +113,7 @@ void draco_mesh_set_face(DracoMeshHandle handle, uint32_t face_idx, uint32_t v0,
 }
 
 // Set number of points and add position attribute
-int draco_mesh_add_position_attribute(DracoMeshHandle handle, uint32_t num_points, const float* positions) {
-    auto* mesh = static_cast<draco::Mesh*>(handle);
-
+int draco_mesh_add_position_attribute(draco::Mesh* mesh, uint32_t num_points, const float* positions) {
     // Create a GeometryAttribute with explicit stride/offset to match single-shot construction
     draco::GeometryAttribute ga;
     ga.Init(draco::GeometryAttribute::POSITION, nullptr, 3, draco::DT_FLOAT32, false, sizeof(float) * 3, 0);
@@ -113,54 +130,23 @@ int draco_mesh_add_position_attribute(DracoMeshHandle handle, uint32_t num_point
     return pos_att_id;
 }
 
-// Create encoder buffer
-DracoEncoderBufferHandle draco_create_encoder_buffer() {
-    return new draco::EncoderBuffer();
-}
-
-// Free encoder buffer
-void draco_free_encoder_buffer(DracoEncoderBufferHandle handle) {
-    delete static_cast<draco::EncoderBuffer*>(handle);
-}
-
-// Get encoded data pointer and size
-const uint8_t* draco_encoder_buffer_data(DracoEncoderBufferHandle handle) {
-    auto* buffer = static_cast<draco::EncoderBuffer*>(handle);
-    return reinterpret_cast<const uint8_t*>(buffer->data());
-}
-
-size_t draco_encoder_buffer_size(DracoEncoderBufferHandle handle) {
-    auto* buffer = static_cast<draco::EncoderBuffer*>(handle);
-    return buffer->size();
-}
-
-// Encode mesh with given speed and quantization settings
-// Returns encoding time in microseconds, or -1 on error
-int64_t draco_encode_mesh(
-    DracoMeshHandle mesh_handle,
-    DracoEncoderBufferHandle buffer_handle,
+// Encode a mesh built through the calls above. The encoding method is left to
+// Draco: sequential at speed 10, edgebreaker otherwise.
+DracoBytes* draco_mesh_encode(
+    const draco::Mesh* mesh,
     int encoding_speed,
     int decoding_speed,
     int quantization_bits
 ) {
-    auto* mesh = static_cast<draco::Mesh*>(mesh_handle);
-    auto* buffer = static_cast<draco::EncoderBuffer*>(buffer_handle);
-    
     draco::Encoder encoder;
     encoder.SetSpeedOptions(encoding_speed, decoding_speed);
     encoder.SetAttributeQuantization(draco::GeometryAttribute::POSITION, quantization_bits);
-    // Don't set encoding method - let C++ use default (sequential at speed 10, edgebreaker otherwise)
-    
-    auto start = std::chrono::steady_clock::now();
-    draco::Status status = encoder.EncodeMeshToBuffer(*mesh, buffer);
-    auto end = std::chrono::steady_clock::now();
-    
-    if (!status.ok()) {
-        return -1;
+
+    draco::EncoderBuffer buffer;
+    if (!encoder.EncodeMeshToBuffer(*mesh, &buffer).ok()) {
+        return nullptr;
     }
-    
-    auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
-    return rounded_ns_to_us(duration.count());
+    return bytes_from_buffer(buffer);
 }
 
 // Benchmark encoding: runs encoding multiple times and returns average time in microseconds
@@ -435,19 +421,16 @@ int draco_profile_reencode_mesh(
     return 0;
 }
 
-// Single-shot encoding that returns encoded data for byte comparison
-// Uses direct mesh construction to match Rust's mesh structure
-// Returns encoded size, or 0 on error. Caller provides output buffer.
-size_t draco_encode_mesh_single(
+// Encode a mesh of positions and faces, for byte comparison. The mesh is built
+// directly, the way the Rust side builds it. Null on error.
+DracoBytes* draco_encode_mesh_positions(
     uint32_t num_points,
     const float* positions,
     uint32_t num_faces,
     const uint32_t* faces,
     int encoding_speed,
     int decoding_speed,
-    int quantization_bits,
-    uint8_t* output_buffer,
-    size_t output_buffer_size
+    int quantization_bits
 ) {
     // Create mesh directly (matching Rust's approach)
     draco::Mesh mesh;
@@ -484,18 +467,10 @@ size_t draco_encode_mesh_single(
     
     draco::EncoderBuffer buffer;
     draco::Status status = encoder.EncodeMeshToBuffer(mesh, &buffer);
-    
     if (!status.ok()) {
-        return 0;
+        return nullptr;
     }
-    
-    size_t encoded_size = buffer.size();
-    if (encoded_size > output_buffer_size) {
-        return 0;  // Buffer too small
-    }
-    
-    std::memcpy(output_buffer, buffer.data(), encoded_size);
-    return encoded_size;
+    return bytes_from_buffer(buffer);
 }
 
 // Single-shot encoding with the attributes a real mesh carries, not positions
@@ -508,7 +483,7 @@ size_t draco_encode_mesh_single(
 // added in the order normal, texture coordinate, colour, and the Rust side must
 // add them in the same order: Draco numbers attributes by insertion and encodes
 // them in that order.
-size_t draco_encode_mesh_attributed(
+DracoBytes* draco_encode_mesh_attributed(
     uint32_t num_points,
     const float* positions,
     uint32_t num_faces,
@@ -521,9 +496,7 @@ size_t draco_encode_mesh_attributed(
     int position_bits,
     int normal_bits,
     int uv_bits,
-    int color_bits,
-    uint8_t* output_buffer,
-    size_t output_buffer_size
+    int color_bits
 ) {
     draco::Mesh mesh;
     mesh.set_num_points(num_points);
@@ -595,16 +568,9 @@ size_t draco_encode_mesh_attributed(
     draco::EncoderBuffer buffer;
     draco::Status status = encoder.EncodeMeshToBuffer(mesh, &buffer);
     if (!status.ok()) {
-        return 0;
+        return nullptr;
     }
-
-    size_t encoded_size = buffer.size();
-    if (encoded_size > output_buffer_size) {
-        return 0;
-    }
-
-    std::memcpy(output_buffer, buffer.data(), encoded_size);
-    return encoded_size;
+    return bytes_from_buffer(buffer);
 }
 
 
@@ -613,7 +579,7 @@ size_t draco_encode_mesh_attributed(
 // the mesh has points and both attributes come with an explicit point map.
 // This is what produces attribute seams, and it is unreachable through
 // draco_encode_mesh_attributed, which identity-maps every attribute.
-size_t draco_encode_mesh_seamed(
+DracoBytes* draco_encode_mesh_seamed(
     uint32_t num_points,
     uint32_t num_position_values,
     const float* positions,
@@ -626,9 +592,7 @@ size_t draco_encode_mesh_seamed(
     int encoding_speed,
     int decoding_speed,
     int position_bits,
-    int uv_bits,
-    uint8_t* output_buffer,
-    size_t output_buffer_size
+    int uv_bits
 ) {
     draco::Mesh mesh;
     mesh.set_num_points(num_points);
@@ -684,22 +648,15 @@ size_t draco_encode_mesh_seamed(
     draco::EncoderBuffer buffer;
     draco::Status status = encoder.EncodeMeshToBuffer(mesh, &buffer);
     if (!status.ok()) {
-        return 0;
+        return nullptr;
     }
-
-    size_t encoded_size = buffer.size();
-    if (encoded_size > output_buffer_size) {
-        return 0;
-    }
-
-    std::memcpy(output_buffer, buffer.data(), encoded_size);
-    return encoded_size;
+    return bytes_from_buffer(buffer);
 }
 
 // Single-shot encoding with explicit sequential mesh connectivity mode.
 // When compress_connectivity is non-zero, this writes connectivity_method = 0,
 // whose payload stores delta-coded symbols.
-size_t draco_encode_mesh_sequential(
+DracoBytes* draco_encode_mesh_sequential(
     uint32_t num_points,
     const float* positions,
     uint32_t num_faces,
@@ -707,9 +664,7 @@ size_t draco_encode_mesh_sequential(
     int encoding_speed,
     int decoding_speed,
     int quantization_bits,
-    int compress_connectivity,
-    uint8_t* output_buffer,
-    size_t output_buffer_size
+    int compress_connectivity
 ) {
     draco::Mesh mesh;
     mesh.set_num_points(num_points);
@@ -744,16 +699,9 @@ size_t draco_encode_mesh_sequential(
     draco::Status status = encoder.EncodeMeshToBuffer(mesh, &buffer);
 
     if (!status.ok()) {
-        return 0;
+        return nullptr;
     }
-
-    size_t encoded_size = buffer.size();
-    if (encoded_size > output_buffer_size) {
-        return 0;
-    }
-
-    std::memcpy(output_buffer, buffer.data(), encoded_size);
-    return encoded_size;
+    return bytes_from_buffer(buffer);
 }
 
 // Decode profiling result structure
@@ -1018,21 +966,46 @@ int draco_profile_decode(
     return 0;
 }
 
-// Decode a mesh once and return stable structural/data fingerprints.
-// Decode a payload and hand back one attribute's values as floats, per point.
+// One attribute's values as floats, per point, packed as native-endian bytes.
+// Null when the geometry has no attribute of that type.
+//
+// ConvertValue dequantizes through the attribute transform, which is what the
+// Rust side reports too, so the two are comparable.
+static DracoBytes* attribute_values(const draco::PointCloud& geometry, int attribute_type) {
+    const draco::PointAttribute* att = geometry.GetNamedAttribute(
+        static_cast<draco::GeometryAttribute::Type>(attribute_type));
+    if (att == nullptr) {
+        return nullptr;
+    }
+
+    const int components = att->num_components();
+    std::vector<float> values(static_cast<size_t>(geometry.num_points()) * components);
+    for (draco::PointIndex i(0); i < geometry.num_points(); ++i) {
+        float* value = &values[static_cast<size_t>(i.value()) * components];
+        if (!att->ConvertValue<float>(att->mapped_index(i), components, value)) {
+            return nullptr;
+        }
+    }
+
+    const auto* begin = reinterpret_cast<const uint8_t*>(values.data());
+    auto* bytes = new DracoBytes;
+    bytes->data.assign(begin, begin + values.size() * sizeof(float));
+    return bytes;
+}
+
+// Decode a mesh and hand back one attribute's values.
 //
 // A hash can say "different" and nothing else. Telling an encoder defect from a
 // decoder one needs the values themselves: read the same payload with both
 // implementations and see which pair agrees.
 //
 // `attribute_type` uses Draco's own numbering (0 POSITION, 1 NORMAL,
-// 2 COLOR, 3 TEX_COORD, 4 GENERIC). Returns the number of floats written, or 0.
-size_t draco_decode_attribute_values(
+// 2 COLOR, 3 TEX_COORD, 4 GENERIC). Null on a decode failure or a missing
+// attribute.
+DracoBytes* draco_decode_mesh_attribute(
     const uint8_t* encoded_data,
     size_t encoded_size,
-    int attribute_type,
-    float* output,
-    size_t output_capacity
+    int attribute_type
 ) {
     draco::DecoderBuffer buffer;
     buffer.Init(reinterpret_cast<const char*>(encoded_data), encoded_size);
@@ -1040,45 +1013,18 @@ size_t draco_decode_attribute_values(
     draco::Decoder decoder;
     auto decode_result = decoder.DecodeMeshFromBuffer(&buffer);
     if (!decode_result.ok()) {
-        return 0;
+        return nullptr;
     }
-    auto mesh = std::move(decode_result).value();
-
-    const draco::PointAttribute* att = mesh->GetNamedAttribute(
-        static_cast<draco::GeometryAttribute::Type>(attribute_type));
-    if (att == nullptr) {
-        return 0;
-    }
-
-    const int components = att->num_components();
-    const size_t needed = static_cast<size_t>(mesh->num_points()) * components;
-    if (needed > output_capacity) {
-        return 0;
-    }
-
-    // GetMappedValue dequantizes through the attribute transform, which is what
-    // the Rust side reports too, so the two are comparable.
-    for (draco::PointIndex i(0); i < mesh->num_points(); ++i) {
-        std::vector<float> value(components);
-        if (!att->ConvertValue<float>(att->mapped_index(i), components, value.data())) {
-            return 0;
-        }
-        for (int c = 0; c < components; ++c) {
-            output[i.value() * components + c] = value[c];
-        }
-    }
-    return needed;
+    return attribute_values(*decode_result.value(), attribute_type);
 }
 
 // As above, for a payload holding a point cloud rather than a mesh. The two
 // differ only in which Decode*FromBuffer runs; a point cloud decoded as a mesh
 // fails outright, so the caller picks.
-size_t draco_decode_point_cloud_attribute_values(
+DracoBytes* draco_decode_point_cloud_attribute(
     const uint8_t* encoded_data,
     size_t encoded_size,
-    int attribute_type,
-    float* output,
-    size_t output_capacity
+    int attribute_type
 ) {
     draco::DecoderBuffer buffer;
     buffer.Init(reinterpret_cast<const char*>(encoded_data), encoded_size);
@@ -1086,34 +1032,12 @@ size_t draco_decode_point_cloud_attribute_values(
     draco::Decoder decoder;
     auto decode_result = decoder.DecodePointCloudFromBuffer(&buffer);
     if (!decode_result.ok()) {
-        return 0;
+        return nullptr;
     }
-    auto point_cloud = std::move(decode_result).value();
-
-    const draco::PointAttribute* att = point_cloud->GetNamedAttribute(
-        static_cast<draco::GeometryAttribute::Type>(attribute_type));
-    if (att == nullptr) {
-        return 0;
-    }
-
-    const int components = att->num_components();
-    const size_t needed = static_cast<size_t>(point_cloud->num_points()) * components;
-    if (needed > output_capacity) {
-        return 0;
-    }
-
-    for (draco::PointIndex i(0); i < point_cloud->num_points(); ++i) {
-        std::vector<float> value(components);
-        if (!att->ConvertValue<float>(att->mapped_index(i), components, value.data())) {
-            return 0;
-        }
-        for (int c = 0; c < components; ++c) {
-            output[i.value() * components + c] = value[c];
-        }
-    }
-    return needed;
+    return attribute_values(*decode_result.value(), attribute_type);
 }
 
+// Decode a mesh once and return stable structural/data fingerprints.
 int draco_decode_mesh_fingerprint(
     const uint8_t* encoded_data,
     size_t encoded_size,
@@ -1166,7 +1090,7 @@ int draco_decode_point_cloud_fingerprint(
 
 // Point cloud encoding. `encoding_method` is -1 to leave the choice to Draco's
 // own selection rule, 0 to force sequential, 1 to force kd-tree.
-size_t draco_encode_point_cloud(
+DracoBytes* draco_encode_point_cloud(
     uint32_t num_points,
     const float* positions,
     const float* normals,
@@ -1176,9 +1100,7 @@ size_t draco_encode_point_cloud(
     int decoding_speed,
     int position_bits,
     int normal_bits,
-    int color_bits,
-    uint8_t* output_buffer,
-    size_t output_buffer_size
+    int color_bits
 ) {
     draco::PointCloud pc;
     pc.set_num_points(num_points);
@@ -1234,16 +1156,9 @@ size_t draco_encode_point_cloud(
     draco::EncoderBuffer buffer;
     draco::Status status = encoder.EncodePointCloudToBuffer(pc, &buffer);
     if (!status.ok()) {
-        return 0;
+        return nullptr;
     }
-
-    size_t encoded_size = buffer.size();
-    if (encoded_size > output_buffer_size) {
-        return 0;
-    }
-
-    std::memcpy(output_buffer, buffer.data(), encoded_size);
-    return encoded_size;
+    return bytes_from_buffer(buffer);
 }
 
 // A mesh or point cloud carrying one POSITION attribute plus one GENERIC
@@ -1252,7 +1167,7 @@ size_t draco_encode_point_cloud(
 // attributes, and DT_INT64/DT_UINT64/DT_FLOAT64/DT_BOOL). `generic_data_type`
 // is a draco::DataType value; `generic_data` is already packed at
 // DataTypeLength(generic_data_type) * generic_num_components bytes per point.
-size_t draco_encode_generic(
+DracoBytes* draco_encode_generic(
     int is_mesh,
     uint32_t num_points,
     const float* positions,
@@ -1265,9 +1180,7 @@ size_t draco_encode_generic(
     int encoding_method,
     int encoding_speed,
     int decoding_speed,
-    int position_bits,
-    uint8_t* output_buffer,
-    size_t output_buffer_size
+    int position_bits
 ) {
     const draco::DataType dt = static_cast<draco::DataType>(generic_data_type);
     const int component_size = draco::DataTypeLength(dt);
@@ -1332,16 +1245,9 @@ size_t draco_encode_generic(
         ? encoder.EncodeMeshToBuffer(mesh_storage, &buffer)
         : encoder.EncodePointCloudToBuffer(pc_storage, &buffer);
     if (!status.ok()) {
-        return 0;
+        return nullptr;
     }
-
-    size_t encoded_size = buffer.size();
-    if (encoded_size > output_buffer_size) {
-        return 0;
-    }
-
-    std::memcpy(output_buffer, buffer.data(), encoded_size);
-    return encoded_size;
+    return bytes_from_buffer(buffer);
 }
 } // extern "C"
 

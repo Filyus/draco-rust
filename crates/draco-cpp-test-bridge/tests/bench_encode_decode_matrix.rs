@@ -205,7 +205,7 @@ fn bench_encode_decode_matrix() {
         return;
     }
 
-    let (major, minor, revision) = draco_cpp_test_bridge::get_version();
+    let (major, minor, revision) = draco_cpp_test_bridge::cpp_version();
     println!("\n╔═══════════════════════════════════════════════════════════════════════╗");
     println!("║     COMPREHENSIVE DRACO PERFORMANCE TEST (C++ vs Rust)               ║");
     println!("╚═══════════════════════════════════════════════════════════════════════╝");

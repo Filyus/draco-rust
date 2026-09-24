@@ -135,7 +135,7 @@ fn bench_encode_cpp_vs_rust() {
         return;
     }
 
-    let (major, minor, revision) = draco_cpp_test_bridge::get_version();
+    let (major, minor, revision) = draco_cpp_test_bridge::cpp_version();
     let mut out = String::new();
     writeln!(
         out,

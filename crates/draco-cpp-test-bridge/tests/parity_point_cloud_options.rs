@@ -23,9 +23,7 @@ use draco_core::{
     DataType, EncoderBuffer, EncoderOptions, GeometryAttributeType, Metadata, PointAttribute,
     PointCloud, PointCloudEncoder,
 };
-use draco_cpp_test_bridge::{
-    decode_cpp_point_cloud_attribute_values, decode_cpp_point_cloud_fingerprint,
-};
+use draco_cpp_test_bridge::{decode_cpp_point_cloud_attribute, decode_cpp_point_cloud_fingerprint};
 
 const NUM_POINTS: usize = 4096;
 
@@ -128,7 +126,7 @@ fn encode(search: bool, spatial: bool) -> Vec<u8> {
 
 /// Positions as a set, for a stream whose points come back in another order.
 fn sorted_positions(encoded: &[u8]) -> Vec<[u32; 3]> {
-    let values = decode_cpp_point_cloud_attribute_values(encoded, POSITION)
+    let values = decode_cpp_point_cloud_attribute(encoded, POSITION)
         .expect("C++ decodes the position attribute");
     // Compared as bit patterns: these are dequantized values that went through
     // the same arithmetic on both sides, so equality is exact or it is a

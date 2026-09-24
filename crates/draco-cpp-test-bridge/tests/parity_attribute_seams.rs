@@ -280,11 +280,11 @@ fn cpp_decoder_reads_rust_seamed_uvs() {
         for speed in 0..=10 {
             let payload = encode_rust(sample, speed);
             let (Some(positions), Some(uvs)) = (
-                draco_cpp_test_bridge::decode_cpp_attribute_values(
+                draco_cpp_test_bridge::decode_cpp_mesh_attribute(
                     &payload,
                     draco_cpp_test_bridge::cpp_attribute::POSITION,
                 ),
-                draco_cpp_test_bridge::decode_cpp_attribute_values(
+                draco_cpp_test_bridge::decode_cpp_mesh_attribute(
                     &payload,
                     draco_cpp_test_bridge::cpp_attribute::TEX_COORD,
                 ),

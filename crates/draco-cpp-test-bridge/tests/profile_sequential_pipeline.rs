@@ -804,22 +804,10 @@ fn profile_sequential_pipeline() {
         );
 
         // C++ comparison
-        let cpp_time = unsafe {
-            let mut output_size = 0usize;
-            draco_cpp_test_bridge::draco_benchmark_encode_mesh(
-                num_points as u32,
-                positions.as_ptr(),
-                num_faces as u32,
-                faces.as_ptr(),
-                10,
-                10,
-                10,
-                iterations,
-                &mut output_size as *mut usize,
-            )
-        };
-
-        if cpp_time >= 0 {
+        if let Some(cpp) =
+            draco_cpp_test_bridge::benchmark_cpp_encode(&positions, &faces, 10, 10, 10, iterations)
+        {
+            let cpp_time = cpp.avg_time_us;
             let cpp_ms = cpp_time as f64 / 1000.0;
             println!("  C++  avg: {:.2}ms", cpp_ms);
             println!("  Speedup (C++/Rust): {:.2}x", cpp_ms / avg);
@@ -938,22 +926,10 @@ fn profile_detailed_breakdown() {
     println!();
 
     // C++ comparison
-    let cpp_time = unsafe {
-        let mut output_size = 0usize;
-        draco_cpp_test_bridge::draco_benchmark_encode_mesh(
-            num_points as u32,
-            positions.as_ptr(),
-            num_faces as u32,
-            faces.as_ptr(),
-            10,
-            10,
-            10,
-            iterations,
-            &mut output_size as *mut usize,
-        )
-    };
-
-    if cpp_time >= 0 {
+    if let Some(cpp) =
+        draco_cpp_test_bridge::benchmark_cpp_encode(&positions, &faces, 10, 10, 10, iterations)
+    {
+        let cpp_time = cpp.avg_time_us;
         let cpp_us = cpp_time as f64;
         println!("C++ avg:               {:7.1} µs", cpp_us);
         println!("C++/Rust speedup:      {:7.2}x", cpp_us / total_us);
@@ -1668,7 +1644,6 @@ fn profile_full_encode_breakdown() {
     // Profile the actual full encoding pipeline including connectivity
     let grid_size = 100;
     let (mesh, positions, faces) = create_grid_mesh(grid_size);
-    let num_points = positions.len() / 3;
     let num_faces = faces.len() / 3;
 
     let iterations = 50;
@@ -1722,20 +1697,9 @@ fn profile_full_encode_breakdown() {
     let full_encode_us = avg_duration_us(start.elapsed(), iterations);
 
     // Stage 4: C++ encode for comparison
-    let cpp_avg = unsafe {
-        let mut output_size = 0usize;
-        draco_cpp_test_bridge::draco_benchmark_encode_mesh(
-            num_points as u32,
-            positions.as_ptr(),
-            num_faces as u32,
-            faces.as_ptr(),
-            10,
-            10,
-            10,
-            iterations,
-            &mut output_size as *mut usize,
-        ) as f64
-    };
+    let cpp_avg =
+        draco_cpp_test_bridge::benchmark_cpp_encode(&positions, &faces, 10, 10, 10, iterations)
+            .map_or(-1.0, |cpp| cpp.avg_time_us as f64);
 
     println!(
         "Full encode breakdown ({}x{} mesh, {} iterations):",
