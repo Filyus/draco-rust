@@ -215,31 +215,32 @@ export function selectedFromNamedAttributes(
  * from eight cameras and compared against the unquantized scene, on a street
  * capture and two interiors, in linear radiance.
  *
- * - **Positions at 16.** Three per cent of the file, and the largest damage of
- *   anything tried when coarsened: 12 bits cost 5 to 15 dB.
+ * The errors of different properties add, so each group is worth bits in
+ * proportion to what it removes, and once the harmonics are coarsened the
+ * rest carry most of what error is left.
+ *
+ * - **Positions at 18.** 16 bits over a street's box leave a visible step:
+ *   18 buy it 1.2 dB for 0.75 bytes a splat, 93 per cent of what 20 buy. An
+ *   interior gains nothing, and loses 2 per cent of the file. 12 bits cost
+ *   5 to 15 dB.
  * - **Harmonics at 6.** A quarter of the file for 0.1 dB on the street and
  *   about 1 dB on an interior -- the best trade measured by a distance. Four
  *   bits halve the file again and cost an interior 10 dB.
- * - **Colour, opacity and scale at 10.** With the harmonics at 6 these carry
- *   most of what error is left, and the errors of different properties add,
- *   so each is worth its own bits: 1.7 bytes a splat buy 2.8 to 3.3 dB. Twelve
- *   bits buy another 0.3 for the same again. Opacity stays a logit: storing
- *   alpha instead was measured as a small loss, not a gain.
- * - **Everything else at 8.** Rotation, and whatever else the file carries.
+ * - **Everything else at 10.** Colour, opacity and scale: 1.7 bytes a splat
+ *   buy 2.8 to 3.3 dB over 8 bits, and 12 add only 0.3 for the same again.
+ *   Rotation: a byte buys 1.2 to 1.6 dB, nearly all that 12 bits buy for two.
+ *   Opacity stays a logit: storing alpha instead was measured as a small loss,
+ *   not a gain.
  *
- * At this budget the street and an interior render better than SPZ's at 8/8
- * does, in 8 and 21 per cent fewer bytes.
+ * At this budget the street renders at 54.8 dB in 34.8 bytes a splat and an
+ * interior at 54.6 in 34.3, against SPZ at 8/8 with 49.5 in 35.9 and 52.1 in
+ * 40.9.
  */
-export const SPLAT_BUDGET = { positions: 16, harmonics: 6, appearance: 10, other: 8 } as const;
-
-/** The properties written at `SPLAT_BUDGET.appearance`, by name prefix. */
-const APPEARANCE_PREFIXES = ['f_dc_', 'opacity', 'scale_'];
+export const SPLAT_BUDGET = { positions: 18, harmonics: 6, other: 10 } as const;
 
 /** The bits a splat property is written with, by its name in the file. */
 export function splatBitsFor(name: string): number {
-  if (name.startsWith('f_rest_')) return SPLAT_BUDGET.harmonics;
-  if (APPEARANCE_PREFIXES.some((prefix) => name.startsWith(prefix))) return SPLAT_BUDGET.appearance;
-  return SPLAT_BUDGET.other;
+  return name.startsWith('f_rest_') ? SPLAT_BUDGET.harmonics : SPLAT_BUDGET.other;
 }
 
 function sigmoid(x: number): number {
