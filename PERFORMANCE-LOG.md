@@ -36,7 +36,7 @@ figure at all.
 `rejected` -- tried, deliberately not kept. `retracted` -- an earlier claim
 here was withdrawn. `diagnostic` -- measured only, no change proposed.
 
-70 rounds: 40 landed, 10 diagnostic, 10 null, 8 retracted, 2 rejected.
+71 rounds: 41 landed, 10 diagnostic, 10 null, 8 retracted, 2 rejected.
 
 | Round | Verdict | Headline |
 | --- | --- | ---: |
@@ -110,6 +110,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [KTX2: Constant Tables, Built Per Decode](#ktx2-constant-tables-built-per-decode) | landed | `3.04x -> 1.27x` |
 | [KTX2: Bit Reading, And Solid UASTC Blocks](#ktx2-bit-reading-and-solid-uastc-blocks) | landed | `1.27x -> 0.74x` |
 | [KTX2: The BC7 Block Writer](#ktx2-the-bc7-block-writer) | landed | `1.02x -> 0.93x` |
+| [KTX2: Zstd, And Which Decoder](#ktx2-zstd-and-which-decoder) | landed | `3.4 -> 2.5 ms` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -4191,6 +4192,49 @@ already true; `parity.rs` agrees on all 346 images.
 BC7 from UASTC went from `1.02-1.04x` the reference's time to `0.91-0.94x`,
 over three runs. `ktx2_transcode` ran 84,000 executions under ASan without a
 finding.
+
+### KTX2: Zstd, And Which Decoder
+
+2026-09-24, `draco-texture`, Windows. The transcode rounds above exclude Zstd
+supercompression: the vendored reference is built without it, so the harness
+undoes it for both sides first. This round measured that part on its own,
+over the four Zstd fixtures (3.2 MB decompressed), with every decoder's
+output checked against C before timing. C zstd 1.5.6 is built from
+`_refs/zstd` without its assembly Huffman loops, as Windows builds are.
+
+| decoder | time against C | `unsafe` sites |
+| --- | ---: | ---: |
+| `ruzstd` 0.7.3 `StreamingDecoder` (what this crate used) | `4.49x` | ~35 |
+| `ruzstd` 0.7.3 `FrameDecoder::decode_all` | `3.37x` | ~35 |
+| `ruzstd` 0.9.0, either way | `4.39x` / `3.44x` | ~39 |
+| `zrip` 0.8.8 one-shot | `1.49x` | ~50 |
+| `zrip` 0.8.8 one-shot, `paranoid` | `1.70x` | 0 |
+| `structured-zstd` 0.0.55 | `0.82x` | ~1100 |
+| `libzstd-rs-sys` `33e9a500` (c2rust port) | `0.97x` | ~1000 |
+
+**Landed:** the level is decoded with `decode_all`'s own frame loop, a block
+at a time, each block's output appended to a growing vector. That is
+`decode_all`'s speed -- 3.4 ms to 2.5 over the four fixtures -- without its
+slice sized from the level's claimed length, which is the file's word. A
+first version believed the claim up to 1024 times the compressed size and was
+withdrawn before landing: Zstd can expand a few bytes into a whole block, so
+any ratio is a guess, and at that one a 1 MB file could make a level reserve
+1 GB.
+
+**Rejected: `zrip`.** Its one-shot path is fast because it reserves from the
+frame header's content size, up to 128 MiB, with an infallible `reserve`: a
+few hostile bytes, and a browser tab gone. Its streaming decoder does not,
+and measured only 10% faster than the block loop above (2.3 ms against 2.5),
+which does not buy a three-month-old dependency on hostile input.
+
+**Not taken: the two at C's speed.** `structured-zstd` and `libzstd-rs-sys`
+match or beat C but carry about a thousand `unsafe` sites each, on a decoder
+fed untrusted files, and are at 0.0.x and pre-release. Worth re-measuring
+when either matures; `libzstd-rs-sys` is Trifecta's, whose `zlib-rs` took the
+same road to C parity.
+
+The harness is a standalone Cargo project that links C zstd from `_refs`; it
+was run from a scratch directory and is not in the repository.
 
 ## Unexplored
 
