@@ -185,9 +185,10 @@ impl EncoderOptions {
     /// which is an entropy pass over each candidate's symbols, not a second
     /// encode, and the winner's estimate is what the coder is then handed
     /// rather than working it out again: on a splat of a million points and 58
-    /// attributes the option adds about a third to the encode. Decoding is unaffected, and every stream this
-    /// can produce is one an ordinary decoder reads: the scheme is a byte the
-    /// bitstream has always carried, `PREDICTION_NONE` included.
+    /// attributes the option adds about a third to the encode. Decoding is
+    /// unaffected, and every stream this can produce is one an ordinary decoder
+    /// reads: the scheme is a byte the bitstream has always carried,
+    /// `PREDICTION_NONE` included.
     ///
     /// An attribute with an explicit `prediction_scheme` is left alone; a
     /// caller who named a scheme has already made this choice.

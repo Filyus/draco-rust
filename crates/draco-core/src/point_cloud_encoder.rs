@@ -151,18 +151,6 @@ fn validate_attribute_storage(att_id: i32, attribute: &PointAttribute) -> Status
     Ok(())
 }
 
-/// Picks sequential or KD-tree encoding, as C++ `ExpertEncoder::EncodeToBuffer`
-/// does for a point cloud.
-///
-/// The default matters: with no explicit method and the default speed of 5, a
-/// point cloud whose attributes are all eligible is encoded with the **KD-tree**
-/// method, not the sequential one. Defaulting to sequential produces a different
-/// method byte and an entirely different payload from the reference encoder for
-/// the same input.
-///
-/// Note the asymmetry upstream has and this keeps: the `speed == 10` shortcut is
-/// guarded on the method being unset, so an explicitly requested KD-tree encode
-/// still takes that path at speed 10.
 /// The order the sequential coder should walk the points in.
 ///
 /// Identity unless the caller asked for a spatial order and the geometry gives
@@ -308,6 +296,18 @@ fn read_component_as_f64(
     })
 }
 
+/// Picks sequential or KD-tree encoding, as C++ `ExpertEncoder::EncodeToBuffer`
+/// does for a point cloud.
+///
+/// The default matters: with no explicit method and the default speed of 5, a
+/// point cloud whose attributes are all eligible is encoded with the **KD-tree**
+/// method, not the sequential one. Defaulting to sequential produces a different
+/// method byte and an entirely different payload from the reference encoder for
+/// the same input.
+///
+/// Note the asymmetry upstream has and this keeps: the `speed == 10` shortcut is
+/// guarded on the method being unset, so an explicitly requested KD-tree encode
+/// still takes that path at speed 10.
 fn select_encoding_method(
     point_cloud: &PointCloud,
     options: &EncoderOptions,
