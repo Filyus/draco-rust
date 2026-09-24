@@ -6,6 +6,10 @@ members = [
     "draco-texture",
     "draco-cpp-test-bridge",
 ]
+# Build scratch lives under target/, including the unpacked archives the
+# packaged-crate test builds as crates.io would. Inside this directory they
+# would otherwise be taken for unlisted members of this workspace.
+exclude = ["target"]
 resolver = "2"
 
 # Optimize draco-core even in dev/test builds so benchmarks are meaningful.
