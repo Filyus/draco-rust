@@ -22,10 +22,10 @@ impl Bc4Block {
         bytes
     }
 
-    // The two conversions that write this block are gated on the codecs
-    // that reach BC4; a build carrying the layout without either of them
-    // would otherwise fail on an unused method.
-    #[cfg_attr(not(any(feature = "etc1s", feature = "uastc")), allow(dead_code))]
+    // Only the ETC1S conversion writes selectors one at a time; UASTC packs
+    // all sixteen at once. A build without ETC1S would otherwise fail on an
+    // unused method.
+    #[cfg_attr(not(feature = "etc1s"), allow(dead_code))]
     pub(crate) fn set_selector(&mut self, texel: usize, value: u8) {
         let bit = texel * 3;
         let byte = bit >> 3;

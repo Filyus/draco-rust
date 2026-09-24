@@ -92,7 +92,8 @@ impl Bc7Converter {
         let mut block = Bc7Block::default();
         let range = MODE_ENDPOINT_RANGES[mode] as usize;
         let components = MODE_COMPONENTS[mode] as usize;
-        let endpoint = |at: usize| unquantize(unpacked.endpoints[at] as u32, range) as f32 / 255.0;
+        let endpoint =
+            |at: usize| unquantize(unpacked.endpoints()[at] as u32, range) as f32 / 255.0;
 
         match mode {
             // One subset, colour and alpha on one set of weights: BC7 mode 6,
@@ -142,7 +143,7 @@ impl Bc7Converter {
             // One subset, four-step weights, endpoints already at full range.
             1 => {
                 block.mode = 3;
-                let raw = |at: usize| unpacked.endpoints[at] as f32 / 255.0;
+                let raw = |at: usize| unpacked.endpoints()[at] as f32 / 255.0;
                 let low = [raw(0), raw(2), raw(4), 1.0];
                 let high = [raw(1), raw(3), raw(5), 1.0];
                 let (min, max, pbits) = unique_pbits(3, 7, &low, &high);
@@ -168,8 +169,8 @@ impl Bc7Converter {
                     for component in 0..3 {
                         // Range 8 is four bits, widened by repetition rather
                         // than through the general unquantizer.
-                        let l = unpacked.endpoints[component * 2 + subset * 6] as u32;
-                        let h = unpacked.endpoints[component * 2 + subset * 6 + 1] as u32;
+                        let l = unpacked.endpoints()[component * 2 + subset * 6] as u32;
+                        let h = unpacked.endpoints()[component * 2 + subset * 6 + 1] as u32;
                         low[component] = ((l << 4) | l) as f32 / 255.0;
                         high[component] = ((h << 4) | h) as f32 / 255.0;
                     }
@@ -195,11 +196,11 @@ impl Bc7Converter {
                     let target = mapped as usize;
                     for component in 0..3 {
                         let low = unquantize(
-                            unpacked.endpoints[component * 2 + subset * 6] as u32,
+                            unpacked.endpoints()[component * 2 + subset * 6] as u32,
                             range,
                         );
                         let high = unquantize(
-                            unpacked.endpoints[component * 2 + 1 + subset * 6] as u32,
+                            unpacked.endpoints()[component * 2 + 1 + subset * 6] as u32,
                             range,
                         );
                         block.low[target][component] = ((low * 31 + 127) / 255) as u8;
@@ -243,21 +244,21 @@ impl Bc7Converter {
                 block.rotation = ((selector + 1) & 3) as u32;
 
                 if components == 2 {
-                    let low =
-                        ((unquantize(unpacked.endpoints[0] as u32, range) * 127 + 127) / 255) as u8;
-                    let high =
-                        ((unquantize(unpacked.endpoints[1] as u32, range) * 127 + 127) / 255) as u8;
+                    let low = ((unquantize(unpacked.endpoints()[0] as u32, range) * 127 + 127)
+                        / 255) as u8;
+                    let high = ((unquantize(unpacked.endpoints()[1] as u32, range) * 127 + 127)
+                        / 255) as u8;
                     block.low[0] = [
                         low,
                         low,
                         low,
-                        unquantize(unpacked.endpoints[2] as u32, range) as u8,
+                        unquantize(unpacked.endpoints()[2] as u32, range) as u8,
                     ];
                     block.high[0] = [
                         high,
                         high,
                         high,
-                        unquantize(unpacked.endpoints[3] as u32, range) as u8,
+                        unquantize(unpacked.endpoints()[3] as u32, range) as u8,
                     ];
                 } else {
                     for astc in 0..4usize {
@@ -270,8 +271,8 @@ impl Bc7Converter {
                         };
                         let (mut low, mut high) = (255u32, 255u32);
                         if astc < components {
-                            low = unquantize(unpacked.endpoints[astc * 2] as u32, range);
-                            high = unquantize(unpacked.endpoints[astc * 2 + 1] as u32, range);
+                            low = unquantize(unpacked.endpoints()[astc * 2] as u32, range);
+                            high = unquantize(unpacked.endpoints()[astc * 2 + 1] as u32, range);
                         }
                         if bc7 < 3 {
                             // Mode 5 keeps colour at seven bits and alpha at eight.
@@ -309,11 +310,11 @@ impl Bc7Converter {
                     let astc_subset = partition_index_3_to_2(bc7_subset as u32, k as u32) as usize;
                     for component in 0..3 {
                         let low = unquantize(
-                            unpacked.endpoints[component * 2 + astc_subset * 6] as u32,
+                            unpacked.endpoints()[component * 2 + astc_subset * 6] as u32,
                             range,
                         );
                         let high = unquantize(
-                            unpacked.endpoints[component * 2 + 1 + astc_subset * 6] as u32,
+                            unpacked.endpoints()[component * 2 + 1 + astc_subset * 6] as u32,
                             range,
                         );
                         block.low[bc7_subset][component] = ((low * 31 + 127) / 255) as u8;

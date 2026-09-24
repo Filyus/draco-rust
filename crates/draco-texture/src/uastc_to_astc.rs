@@ -79,7 +79,7 @@ pub(crate) fn convert(unpacked: &Unpacked) -> [u8; 16] {
     let endpoint_pairs = (1 + (cem >> 2)) * subsets;
     pack_bise(
         &mut writer,
-        &unpacked.endpoints,
+        unpacked.endpoints(),
         offset,
         (endpoint_pairs * 2) as usize,
         MODE_ENDPOINT_RANGES[mode] as usize,
@@ -124,22 +124,15 @@ fn reverse_bits(value: u32, count: u32) -> u32 {
 
 /// A block of one colour, which ASTC calls a void extent.
 fn solid_block(color: [u8; 4]) -> [u8; 16] {
-    let mut writer = BitWriter { bytes: [0; 16] };
-    // The void-extent block mode, with every coordinate range left undefined.
-    writer.bytes[0] = 0xfc;
-    writer.bytes[1] = 0xfd;
-    writer.bytes[2] = 0xff;
-    writer.bytes[3] = 0xff;
-    for byte in writer.bytes.iter_mut().take(8).skip(4) {
-        *byte = 0xff;
-    }
-    let mut offset = 64;
-    for channel in color {
-        // Sixteen bits per channel, the eight-bit value repeated.
-        let value = channel as u32;
-        writer.set(&mut offset, value | (value << 8), 16);
-    }
-    writer.bytes
+    let [red, green, blue, alpha] = color;
+    [
+        // The void-extent block mode, with every coordinate range left
+        // undefined.
+        0xfc, 0xfd, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        // Sixteen bits per channel from bit 64, the eight-bit value repeated:
+        // byte-aligned, so each channel is simply its byte twice.
+        red, red, green, green, blue, blue, alpha, alpha,
+    ]
 }
 
 /// Write values back through ASTC's integer sequence encoding.

@@ -24,6 +24,17 @@ use crate::bc4::Bc4Block;
 /// the order runs from one end to the other.
 const STEPS: [u8; 8] = [1, 7, 6, 5, 4, 3, 2, 0];
 
+/// The block every texel of which is `value`: what [`pack`] makes of sixteen
+/// equal values, and the reference's `write_bc4_solid_block`, so a caller
+/// that already knows the block is one colour can skip the search.
+pub(crate) fn solid(value: u8) -> Bc4Block {
+    Bc4Block {
+        low: value,
+        high: value,
+        selectors: [0; 6],
+    }
+}
+
 /// Pack sixteen one-channel values into a BC4 block.
 ///
 /// The search is the reference's: endpoints at the extremes, and a texel's
@@ -31,15 +42,14 @@ const STEPS: [u8; 8] = [1, 7, 6, 5, 4, 3, 2, 0];
 /// exact for BC4's uniform ramp, so there is nothing to improve by checking
 /// all eight candidates.
 pub(crate) fn pack(values: &[u8; 16]) -> Bc4Block {
-    let lowest = *values.iter().min().unwrap_or(&0);
-    let highest = *values.iter().max().unwrap_or(&0);
+    // Two single reductions rather than one over a pair: each of these over
+    // sixteen bytes vectorizes to a handful of instructions, where the fold of
+    // a tuple was compiled a byte at a time.
+    let lowest = values.iter().fold(u8::MAX, |low, &value| low.min(value));
+    let highest = values.iter().fold(u8::MIN, |high, &value| high.max(value));
 
     if lowest == highest {
-        return Bc4Block {
-            low: lowest,
-            high: highest,
-            selectors: [0; 6],
-        };
+        return solid(lowest);
     }
 
     // BC4 floors its interpolation divisions, compensated here by the bias.
@@ -49,18 +59,21 @@ pub(crate) fn pack(values: &[u8; 16]) -> Bc4Block {
 
     // BC4 writes its top endpoint into the first byte, and the selector
     // ramp counts down from there; `STEPS` reads the same way.
-    let mut block = Bc4Block {
-        low: highest,
-        high: lowest,
-        selectors: [0; 6],
-    };
+    // Sixteen three-bit selectors are 48 bits, gathered in one word and
+    // written once rather than read and rewritten texel by texel.
+    let mut selectors = 0u64;
     for (texel, &value) in values.iter().enumerate() {
         let scaled = value as i32 * 14 + bias;
-        let rank = thresholds
+        let rank: usize = thresholds
             .iter()
-            .filter(|&&threshold| scaled >= threshold)
-            .count();
-        block.set_selector(texel, STEPS[rank]);
+            .map(|&threshold| usize::from(scaled >= threshold))
+            .sum();
+        selectors |= u64::from(STEPS[rank]) << (texel * 3);
     }
-    block
+    let bytes = selectors.to_le_bytes();
+    Bc4Block {
+        low: highest,
+        high: lowest,
+        selectors: [bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]],
+    }
 }
