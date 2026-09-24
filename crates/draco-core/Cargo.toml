@@ -9,6 +9,14 @@ repository = "https://github.com/Filyus/draco-rust"
 readme = "README.md"
 keywords = ["draco", "compression", "mesh", "point-cloud", "geometry"]
 categories = ["compression", "encoding", "graphics", "wasm"]
+# Research instruments, not tests: every one is `#[ignore]`d, reads a scene
+# or writes streams for another tool through the environment, and several
+# build on `draco-io`, which is a path-only dev-dependency and so absent from
+# the published manifest.
+exclude = [
+    "tests/*_probe.rs",
+    "tests/emit_*.rs",
+]
 
 [package.metadata.docs.rs]
 all-features = true
