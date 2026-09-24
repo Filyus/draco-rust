@@ -645,10 +645,11 @@ fn write_the_arms() {
                 ..full
             }),
         },
-        // The web preset with the points left in file order. The viewer sorts
-        // on depth quantized to sixteen bits and keeps file order within a
-        // bucket, so a reordered file blends ties the other way round -- a
-        // difference no bit depth can reach.
+        // The web preset with the points left in file order. A viewer that
+        // sorts on coarsely quantized depth keeps file order within a bucket,
+        // so a reordered file blends ties the other way round -- a difference
+        // no bit depth can reach. Against this viewer's 32-bit sort the two
+        // should render alike.
         Arm {
             name: "rebalance6at10pos18rot10inorder",
             encode: Some(Budget {
@@ -661,6 +662,50 @@ fn write_the_arms() {
                     ("opacity", 10),
                 ],
                 spatial: false,
+                ..full
+            }),
+        },
+        // The web preset with finer positions. SPZ steps by 1/4096 whatever
+        // the scene, which over a 235-unit street is about 20 bits.
+        Arm {
+            name: "rebalance6at10pos20rot10",
+            encode: Some(Budget {
+                harmonics: 6,
+                raise: &[
+                    ("position", 20),
+                    ("rot_", 10),
+                    ("scale_", 10),
+                    ("f_dc_", 10),
+                    ("opacity", 10),
+                ],
+                ..full
+            }),
+        },
+        Arm {
+            name: "rebalance6at10pos22rot10",
+            encode: Some(Budget {
+                harmonics: 6,
+                raise: &[
+                    ("position", 22),
+                    ("rot_", 10),
+                    ("scale_", 10),
+                    ("f_dc_", 10),
+                    ("opacity", 10),
+                ],
+                ..full
+            }),
+        },
+        Arm {
+            name: "rebalance6at10pos24rot10",
+            encode: Some(Budget {
+                harmonics: 6,
+                raise: &[
+                    ("position", 24),
+                    ("rot_", 10),
+                    ("scale_", 10),
+                    ("f_dc_", 10),
+                    ("opacity", 10),
+                ],
                 ..full
             }),
         },
