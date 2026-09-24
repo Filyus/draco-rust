@@ -4181,6 +4181,20 @@ what is known to be behind them. Each says what was measured, what was not,
 and the smallest next step -- a fresh session should be able to start from any
 one line.
 
+### What the KTX2 rounds left behind
+
+- **UASTC on a texture that is not mostly solid.** The fixtures' UASTC blocks
+  are 88% solid-colour, so the `0.87x` against the reference is weighted
+  toward the solid path. The full unpack was sped up too, but never measured
+  on its own; a busy UASTC texture is the fixture that would say how it
+  stands.
+- **BC7 from UASTC is level, not ahead** (`1.02-1.04x`). Its solid path is
+  the reference's, so what is left is the per-block restatement in
+  `uastc_to_bc7.rs`, which callgrind has not been pointed at.
+- **The fuzz corpus on CI is heavier than any local copy.** `ktx2_transcode`
+  ran at 12 executions a second there before the converter tables were
+  shared; the next soaks say what it runs at now.
+
 ### What the fan round left behind
 
 The fan's `O(valence^2)` stage is fixed; what it touched on the way is not.
