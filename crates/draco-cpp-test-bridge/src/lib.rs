@@ -1234,6 +1234,8 @@ mod tests {
         if is_available() {
             let (major, minor, revision) = cpp_version();
             println!("Draco C++ version: {}.{}.{}", major, minor, revision);
+            // Every release is at least 0.9.1, so all zeros is a parse failure.
+            assert_ne!((major, minor, revision), (0, 0, 0));
         } else {
             println!("C++ test bridge is disabled");
         }

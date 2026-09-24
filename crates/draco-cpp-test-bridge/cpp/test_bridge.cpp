@@ -1,6 +1,7 @@
 // Internal C++ test bridge for Rust parity and performance tests.
 // This is not a public C API surface.
 
+#include <cstdio>
 #include <cstring>
 #include <cstdint>
 #include <chrono>
@@ -14,6 +15,7 @@
 #include "draco/point_cloud/point_cloud.h"
 #include "draco/core/encoder_buffer.h"
 #include "draco/core/decoder_buffer.h"
+#include "draco/core/draco_version.h"
 #include "draco/mesh/corner_table.h"
 
 // Opt-in global allocation counting for the C++ side (BRIDGE_COUNT_ALLOCS,
@@ -222,12 +224,19 @@ int64_t draco_benchmark_encode_mesh(
     return rounded_ns_to_us(total_time_ns / iterations);
 }
 
-// Get version info for verification
+// The Draco version, parsed from `kDracoVersion`: the one constant every
+// release carries (`Version()` went away after 1.3). It comes from the headers
+// the bridge was compiled against, since the library exports no version of its
+// own. Zeros if the string does not parse.
 void draco_get_version(int* major, int* minor, int* revision) {
-    // Draco version from CMakeLists.txt
-    *major = 1;
-    *minor = 5;
-    *revision = 7;
+    *major = 0;
+    *minor = 0;
+    *revision = 0;
+    if (std::sscanf(draco::kDracoVersion, "%d.%d.%d", major, minor, revision) != 3) {
+        *major = 0;
+        *minor = 0;
+        *revision = 0;
+    }
 }
 
 // Profiling result structure
