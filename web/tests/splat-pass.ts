@@ -84,8 +84,8 @@ function cloudOf(positions: number[][]): SplatCloud {
   assert.deepEqual([...out], [1, 0]);
 }
 
-// A counting sort has one failure a comparator sort cannot have: every splat
-// at the same depth divides by a range of zero.
+// A sort over a scaled range has one failure a comparator sort cannot have:
+// every splat at the same depth divides by a range of zero.
 {
   const cloud = cloudOf([[0, 0, 5], [0, 0, 5], [0, 0, 5]]);
   const out = sortOrder(cloud, [0, 0, 1]);
@@ -93,17 +93,31 @@ function cloudOf(positions: number[][]): SplatCloud {
   assert.deepEqual([...out].sort((a, b) => a - b), [0, 1, 2], 'every splat is placed once');
 }
 
-// And a real scene's worth. A counting sort is exact only to the width of a
-// bucket -- two splats inside one keep the order they arrived in -- so that
-// width is the tolerance, and asserting anything tighter would be asserting
-// something this sort does not promise. Sixteen bits over a 200-unit scene is
-// 3 mm, far under what a splat is wide.
+// Two splats a tenth of a millimetre apart in a 200-unit scene come out in
+// depth order whichever the file holds first. Sixteen bits of depth put them in
+// one 3 mm bucket, where the file order decided, so an encoder that reordered
+// points changed which one blended over the other.
+{
+  const far = [0, 0, 0.5001];
+  const near = [0, 0, 0.5];
+  const ends = [[0, 0, -100], [0, 0, 100]];
+  for (const [first, second] of [[far, near], [near, far]]) {
+    const cloud = cloudOf([...ends, first, second]);
+    const out = [...sortOrder(cloud, [0, 0, 1])].filter((splat) => splat >= 2);
+    const farIndex = first === far ? 2 : 3;
+    assert.deepEqual(out, [farIndex, 5 - farIndex], 'the further splat is drawn first');
+  }
+}
+
+// And a real scene's worth. The sort is exact to the width of a 32-bit key
+// across the range -- two splats inside one keep the order they arrived in --
+// so that width is the tolerance.
 {
   const count = 5000;
   const spread = 100;
   const positions = Array.from({ length: count }, (_, i) => [0, 0, Math.sin(i) * spread]);
   const cloud = cloudOf(positions);
-  const bucket = (2 * spread) / ((1 << 16) - 1);
+  const bucket = (2 * spread) / 0xffffffff;
   const out = sortOrder(cloud, [0, 0, 1]);
   assert.deepEqual([...out].sort((a, b) => a - b), [...Array(count).keys()], 'a permutation');
   for (let i = 1; i < count; i += 1) {
@@ -113,4 +127,4 @@ function cloudOf(positions: number[][]): SplatCloud {
   }
 }
 
-console.log('splat pass: packing and the counting sort hold');
+console.log('splat pass: packing and the radix sort hold');

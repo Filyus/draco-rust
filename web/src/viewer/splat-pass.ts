@@ -19,8 +19,8 @@
  * comparator sort over a boxed array, then fifty-six bytes a splat re-uploaded
  * in the new order, 344 ms for 742k splats. Both halves are gone:
  *
- *   - the sort is a counting sort over depth quantized to sixteen bits, which
- *     is linear in the splats and touches no boxed values;
+ *   - the sort is a radix sort over depth quantized to 32 bits, which is
+ *     linear in the splats and touches no boxed values;
  *   - the splats themselves never move. They live in a texture, and what the
  *     sort produces is an index per instance -- four bytes a splat uploaded
  *     instead of fifty-six.
@@ -399,12 +399,20 @@ export function packSplats(cloud: SplatCloud): Float32Array {
  * what keeps the order stable while the camera dollies, and wrong only for a
  * splat behind the camera, which is not drawn anyway.
  *
- * A counting sort, not a comparator one. The depths are quantized to sixteen
- * bits across the range they actually span, which is finer than the difference
- * between two splats that matters and costs one pass each to bucket, total and
- * place. The comparator version this replaced took 243 ms on 742k splats
- * against 12 for this, and that difference was the whole of why turning the
- * camera stuttered where panning did not.
+ * A radix sort, not a comparator one: the depths become 32-bit keys across the
+ * range they span, and two stable counting passes of sixteen bits each order
+ * them, low half first. The comparator version this replaced took 243 ms on
+ * 742k splats, and that was the whole of why turning the camera stuttered
+ * where panning did not.
+ *
+ * Thirty-two bits rather than sixteen because the tie is not harmless. A
+ * street scene spans over 200 units, so sixteen bits make a bucket 1.4 to
+ * 3.6 mm deep against a 24 mm splat, and 99% of its splats shared one with
+ * another. Inside a bucket a stable sort keeps file order, so overlapping
+ * splats blended in whatever order the file happened to hold them, and an
+ * encoder that reorders points for compression moved single pixels by a
+ * seventh of full scale. At 32 bits the keys resolve everything a float32
+ * depth does, and the file order decides only exact ties.
  */
 export function sortOrder(
   cloud: SplatCloud,
@@ -412,54 +420,74 @@ export function sortOrder(
   scratch?: SortScratch,
 ): Uint32Array {
   const count = cloud.count;
-  const work = scratch && scratch.depths.length === count ? scratch : makeSortScratch(count);
-  const { depths, counts, order } = work;
+  const work = scratch && scratch.keys.length === count ? scratch : makeSortScratch(count);
+  const { keys, low: lowCounts, high: highCounts, passed, order } = work;
+  const positions = cloud.positions;
 
   const [dx, dy, dz] = direction;
   let low = Infinity;
   let high = -Infinity;
   for (let splat = 0; splat < count; splat += 1) {
-    const depth = cloud.positions[splat * 3] * dx
-      + cloud.positions[splat * 3 + 1] * dy
-      + cloud.positions[splat * 3 + 2] * dz;
-    depths[splat] = depth;
+    const depth = positions[splat * 3] * dx
+      + positions[splat * 3 + 1] * dy
+      + positions[splat * 3 + 2] * dz;
     if (depth < low) low = depth;
     if (depth > high) high = depth;
   }
 
-  const buckets = counts.length;
-  // A scene with every splat at one depth has no order to find; any is right.
-  const scale = high > low ? (buckets - 1) / (high - low) : 0;
-  counts.fill(0);
-  const bucketOf = (depth: number) => (buckets - 1) - ((depth - low) * scale | 0);
-  for (let splat = 0; splat < count; splat += 1) counts[bucketOf(depths[splat])] += 1;
-  let running = 0;
-  for (let bucket = 0; bucket < buckets; bucket += 1) {
-    const here = counts[bucket];
-    counts[bucket] = running;
-    running += here;
+  // Furthest first, so the key counts down from the far end. A scene with
+  // every splat at one depth has no order to find; any is right.
+  const scale = high > low ? 0xffffffff / (high - low) : 0;
+  lowCounts.fill(0);
+  highCounts.fill(0);
+  for (let splat = 0; splat < count; splat += 1) {
+    const depth = positions[splat * 3] * dx
+      + positions[splat * 3 + 1] * dy
+      + positions[splat * 3 + 2] * dz;
+    const key = ((high - depth) * scale) >>> 0;
+    keys[splat] = key;
+    lowCounts[key & 0xffff] += 1;
+    highCounts[key >>> 16] += 1;
+  }
+  let lowRunning = 0;
+  let highRunning = 0;
+  for (let bucket = 0; bucket < RADIX; bucket += 1) {
+    const lowHere = lowCounts[bucket];
+    lowCounts[bucket] = lowRunning;
+    lowRunning += lowHere;
+    const highHere = highCounts[bucket];
+    highCounts[bucket] = highRunning;
+    highRunning += highHere;
   }
   for (let splat = 0; splat < count; splat += 1) {
-    const bucket = bucketOf(depths[splat]);
-    order[counts[bucket]] = splat;
-    counts[bucket] += 1;
+    passed[lowCounts[keys[splat] & 0xffff]++] = splat;
+  }
+  for (let at = 0; at < count; at += 1) {
+    const splat = passed[at];
+    order[highCounts[keys[splat] >>> 16]++] = splat;
   }
   return order;
 }
 
-/** The three arrays the sort reuses, so that turning the camera allocates nothing. */
+/** One radix digit: sixteen bits, a histogram that still fits a cache. */
+const RADIX = 1 << 16;
+
+/** The arrays the sort reuses, so that turning the camera allocates nothing. */
 export interface SortScratch {
-  depths: Float32Array;
-  counts: Uint32Array;
+  keys: Uint32Array;
+  low: Uint32Array;
+  high: Uint32Array;
+  /** The order after the low digit, which the high digit reads. */
+  passed: Uint32Array;
   order: Uint32Array;
 }
 
 export function makeSortScratch(count: number): SortScratch {
   return {
-    depths: new Float32Array(count),
-    // Sixteen bits of depth: finer than a splat is wide at any framing this
-    // draws, and a histogram that still fits a cache.
-    counts: new Uint32Array(1 << 16),
+    keys: new Uint32Array(count),
+    low: new Uint32Array(RADIX),
+    high: new Uint32Array(RADIX),
+    passed: new Uint32Array(count),
     order: new Uint32Array(count),
   };
 }
