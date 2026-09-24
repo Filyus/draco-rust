@@ -580,6 +580,14 @@ fn write_the_arms() {
             }),
         },
         Arm {
+            name: "rebalance6at10",
+            encode: Some(Budget {
+                harmonics: 6,
+                raise: &[("scale_", 10), ("f_dc_", 10), ("opacity", 10)],
+                ..full
+            }),
+        },
+        Arm {
             name: "rebalance7",
             encode: Some(Budget {
                 harmonics: 7,
