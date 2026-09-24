@@ -86,6 +86,43 @@ impl Bc7Converter {
         Bc7Converter { mode6, mode5 }
     }
 
+    /// A solid-color block, from its colour alone.
+    ///
+    /// What [`Bc7Converter::convert`] does for that mode, callable without
+    /// unpacking the block first.
+    pub(crate) fn convert_solid(&self, color: [u8; 4]) -> Bc7Block {
+        let mut block = Bc7Block::default();
+        let sum = |pbit: usize| -> u32 {
+            color
+                .iter()
+                .map(|c| self.mode6[*c as usize][pbit].error)
+                .sum()
+        };
+        let (error0, error1) = (sum(0), sum(1));
+        if error0 > 0 && error1 > 0 {
+            // Mode 5 stores alpha exactly, so a colour neither p-bit reaches
+            // is better served there.
+            block.mode = 5;
+            for (component, &value) in color.iter().enumerate().take(3) {
+                block.low[0][component] = self.mode5[value as usize].low;
+                block.high[0][component] = self.mode5[value as usize].high;
+            }
+            block.low[0][3] = color[3];
+            block.high[0][3] = color[3];
+            block.selectors = [MODE_5_OPTIMAL_INDEX; 16];
+        } else {
+            block.mode = 6;
+            let pbit = usize::from(error1 < error0);
+            for (component, &value) in color.iter().enumerate() {
+                block.low[0][component] = self.mode6[value as usize][pbit].low;
+                block.high[0][component] = self.mode6[value as usize][pbit].high;
+            }
+            block.pbits[0] = [pbit as u32, pbit as u32];
+            block.selectors = [MODE_6_OPTIMAL_INDEX; 16];
+        }
+        block
+    }
+
     /// Restate one unpacked UASTC block as a BC7 block.
     pub(crate) fn convert(&self, unpacked: &Unpacked) -> Bc7Block {
         let mode = unpacked.mode;
@@ -325,37 +362,7 @@ impl Bc7Converter {
             }
 
             // One colour everywhere.
-            8 => {
-                let color = unpacked.solid_color;
-                let sum = |pbit: usize| -> u32 {
-                    color
-                        .iter()
-                        .map(|c| self.mode6[*c as usize][pbit].error)
-                        .sum()
-                };
-                let (error0, error1) = (sum(0), sum(1));
-                if error0 > 0 && error1 > 0 {
-                    // Mode 5 stores alpha exactly, so a colour neither p-bit
-                    // reaches is better served there.
-                    block.mode = 5;
-                    for (component, &value) in color.iter().enumerate().take(3) {
-                        block.low[0][component] = self.mode5[value as usize].low;
-                        block.high[0][component] = self.mode5[value as usize].high;
-                    }
-                    block.low[0][3] = color[3];
-                    block.high[0][3] = color[3];
-                    block.selectors = [MODE_5_OPTIMAL_INDEX; 16];
-                } else {
-                    block.mode = 6;
-                    let pbit = usize::from(error1 < error0);
-                    for (component, &value) in color.iter().enumerate() {
-                        block.low[0][component] = self.mode6[value as usize][pbit].low;
-                        block.high[0][component] = self.mode6[value as usize][pbit].high;
-                    }
-                    block.pbits[0] = [pbit as u32, pbit as u32];
-                    block.selectors = [MODE_6_OPTIMAL_INDEX; 16];
-                }
-            }
+            8 => return self.convert_solid(unpacked.solid_color),
 
             // Two subsets with alpha: BC7 mode 7.
             9 | 16 => {

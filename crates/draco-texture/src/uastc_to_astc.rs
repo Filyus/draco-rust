@@ -86,8 +86,7 @@ pub(crate) fn convert(unpacked: &Unpacked) -> [u8; 16] {
     );
 
     // ASTC stores its weights from the end of the block backwards, each one
-    // bit-reversed. Reversing a value of n bits is a table small enough to
-    // build here rather than carry.
+    // bit-reversed.
     for index in 0..total_weights as usize {
         let weight = unpacked.weights[index] as u32;
         let reversed = reverse_bits(weight, weight_bits);
@@ -113,17 +112,18 @@ fn partition_seed(mode: usize, pattern: u32) -> u32 {
     }
 }
 
-/// Reverse the low `count` bits of `value`.
+/// Reverse the low `count` bits of `value`; bits above them are dropped.
 fn reverse_bits(value: u32, count: u32) -> u32 {
-    let mut reversed = 0;
-    for bit in 0..count {
-        reversed |= ((value >> bit) & 1) << (count - 1 - bit);
+    if count == 0 {
+        return 0;
     }
-    reversed
+    // Reversing all 32 bits puts the low `count` at the top, in reverse, and
+    // anything above them below it, where the shift discards it.
+    value.reverse_bits() >> (32 - count)
 }
 
 /// A block of one colour, which ASTC calls a void extent.
-fn solid_block(color: [u8; 4]) -> [u8; 16] {
+pub(crate) fn solid_block(color: [u8; 4]) -> [u8; 16] {
     let [red, green, blue, alpha] = color;
     [
         // The void-extent block mode, with every coordinate range left

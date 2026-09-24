@@ -16,7 +16,7 @@
 //!
 //! Those hint bits are the ones a decode to pixels skips.
 
-use crate::uastc::{Unpacked, MODE_HAS_ALPHA, MODE_HAS_ETC1_BIAS, MODE_SOLID_COLOR};
+use crate::uastc::{EtcHints, Unpacked, MODE_HAS_ALPHA, MODE_HAS_ETC1_BIAS, MODE_SOLID_COLOR};
 
 /// The four selector bytes of a single-colour ETC1 block, per hinted selector.
 const SOLID_SELECTORS: [[u8; 4]; 4] = [
@@ -297,24 +297,33 @@ fn determine_selectors(bytes: &mut [u8; 8], pixels: &[[u8; 4]; 16]) {
     bytes[4] = (high >> 8) as u8;
 }
 
+/// The ETC1 block of a solid-color UASTC block, from its hints alone.
+///
+/// A solid block's hints are the whole ETC1 block: base colour, table, and the
+/// selector every texel takes.
+pub(crate) fn solid_etc1(hints: &EtcHints) -> [u8; 8] {
+    let mut bytes = [0u8; 8];
+    bytes[3] = (u8::from(hints.diff) << 1) | (hints.inten0 << 5) | (hints.inten0 << 2);
+    if hints.diff {
+        bytes[0] = hints.red << 3;
+        bytes[1] = hints.green << 3;
+        bytes[2] = hints.blue << 3;
+    } else {
+        bytes[0] = hints.red | (hints.red << 4);
+        bytes[1] = hints.green | (hints.green << 4);
+        bytes[2] = hints.blue | (hints.blue << 4);
+    }
+    bytes[4..8].copy_from_slice(&SOLID_SELECTORS[(hints.selector & 3) as usize]);
+    bytes
+}
+
 /// Restate one unpacked UASTC block as an ETC1 block.
 pub(crate) fn convert_etc1(unpacked: &Unpacked, pixels: &[[u8; 4]; 16]) -> [u8; 8] {
     let hints = &unpacked.etc_hints;
     let mut bytes = [0u8; 8];
 
     if unpacked.mode == MODE_SOLID_COLOR {
-        bytes[3] = (u8::from(hints.diff) << 1) | (hints.inten0 << 5) | (hints.inten0 << 2);
-        if hints.diff {
-            bytes[0] = hints.red << 3;
-            bytes[1] = hints.green << 3;
-            bytes[2] = hints.blue << 3;
-        } else {
-            bytes[0] = hints.red | (hints.red << 4);
-            bytes[1] = hints.green | (hints.green << 4);
-            bytes[2] = hints.blue | (hints.blue << 4);
-        }
-        bytes[4..8].copy_from_slice(&SOLID_SELECTORS[(hints.selector & 3) as usize]);
-        return bytes;
+        return solid_etc1(hints);
     }
 
     bytes[3] = u8::from(hints.flip)
@@ -360,17 +369,20 @@ pub(crate) fn convert_etc1(unpacked: &Unpacked, pixels: &[[u8; 4]; 16]) -> [u8; 
     bytes
 }
 
+/// The EAC alpha block of a constant alpha, `base` everywhere.
+pub(crate) fn eac_constant(base: u8) -> [u8; 8] {
+    let mut bytes = [0u8; 8];
+    bytes[0] = base;
+    // Table 13 at multiplier one with every texel on the middle step
+    // reproduces the base exactly.
+    bytes[1] = (1 << 4) | 13;
+    bytes[2..8].copy_from_slice(&EAC_CONSTANT_SELECTORS);
+    bytes
+}
+
 /// The EAC alpha block that goes in front of the ETC1 half of ETC2 RGBA.
 pub(crate) fn convert_eac_alpha(unpacked: &Unpacked, pixels: &[[u8; 4]; 16]) -> [u8; 8] {
-    let constant = |base: u8| -> [u8; 8] {
-        let mut bytes = [0u8; 8];
-        bytes[0] = base;
-        // Table 13 at multiplier one with every texel on the middle step
-        // reproduces the base exactly.
-        bytes[1] = (1 << 4) | 13;
-        bytes[2..8].copy_from_slice(&EAC_CONSTANT_SELECTORS);
-        bytes
-    };
+    let constant = eac_constant;
 
     if !MODE_HAS_ALPHA[unpacked.mode] || unpacked.mode == MODE_SOLID_COLOR {
         return constant(if unpacked.mode == MODE_SOLID_COLOR {

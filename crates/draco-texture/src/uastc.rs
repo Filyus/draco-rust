@@ -321,6 +321,7 @@ pub enum UastcError {
 /// For outputs written front to back, which then append instead of zeroing
 /// a buffer they are about to overwrite whole. The reservation is still
 /// fallible, for the same reason as [`zeroed`]'s.
+#[cfg(any(feature = "bc", feature = "etc", feature = "astc"))]
 pub(crate) fn reserved(len: usize) -> Result<Vec<u8>, UastcError> {
     let mut out = Vec::new();
     out.try_reserve_exact(len)
@@ -387,6 +388,10 @@ pub fn decode_astc(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Uast
     let mut blocks = reserved(blocks_x * blocks_y * 16)?;
     for index in 0..blocks_x * blocks_y {
         let block = &data[index * BLOCK_SIZE..index * BLOCK_SIZE + BLOCK_SIZE];
+        if let Some(color) = solid_color_of(block) {
+            blocks.extend_from_slice(&crate::uastc_to_astc::solid_block(color));
+            continue;
+        }
         let mut unpacked = unpack_block(block, index, false)?;
         apply_blue_contract(&mut unpacked);
         blocks.extend_from_slice(&crate::uastc_to_astc::convert(&unpacked));
@@ -410,12 +415,14 @@ pub fn decode_etc1(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Uast
     let mut texels = [[0u8; 4]; 16];
     for index in 0..blocks_x * blocks_y {
         let block = &data[index * BLOCK_SIZE..index * BLOCK_SIZE + BLOCK_SIZE];
-        let unpacked = unpack_block(block, index, true)?;
-        // A solid block is written from its hints alone, so, as in the
-        // reference, its texels are never needed.
-        if unpacked.mode != MODE_SOLID_COLOR {
-            write_unpacked(&unpacked, &mut texels);
+        // A solid block is written from its hints alone, as the reference
+        // does, without unpacking it.
+        if let Some((_, hints)) = solid_etc_of(block) {
+            blocks.extend_from_slice(&crate::uastc_to_etc::solid_etc1(&hints));
+            continue;
         }
+        let unpacked = unpack_block(block, index, true)?;
+        write_unpacked(&unpacked, &mut texels);
         blocks.extend_from_slice(&crate::uastc_to_etc::convert_etc1(&unpacked, &texels));
     }
     Ok(blocks)
@@ -438,12 +445,15 @@ pub fn decode_etc2(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Uast
     let mut texels = [[0u8; 4]; 16];
     for index in 0..blocks_x * blocks_y {
         let block = &data[index * BLOCK_SIZE..index * BLOCK_SIZE + BLOCK_SIZE];
-        let unpacked = unpack_block(block, index, true)?;
-        // A solid block is written from its hints alone, so, as in the
-        // reference, its texels are never needed.
-        if unpacked.mode != MODE_SOLID_COLOR {
-            write_unpacked(&unpacked, &mut texels);
+        // A solid block is written from its colour and hints alone, as the
+        // reference does, without unpacking it.
+        if let Some((color, hints)) = solid_etc_of(block) {
+            blocks.extend_from_slice(&crate::uastc_to_etc::eac_constant(color[3]));
+            blocks.extend_from_slice(&crate::uastc_to_etc::solid_etc1(&hints));
+            continue;
         }
+        let unpacked = unpack_block(block, index, true)?;
+        write_unpacked(&unpacked, &mut texels);
         blocks.extend_from_slice(&crate::uastc_to_etc::convert_eac_alpha(&unpacked, &texels));
         blocks.extend_from_slice(&crate::uastc_to_etc::convert_etc1(&unpacked, &texels));
     }
@@ -467,11 +477,12 @@ pub fn decode_bc4(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Uastc
     let mut texels = [[0u8; 4]; 16];
     for index in 0..blocks_x * blocks_y {
         let block = &data[index * BLOCK_SIZE..index * BLOCK_SIZE + BLOCK_SIZE];
-        let unpacked = unpack_block(block, index, false)?;
-        let packed = if unpacked.mode == MODE_SOLID_COLOR {
-            crate::uastc_to_bc4::solid(unpacked.solid_color[0])
-        } else {
-            crate::uastc_to_bc4::pack(&channel(&unpacked, &mut texels, 0))
+        let packed = match solid_color_of(block) {
+            Some(color) => crate::uastc_to_bc4::solid(color[0]),
+            None => {
+                let unpacked = unpack_block(block, index, false)?;
+                crate::uastc_to_bc4::pack(&channel(&unpacked, &mut texels, 0))
+            }
         };
         blocks.extend_from_slice(&packed.to_bytes());
     }
@@ -496,13 +507,13 @@ pub fn decode_bc5(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Uastc
     let mut texels = [[0u8; 4]; 16];
     for index in 0..blocks_x * blocks_y {
         let block = &data[index * BLOCK_SIZE..index * BLOCK_SIZE + BLOCK_SIZE];
-        let unpacked = unpack_block(block, index, false)?;
-        let (red, green) = if unpacked.mode == MODE_SOLID_COLOR {
+        let (red, green) = if let Some(color) = solid_color_of(block) {
             (
-                crate::uastc_to_bc4::solid(unpacked.solid_color[0]),
-                crate::uastc_to_bc4::solid(unpacked.solid_color[3]),
+                crate::uastc_to_bc4::solid(color[0]),
+                crate::uastc_to_bc4::solid(color[3]),
             )
         } else {
+            let unpacked = unpack_block(block, index, false)?;
             let red = crate::uastc_to_bc4::pack(&channel(&unpacked, &mut texels, 0));
             // `channel` has already written the block's texels.
             let green = crate::uastc_to_bc4::pack(&std::array::from_fn(|i| texels[i][3]));
@@ -529,11 +540,12 @@ pub fn decode_eac_r11(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, U
     let mut texels = [[0u8; 4]; 16];
     for index in 0..blocks_x * blocks_y {
         let block = &data[index * BLOCK_SIZE..index * BLOCK_SIZE + BLOCK_SIZE];
-        let unpacked = unpack_block(block, index, false)?;
-        let packed = if unpacked.mode == MODE_SOLID_COLOR {
-            crate::eac_r11::EacR11Block::solid(unpacked.solid_color[0])
-        } else {
-            crate::uastc_to_eac_r11::pack(&channel(&unpacked, &mut texels, 0))
+        let packed = match solid_color_of(block) {
+            Some(color) => crate::eac_r11::EacR11Block::solid(color[0]),
+            None => {
+                let unpacked = unpack_block(block, index, false)?;
+                crate::uastc_to_eac_r11::pack(&channel(&unpacked, &mut texels, 0))
+            }
         };
         blocks.extend_from_slice(&packed.to_bytes());
     }
@@ -565,17 +577,18 @@ pub fn decode_eac_rg11(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, 
     let mut texels = [[0u8; 4]; 16];
     for index in 0..blocks_x * blocks_y {
         let block = &data[index * BLOCK_SIZE..index * BLOCK_SIZE + BLOCK_SIZE];
-        let unpacked = unpack_block(block, index, true)?;
-        let red = if unpacked.mode == MODE_SOLID_COLOR {
-            crate::eac_r11::EacR11Block::solid(unpacked.solid_color[0])
+        let (red, green) = if let Some(color) = solid_color_of(block) {
+            (
+                crate::eac_r11::EacR11Block::solid(color[0]),
+                crate::eac_r11::EacR11Block::solid(color[3]),
+            )
         } else {
-            crate::uastc_to_eac_r11::pack(&channel(&unpacked, &mut texels, 0))
-        };
-        let green = if unpacked.mode == MODE_SOLID_COLOR {
-            crate::eac_r11::EacR11Block::solid(unpacked.solid_color[3])
-        } else {
+            let unpacked = unpack_block(block, index, true)?;
+            let red = crate::uastc_to_eac_r11::pack(&channel(&unpacked, &mut texels, 0));
+            // `channel` has already written the block's texels, which the
+            // alpha transcode reads.
             let bytes = crate::uastc_to_etc::convert_eac_alpha(&unpacked, &texels);
-            crate::eac_r11::EacR11Block::from_bytes(bytes)
+            (red, crate::eac_r11::EacR11Block::from_bytes(bytes))
         };
         blocks.extend_from_slice(&red.to_bytes());
         blocks.extend_from_slice(&green.to_bytes());
@@ -600,24 +613,40 @@ pub fn decode_bc7(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Uastc
     let mut blocks = reserved(blocks_x * blocks_y * 16)?;
     for index in 0..blocks_x * blocks_y {
         let block = &data[index * BLOCK_SIZE..index * BLOCK_SIZE + BLOCK_SIZE];
-        let unpacked = unpack_block(block, index, false)?;
-        blocks.extend_from_slice(&converter.convert(&unpacked).to_bytes());
+        let converted = match solid_color_of(block) {
+            Some(color) => converter.convert_solid(color),
+            None => converter.convert(&unpack_block(block, index, false)?),
+        };
+        blocks.extend_from_slice(&converted.to_bytes());
     }
     Ok(blocks)
 }
 
+/// A block's sixteen bytes followed by eight zeros, so that eight bytes can be
+/// loaded from any byte of the block.
+type PaddedBlock = [u8; BLOCK_SIZE + 8];
+
 /// Read a bit field out of the block, least significant bit first.
 ///
-/// The block is one `u128`, loaded once by [`unpack_block`], so a field is a
-/// shift and a mask. A field reaching past the block's 128 bits is a mode
-/// table this port got wrong, and panics as reading past the bytes did.
-fn read_bits(block: u128, offset: &mut usize, count: u32) -> u32 {
+/// One unaligned eight-byte load from the field's first byte, a shift and a
+/// mask -- the reference's fast path, which the padding makes safe to take
+/// everywhere rather than only below bit 112. A field is at most 32 bits, so
+/// it lies inside the load at any alignment. A field reaching past the
+/// block's 128 bits is a mode table this port got wrong, and panics as
+/// reading past the bytes did.
+fn read_bits(block: &PaddedBlock, offset: &mut usize, count: u32) -> u32 {
     if count == 0 {
         return 0;
     }
     let end = *offset + count as usize;
     assert!(end <= 128, "a UASTC field reaches past its block");
-    let value = (block >> *offset) & ((1u128 << count) - 1);
+    let start = *offset >> 3;
+    let word = u64::from_le_bytes(
+        block[start..start + 8]
+            .try_into()
+            .expect("eight bytes from inside a padded block"),
+    );
+    let value = (word >> (*offset & 7)) & ((1u64 << count) - 1);
     *offset = end;
     value as u32
 }
@@ -677,8 +706,52 @@ fn channel(unpacked: &Unpacked, texels: &mut [[u8; 4]; 16], component: usize) ->
     std::array::from_fn(|i| texels[i][component])
 }
 
+/// The colour of a solid-color block, or `None` for any other mode.
+///
+/// Exactly what [`unpack_block`] reads for that mode, for the targets that
+/// write a solid block from its colour alone. Most blocks of a typical UASTC
+/// texture are solid, and building a whole block description to hand back
+/// four bytes of it cost more than the rest of their transcode.
+fn solid_color_of(block: &[u8]) -> Option<[u8; 4]> {
+    if HUFF_MODES[(block[0] & 127) as usize] as usize != MODE_SOLID_COLOR {
+        return None;
+    }
+    let word = u64::from_le_bytes(block[..8].try_into().expect("a block is sixteen bytes"));
+    Some(((word >> MODE_CODE_BITS[MODE_SOLID_COLOR]) as u32).to_le_bytes())
+}
+
+/// The colour and ETC hints of a solid-color block, or `None` for any other
+/// mode.
+///
+/// What [`unpack_block`] reads for that mode with `read_hints`, in the same
+/// order: the colour, then the differential bit, the intensity table, the
+/// selector and the three five-bit channels, all within the first 64 bits.
+#[cfg(feature = "etc")]
+fn solid_etc_of(block: &[u8]) -> Option<([u8; 4], EtcHints)> {
+    let color = solid_color_of(block)?;
+    let word = u64::from_le_bytes(block[..8].try_into().expect("a block is sixteen bytes"));
+    let field = |at: u32, count: u32| ((word >> at) & ((1 << count) - 1)) as u8;
+    let hints = EtcHints {
+        flip: false,
+        diff: field(37, 1) != 0,
+        inten0: field(38, 3),
+        inten1: 0,
+        selector: field(41, 2),
+        red: field(43, 5),
+        green: field(48, 5),
+        blue: field(53, 5),
+        bias: 0,
+        etc2: 0,
+    };
+    Some((color, hints))
+}
+
 /// Decode one 128-bit block into sixteen texels.
 fn decode_block(block: &[u8], index: usize, texels: &mut [[u8; 4]; 16]) -> Result<(), UastcError> {
+    if let Some(color) = solid_color_of(block) {
+        texels.fill(color);
+        return Ok(());
+    }
     let unpacked = unpack_block(block, index, false)?;
     write_unpacked(&unpacked, texels);
     Ok(())
@@ -738,7 +811,7 @@ pub(crate) struct EtcHints {
 
 /// Read the hint fields, leaving `offset` exactly where skipping them would.
 #[cfg(feature = "etc")]
-fn read_etc_hints(block: u128, offset: &mut usize, mode: usize) -> EtcHints {
+fn read_etc_hints(block: &PaddedBlock, offset: &mut usize, mode: usize) -> EtcHints {
     // The BC1 hints are read and dropped: nothing here targets BC1 from UASTC,
     // but they sit in front of the ETC ones and have to be stepped over.
     if MODE_HAS_BC1_HINT0[mode] {
@@ -792,12 +865,10 @@ pub(crate) fn unpack_block(
         });
     }
     let mut offset = MODE_CODE_BITS[mode] as usize;
-    // Every field from here is a shift of this one load.
-    let block = u128::from_le_bytes(
-        block[..BLOCK_SIZE]
-            .try_into()
-            .expect("a slice of BLOCK_SIZE bytes"),
-    );
+    // Every field from here is one load out of this copy.
+    let mut padded: PaddedBlock = [0; BLOCK_SIZE + 8];
+    padded[..BLOCK_SIZE].copy_from_slice(&block[..BLOCK_SIZE]);
+    let block = &padded;
 
     if mode == MODE_SOLID_COLOR {
         // The four channels are consecutive bytes of the field, so one read
@@ -936,7 +1007,7 @@ pub(crate) fn unpack_block(
 /// values to a bundle. The bundle is read first, then peeled one digit per
 /// value — which is why this cannot be a simple bit field read.
 fn read_endpoints(
-    block: u128,
+    block: &PaddedBlock,
     offset: &mut usize,
     total_values: usize,
     range: usize,
@@ -1011,7 +1082,7 @@ fn read_endpoints(
 /// what removes the ambiguity between swapping a subset's two endpoints and
 /// inverting all of its weights.
 fn read_weights(
-    block: u128,
+    block: &PaddedBlock,
     mut offset: usize,
     mode: usize,
     weight_bits: u32,
