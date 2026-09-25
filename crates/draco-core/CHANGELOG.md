@@ -8,72 +8,39 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.2.0](https://github.com/Filyus/draco-rust/compare/draco-core-v2.1.0...draco-core-v2.2.0) - 2026-09-25
+
 ### Added
 
-- `Mesh::into_point_cloud` takes the point cloud a mesh is built on, dropping
-  the triangle topology. `Deref` already lent that half out for reading, but
-  `PointCloudEncoder` needs it owned, so geometry read from a file with no
-  faces had no way to reach the point-cloud coder without every attribute
-  being rebuilt.
-- `EncoderOptions::set_prediction_search` chooses each point-cloud attribute's
-  prediction scheme by the estimated cost of the candidates. The automatic
-  choice for a point-cloud attribute is always `Difference`, which costs more
-  than it saves whenever consecutive values do not correlate — on a Gaussian
-  splat scene the option takes 53.02 to 48.82 bytes per point. It is off by
-  default, because the automatic choice is upstream's and this crate's output
-  is byte-identical to C++ Draco's for the same input. The cost when it is on
-  is encode time: the candidates are ranked by the symbol coder's own bit
-  estimate, one entropy pass each, and the winner's is what the coder then
-  writes from, which adds about a third to the encode of that splat.
-  Every stream it can produce is one an ordinary decoder reads,
-  `PREDICTION_NONE` having been in the bitstream since version 1.1.
-  It is narrow: on a photogrammetry capture of eight million coloured points it
-  finds nothing, because differencing serves both attributes well there.
-- `EncoderOptions::set_spatial_point_order` emits a point cloud's points in a
-  spatial order rather than in the order they were handed in, which gives the
-  difference predictor a spatial neighbour to predict from. The order is a
-  Morton curve for now and is not part of the option's contract, so a later
-  release may pick a better one. A point cloud's point order carries no
-  meaning — nothing refers to it and every attribute is read through the same
-  index — so an encoder may choose it. Off by default, for the same
-  byte-parity reason. It reorders the decoded points, and it can make a file
-  bigger when an attribute varies along the order it came in rather than
-  through space; both are measured in `spatial_point_order_test`. It is the
-  general one of the two: 53.02 to 45.47 bytes per point on the splat scene
-  (45.43 with the prediction search), and 6.26 to 4.23 — 32% — on a 223 MB
-  photogrammetry capture of eight million coloured points. The Morton curve is
-  laid over a grid as fine as the positions' own `quantization_bits`, capped at
-  the 21 bits an axis that still interleave into a `u64` key.
+- `Mesh::into_point_cloud` returns the mesh's point cloud without its faces,
+  so geometry with no faces can go to `PointCloudEncoder` without copying
+  every attribute.
+- `EncoderOptions::set_prediction_search` picks each point-cloud attribute's
+  prediction scheme by estimated size instead of always using `Difference`.
+  On a Gaussian splat scene: 53.02 to 48.82 bytes per point, at about a third
+  more encode time. Off by default, so output stays byte-identical to C++
+  Draco. Every stream it writes is readable by any Draco decoder.
+- `EncoderOptions::set_spatial_point_order` writes a point cloud's points in
+  spatial order, so the difference predictor sees near neighbours. On the
+  splat scene: 53.02 to 45.47 bytes per point; on an eight-million-point
+  photogrammetry capture: 6.26 to 4.23 (−32%). Off by default. Decoded points
+  come back in the new order. The curve (Morton for now) is not part of the
+  contract and may change.
 
 ### Changed
 
-- The point-cloud sequential encoder takes its point order from `point_order`
-  rather than assuming the identity. With no option set it still is the
-  identity, and the stream is unchanged.
-- The symbol coder counts small alphabets into four interleaved tables, and
-  what it works out before choosing its scheme is now a value a caller can
-  build and hand back. A histogram is a scatter into one table, so a run of
-  equal symbols serializes on the store buffer; four tables break that chain.
-  Ranking prediction candidates and choosing the coder's own scheme ask the
-  same question of the same symbols, so the winner's answer is carried into
-  the encode instead of being worked out again. Together these take a quarter
-  off the encode of a splat scene with `set_prediction_search` on, and leave
-  every stream byte-for-byte what it was.
+- The symbol coder builds histograms in four interleaved tables and reuses
+  the prediction search's estimate for the final encode. A splat encode with
+  `set_prediction_search` is about a quarter faster; streams are unchanged.
 
 ### Fixed
 
-- `Mesh::finalize` and `PointCloud::deduplicate_attribute_values` merge the
-  repeated values of 64-bit attributes (`Float64`, `Int64`, `Uint64`) instead
-  of failing. The refusal copied upstream's `DeduplicateValues`, whose switch
-  stops at 32 bits, but these are types Draco encodes, so a mesh carrying one
-  could be encoded and could not be finalized. A reader finalizes every mesh it
-  builds, so a PLY with a `double` vertex property read into a mesh failed
-  whole. Attributes upstream deduplicates come out exactly as before.
-- The encode report names no transform for an attribute coded with
-  `PREDICTION_NONE`. It reported `Wrap`, the transform the encoder starts from,
-  although the stream carries no transform byte for such an attribute; the
-  `prediction` field of `EncodedAttributeInfo` now reads
-  `(None, None)`, as the bitstream does.
+- `Mesh::finalize` and `PointCloud::deduplicate_attribute_values` now handle
+  64-bit attributes (`Float64`, `Int64`, `Uint64`) instead of failing. A PLY
+  with a `double` vertex property could not be read into a mesh.
+- The encode report no longer names a transform for an attribute coded with
+  `PREDICTION_NONE`; `EncodedAttributeInfo::prediction` reads `(None, None)`,
+  matching the bitstream.
 
 ## [2.1.0](https://github.com/Filyus/draco-rust/compare/draco-core-v2.0.0...draco-core-v2.1.0) - 2026-09-15
 
