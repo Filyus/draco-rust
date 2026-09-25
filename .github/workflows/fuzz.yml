@@ -90,10 +90,12 @@ jobs:
   # was worth, and the answer settles it: over 1,736,158 runs it ended at
   # 13,124 edges, and the second half of that -- two hours of runner -- bought
   # four of them. The last tenth bought one. Read against the same metric on
-  # the two runs before it (+226, then +7), the tail is gone. Two hours keeps
-  # roughly 900,000 executions, still more than any other target gets, and the
-  # round-trip oracle it carries is the only one here that catches an encoder
-  # writing a stream its own decoder refuses.
+  # the two runs before it (+226, then +7), the tail is gone. It kept two
+  # hours after that, and four two-hour soaks on 2026-09-24 and -25 bought +4,
+  # +2 and +2 edges between them, so it is at one hour now: about 450,000
+  # executions, still more than most targets get, for the round-trip oracle
+  # that is the only one here catching an encoder writing a stream its own
+  # decoder refuses.
   #
   # `decode_drc` is at the parser budget for the same reason twice measured:
   # thirty minutes reached 7,033 edges where two hours had reached 7,030.
@@ -126,7 +128,7 @@ jobs:
           - group: encode
             name: draco encode
             targets: encode_drc
-            soak_seconds: 7200
+            soak_seconds: 3600
             # Coverage over the corpus showed the valence traversal at 0%.
             # `select_edgebreaker_traversal` leaves the standard walk only at
             # 1,000 faces, a face costs three `u16` in this target's grammar,
@@ -192,16 +194,16 @@ jobs:
           - group: gltf_compress
             name: glTF compression
             targets: compress_gltf
-            # The only target still climbing: +159 edges on 2026-08-28 and +143
-            # on 2026-08-29, where every other parser here moved by single
-            # digits or not at all. It is also the slowest per second -- 117,011
-            # executions against the FBX reader's 5.5 million in the same half
-            # hour -- so thirty minutes buys it far fewer attempts than the
-            # number suggests. Two hours prices its tail the way four priced
-            # `encode_drc`'s; groups run concurrently and `encode_drc` already
-            # holds the soak at two hours, so this costs no wall clock.
+            # It was given two hours while it still climbed: +159 edges on
+            # 2026-08-28 and +143 on 2026-08-29, where every other parser here
+            # moved by single digits. Four two-hour soaks on 2026-09-24 and -25
+            # moved it by +4, +4 and +10, so it has plateaued with the rest.
+            # It keeps one hour rather than the parser budget because it is
+            # the slowest per second -- 30 to 50 executions against the FBX
+            # reader's 3,000 -- so thirty minutes buys it far fewer attempts
+            # than the number suggests.
             dict: gltf
-            soak_seconds: 7200
+            soak_seconds: 3600
           - group: gltf_import
             name: glTF import
             targets: draco_gltf_import
@@ -213,10 +215,15 @@ jobs:
             # The one target this workflow did not run: it was wired into
             # ClusterFuzzLite only, and that layer is manual and has never
             # been dispatched, so no campaign had ever accumulated over the
-            # KTX2 reader. Parser budget, like the other readers of formats
-            # that are not this workspace's own.
+            # KTX2 reader.
+            #
+            # One hour, unlike the other readers, because it is the one target
+            # still climbing: four soaks on 2026-09-24 and -25 ended at 7,846,
+            # 8,309, 8,547 and 8,647 edges. The transcoder speed-ups of that day
+            # took it from 12 executions a second to about 400, so the time is
+            # now spent on attempts rather than on one slow block.
             dict: ktx2
-            soak_seconds: 1800
+            soak_seconds: 3600
     steps:
       - name: Checkout
         uses: actions/checkout@v5
