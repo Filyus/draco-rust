@@ -9,7 +9,9 @@ repository = "https://github.com/Filyus/draco-rust"
 readme = "README.md"
 keywords = ["draco", "gltf", "glb", "compression", "scene"]
 categories = ["compression", "graphics", "rendering::data-formats"]
-exclude = ["tests/roundtrip_test.rs"]
+# The probe is a research instrument, `#[ignore]`d, that reads its scene
+# through the environment; it is left out as `draco-core`'s probes are.
+exclude = ["tests/roundtrip_test.rs", "tests/*_probe.rs"]
 
 [package.metadata.docs.rs]
 all-features = true
