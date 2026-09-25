@@ -9,18 +9,15 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.4.0...draco-gltf-v0.4.1) - 2026-09-25
+
 ### Added
 
-- `KHR_gaussian_splatting` joins `BINARY_FREE_EXTENSIONS`, so an asset that
-  mixes Gaussian splats with ordinary geometry can be Draco-compressed. The
-  transform safety check is whole-document, so one splat primitive anywhere
-  previously refused compression for the entire file — including the triangle
-  meshes that are the reason to compress it. The ratified extension object
-  holds four strings and names no accessor or buffer view; a splat's payload
-  rides in the primitive's own attributes, which the reference walk already
-  follows. The splat primitives are left alone either way, being `POINTS`.
-  Compression extensions built on top of this one are not registered and
-  continue to refuse.
+- `KHR_gaussian_splatting` is in `BINARY_FREE_EXTENSIONS`, so a file that
+  mixes Gaussian splats with ordinary meshes can now be Draco-compressed.
+  Before, one splat primitive refused compression for the whole file. The
+  splat primitives themselves are left uncompressed (they are `POINTS`).
+  Compression extensions layered on top, such as SPZ, still refuse.
 
 ## [0.4.0](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.3.0...draco-gltf-v0.4.0) - 2026-09-15
 
