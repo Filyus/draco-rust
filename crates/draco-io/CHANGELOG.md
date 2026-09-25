@@ -9,53 +9,35 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.1](https://github.com/Filyus/draco-rust/compare/draco-io-v0.5.0...draco-io-v0.5.1) - 2026-09-25
+
 ### Added
 
-- `PlyReader::loss_report` reports what a read of a PLY file does not carry
-  into the mesh: vertex properties with no attribute to land in, normals
-  declared in a type the reader will not build from, face properties other
-  than the corner indices, and whole elements it skips. The reader has always
-  ignored these without failing, so a file whose payload lives in custom
-  per-vertex properties -- a Gaussian-splat PLY, where everything but the
-  position sits in `f_dc_*`, `f_rest_*`, `opacity`, `scale_*` and `rot_*` --
-  read back as a bare point cloud and reported no error.
-- `PlyReader::read_mesh_reporting_loss` returns the mesh and that report from
-  one parse, so the report answers for the bytes the mesh came from. Asking
-  `loss_report` separately parses again, which for a reader opened on a path
-  can land either side of a write to that file.
-- `PlyReader::with_generic_attributes` carries vertex properties that have no
-  attribute of their own as `Generic` attributes, one per property, each keeping
-  the type the file declared and named through its attribute metadata under
-  `"name"` -- the key upstream Draco writes and reads. Off by default, since it
-  changes what a read produces. A property carried this way leaves the loss
-  report in the same breath, because it is no longer lost; list properties
-  cannot become attributes and stay dropped and reported. A `double` property
-  is carried on a mesh as well as on a point cloud, which needs the
-  `draco-core` release after 2.1.0: finalizing a mesh merges each attribute's
-  repeated values, and 2.1.0 refuses to do that for 64-bit ones.
-- `PlyWriter::with_generic_attributes` is the writing half: a `Generic`
-  attribute named through its metadata under `"name"` is written as a vertex
-  property of that name, in the type it holds, so a Gaussian-splat PLY read
-  with generics on writes back out whole instead of as bare positions. Float
-  values are written exactly in ASCII too, rather than at the six places
-  positions get. Off by default, since it changes what a write produces. On,
-  a mesh whose generics cannot be written faithfully -- a 64-bit integer PLY
-  has no type for, a name that is not one token of printable ASCII, a name the
-  reader claims for something else (`x`, `red`, the texture coordinates `u`/`v`
-  and `s`/`t`), or a name an earlier mesh gave another type -- is refused
-  before any of it is added.
-- `PlyDroppedItem` implements `Display`, so a wrapper can hand these to a
-  caller as plain strings without restating the wording.
+- `PlyReader::loss_report` lists what a PLY read leaves out of the mesh:
+  vertex properties with no attribute, normals in an unsupported type, extra
+  face properties and skipped elements. Before, such data was dropped
+  silently — a Gaussian-splat PLY read back as bare positions.
+- `PlyReader::read_mesh_reporting_loss` returns the mesh and its loss report
+  from a single parse.
+- `PlyReader::with_generic_attributes` keeps unrecognized vertex properties as
+  `Generic` attributes, one per property, in the declared type and named via
+  metadata `"name"` (as upstream Draco does). Off by default.
+- `PlyWriter::with_generic_attributes` writes such attributes back as vertex
+  properties, so a splat PLY round-trips whole. Off by default. Generics that
+  cannot be written faithfully (64-bit integers, invalid or reserved names,
+  conflicting types) are refused up front.
+- `PlyDroppedItem` implements `Display`.
+
+### Changed
+
+- Requires `draco-core` 2.2.0, which lets a mesh carry `double` properties.
 
 ### Fixed
 
-- `PlyReader` no longer refuses a file in which `u`, `v`, `s` or `t` appears
-  without its partner, or as a pair that is not `float`. Only a complete
-  `float` pair is read as texture coordinates; anything else is an ordinary
-  property -- carried under `with_generic_attributes`, reported as dropped
-  otherwise. The PLY format gives these names no meaning, upstream Draco reads
-  no texture coordinates from a PLY at all, and a lone `t` is often a
-  timestamp: such files were valid, and other readers open them.
+- `PlyReader` no longer rejects files where `u`, `v`, `s` or `t` appears
+  alone or not as `float`. Only a complete `float` pair is read as texture
+  coordinates; anything else is an ordinary property. Such files are valid
+  PLY, and other readers open them.
 
 ## [0.5.0](https://github.com/Filyus/draco-rust/compare/draco-io-v0.4.0...draco-io-v0.5.0) - 2026-09-15
 
