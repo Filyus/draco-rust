@@ -27,6 +27,10 @@ pub use document::{
     MeshIndex, Node, NodeIndex, PrimitiveIndex, PrimitiveRef, Sampler, SamplerIndex, Scene,
     SceneIndex, Shape, ShapeIndex, Skin, SkinIndex, Texture, TextureIndex, ValidationProfile,
 };
+#[cfg(feature = "draco-decode")]
+mod draco_primitive;
+#[cfg(feature = "draco-decode")]
+pub use draco_primitive::{DracoPrimitiveContract, DracoPrimitiveExtension};
 #[cfg(feature = "geometry")]
 mod packed;
 #[cfg(feature = "geometry")]

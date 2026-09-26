@@ -5,8 +5,6 @@ use std::sync::Arc;
 use crate::json::Value;
 #[cfg(feature = "draco-decode")]
 use draco_core::{decode_limits::DecodeLimits, Mesh};
-#[cfg(feature = "draco-decode")]
-use draco_core::{DecoderBuffer, MeshDecoder};
 
 #[cfg(feature = "draco-decode")]
 use crate::PrimitiveRef;
@@ -663,14 +661,7 @@ impl ExtensionHandler for DracoExtension {
                 .checked_add(length)
                 .filter(|end| *end <= buffer.len())
                 .ok_or_else(|| Error::Extension("Draco bufferView out of bounds".into()))?;
-            let mut mesh = Mesh::new();
-            MeshDecoder::new()
-                .decode(
-                    &mut DecoderBuffer::new(&buffer[start..end]).with_limits(*limits),
-                    &mut mesh,
-                )
-                .map_err(Error::Decode)?;
-            Ok(mesh)
+            crate::draco_primitive::decode_payload(&buffer[start..end], limits)
         })())
     }
 }
