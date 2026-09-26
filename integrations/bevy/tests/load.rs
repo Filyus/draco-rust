@@ -7,7 +7,7 @@ use bevy::asset::LoadState;
 use bevy::gltf::{GltfAssetLabel, GltfLoaderSettings};
 use bevy::mesh::{Mesh, VertexAttributeValues};
 use bevy::prelude::*;
-use draco_gltf_bevy::{draco_loader_settings, DracoGltfPlugin};
+use bevy_draco::{draco_loader_settings, DracoGltfPlugin};
 
 fn fixture(path: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -26,7 +26,7 @@ fn asset_dir() -> &'static Path {
 }
 
 fn build_asset_dir() -> PathBuf {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("draco-gltf-bevy-assets");
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("bevy_draco-assets");
     std::fs::create_dir_all(&dir).unwrap();
     let draco = std::fs::read(fixture("Box/glTF_Binary/Box_Draco.glb")).unwrap();
     std::fs::write(dir.join("Box_Draco.glb"), &draco).unwrap();

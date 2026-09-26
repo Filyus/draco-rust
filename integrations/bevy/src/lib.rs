@@ -6,7 +6,7 @@
 //!
 //! ```no_run
 //! use bevy::prelude::*;
-//! use draco_gltf_bevy::{draco_loader_settings, DracoGltfPlugin};
+//! use bevy_draco::{draco_loader_settings, DracoGltfPlugin};
 //!
 //! fn main() {
 //!     App::new()

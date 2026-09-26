@@ -1,14 +1,16 @@
-# draco-gltf-bevy
+# bevy_draco
 
 `KHR_draco_mesh_compression` for Bevy's glTF loader, decoded by
 [`draco-gltf`](../../crates/draco-gltf).
+
+A third-party crate, not made by the Bevy project.
 
 **Status: experimental.** Built against Bevy 0.19. `publish = false` until the
 questions at the end are settled.
 
 ```rust
 use bevy::prelude::*;
-use draco_gltf_bevy::{draco_loader_settings, DracoGltfPlugin};
+use bevy_draco::{draco_loader_settings, DracoGltfPlugin};
 
 App::new()
     .add_plugins((DefaultPlugins, DracoGltfPlugin::default()))
@@ -87,8 +89,9 @@ cargo test --manifest-path integrations/bevy/Cargo.toml
 
 ## Before merging or publishing
 
-- **Name.** `draco-gltf-bevy` follows this repository. The Bevy ecosystem
-  mostly uses `bevy_*`, and `bevy_gltf_draco` is already taken.
+- **Name.** `bevy_draco` is free on crates.io (checked 2026-09-26). It
+  matches how Bevy users search, and it leaves room for a `.drc` asset loader.
+  `bevy_gltf_draco` is an unrelated crate.
 - **Bevy version policy.** One crate version per Bevy minor, plus a
   compatibility table.
 - **CI job.** Nothing runs these checks in CI yet.

@@ -1,5 +1,5 @@
 [package]
-name = "draco-gltf-bevy"
+name = "bevy_draco"
 version = "0.1.0"
 edition = "2021"
 description = "Bevy glTF loader support for KHR_draco_mesh_compression, decoded by draco-gltf"
