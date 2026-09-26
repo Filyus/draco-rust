@@ -5,6 +5,7 @@
 //! load Draco-compressed files with [`draco_loader_settings`]:
 //!
 //! ```no_run
+//! #![deny(deprecated)]
 //! use bevy::prelude::*;
 //! use bevy_draco::{draco_loader_settings, DracoGltfPlugin};
 //!
@@ -16,10 +17,11 @@
 //! }
 //!
 //! fn setup(mut commands: Commands, assets: Res<AssetServer>) {
-//!     commands.spawn(WorldAssetRoot(assets.load_with_settings(
-//!         GltfAssetLabel::Scene(0).from_asset("truck.glb"),
-//!         draco_loader_settings,
-//!     )));
+//!     let truck = assets
+//!         .load_builder()
+//!         .with_settings(draco_loader_settings)
+//!         .load(GltfAssetLabel::Scene(0).from_asset("truck.glb"));
+//!     commands.spawn(WorldAssetRoot(truck));
 //! }
 //! ```
 //!
@@ -86,7 +88,7 @@ impl Plugin for DracoGltfPlugin {
 /// the Draco payload is still bounds-checked and validated while it is
 /// decoded.
 ///
-/// Pass it to `AssetServer::load_with_settings`.
+/// Pass it to `AssetServer::load_builder().with_settings(..)`.
 pub fn draco_loader_settings(settings: &mut GltfLoaderSettings) {
     settings.validate = false;
 }

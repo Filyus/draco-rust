@@ -15,10 +15,11 @@ use bevy_draco::{draco_loader_settings, DracoGltfPlugin};
 App::new()
     .add_plugins((DefaultPlugins, DracoGltfPlugin::default()))
     .add_systems(Startup, |mut commands: Commands, assets: Res<AssetServer>| {
-        commands.spawn(WorldAssetRoot(assets.load_with_settings(
-            GltfAssetLabel::Scene(0).from_asset("truck.glb"),
-            draco_loader_settings,
-        )));
+        let truck = assets
+            .load_builder()
+            .with_settings(draco_loader_settings)
+            .load(GltfAssetLabel::Scene(0).from_asset("truck.glb"));
+        commands.spawn(WorldAssetRoot(truck));
     })
     .run();
 ```
