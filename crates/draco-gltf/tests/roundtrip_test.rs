@@ -94,3 +94,68 @@ fn skin_and_animation_fixture_survive_draco_roundtrip() {
         &animation_output,
     );
 }
+
+/// The host-neutral Draco entry point is the path `read_primitive` takes, so a
+/// caller with its own document model gets byte-identical geometry.
+#[test]
+fn host_neutral_draco_decode_matches_read_primitive() {
+    use draco_gltf::{
+        DracoPrimitiveContract, DracoPrimitiveExtension, GeometryError, PrimitiveIndex,
+        KHR_DRACO_MESH_COMPRESSION,
+    };
+
+    let import = open(
+        fixture("testdata/Box/glTF_Binary/Box_Draco.glb"),
+        ValidationProfile::Gltf20,
+    )
+    .unwrap();
+    let primitive = import.document.primitive(MeshIndex(0), 0).unwrap();
+    let extension = DracoPrimitiveExtension::from_json(
+        primitive.extension(KHR_DRACO_MESH_COMPRESSION).unwrap(),
+    )
+    .unwrap();
+
+    let view = &import.document.as_value()["bufferViews"]
+        .as_array()
+        .unwrap()[extension.buffer_view()];
+    let buffer = &import.resources.buffers[view["buffer"].as_u64().unwrap() as usize];
+    let start = view.get("byteOffset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+    let payload = &buffer[start..start + view["byteLength"].as_u64().unwrap() as usize];
+
+    let mut contract = DracoPrimitiveContract::new().with_profile(ValidationProfile::Gltf20);
+    for (semantic, index) in primitive.attribute_indices() {
+        let accessor = import.document.accessor(index).unwrap();
+        contract =
+            contract.with_attribute(semantic, accessor.count().unwrap(), accessor.normalized());
+    }
+    let indices = import
+        .document
+        .accessor(primitive.indices().unwrap())
+        .unwrap()
+        .count()
+        .unwrap();
+    let decoded = extension
+        .decode(payload, &contract.clone().with_indices(indices))
+        .unwrap();
+    let expected = import
+        .read_primitive(PrimitiveIndex {
+            mesh: MeshIndex(0),
+            primitive: 0,
+        })
+        .unwrap();
+    assert_eq!(decoded, expected);
+    assert_eq!(extension.attributes().len(), decoded.attributes().len());
+
+    // A declared count the stream cannot supply is refused, as it is for
+    // documents this crate parsed itself.
+    let error = extension
+        .decode(payload, &contract.with_indices(indices + 3))
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            draco_gltf::Error::Geometry(GeometryError::DracoAccessorCount { .. })
+        ),
+        "{error}"
+    );
+}

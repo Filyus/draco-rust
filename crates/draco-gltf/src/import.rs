@@ -212,6 +212,18 @@ impl Import {
     /// Decodes a primitive through the supplied extension registry.
     #[cfg(feature = "draco-decode")]
     pub fn decode_draco_primitive(&self, primitive: PrimitiveRef<'_>) -> Result<draco_core::Mesh> {
+        let (mesh, contract) = self.decode_draco_mesh(primitive)?;
+        crate::draco_primitive::validate_decoded_counts(&mesh, &contract)?;
+        Ok(mesh)
+    }
+
+    /// Decodes `primitive` without checking the result against the document,
+    /// and returns what the document declares for that check.
+    #[cfg(feature = "draco-decode")]
+    fn decode_draco_mesh(
+        &self,
+        primitive: PrimitiveRef<'_>,
+    ) -> Result<(draco_core::Mesh, crate::DracoPrimitiveContract)> {
         self.validate(&self.extensions)?;
         let mesh = self.extensions.decode_primitive(
             &self.document,
@@ -219,79 +231,44 @@ impl Import {
             &self.draco_decode_limits,
             primitive,
         )?;
-        self.validate_decoded_draco_counts(primitive, &mesh)?;
-        Ok(mesh)
+        Ok((mesh, self.draco_contract(primitive)?))
     }
 
+    /// Collects what the document declares about a Draco primitive's
+    /// accessors, in the form hosts with their own document model supply too.
     #[cfg(feature = "draco-decode")]
-    fn validate_decoded_draco_counts(
-        &self,
-        primitive: PrimitiveRef<'_>,
-        mesh: &draco_core::Mesh,
-    ) -> Result<()> {
-        let decoded_points = u64::try_from(mesh.num_points())
-            .map_err(|_| Error::ResourceLimit("decoded Draco point count exceeds u64".into()))?;
+    fn draco_contract(&self, primitive: PrimitiveRef<'_>) -> Result<crate::DracoPrimitiveContract> {
+        let mut contract = crate::DracoPrimitiveContract::new()
+            .with_limits(self.draco_decode_limits)
+            .with_profile(self.profile);
         for (semantic, index) in primitive.attribute_indices() {
-            let declared = self
-                .document
-                .accessor(index)
-                .and_then(|accessor| accessor.count())
-                .ok_or_else(|| {
-                    Error::Validation(vec![format!(
-                        "Draco attribute {semantic:?} accessor count is missing"
-                    )])
-                })?;
-            // Only an accessor that promises more vertices than the stream can
-            // supply is fatal: the missing ones have nowhere to come from.
-            //
-            // The other direction is what real encoders emit. Draco stores
-            // connectivity per position vertex and re-splits it at attribute
-            // seams while decoding, so a mesh whose normals or texture
-            // coordinates break along an edge decodes to more points than the
-            // accessor written before compression declares. glTF-Pipeline,
-            // Blender and the Draco encoder itself all produce such files —
-            // Three.js's ferrari.glb among them — and every browser viewer
-            // reads them, because the decoded geometry is self-consistent:
-            // indices, positions and attributes all come out of the same
-            // stream. Refusing them would reject working files over metadata
-            // the extension has already superseded.
-            if declared > decoded_points {
-                return Err(crate::GeometryError::DracoAccessorCount {
-                    semantic: semantic.into(),
-                    decoded: decoded_points,
-                    declared,
-                }
-                .into());
-            }
+            let accessor = self.document.accessor(index);
+            let count = accessor.and_then(crate::Accessor::count).ok_or_else(|| {
+                Error::Validation(vec![format!(
+                    "Draco attribute {semantic:?} accessor count is missing"
+                )])
+            })?;
+            // The accessor, not the Draco attribute, defines how the decoded
+            // integers are read. KHR_draco_mesh_compression makes the accessor
+            // authoritative, and encoders leave the Draco flag unset, so a
+            // normalized COLOR_0 would otherwise reach the consumer as raw
+            // 0..65535 values.
+            let normalized = accessor.is_some_and(crate::Accessor::normalized);
+            contract = contract.with_attribute(semantic, count, normalized);
         }
-
         if primitive.mode() == crate::PrimitiveMode::Triangles.to_gltf() {
             if let Some(index) = primitive.indices() {
-                let declared = self
+                let count = self
                     .document
                     .accessor(index)
                     .and_then(|accessor| accessor.count())
                     .ok_or_else(|| {
                         Error::Validation(vec!["Draco index accessor count is missing".into()])
                     })?;
-                let decoded = mesh
-                    .num_faces()
-                    .checked_mul(3)
-                    .and_then(|count| u64::try_from(count).ok())
-                    .ok_or_else(|| {
-                        Error::ResourceLimit("decoded Draco index count exceeds u64".into())
-                    })?;
-                if declared != decoded {
-                    return Err(crate::GeometryError::DracoAccessorCount {
-                        semantic: "indices".into(),
-                        decoded,
-                        declared,
-                    }
-                    .into());
-                }
+                contract = contract.with_indices(count);
             }
         }
-        Ok(())
+        Ok(contract)
     }
 
     /// Reads one ordinary or Draco-compressed primitive into packed buffers.
@@ -317,33 +294,13 @@ impl Import {
         {
             #[cfg(feature = "draco-decode")]
             {
-                let contract = crate::extensions::parse_draco_extension(
+                let extension = crate::extensions::parse_draco_extension(
                     reference.extension(crate::KHR_DRACO_MESH_COMPRESSION),
                 )?
+                .map(crate::DracoPrimitiveExtension::from_contract)
                 .ok_or_else(|| Error::Extension("missing Draco extension".into()))?;
-                let decoded = self.decode_draco_primitive(reference)?;
-                // The accessor, not the Draco attribute, defines how the
-                // decoded integers are read. KHR_draco_mesh_compression makes
-                // the accessor authoritative, and encoders leave the Draco
-                // flag unset, so a normalized COLOR_0 would otherwise reach the
-                // consumer as raw 0..65535 values.
-                let normalized: std::collections::BTreeMap<String, bool> = reference
-                    .attribute_indices()
-                    .map(|(semantic, index)| {
-                        let normalized = self
-                            .document
-                            .accessor(index)
-                            .is_some_and(crate::Accessor::normalized);
-                        (semantic.to_owned(), normalized)
-                    })
-                    .collect();
-                let geometry = crate::PackedGeometry::from_draco_mesh(
-                    &decoded,
-                    &contract.attributes,
-                    &normalized,
-                )?;
-                geometry.validate(self.profile)?;
-                return Ok(geometry);
+                let (decoded, contract) = self.decode_draco_mesh(reference)?;
+                return extension.pack(&decoded, &contract);
             }
             #[cfg(not(feature = "draco-decode"))]
             return Err(Error::Extension(
