@@ -14,6 +14,7 @@ run:
 ```sh
 cargo fmt --manifest-path crates/Cargo.toml --all -- --check
 cargo fmt --manifest-path web/Cargo.toml --all -- --check
+cargo fmt --manifest-path integrations/bevy/Cargo.toml -- --check
 ```
 
 To format the workspaces, run the same commands without `-- --check`.
@@ -40,6 +41,10 @@ To format the workspaces, run the same commands without `-- --check`.
   `publish = false`.
 - `web/` contains WASM wrapper crates and demo tooling; it is released as GitHub
   release assets, not as crates.io packages.
+- `integrations/bevy` (`draco-gltf-bevy`) is an experimental Bevy glTF loader
+  plugin over `draco-gltf`'s document-independent Draco entry point. It is its
+  own workspace so nothing under `crates/` builds Bevy, and it has
+  `publish = false`; its README lists what is open before it ships.
 
 The three publishable crates are versioned and **released independently** (see
 [Releases](#releases)).

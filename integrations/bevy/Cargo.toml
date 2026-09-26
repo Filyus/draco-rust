@@ -1,0 +1,50 @@
+[package]
+name = "draco-gltf-bevy"
+version = "0.1.0"
+edition = "2021"
+description = "Bevy glTF loader support for KHR_draco_mesh_compression, decoded by draco-gltf"
+repository = "https://github.com/Filyus/draco-rust"
+license = "Apache-2.0"
+keywords = ["bevy", "draco", "gltf", "compression", "mesh"]
+categories = ["game-development", "graphics", "compression"]
+# Experimental. Before publishing, settle the name and the Bevy version
+# policy in README.md, and add the crate to the release order after
+# draco-gltf.
+publish = false
+
+# Its own workspace, on purpose: Bevy is some three hundred crates, and the
+# codec workspace under crates/ should not build or lock any of them.
+[workspace]
+
+[dependencies]
+bevy = { version = "0.19", default-features = false, features = [
+    "std",
+    "bevy_asset",
+    "bevy_gltf",
+    "bevy_log",
+    "bevy_mesh",
+] }
+draco-gltf = { version = "0.4.1", path = "../../crates/draco-gltf", default-features = false, features = [
+    "draco-decode",
+] }
+# Must resolve to the gltf that bevy_gltf uses: the loader's helpers take its
+# types. Bevy enables these features already; they are named because this
+# crate reads primitive extensions and mesh extras itself.
+gltf = { version = "1.4", default-features = false, features = ["extensions", "extras"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+bevy = { version = "0.19", default-features = false, features = [
+    "std",
+    "bevy_asset",
+    "bevy_gltf",
+    "bevy_log",
+    "bevy_mesh",
+    "bevy_pbr",
+    "bevy_animation",
+] }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
