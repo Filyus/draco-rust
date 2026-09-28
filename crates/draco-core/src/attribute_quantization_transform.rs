@@ -223,6 +223,14 @@ impl AttributeQuantizationTransform {
                 )));
             }
             let diff = max_values[c] - self.min_values[c];
+            // Two finite ends can still be further apart than an f32 holds.
+            // Upstream quantizes against the infinite range anyway, and the
+            // stream then dequantizes to NaN.
+            if !diff.is_finite() {
+                return Err(DracoError::invalid_parameter(format!(
+                    "Attribute component {c} spans a range wider than f32 and cannot be quantized"
+                )));
+            }
             if diff > self.range {
                 self.range = diff;
             }
@@ -785,6 +793,29 @@ mod tests {
         assert!(
             err.to_string().contains("cover 2 components"),
             "the error should name the mismatch, got: {err}"
+        );
+    }
+
+    /// Two finite ends further apart than an f32 holds are refused: quantizing
+    /// against the infinite range writes a stream that dequantizes to NaN.
+    #[test]
+    fn a_range_wider_than_f32_is_refused() {
+        let mut attribute = PointAttribute::new();
+        attribute.init(
+            GeometryAttributeType::Position,
+            1,
+            DataType::Float32,
+            false,
+            2,
+        );
+        attribute.buffer_mut().write(0, &(-f32::MAX).to_le_bytes());
+        attribute.buffer_mut().write(4, &f32::MAX.to_le_bytes());
+        let err = AttributeQuantizationTransform::new()
+            .compute_parameters(&attribute, 14)
+            .expect_err("an infinite range must not be quantized against");
+        assert!(
+            err.to_string().contains("wider than f32"),
+            "the error should say why, got: {err}"
         );
     }
 
