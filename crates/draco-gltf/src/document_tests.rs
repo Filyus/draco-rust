@@ -117,11 +117,84 @@ fn draft_validation_covers_published_scene_links() {
         Some("box")
     );
 
-    let invalid = Document::from_json_bytes(
-        br#"{"asset":{"version":"2.1"},"shapes":[{"type":"box"}],"nodes":[{"boundingVolume":{"shape":0}}]}"#,
+    // A core shape may leave its parameters out, and they take their defaults.
+    let defaults = Document::from_json_bytes(
+        br#"{"asset":{"version":"2.1"},"shapes":[{"type":"box"},{"type":"sphere","sphere":{}}],"nodes":[{"boundingVolume":{"shape":0}}]}"#,
     )
     .unwrap();
-    assert!(invalid.validate(ValidationProfile::Gltf21Draft).is_err());
+    defaults.validate(ValidationProfile::Gltf21Draft).unwrap();
+
+    let dangling = Document::from_json_bytes(
+        br#"{"asset":{"version":"2.1"},"nodes":[{"boundingVolume":{"shape":0}}]}"#,
+    )
+    .unwrap();
+    assert!(dangling.validate(ValidationProfile::Gltf21Draft).is_err());
+}
+
+#[cfg(feature = "strict-validation")]
+#[test]
+fn draft_validation_refuses_degenerate_and_mismatched_shapes() {
+    let profile = ValidationProfile::Gltf21Draft;
+    let shape = |shape: &str| {
+        Document::from_json_bytes(
+            format!(r#"{{"asset":{{"version":"2.1"}},"shapes":[{shape}]}}"#).as_bytes(),
+        )
+        .unwrap()
+    };
+    for good in [
+        r#"{"type":"sphere","sphere":{"radius":0.25}}"#,
+        r#"{"type":"box","box":{"size":[1,2,3]}}"#,
+        r#"{"type":"capsule","capsule":{"height":1,"radiusTop":0,"radiusBottom":0.5}}"#,
+        r#"{"type":"cylinder","cylinder":{"radiusBottom":0}}"#,
+        r#"{"type":"plane","plane":{"sizeX":4}}"#,
+        r#"{"type":"plane"}"#,
+        // A type the core does not define is left to whoever defines it.
+        r#"{"type":"torus","torus":{"radius":-1}}"#,
+    ] {
+        shape(good).validate(profile).expect(good);
+    }
+    for bad in [
+        r#"{"type":"sphere","sphere":{"radius":0}}"#,
+        r#"{"type":"sphere","sphere":{"radius":"big"}}"#,
+        r#"{"type":"sphere","sphere":5}"#,
+        r#"{"type":"box","box":{"size":[1,2]}}"#,
+        r#"{"type":"box","box":{"size":[1,0,3]}}"#,
+        r#"{"type":"capsule","capsule":{"height":0}}"#,
+        r#"{"type":"capsule","capsule":{"radiusTop":-1}}"#,
+        r#"{"type":"cylinder","cylinder":{"radiusTop":0,"radiusBottom":0}}"#,
+        r#"{"type":"plane","plane":{"sizeZ":0}}"#,
+        // A shape must not carry the parameters of another core shape.
+        r#"{"type":"box","sphere":{}}"#,
+    ] {
+        assert!(shape(bad).validate(profile).is_err(), "{bad}");
+    }
+}
+
+#[cfg(feature = "strict-validation")]
+#[test]
+fn draft_validation_checks_the_bounding_volume_transform() {
+    let profile = ValidationProfile::Gltf21Draft;
+    let volume = |volume: &str| {
+        Document::from_json_bytes(
+            format!(
+                r#"{{"asset":{{"version":"2.1"}},"shapes":[{{"type":"sphere"}}],"nodes":[{{"boundingVolume":{volume}}}]}}"#
+            )
+            .as_bytes(),
+        )
+        .unwrap()
+    };
+    volume(r#"{"shape":0,"rotation":[0,0,0,1],"scale":[1,2,3],"translation":[0,-1,5]}"#)
+        .validate(profile)
+        .unwrap();
+    for bad in [
+        r#"{"shape":0,"rotation":[0,0,1]}"#,
+        r#"{"shape":0,"rotation":[0,0,0,2]}"#,
+        r#"{"shape":0,"scale":[1,1]}"#,
+        r#"{"shape":0,"translation":"none"}"#,
+        r#"{"shape":0,"translation":[0,"y",0]}"#,
+    ] {
+        assert!(volume(bad).validate(profile).is_err(), "{bad}");
+    }
 }
 
 #[cfg(feature = "resources")]

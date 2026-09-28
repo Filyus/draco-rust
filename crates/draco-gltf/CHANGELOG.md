@@ -18,6 +18,12 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a chunk and a URI, and naming a chunk in a file that is not a GLB are
   errors. Writing still puts every buffer in one chunk, and a `.gltf` bundle
   drops the `chunk` property when the bytes move to a companion file.
+- With `strict-validation`, shapes are checked against the draft's schema: the
+  box, capsule, cylinder, plane and sphere parameters must be numbers in
+  range, degenerate shapes are refused, and a core shape must not carry
+  another core shape's parameters. A bounding volume's `rotation`, `scale` and
+  `translation` must be arrays of the right length, and `rotation` a unit
+  quaternion in range.
 - A `files` entry can list `aliases`, and a nested glTF loaded from it reads
   any URI that matches an alias exactly from the file the alias names, whether
   that file is a buffer view or a URI, before asking the caller's resolver.
@@ -30,6 +36,9 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- A core shape's own parameter object is optional, as the draft has it, and its
+  parameters take their defaults. A `{"type": "box"}` with no `box` object was
+  refused before.
 - A nested glTF embedded in a buffer view no longer finds sibling files by
   their `name`. The 2.1 draft redirects URIs with `aliases` on the file that
   contains them, and a `name` has no such meaning. Files that relied on names

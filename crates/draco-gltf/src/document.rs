@@ -641,7 +641,13 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
             }
         }
     }
-    for node in root.get("nodes").and_then(Value::as_array).unwrap_or(&[]) {
+    for (node_index, node) in root
+        .get("nodes")
+        .and_then(Value::as_array)
+        .unwrap_or(&[])
+        .iter()
+        .enumerate()
+    {
         for field in ["camera", "mesh", "skin"] {
             let target = match field {
                 "camera" => "cameras",
@@ -663,6 +669,7 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
                 ]));
             }
             check(volume, "shape", "shapes")?;
+            validate_bounding_volume_transform(node_index, volume)?;
         }
         if let Some(children) = node.get("children").and_then(Value::as_array) {
             for child in children {
@@ -1057,15 +1064,128 @@ fn validate_draco_extension(
 }
 
 #[cfg(feature = "strict-validation")]
+const CORE_SHAPE_TYPES: [&str; 5] = ["box", "capsule", "cylinder", "plane", "sphere"];
+
+/// Checks each shape against the draft's schema and its rule against
+/// degenerate shapes. A core shape's own object is optional, and its
+/// parameters then take their defaults, which are valid.
+#[cfg(feature = "strict-validation")]
 fn validate_shapes(root: &Value) -> Result<()> {
-    const CORE_TYPES: [&str; 5] = ["box", "capsule", "cylinder", "plane", "sphere"];
-    for shape in root.get("shapes").and_then(Value::as_array).unwrap_or(&[]) {
+    for (index, shape) in root
+        .get("shapes")
+        .and_then(Value::as_array)
+        .unwrap_or(&[])
+        .iter()
+        .enumerate()
+    {
         let kind = shape.get("type").and_then(Value::as_str).ok_or_else(|| {
             Error::Validation(vec!["shape type is missing or not a string".into()])
         })?;
-        if CORE_TYPES.contains(&kind) && !shape.get(kind).is_some_and(Value::is_object) {
+        if !CORE_SHAPE_TYPES.contains(&kind) {
+            continue;
+        }
+        if let Some(other) = CORE_SHAPE_TYPES
+            .into_iter()
+            .find(|other| *other != kind && shape.get(other).is_some())
+        {
             return Err(Error::Validation(vec![format!(
-                "shape {kind:?} is missing its {kind:?} definition object"
+                "shapes[{index}] is a {kind:?} and must not define a {other:?} object"
+            )]));
+        }
+        if let Some(definition) = shape.get(kind) {
+            validate_shape_parameters(index, kind, definition)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "strict-validation")]
+fn validate_shape_parameters(index: usize, kind: &str, definition: &Value) -> Result<()> {
+    let fail = |what: String| Error::Validation(vec![format!("shapes[{index}].{kind}: {what}")]);
+    if !definition.is_object() {
+        return Err(fail("is not an object".into()));
+    }
+    let number = |name: &str| -> Result<Option<f64>> {
+        definition
+            .get(name)
+            .map(|value| {
+                value
+                    .as_f64()
+                    .ok_or_else(|| fail(format!("{name} is not a number")))
+            })
+            .transpose()
+    };
+    let positive = |name: &str| -> Result<()> {
+        match number(name)? {
+            Some(value) if value <= 0.0 => Err(fail(format!("{name} must be greater than zero"))),
+            _ => Ok(()),
+        }
+    };
+    match kind {
+        "sphere" => positive("radius")?,
+        "box" => {
+            if let Some(size) = definition.get("size") {
+                let sizes = size
+                    .as_array()
+                    .filter(|sizes| sizes.len() == 3)
+                    .ok_or_else(|| fail("size is not an array of three numbers".into()))?;
+                for value in sizes {
+                    match value.as_f64() {
+                        Some(value) if value > 0.0 => {}
+                        _ => return Err(fail("every size must be a number above zero".into())),
+                    }
+                }
+            }
+        }
+        "plane" => {
+            positive("sizeX")?;
+            positive("sizeZ")?;
+        }
+        _ => {
+            positive("height")?;
+            let mut radii = [0.5f64; 2];
+            for (radius, name) in radii.iter_mut().zip(["radiusBottom", "radiusTop"]) {
+                if let Some(value) = number(name)? {
+                    if value < 0.0 {
+                        return Err(fail(format!("{name} must not be negative")));
+                    }
+                    *radius = value;
+                }
+            }
+            if radii == [0.0, 0.0] {
+                return Err(fail(
+                    "radiusTop and radiusBottom must not both be zero".into(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Checks the transform a bounding volume places its shape with.
+#[cfg(feature = "strict-validation")]
+fn validate_bounding_volume_transform(node: usize, volume: &Value) -> Result<()> {
+    for (name, length) in [("rotation", 4), ("scale", 3), ("translation", 3)] {
+        let Some(value) = volume.get(name) else {
+            continue;
+        };
+        let components = value
+            .as_array()
+            .filter(|components| components.len() == length)
+            .and_then(|components| {
+                components
+                    .iter()
+                    .map(Value::as_f64)
+                    .collect::<Option<Vec<_>>>()
+            })
+            .ok_or_else(|| {
+                Error::Validation(vec![format!(
+                    "nodes[{node}].boundingVolume.{name} is not an array of {length} numbers"
+                )])
+            })?;
+        if name == "rotation" && components.iter().any(|value| value.abs() > 1.0) {
+            return Err(Error::Validation(vec![format!(
+                "nodes[{node}].boundingVolume.rotation is not a unit quaternion"
             )]));
         }
     }
