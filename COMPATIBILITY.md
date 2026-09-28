@@ -26,6 +26,7 @@ For which algorithms exist at all, see
 | [Point-cloud options][options] | only when off | yes | yes |
 | [`Mesh::finalize`][finalize] | yes; the mesh differs | yes | yes |
 | [64-bit dedup][dedup] | n/a | yes | yes |
+| [Range wider than `f32`][range] | we refuse; C++ writes NaN | n/a | yes, to NaN |
 
 [uint32]: #uint32-attribute-values-above-i32max
 [wrap]: #prediction-corrections-that-overflow-int32
@@ -33,6 +34,7 @@ For which algorithms exist at all, see
 [options]: #point-cloud-encoder-options-not-in-upstream
 [finalize]: #meshfinalize-drops-unused-points-and-values
 [dedup]: #deduplication-of-64-bit-attribute-values
+[range]: #quantizing-a-range-wider-than-f32
 
 "C++ refuses": C++ Draco will not encode that input. "n/a": nothing upstream
 builds reaches that code.
@@ -323,6 +325,25 @@ No stream changes: nothing upstream builds hands its `Finalize` a 64-bit
 attribute, and for every type it handles the result is the same. The
 difference lets a caller finalize a mesh carrying a 64-bit attribute, which
 used to fail here as it does upstream.
+
+### Quantizing a range wider than `f32`
+
+Quantization scales by `max - min` of each component. NaN and infinite values
+are refused on both sides. When every value is finite but the difference still
+overflows `f32`, because the values sit near both ends of the range (about
+±1.7·10³⁸), the scale is infinite. C++ Draco encodes anyway and writes a stream
+whose values decode to NaN. This encoder returns an invalid-parameter error
+instead, before writing anything.
+
+No usable stream changes: the only input affected is one where C++'s output
+does not hold the geometry it was given. Both decoders read the C++ stream the
+same way, to NaN.
+
+#### Tests
+
+| test | file | what it pins |
+|---|---|---|
+| `a_range_wider_than_f32_is_refused` | [`draco-core/src/attribute_quantization_transform.rs`](crates/draco-core/src/attribute_quantization_transform.rs) | The encode going back to writing a NaN stream. |
 
 ## File readers, `draco-io` and `draco-gltf`
 

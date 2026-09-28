@@ -8,6 +8,27 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.2.1](https://github.com/Filyus/draco-rust/compare/draco-core-v2.2.0...draco-core-v2.2.1) - 2026-09-29
+
+### Fixed
+
+- `EncodedMeshInfo::num_encoded_points` now counts the points the decoder
+  reconstructs. An EdgeBreaker encode splits a point wherever an attribute has
+  a seam, so a mesh with UV or normal seams decodes to more points than the
+  mesh held, and the report said the old number. Per-attribute
+  `num_encoded_values` and the position bounds follow the same rule.
+  `encode_with_info` does this from what the encoder kept, without walking the
+  mesh again.
+- `EncodedMeshInfo::num_encoded_faces` no longer counts degenerate faces the
+  encoder drops. `draco-gltf` declares accessor counts from this report
+  without decoding, so a wrong count described a file that did not hold that
+  data.
+- Quantizing an attribute whose range is wider than `f32` (for example
+  positions near ±1.7·10³⁸) is refused with an invalid-parameter error. The
+  range overflowed to infinity, so the encoder wrote a stream that decoded to
+  NaN. C++ Draco writes the same broken stream; `COMPATIBILITY.md` records
+  the difference.
+
 ## [2.2.0](https://github.com/Filyus/draco-rust/compare/draco-core-v2.1.0...draco-core-v2.2.0) - 2026-09-25
 
 ### Added
