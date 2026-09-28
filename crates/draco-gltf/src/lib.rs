@@ -80,7 +80,7 @@ pub mod meshopt;
 pub use container::{
     decode_data_uri, inspect_glb, parse_glb_json_and_bin, parse_gltf_container,
     resolve_gltf_buffers, resolve_resource_uri, ExternalFilePolicy, FileResourceResolver,
-    GlbChunkDescriptor, GlbLayout, GlbRangeReader, GltfBufferReference, GltfContainer,
+    GlbBinChunk, GlbChunkDescriptor, GlbLayout, GlbRangeReader, GltfBufferReference, GltfContainer,
     GltfContainerFormat, ResourceLimits, ResourceResolver,
 };
 #[cfg(feature = "geometry")]

@@ -9,6 +9,29 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- A GLB version 3 buffer can name the chunk that holds it with `chunk`, so a
+  file can carry several BIN chunks. The index counts every chunk in the file
+  from zero. Buffer 0 with neither `chunk` nor `uri` still uses the chunk at
+  index 1, as in glTF 2.0. Naming a chunk that is not a BIN chunk, naming both
+  a chunk and a URI, and naming a chunk in a file that is not a GLB are
+  errors. Writing still puts every buffer in one chunk, and a `.gltf` bundle
+  drops the `chunk` property when the bytes move to a companion file.
+- `GlbBinChunk` and `GltfContainer::bin_chunks` list the BIN chunks of a
+  container with their indices. `GltfBufferReference::chunk` carries a
+  buffer's `chunk`.
+
+### Changed
+
+- Breaking: `resolve_gltf_buffers` takes the BIN chunks as a
+  `&[GlbBinChunk]` instead of an `Option<&[u8]>`. `GltfContainer` is no longer
+  `Copy`, and `GltfBufferReference` has the new `chunk` field.
+- A version 3 file may have chunks of unknown type anywhere, more than one JSON
+  chunk (the first is the glTF JSON, wherever it sits) and BIN chunks in any
+  position, and its BIN chunk may be up to 7 bytes longer than the buffer it
+  holds, which is the padding to 8. Version 2 is unchanged, at 3.
+
 ### Fixed
 
 - GLB version 3 files use the chunk layout the glTF 2.1 draft defines. A chunk

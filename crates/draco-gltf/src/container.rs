@@ -230,15 +230,29 @@ impl GltfContainerFormat {
     }
 }
 
+/// A BIN chunk of a GLB container and its position among the chunks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GlbBinChunk<'a> {
+    /// Index of the chunk in the file, counting every chunk from zero.
+    ///
+    /// This is the number a glTF `buffer.chunk` property names.
+    pub index: usize,
+    /// Chunk payload, including any trailing padding.
+    pub data: &'a [u8],
+}
+
 /// Borrowed, strictly parsed glTF container.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct GltfContainer<'a> {
     /// Input container kind.
     pub format: GltfContainerFormat,
     /// JSON document bytes (including legal GLB JSON padding).
     pub json: &'a [u8],
-    /// Optional GLB BIN chunk.
+    /// The BIN chunk at chunk index 1, which buffer 0 uses when it names
+    /// neither a `chunk` nor a `uri`. Also listed in [`Self::bin_chunks`].
     pub bin: Option<&'a [u8]>,
+    /// Every BIN chunk, in file order. Version 2 has at most one.
+    pub bin_chunks: Vec<GlbBinChunk<'a>>,
 }
 
 /// A chunk address in a seekable GLB input. No chunk bytes are materialized.
@@ -420,6 +434,8 @@ pub struct ResourceLimits {
 pub struct GltfBufferReference<'a> {
     /// Optional data or companion-resource URI.
     pub uri: Option<&'a str>,
+    /// Optional index of the GLB chunk holding the buffer (`buffer.chunk`).
+    pub chunk: Option<usize>,
     /// Declared `byteLength` of the logical buffer, excluding GLB padding.
     pub byte_length: usize,
     /// `EXT_meshopt_compression` fallback buffer: it carries no stored bytes
@@ -560,6 +576,7 @@ pub fn parse_gltf_container(data: &[u8]) -> Result<GltfContainer<'_>> {
             format: GltfContainerFormat::Gltf,
             json: data,
             bin: None,
+            bin_chunks: Vec::new(),
         });
     }
     if data.len() < 12 {
@@ -588,6 +605,7 @@ pub fn parse_gltf_container(data: &[u8]) -> Result<GltfContainer<'_>> {
     let mut chunk_index = 0usize;
     let mut json = None;
     let mut bin = None;
+    let mut bin_chunks = Vec::new();
     while offset < declared {
         let header_end = offset
             .checked_add(8)
@@ -630,6 +648,10 @@ pub fn parse_gltf_container(data: &[u8]) -> Result<GltfContainer<'_>> {
                         "BIN must be the second and only BIN chunk".into(),
                     ));
                 }
+                bin_chunks.push(GlbBinChunk {
+                    index: chunk_index,
+                    data: bytes,
+                });
             }
             _ => {
                 if chunk_index == 0 {
@@ -645,6 +667,7 @@ pub fn parse_gltf_container(data: &[u8]) -> Result<GltfContainer<'_>> {
         format: GltfContainerFormat::GlbV2,
         json: json.ok_or_else(|| GltfError::InvalidGlb("GLB has no JSON chunk".into()))?,
         bin,
+        bin_chunks,
     })
 }
 
@@ -673,6 +696,7 @@ fn parse_glb_v3(data: &[u8]) -> Result<GltfContainer<'_>> {
     let mut chunk_index = 0usize;
     let mut json = None;
     let mut bin = None;
+    let mut bin_chunks = Vec::new();
     while offset < data.len() {
         let header_end = offset
             .checked_add(16)
@@ -694,29 +718,25 @@ fn parse_glb_v3(data: &[u8]) -> Result<GltfContainer<'_>> {
             .ok_or_else(|| GltfError::InvalidGlb("GLB v3 chunk extends past file end".into()))?;
         let bytes = &data[header_end..end];
         match kind {
-            GLB_CHUNK_JSON => {
-                if chunk_index != 0 || json.replace(bytes).is_some() {
-                    return Err(GltfError::InvalidGlb(
-                        "JSON must be the first and only GLB v3 JSON chunk".into(),
-                    ));
-                }
+            // The glTF JSON is the first JSON chunk, wherever it sits; later
+            // JSON chunks and chunks of unknown type belong to extensions.
+            GLB_CHUNK_JSON if json.is_none() => {
                 if !bytes
                     .iter()
                     .any(|byte| !matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
                 {
                     return Err(GltfError::InvalidGlb("GLB v3 JSON chunk is empty".into()));
                 }
+                json = Some(bytes);
             }
-            GLB_CHUNK_BIN if chunk_index == 1 && bin.is_none() => bin = Some(bytes),
             GLB_CHUNK_BIN => {
-                return Err(GltfError::InvalidGlb(
-                    "BIN must be the second and only GLB v3 BIN chunk".into(),
-                ));
-            }
-            _ if chunk_index == 0 => {
-                return Err(GltfError::InvalidGlb(
-                    "GLB v3 JSON chunk must be first".into(),
-                ));
+                if chunk_index == 1 {
+                    bin = Some(bytes);
+                }
+                bin_chunks.push(GlbBinChunk {
+                    index: chunk_index,
+                    data: bytes,
+                });
             }
             _ => {}
         }
@@ -729,6 +749,7 @@ fn parse_glb_v3(data: &[u8]) -> Result<GltfContainer<'_>> {
         format: GltfContainerFormat::GlbV3,
         json: json.ok_or_else(|| GltfError::InvalidGlb("GLB v3 has no JSON chunk".into()))?,
         bin,
+        bin_chunks,
     })
 }
 
@@ -820,21 +841,24 @@ pub fn parse_glb_json_and_bin(data: &[u8]) -> Result<(&[u8], Option<&[u8]>)> {
 pub fn resolve_gltf_buffers(
     references: &[GltfBufferReference<'_>],
     format: GltfContainerFormat,
-    glb_bin: Option<&[u8]>,
+    glb_chunks: &[GlbBinChunk<'_>],
     resolver: Option<&dyn ResourceResolver>,
     limits: &ResourceLimits,
 ) -> Result<Vec<Vec<u8>>> {
-    if format == GltfContainerFormat::Gltf && glb_bin.is_some() {
+    if format == GltfContainerFormat::Gltf && !glb_chunks.is_empty() {
         return Err(GltfError::InvalidGltf(
             "JSON glTF input cannot have a GLB BIN chunk".into(),
         ));
     }
-    if references.is_empty() && glb_bin.is_some() {
+    if references.is_empty() && !glb_chunks.is_empty() {
         return Err(GltfError::InvalidGlb(
             "GLB has a BIN chunk but declares no buffer".into(),
         ));
     }
-    if glb_bin.is_some()
+    // Version 2 has one BIN chunk, and buffer 0 is its only possible owner.
+    // Version 3 names chunks explicitly, so a chunk may sit unused.
+    if format == GltfContainerFormat::GlbV2
+        && !glb_chunks.is_empty()
         && references
             .first()
             .is_some_and(|buffer| buffer.uri.is_some())
@@ -880,7 +904,7 @@ pub fn resolve_gltf_buffers(
             index,
             *reference,
             format,
-            glb_bin,
+            glb_chunks,
             resolver,
             &effective_limits,
         )?;
@@ -897,14 +921,15 @@ fn resolve_gltf_buffer(
     index: usize,
     reference: GltfBufferReference<'_>,
     format: GltfContainerFormat,
-    glb_bin: Option<&[u8]>,
+    glb_chunks: &[GlbBinChunk<'_>],
     resolver: Option<&dyn ResourceResolver>,
     limits: &ResourceLimits,
 ) -> Result<Vec<u8>> {
+    let chunk = buffer_chunk(index, reference, format, glb_chunks)?;
     // A fallback buffer only carries stored bytes when the extension is
     // optional; when it is required the buffer starts out zeroed and its views
     // are filled in by the meshopt decoder.
-    if reference.meshopt_fallback && reference.uri.is_none() && !(index == 0 && glb_bin.is_some()) {
+    if reference.meshopt_fallback && reference.uri.is_none() && chunk.is_none() {
         check_limit(
             reference.byte_length,
             limits.max_resource_bytes,
@@ -920,7 +945,7 @@ fn resolve_gltf_buffer(
 
     if let Some(uri) = reference.uri {
         let mut data = resolve_resource_uri(uri, resolver, limits.max_resource_bytes)?;
-        validate_declared_buffer_length(index, reference.byte_length, data.len(), false)?;
+        validate_declared_buffer_length(index, reference.byte_length, data.len(), None)?;
         data.truncate(reference.byte_length);
         return Ok(data);
     }
@@ -930,16 +955,21 @@ fn resolve_gltf_buffer(
             "Buffer {index} has no URI in JSON glTF"
         )));
     }
-    if index != 0 {
-        return Err(GltfError::InvalidGlb(format!(
-            "Buffer {index} has no URI and is not buffer 0"
-        )));
-    }
-    let bin = glb_bin.ok_or_else(|| {
-        GltfError::InvalidGlb("Buffer 0 has no URI but GLB has no BIN chunk".into())
-    })?;
+    let Some(bin) = chunk else {
+        return Err(GltfError::InvalidGlb(if index == 0 {
+            "Buffer 0 has no URI or chunk but GLB has no BIN chunk at index 1".into()
+        } else {
+            format!("Buffer {index} names neither a URI nor a chunk")
+        }));
+    };
     check_limit(bin.len(), limits.max_resource_bytes, "GLB BIN chunk")?;
-    validate_declared_buffer_length(index, reference.byte_length, bin.len(), true)?;
+    // The last 7 bytes are 8-byte alignment padding in version 3, 3 in version 2.
+    let padding = if format == GltfContainerFormat::GlbV3 {
+        7
+    } else {
+        3
+    };
+    validate_declared_buffer_length(index, reference.byte_length, bin.len(), Some(padding))?;
     if bin[reference.byte_length..]
         .iter()
         .any(|&padding| padding != 0)
@@ -951,24 +981,64 @@ fn resolve_gltf_buffer(
     copy_prefix(bin, reference.byte_length, "GLB BIN chunk")
 }
 
+/// The BIN chunk `reference` stores its bytes in, when it names one.
+///
+/// A buffer names its chunk with `chunk`. Buffer 0 with neither `chunk` nor
+/// `uri` uses the chunk at index 1, as in glTF 2.0; a missing chunk is left to
+/// the caller to report. Every other buffer without either is not GLB-stored.
+fn buffer_chunk<'a>(
+    index: usize,
+    reference: GltfBufferReference<'_>,
+    format: GltfContainerFormat,
+    chunks: &[GlbBinChunk<'a>],
+) -> Result<Option<&'a [u8]>> {
+    let find = |chunk: usize| {
+        chunks
+            .iter()
+            .find(|candidate| candidate.index == chunk)
+            .map(|candidate| candidate.data)
+    };
+    match reference.chunk {
+        Some(chunk) => {
+            if reference.uri.is_some() {
+                return Err(GltfError::InvalidGlb(format!(
+                    "Buffer {index} names both a chunk and a URI"
+                )));
+            }
+            if !format.is_glb() {
+                return Err(GltfError::InvalidGltf(format!(
+                    "Buffer {index} names chunk {chunk} but the input is not a GLB"
+                )));
+            }
+            find(chunk).map(Some).ok_or_else(|| {
+                GltfError::InvalidGlb(format!(
+                    "Buffer {index} names chunk {chunk}, which is not a BIN chunk of this GLB"
+                ))
+            })
+        }
+        None if index == 0 && reference.uri.is_none() && format.is_glb() => Ok(find(1)),
+        None => Ok(None),
+    }
+}
+
 fn validate_declared_buffer_length(
     index: usize,
     declared: usize,
     actual: usize,
-    glb_bin: bool,
+    padding: Option<usize>,
 ) -> Result<()> {
     if actual < declared {
         return Err(GltfError::InvalidGltf(format!(
             "Buffer {index} byteLength {declared} exceeds resource length {actual}"
         )));
     }
-    if glb_bin {
+    if let Some(padding) = padding {
         let padded_limit = declared
-            .checked_add(3)
+            .checked_add(padding)
             .ok_or_else(|| GltfError::InvalidGlb("buffer byteLength overflow".into()))?;
         if actual > padded_limit {
             return Err(GltfError::InvalidGlb(format!(
-                "GLB BIN chunk length {actual} is more than 3 bytes larger than buffer[0].byteLength {declared}"
+                "GLB BIN chunk length {actual} is more than {padding} bytes larger than buffer[{index}].byteLength {declared}"
             )));
         }
     }
@@ -1210,6 +1280,161 @@ mod tests {
         output
     }
 
+    /// A version 3 file from parts, each chunk starting on an 8-byte boundary.
+    fn v3_file(chunks: &[(u32, &[u8])]) -> Vec<u8> {
+        let mut body = Vec::new();
+        for (kind, bytes) in chunks {
+            body.resize(body.len().next_multiple_of(8), 0);
+            body.extend_from_slice(&kind.to_le_bytes());
+            body.extend_from_slice(&0u32.to_le_bytes());
+            body.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+            body.extend_from_slice(bytes);
+        }
+        let mut file = Vec::new();
+        file.extend_from_slice(&GLB_MAGIC.to_le_bytes());
+        file.extend_from_slice(&GLB_VERSION_V3.to_le_bytes());
+        file.extend_from_slice(&((16 + body.len()) as u64).to_le_bytes());
+        file.extend_from_slice(&body);
+        file
+    }
+
+    const UNKNOWN_CHUNK: u32 = 0x1234_5678;
+    const JSON: &[u8] = br#"{"asset":{"version":"2.1"}}"#;
+
+    fn chunk_buffer(chunk: Option<usize>, byte_length: usize) -> GltfBufferReference<'static> {
+        GltfBufferReference {
+            uri: None,
+            chunk,
+            byte_length,
+            meshopt_fallback: false,
+        }
+    }
+
+    fn resolve(
+        references: &[GltfBufferReference<'_>],
+        container: &GltfContainer<'_>,
+    ) -> Result<Vec<Vec<u8>>> {
+        resolve_gltf_buffers(
+            references,
+            container.format,
+            &container.bin_chunks,
+            None,
+            &ResourceLimits::default(),
+        )
+    }
+
+    /// A version 3 buffer names its chunk, and the chunk index counts every
+    /// chunk in the file, whatever its type.
+    #[test]
+    fn glb_v3_buffers_read_the_chunk_they_name() {
+        let first = [1u8, 2, 3, 4];
+        let second = [5u8, 6, 7, 8, 9, 10, 11, 12];
+        let file = v3_file(&[
+            (GLB_CHUNK_JSON, JSON),
+            (UNKNOWN_CHUNK, &[0xEE; 5]),
+            (GLB_CHUNK_BIN, &first),
+            (GLB_CHUNK_BIN, &second),
+        ]);
+        let container = parse_gltf_container(&file).unwrap();
+        assert_eq!(container.json, JSON);
+        assert!(container.bin.is_none(), "chunk 1 is not a BIN chunk");
+        let indices: Vec<_> = container
+            .bin_chunks
+            .iter()
+            .map(|chunk| chunk.index)
+            .collect();
+        assert_eq!(indices, [2, 3]);
+
+        let buffers = resolve(
+            &[chunk_buffer(Some(3), 8), chunk_buffer(Some(2), 4)],
+            &container,
+        )
+        .unwrap();
+        assert_eq!(buffers, [second.to_vec(), first.to_vec()]);
+    }
+
+    /// Buffer 0 with neither `chunk` nor `uri` still means chunk 1, next to
+    /// buffers that name theirs.
+    #[test]
+    fn glb_v3_buffer_zero_keeps_the_implicit_chunk() {
+        let file = v3_file(&[
+            (GLB_CHUNK_JSON, JSON),
+            (GLB_CHUNK_BIN, &[1, 2, 3, 4]),
+            (GLB_CHUNK_BIN, &[5, 6, 7, 8]),
+        ]);
+        let container = parse_gltf_container(&file).unwrap();
+        assert_eq!(container.bin, Some([1u8, 2, 3, 4].as_slice()));
+        let buffers = resolve(
+            &[chunk_buffer(None, 4), chunk_buffer(Some(2), 4)],
+            &container,
+        )
+        .unwrap();
+        assert_eq!(buffers, [vec![1, 2, 3, 4], vec![5, 6, 7, 8]]);
+    }
+
+    /// The glTF JSON is the first JSON chunk wherever it is, and later JSON
+    /// chunks and unknown chunks are not the reader's concern.
+    #[test]
+    fn glb_v3_finds_the_json_chunk_among_others() {
+        let file = v3_file(&[
+            (UNKNOWN_CHUNK, &[1, 2, 3]),
+            (GLB_CHUNK_JSON, JSON),
+            (GLB_CHUNK_JSON, b"not the gltf json"),
+            (GLB_CHUNK_BIN, &[1, 2, 3, 4]),
+        ]);
+        let container = parse_gltf_container(&file).unwrap();
+        assert_eq!(container.json, JSON);
+        assert_eq!(container.bin_chunks.len(), 1);
+        assert_eq!(container.bin_chunks[0].index, 3);
+    }
+
+    #[test]
+    fn glb_v3_refuses_buffers_that_name_no_usable_chunk() {
+        let file = v3_file(&[
+            (GLB_CHUNK_JSON, JSON),
+            (GLB_CHUNK_BIN, &[1, 2, 3, 4]),
+            (UNKNOWN_CHUNK, &[0; 4]),
+        ]);
+        let container = parse_gltf_container(&file).unwrap();
+        // Chunk 2 exists but is not a BIN chunk; chunk 9 does not exist.
+        for chunk in [2, 9] {
+            assert!(resolve(&[chunk_buffer(Some(chunk), 4)], &container).is_err());
+        }
+        // Only buffer 0 stores bytes implicitly.
+        assert!(resolve(&[chunk_buffer(None, 4), chunk_buffer(None, 4)], &container).is_err());
+        // A chunk and a URI are two answers to one question.
+        let both = GltfBufferReference {
+            uri: Some("data:,abcd"),
+            ..chunk_buffer(Some(1), 4)
+        };
+        assert!(resolve(&[both], &container).is_err());
+        // Plain JSON glTF has no chunks to name.
+        assert!(resolve_gltf_buffers(
+            &[chunk_buffer(Some(1), 4)],
+            GltfContainerFormat::Gltf,
+            &[],
+            None,
+            &ResourceLimits::default(),
+        )
+        .is_err());
+    }
+
+    /// Version 3 pads a BIN chunk to 8 bytes, so up to 7 bytes may follow the
+    /// buffer's `byteLength`; version 2 pads to 4 and allows 3.
+    #[test]
+    fn glb_bin_padding_allowance_follows_the_container_version() {
+        let bin = [1u8, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0];
+        let v3_bytes = v3_file(&[(GLB_CHUNK_JSON, JSON), (GLB_CHUNK_BIN, &bin)]);
+        let v3 = parse_gltf_container(&v3_bytes).unwrap();
+        assert!(resolve(&[chunk_buffer(None, 9)], &v3).is_ok());
+        assert!(resolve(&[chunk_buffer(None, 8)], &v3).is_err());
+
+        let v2_file = raw_glb(&[(GLB_CHUNK_JSON, b"{}  "), (GLB_CHUNK_BIN, &bin[..12])]);
+        let v2 = parse_gltf_container(&v2_file).unwrap();
+        assert!(resolve(&[chunk_buffer(None, 9)], &v2).is_ok());
+        assert!(resolve(&[chunk_buffer(None, 8)], &v2).is_err());
+    }
+
     #[test]
     fn strict_data_uri_rejects_malformed_input() {
         assert_eq!(decode_data_uri("data:,a%20b", None).unwrap(), b"a b");
@@ -1255,11 +1480,12 @@ mod tests {
         let buffers = resolve_gltf_buffers(
             &[GltfBufferReference {
                 uri: Some("mesh.bin"),
+                chunk: None,
                 byte_length: 2,
                 meshopt_fallback: false,
             }],
             GltfContainerFormat::Gltf,
-            None,
+            &[],
             Some(&resolver),
             &ResourceLimits {
                 max_total_buffer_bytes: Some(3),
@@ -1273,11 +1499,12 @@ mod tests {
         assert!(resolve_gltf_buffers(
             &[GltfBufferReference {
                 uri: Some("data:,abcd"),
+                chunk: None,
                 byte_length: 4,
                 meshopt_fallback: false,
             }],
             GltfContainerFormat::Gltf,
-            None,
+            &[],
             None,
             &ResourceLimits {
                 max_total_buffer_bytes: Some(2),

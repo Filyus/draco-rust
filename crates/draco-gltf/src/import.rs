@@ -472,6 +472,10 @@ impl Import {
                 None => {
                     let uri = format!("buffer-{index}.bin");
                     buffer["uri"] = Value::from(uri.as_str());
+                    // The bytes leave the GLB chunk for a companion file.
+                    if let Some(entries) = buffer.as_object_mut() {
+                        entries.retain(|(key, _)| key != "chunk");
+                    }
                     uri
                 }
             };
@@ -897,11 +901,26 @@ pub fn parse_with_options(
                     buffer.index().0
                 )])
             })?;
+        let chunk = match buffer.value().get("chunk") {
+            None => None,
+            Some(value) => Some(
+                value
+                    .as_u64()
+                    .and_then(|value| usize::try_from(value).ok())
+                    .ok_or_else(|| {
+                        Error::Validation(vec![format!(
+                            "buffer {} chunk is not a chunk index",
+                            buffer.index().0
+                        )])
+                    })?,
+            ),
+        };
         let meshopt_fallback = meshopt_extension(buffer.value().get("extensions"))
             .and_then(|(_, value)| value.get("fallback"))
             .is_some_and(|value| matches!(value, Value::Bool(true)));
         references.push(GltfBufferReference {
             uri,
+            chunk,
             byte_length,
             meshopt_fallback,
         });
@@ -909,7 +928,7 @@ pub fn parse_with_options(
     let mut buffers = resolve_gltf_buffers(
         &references,
         container.format,
-        container.bin,
+        &container.bin_chunks,
         resolver,
         limits,
     )?;
@@ -1062,6 +1081,50 @@ mod tests {
             &[1, 2, 3, 4],
             "the consolidated buffer must still decode to the same vertex"
         );
+    }
+
+    /// A version 3 file whose buffers name their chunks reads, and writes back
+    /// without the `chunk` property, which no longer means anything once the
+    /// bytes have moved into one chunk or a companion file.
+    #[test]
+    fn buffers_that_name_glb_chunks_survive_a_rewrite() {
+        let json = br#"{"asset":{"version":"2.1"},
+            "buffers":[{"byteLength":4,"chunk":2},{"byteLength":4,"chunk":3}]}"#;
+        let chunks: [(u32, &[u8]); 4] = [
+            (0x4e4f_534a, json),
+            (0x1234_5678, &[0xEE; 3]),
+            (0x004e_4942, &[1, 2, 3, 4]),
+            (0x004e_4942, &[5, 6, 7, 8]),
+        ];
+        let mut body = Vec::new();
+        for (kind, bytes) in chunks {
+            body.resize(body.len().next_multiple_of(8), 0);
+            body.extend_from_slice(&kind.to_le_bytes());
+            body.extend_from_slice(&0u32.to_le_bytes());
+            body.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+            body.extend_from_slice(bytes);
+        }
+        let mut glb = b"glTF".to_vec();
+        glb.extend_from_slice(&3u32.to_le_bytes());
+        glb.extend_from_slice(&((16 + body.len()) as u64).to_le_bytes());
+        glb.extend_from_slice(&body);
+
+        let import = parse(&glb, ValidationProfile::Gltf21Draft).unwrap();
+        assert_eq!(
+            import.resources.buffers,
+            [vec![1, 2, 3, 4], vec![5, 6, 7, 8]]
+        );
+
+        let rewritten = import.to_bytes(crate::OutputFormat::GlbV3).unwrap();
+        let reread = parse(&rewritten, ValidationProfile::Gltf21Draft).unwrap();
+        assert_eq!(reread.resources.buffers.len(), 1);
+        assert_eq!(reread.resources.buffers[0][..8], [1, 2, 3, 4, 5, 6, 7, 8]);
+
+        let output = import.to_gltf_output().unwrap();
+        let text = String::from_utf8(output.json).unwrap();
+        assert!(!text.contains("\"chunk\""), "{text}");
+        assert!(text.contains("buffer-0.bin") && text.contains("buffer-1.bin"));
+        assert_eq!(output.resources[1].bytes, [5, 6, 7, 8]);
     }
 
     #[test]
