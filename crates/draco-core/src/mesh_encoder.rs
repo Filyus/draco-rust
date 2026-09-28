@@ -1969,8 +1969,18 @@ impl MeshEncoder {
     }
 
     fn compute_number_of_encoded_faces(&mut self) {
-        if let Some(ref mesh) = self.mesh {
-            self.num_encoded_faces = mesh.num_faces();
+        self.num_encoded_faces = self.encoded_num_faces();
+    }
+
+    /// The faces a decoder reconstructs, after C++
+    /// `ComputeNumberOfEncodedFaces`: EdgeBreaker leaves degenerate faces out of
+    /// the stream, the sequential encoder writes every face.
+    fn encoded_num_faces(&self) -> usize {
+        match (self.method, self.corner_table.as_ref()) {
+            (1, Some(corner_table)) => {
+                corner_table.num_faces() - corner_table.num_degenerated_faces()
+            }
+            _ => self.mesh.as_ref().map_or(0, Mesh::num_faces),
         }
     }
 
@@ -2061,7 +2071,7 @@ impl MeshEncoder {
             traversal,
             speed: self.options.get_speed(),
             single_connectivity: self.use_single_connectivity,
-            num_encoded_faces: num_faces,
+            num_encoded_faces: self.encoded_num_faces(),
             num_encoded_points: encoded_num_points,
             attributes,
         })

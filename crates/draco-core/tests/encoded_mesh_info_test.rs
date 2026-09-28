@@ -793,3 +793,23 @@ fn identical_unwelded_points_are_counted_once() {
     assert_eq!(decoded.num_points(), 12);
     assert_info_matches_decoded(&info, &decoded);
 }
+
+/// EdgeBreaker leaves degenerate faces out of the stream, so the reported face
+/// count has to leave them out too: a glTF writer declares its index count
+/// from it.
+#[test]
+fn degenerate_faces_are_not_counted_as_encoded() {
+    let mut mesh = build_triangle();
+    mesh.set_num_faces(3);
+    mesh.set_face(FaceIndex(1), [PointIndex(0), PointIndex(0), PointIndex(1)]);
+    mesh.set_face(FaceIndex(2), [PointIndex(2), PointIndex(1), PointIndex(2)]);
+    for speed in [0, 5, 7] {
+        let mut options = EncoderOptions::new();
+        options.set_global_int("encoding_method", 1);
+        options.set_global_int("encoding_speed", speed);
+        options.set_global_int("decoding_speed", speed);
+        let (info, decoded) = encode_decode_with_info(mesh.clone(), options);
+        assert_eq!(decoded.num_faces(), 1, "speed {speed}");
+        assert_info_matches_decoded(&info, &decoded);
+    }
+}
