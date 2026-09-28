@@ -279,7 +279,10 @@ mod encode {
     use draco_core::draco_types::DataType;
 
     use super::DracoPrimitiveExtension;
-    use crate::compression::{encode_draco_mesh, gltf20_component_type, DracoGeometryLayout};
+    use std::collections::BTreeMap;
+    use std::sync::OnceLock;
+
+    use crate::compression::{decode_encoded, encode_primitive, keeps_vertex_order};
     use crate::geometry::{gltf_type_for_num_components, AccessorSource, DecodedAccessor};
     use crate::gltf_error::GltfError;
     use crate::{ComponentType, CompressionOptions, Error, PackedGeometry, PrimitiveMode, Result};
@@ -317,6 +320,9 @@ mod encode {
         attributes: Vec<(String, u32)>,
         accessors: Vec<DracoAccessor>,
         index_count: usize,
+        normalized: BTreeMap<String, bool>,
+        position_bits: Option<u8>,
+        decoded: OnceLock<PackedGeometry>,
     }
 
     /// What one attribute accessor of an encoded primitive declares.
@@ -336,7 +342,8 @@ mod encode {
             &self.semantic
         }
 
-        /// Returns the accessor `count`: the number of points in the stream.
+        /// Returns the accessor `count`: the vertices the stream decodes to,
+        /// which may differ from the input's.
         pub const fn count(&self) -> usize {
             self.count
         }
@@ -362,9 +369,8 @@ mod encode {
             self.normalized
         }
 
-        /// Returns the `min` and `max` the accessor must declare, which glTF
-        /// requires for `POSITION` alone. They are the bounds of the encoded
-        /// values, after any quantization.
+        /// Returns `POSITION`'s `min` and `max` as decoded, after quantization;
+        /// `None` for other attributes.
         pub fn bounds(&self) -> Option<(&[f64], &[f64])> {
             self.bounds
                 .as_ref()
@@ -401,45 +407,42 @@ mod encode {
             let indices = geometry.indices().map(|_| source.index_accessor());
             let (mesh, mapping) =
                 crate::decode_geometry(&source, mode.to_gltf(), &attributes, indices)?;
-            let (bytes, info) = encode_draco_mesh(mesh, options)?;
+            let normalized: BTreeMap<String, bool> = geometry
+                .attributes()
+                .iter()
+                .map(|attribute| (attribute.semantic().to_owned(), attribute.normalized()))
+                .collect();
+            let encoded = encode_primitive(mesh, mapping, options)?;
             if let Some(limit) = options.max_output_bytes {
-                if bytes.len() > limit {
+                if encoded.bytes.len() > limit {
                     return Err(Error::ResourceLimit(format!(
                         "Draco bitstream size {} exceeds limit {limit}",
-                        bytes.len()
+                        encoded.bytes.len()
                     )));
                 }
             }
 
-            let layout = DracoGeometryLayout::from_encoded_info(&info, &mapping)?;
-            let accessors = mapping
+            let accessors = encoded
+                .mapping
                 .iter()
-                .zip(&layout.attributes)
-                .map(|((semantic, _), encoded)| {
-                    let normalized = geometry
-                        .attributes()
-                        .iter()
-                        .find(|attribute| attribute.semantic() == semantic)
-                        .is_some_and(|attribute| attribute.normalized());
-                    Ok(DracoAccessor {
-                        semantic: semantic.clone(),
-                        count: layout.points,
-                        components: encoded.components,
-                        component_type: gltf20_component_type(encoded.data_type)?,
-                        normalized,
-                        bounds: encoded.position_bounds.clone(),
-                    })
+                .zip(&encoded.layout.attributes)
+                .map(|((semantic, _), layout)| DracoAccessor {
+                    semantic: semantic.clone(),
+                    count: encoded.layout.points,
+                    components: layout.components,
+                    component_type: layout.component_type,
+                    normalized: normalized.get(semantic).copied().unwrap_or(false),
+                    bounds: layout.position_bounds.clone(),
                 })
-                .collect::<Result<Vec<_>>>()?;
-            let index_count = layout
-                .faces
-                .checked_mul(3)
-                .ok_or_else(|| Error::ResourceLimit("encoded index count overflows".into()))?;
+                .collect();
             Ok(Self {
-                bytes,
-                attributes: mapping,
+                index_count: encoded.layout.index_count,
+                bytes: encoded.bytes,
+                attributes: encoded.mapping,
                 accessors,
-                index_count,
+                normalized,
+                position_bits: options.quantization.position,
+                decoded: OnceLock::new(),
             })
         }
 
@@ -469,6 +472,44 @@ mod encode {
         /// Returns the index accessor's `count`; its type is `UNSIGNED_INT`.
         pub const fn index_count(&self) -> usize {
             self.index_count
+        }
+
+        /// Decodes [`Self::bytes`], on first call, into what readers will see.
+        ///
+        /// Write an uncompressed fallback from this rather than from the
+        /// input: the spec asks for fallback data "decompressed from the Draco
+        /// buffer".
+        pub fn decoded(&self) -> Result<&PackedGeometry> {
+            if let Some(decoded) = self.decoded.get() {
+                return Ok(decoded);
+            }
+            let decoded = decode_encoded(
+                &self.bytes,
+                &self.attributes,
+                self.reported(),
+                &self.normalized,
+            )?;
+            Ok(self.decoded.get_or_init(|| decoded))
+        }
+
+        /// Returns whether every vertex of `input`, the encoded geometry,
+        /// decodes at its own index (within quantization).
+        ///
+        /// Morph targets stay valid only if it does. EdgeBreaker renumbers
+        /// vertices; use `encoding_method: 1` for primitives with targets.
+        pub fn keeps_vertex_order(&self, input: &PackedGeometry) -> Result<bool> {
+            Ok(keeps_vertex_order(
+                input,
+                self.decoded()?,
+                self.position_bits,
+            ))
+        }
+
+        fn reported(&self) -> (usize, usize) {
+            (
+                self.accessors.first().map_or(0, DracoAccessor::count),
+                self.index_count,
+            )
         }
     }
 

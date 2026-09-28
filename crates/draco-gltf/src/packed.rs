@@ -672,7 +672,7 @@ fn index_values(
 }
 
 #[cfg(feature = "draco-decode")]
-fn component_type_for_data_type(data_type: DataType) -> Result<ComponentType> {
+pub(crate) fn component_type_for_data_type(data_type: DataType) -> Result<ComponentType> {
     match data_type {
         DataType::Int8 => Ok(ComponentType::I8),
         DataType::Uint8 => Ok(ComponentType::U8),

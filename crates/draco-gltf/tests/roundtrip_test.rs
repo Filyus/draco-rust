@@ -350,3 +350,189 @@ fn draco_primitive_keeps_uncompressed_extra_attributes() {
     let (mismatched, _) = with_extra(vertices + 1);
     assert!(mismatched.read_primitive(first).is_err());
 }
+
+fn declared_count(import: &Import, index: draco_gltf::AccessorIndex) -> usize {
+    import.document.accessor(index).unwrap().count().unwrap() as usize
+}
+
+/// Accessors declare what the stream decodes to, on a mesh where the encoder
+/// merges vertices and one where the decoder splits seams.
+#[test]
+fn compressed_accessors_match_the_decoded_stream() {
+    use draco_gltf::{CompressionMode, PrimitiveIndex};
+
+    let first = PrimitiveIndex {
+        mesh: MeshIndex(0),
+        primitive: 0,
+    };
+    for (file, mode) in [
+        ("testdata/Fox/glTF/Fox.gltf", CompressionMode::Fallback),
+        ("testdata/Fox/glTF/Fox.gltf", CompressionMode::DracoOnly),
+        (
+            "testdata/KhronosSampleModels/Duck/glTF/Duck.gltf",
+            CompressionMode::Fallback,
+        ),
+        (
+            "testdata/KhronosSampleModels/Duck/glTF/Duck.gltf",
+            CompressionMode::DracoOnly,
+        ),
+    ] {
+        let mut import = open(fixture(file), ValidationProfile::Gltf20).unwrap();
+        import
+            .compress_primitive(
+                MeshIndex(0),
+                0,
+                CompressionOptions {
+                    mode,
+                    ..CompressionOptions::default()
+                },
+            )
+            .unwrap();
+        let primitive = import.document.primitive(MeshIndex(0), 0).unwrap();
+        let stream = import.decode_draco_primitive(primitive).unwrap();
+        for (semantic, index) in primitive.attribute_indices() {
+            assert_eq!(
+                declared_count(&import, index),
+                stream.num_points(),
+                "{file} {mode:?} {semantic}"
+            );
+        }
+        assert_eq!(
+            declared_count(&import, primitive.indices().unwrap()),
+            stream.num_faces() * 3,
+            "{file} {mode:?} indices"
+        );
+
+        let decoded = import.read_primitive(first).unwrap();
+        if mode == CompressionMode::Fallback {
+            // Without the extension, a reader sees the same geometry.
+            let mut fallback = import.clone();
+            fallback.document.as_value_mut()["meshes"][0]["primitives"][0]
+                .as_object_mut()
+                .unwrap()
+                .retain(|(key, _)| key != "extensions");
+            let fallback = fallback.read_primitive(first).unwrap();
+            assert_eq!(fallback, decoded, "{file} fallback");
+        }
+    }
+}
+
+/// A primitive with morph targets keeps its vertex order; forcing EdgeBreaker
+/// is refused.
+#[test]
+fn compressing_morph_targets_keeps_vertex_order() {
+    use draco_gltf::{PrimitiveIndex, QuantizationBits};
+
+    let first = PrimitiveIndex {
+        mesh: MeshIndex(0),
+        primitive: 0,
+    };
+    let path =
+        fixture("testdata/KhronosSampleModels/AnimatedMorphCube/glTF/AnimatedMorphCube.gltf");
+    let source = open(&path, ValidationProfile::Gltf20).unwrap();
+    let positions = |geometry: &draco_gltf::PackedGeometry| {
+        geometry
+            .attributes()
+            .iter()
+            .find(|attribute| attribute.semantic() == "POSITION")
+            .unwrap()
+            .bytes()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|v| f32::from_le_bytes(*v))
+            .collect::<Vec<_>>()
+    };
+    let before = positions(&source.read_primitive(first).unwrap());
+
+    for (quantization, tolerance) in [
+        (QuantizationBits::NONE, 0.0),
+        (QuantizationBits::GLTF, 1e-3),
+    ] {
+        let mut import = source.clone();
+        import
+            .compress_primitive(
+                MeshIndex(0),
+                0,
+                CompressionOptions {
+                    quantization,
+                    ..CompressionOptions::default()
+                },
+            )
+            .unwrap();
+        let after = positions(&import.read_primitive(first).unwrap());
+        assert_eq!(after.len(), before.len());
+        for (before, after) in before.iter().zip(&after) {
+            assert!((before - after).abs() <= tolerance, "{before} -> {after}");
+        }
+        let primitive = import.document.primitive(MeshIndex(0), 0).unwrap();
+        assert_eq!(primitive.morph_targets().count(), 2);
+    }
+
+    let mut forced = source.clone();
+    let error = forced
+        .compress_primitive(
+            MeshIndex(0),
+            0,
+            CompressionOptions {
+                encoding_method: 2,
+                ..CompressionOptions::default()
+            },
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("morph targets"), "{error}");
+}
+
+/// The host-neutral encoder's declarations, `decoded()` and
+/// `keeps_vertex_order()`.
+#[test]
+fn host_neutral_draco_encode_describes_the_decoded_stream() {
+    use draco_gltf::{DracoPrimitiveContract, DracoPrimitiveEncoding, PrimitiveIndex};
+
+    let first = PrimitiveIndex {
+        mesh: MeshIndex(0),
+        primitive: 0,
+    };
+    let duck = open(
+        fixture("testdata/KhronosSampleModels/Duck/glTF/Duck.gltf"),
+        ValidationProfile::Gltf20,
+    )
+    .unwrap();
+    let geometry = duck.read_primitive(first).unwrap();
+
+    let encoded =
+        DracoPrimitiveEncoding::encode(&geometry, &CompressionOptions::default()).unwrap();
+    let decoded = encoded.decoded().unwrap();
+    for accessor in encoded.accessors() {
+        assert_eq!(accessor.count(), decoded.vertex_count());
+    }
+    assert_eq!(encoded.index_count(), decoded.indices().unwrap().count());
+    // EdgeBreaker renumbers vertices here.
+    assert!(!encoded.keeps_vertex_order(&geometry).unwrap());
+
+    let mut contract = DracoPrimitiveContract::new().with_indices(encoded.index_count() as u64);
+    for accessor in encoded.accessors() {
+        contract = contract.with_attribute(
+            accessor.semantic(),
+            accessor.count() as u64,
+            accessor.normalized(),
+        );
+    }
+    assert_eq!(
+        &encoded
+            .extension(0)
+            .decode(encoded.bytes(), &contract)
+            .unwrap(),
+        decoded
+    );
+
+    let sequential = DracoPrimitiveEncoding::encode(
+        &geometry,
+        &CompressionOptions {
+            encoding_method: 1,
+            ..CompressionOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(sequential.keeps_vertex_order(&geometry).unwrap());
+}

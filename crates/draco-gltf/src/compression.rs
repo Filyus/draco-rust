@@ -1,6 +1,5 @@
 use crate::{Error, Import, Result};
 use draco_core::{
-    draco_types::DataType,
     encoder_buffer::EncoderBuffer,
     encoder_options::EncoderOptions,
     geometry_attribute::GeometryAttributeType,
@@ -10,8 +9,11 @@ use draco_core::{
 /// How the exported primitive exposes its Draco payload.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CompressionMode {
-    /// Preserve ordinary accessors as a non-Draco fallback. The extension is
-    /// listed in `extensionsUsed`, never `extensionsRequired`.
+    /// Keep an ordinary-accessor copy for readers without Draco. The extension
+    /// is listed in `extensionsUsed`, never `extensionsRequired`.
+    ///
+    /// The copy is the decoded stream, since both readers share the accessors.
+    /// Source accessors stay, as other primitives may reference them.
     Fallback,
     /// Require Draco and remove ordinary geometry payloads owned solely by
     /// the transformed primitive.
@@ -42,7 +44,12 @@ fn detach_draco_only_accessors(
     mapping: &[(String, u32)],
     layout: &DracoGeometryLayout,
 ) -> Result<()> {
-    for (semantic, unique_id) in mapping {
+    if mapping.len() != layout.attributes.len() {
+        return Err(Error::Extension(
+            "decoded Draco attributes do not match the extension".into(),
+        ));
+    }
+    for ((semantic, _), attribute) in mapping.iter().zip(&layout.attributes) {
         let source = root["meshes"][mesh_index]["primitives"][primitive_index]["attributes"]
             [semantic.as_str()]
         .as_u64()
@@ -51,19 +58,12 @@ fn detach_draco_only_accessors(
         let accessor = clone_accessor(root, source)?;
         root["meshes"][mesh_index]["primitives"][primitive_index]["attributes"]
             [semantic.as_str()] = crate::JsonValue::from(accessor as u64);
-        let attribute = layout
-            .attributes
-            .iter()
-            .find(|attribute| attribute.unique_id == *unique_id)
-            .ok_or_else(|| {
-                Error::Extension(format!("encoded Draco attribute {unique_id} is missing"))
-            })?;
         set_draco_accessor_layout(
             root,
             accessor,
             layout.points,
             attribute.components,
-            attribute.data_type,
+            attribute.component_type,
             attribute.position_bounds.as_ref(),
         )?;
     }
@@ -85,25 +85,31 @@ fn detach_draco_only_accessors(
     };
     root["meshes"][mesh_index]["primitives"][primitive_index]["indices"] =
         crate::JsonValue::from(accessor as u64);
-    set_draco_accessor_layout(root, accessor, layout.faces * 3, 1, DataType::Uint32, None)?;
+    set_draco_accessor_layout(
+        root,
+        accessor,
+        layout.index_count,
+        1,
+        crate::ComponentType::U32,
+        None,
+    )?;
     Ok(())
 }
 
 /// What one encoded attribute's accessor has to declare.
 #[derive(Clone)]
 pub(crate) struct DracoAttributeLayout {
-    pub(crate) unique_id: u32,
     pub(crate) components: u8,
-    pub(crate) data_type: DataType,
+    pub(crate) component_type: crate::ComponentType,
     pub(crate) position_bounds: Option<(Vec<f64>, Vec<f64>)>,
 }
 
-/// What the accessors of an encoded primitive have to declare. It is taken
-/// from the encoder's report rather than from the input geometry: the encoder
-/// may merge duplicate points, and POSITION bounds are the ones it quantized.
+/// What the accessors of an encoded primitive declare, from the encoder's
+/// report: the spec requires them to "match the decompressed data".
 pub(crate) struct DracoGeometryLayout {
     pub(crate) points: usize,
-    pub(crate) faces: usize,
+    pub(crate) index_count: usize,
+    /// In the order of the extension's attribute map.
     pub(crate) attributes: Vec<DracoAttributeLayout>,
 }
 
@@ -135,19 +141,126 @@ impl DracoGeometryLayout {
                     None
                 };
                 Ok(DracoAttributeLayout {
-                    unique_id: *unique_id,
                     components: attribute.num_components,
-                    data_type: attribute.data_type,
+                    component_type: gltf20_component_type(
+                        crate::packed::component_type_for_data_type(attribute.data_type)?,
+                    )?,
                     position_bounds,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
+        let index_count = info
+            .num_encoded_faces
+            .checked_mul(3)
+            .ok_or_else(|| Error::ResourceLimit("encoded index count overflows".into()))?;
         Ok(Self {
             points: info.num_encoded_points,
-            faces: info.num_encoded_faces,
+            index_count,
             attributes,
         })
     }
+}
+
+/// A primitive encoded, with what its accessors declare.
+pub(crate) struct EncodedPrimitive {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) info: EncodedMeshInfo,
+    /// `(glTF semantic, Draco unique id)`, the extension's attribute map.
+    pub(crate) mapping: Vec<(String, u32)>,
+    pub(crate) layout: DracoGeometryLayout,
+}
+
+/// Encodes a mesh built by `decode_geometry`.
+pub(crate) fn encode_primitive(
+    mesh: draco_core::Mesh,
+    mapping: Vec<(String, u32)>,
+    options: &CompressionOptions,
+) -> Result<EncodedPrimitive> {
+    let (bytes, info) = encode_draco_mesh(mesh, options)?;
+    let layout = DracoGeometryLayout::from_encoded_info(&info, &mapping)?;
+    Ok(EncodedPrimitive {
+        bytes,
+        info,
+        mapping,
+        layout,
+    })
+}
+
+/// Decodes a stream just encoded, for callers that need the data (a fallback
+/// copy, the morph-target order check), and holds the encoder's report to it.
+pub(crate) fn decode_encoded(
+    bytes: &[u8],
+    mapping: &[(String, u32)],
+    reported: (usize, usize),
+    normalized: &std::collections::BTreeMap<String, bool>,
+) -> Result<crate::PackedGeometry> {
+    // Our own stream: the limits for hostile input do not apply.
+    let mesh =
+        crate::draco_primitive::decode_payload(bytes, &draco_core::DecodeLimits::permissive())?;
+    let decoded = crate::PackedGeometry::from_draco_mesh(&mesh, mapping, normalized)?;
+    let index_count = decoded.indices().map_or(0, crate::PackedIndices::count);
+    if (decoded.vertex_count(), index_count) != reported {
+        return Err(Error::Extension(format!(
+            "Draco encoder reported {} points and {} indices, its stream decodes to {} and {}",
+            reported.0,
+            reported.1,
+            decoded.vertex_count(),
+            index_count
+        )));
+    }
+    Ok(decoded)
+}
+
+/// Whether every vertex of `source` decodes at its own index, within the
+/// position quantization.
+pub(crate) fn keeps_vertex_order(
+    source: &crate::PackedGeometry,
+    decoded: &crate::PackedGeometry,
+    position_bits: Option<u8>,
+) -> bool {
+    let position = |geometry: &crate::PackedGeometry| {
+        geometry
+            .attributes()
+            .iter()
+            .find(|attribute| attribute.semantic() == "POSITION")
+            .filter(|attribute| attribute.component_type() == crate::ComponentType::F32)
+            .map(|attribute| {
+                attribute
+                    .bytes()
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|v| f32::from_le_bytes(*v))
+                    .collect::<Vec<_>>()
+            })
+    };
+    let (Some(source), Some(decoded)) = (position(source), position(decoded)) else {
+        return false;
+    };
+    if source.len() != decoded.len() {
+        return false;
+    }
+    // One quantization step over the largest extent bounds every coordinate.
+    let tolerance = match position_bits {
+        None => 0.0,
+        Some(bits) => {
+            let mut min = [f32::INFINITY; 3];
+            let mut max = [f32::NEG_INFINITY; 3];
+            for vertex in source.as_chunks::<3>().0 {
+                for axis in 0..3 {
+                    min[axis] = min[axis].min(vertex[axis]);
+                    max[axis] = max[axis].max(vertex[axis]);
+                }
+            }
+            let extent = (0..3).map(|axis| max[axis] - min[axis]).fold(0.0, f32::max);
+            let steps = ((1u64 << bits.min(31)) - 1).max(1) as f32;
+            extent / steps * 1.01
+        }
+    };
+    source
+        .iter()
+        .zip(&decoded)
+        .all(|(source, decoded)| (source - decoded).abs() <= tolerance)
 }
 
 fn clone_accessor(root: &mut crate::JsonValue, source: usize) -> Result<usize> {
@@ -168,10 +281,10 @@ fn set_draco_accessor_layout(
     index: usize,
     count: usize,
     components: u8,
-    data_type: DataType,
+    component_type: crate::ComponentType,
     position_bounds: Option<&(Vec<f64>, Vec<f64>)>,
 ) -> Result<()> {
-    let component_type = gltf20_component_type(data_type)?.to_gltf();
+    let component_type = gltf20_component_type(component_type)?.to_gltf();
     let accessor_type = match components {
         1 => "SCALAR",
         2 => "VEC2",
@@ -213,21 +326,21 @@ fn set_draco_accessor_layout(
     Ok(())
 }
 
-/// The glTF 2.0 component type an encoded Draco attribute is declared with.
-pub(crate) fn gltf20_component_type(data_type: DataType) -> Result<crate::ComponentType> {
-    Ok(match data_type {
-        DataType::Int8 => crate::ComponentType::I8,
-        DataType::Uint8 => crate::ComponentType::U8,
-        DataType::Int16 => crate::ComponentType::I16,
-        DataType::Uint16 => crate::ComponentType::U16,
-        DataType::Uint32 => crate::ComponentType::U32,
-        DataType::Float32 => crate::ComponentType::F32,
-        _ => {
-            return Err(Error::Extension(format!(
-                "Draco attribute data type {data_type:?} cannot be represented by glTF 2.0"
-            )))
-        }
-    })
+/// Refuses a component type glTF 2.0 cannot declare.
+pub(crate) fn gltf20_component_type(
+    component_type: crate::ComponentType,
+) -> Result<crate::ComponentType> {
+    match component_type {
+        crate::ComponentType::I8
+        | crate::ComponentType::U8
+        | crate::ComponentType::I16
+        | crate::ComponentType::U16
+        | crate::ComponentType::U32
+        | crate::ComponentType::F32 => Ok(component_type),
+        other => Err(Error::Extension(format!(
+            "Draco attribute type {other:?} cannot be represented by glTF 2.0"
+        ))),
+    }
 }
 
 fn compact_draco_only_resources(
@@ -921,6 +1034,10 @@ impl Import {
     /// it -- Draco's connectivity has no notion of either -- and the output
     /// primitive's `mode` is rewritten to `TRIANGLES` to say so truthfully.
     ///
+    /// Accessors declare what the stream decodes to, as the spec requires. A
+    /// primitive with morph targets is encoded sequentially and refused if its
+    /// vertices move, or if `encoding_method` forces EdgeBreaker.
+    ///
     /// The document and resolved resources are updated only after encoding,
     /// validation, reference remapping, and output-limit checks all succeed.
     /// In [`CompressionMode::DracoOnly`] the operation rejects unregistered
@@ -967,12 +1084,66 @@ impl Import {
                  TRIANGLE_STRIP (5) and TRIANGLE_FAN (6), not mode {source_mode}"
             )));
         }
+        // Morph targets stay uncompressed and index vertices in place, and
+        // EdgeBreaker renumbers vertices: encode sequentially, then check.
+        let has_targets = reference.morph_targets().next().is_some();
+        let mut options = options;
+        if has_targets {
+            if options.encoding_method == 2 {
+                return Err(Error::Extension(
+                    "a primitive with morph targets cannot be EdgeBreaker-encoded: \
+                     EdgeBreaker reorders vertices and the targets index them in place"
+                        .into(),
+                ));
+            }
+            options.encoding_method = 1;
+        }
+        let normalized = reference
+            .attribute_indices()
+            .map(|(semantic, index)| {
+                let normalized = self
+                    .document
+                    .accessor(index)
+                    .is_some_and(crate::Accessor::normalized);
+                (semantic.to_owned(), normalized)
+            })
+            .collect();
         let (geometry, mapping) = self.decode_geometry_primitive(reference)?;
-        let (bytes, encoded_info) = encode_draco_mesh(geometry, &options)?;
+        let encoded = encode_primitive(geometry, mapping, &options)?;
+        let decoded = if has_targets || options.mode == CompressionMode::Fallback {
+            Some(decode_encoded(
+                &encoded.bytes,
+                &encoded.mapping,
+                (encoded.layout.points, encoded.layout.index_count),
+                &normalized,
+            )?)
+        } else {
+            None
+        };
+        if let (true, Some(decoded)) = (has_targets, &decoded) {
+            let source = self.read_primitive(crate::PrimitiveIndex::new(mesh, primitive))?;
+            if !keeps_vertex_order(&source, decoded, options.quantization.position) {
+                return Err(Error::Extension(
+                    "cannot compress a primitive with morph targets: Draco did not keep \
+                     its vertices in order, and the targets would move the wrong ones"
+                        .into(),
+                ));
+            }
+        }
+        let EncodedPrimitive {
+            bytes,
+            info: encoded_info,
+            mapping,
+            layout,
+        } = encoded;
         let encoding_method = encoded_info.encoding_method;
         let encoding_speed = encoded_info.speed;
         let prediction_scheme = prediction_summary(&encoded_info, &mapping);
-        let layout = DracoGeometryLayout::from_encoded_info(&encoded_info, &mapping)?;
+        // The spec: fallback data should be "decompressed from the Draco
+        // buffer, rather than the original source data".
+        if let (CompressionMode::Fallback, Some(decoded)) = (options.mode, &decoded) {
+            self.write_raw_primitive_inner(crate::PrimitiveIndex::new(mesh, primitive), decoded)?;
+        }
         let buffer = self.resources.buffers.len();
         let view;
         {
