@@ -15,7 +15,7 @@
 //! encode instead of panicking, indexing out of bounds, or allocating without a
 //! bound.
 //!
-//! Two oracles:
+//! Three oracles:
 //!
 //! 1. Encoding must never panic, whatever the geometry says. Face indices are
 //!    deliberately allowed past the point count, attribute values past the
@@ -23,6 +23,8 @@
 //! 2. Anything the encoder *accepts* must decode. A stream the encoder produced
 //!    and the decoder rejects is a bitstream bug, and it is invisible to
 //!    decode-side fuzzing, which never sees such a stream.
+//! 3. For a mesh, the encoder's description of the stream -- points, faces and
+//!    values per attribute -- must match what it decodes to.
 //!
 //! The geometry is built by hand from the input bytes rather than through
 //! `arbitrary`'s derive, so every bound is explicit and stated here rather than
@@ -357,9 +359,12 @@ fn fuzz_mesh(spec: &GeometrySpec, payload: &[u8], input: &[u8]) {
     let mut encoder = MeshEncoder::new();
     encoder.set_mesh(mesh);
     let mut buffer = EncoderBuffer::new();
-    if encoder.encode(&options, &mut buffer).is_err() {
+    // `encode_with_info` is `encode` plus the description a glTF writer
+    // declares its accessors from, so taking it here costs the other oracles
+    // nothing and puts the description on the same hostile geometry.
+    let Ok(info) = encoder.encode_with_info(&options, &mut buffer) else {
         return;
-    }
+    };
 
     // Oracle 2: whatever the encoder accepted has to decode. Decode-side
     // fuzzing cannot reach this — it never produces a stream the encoder
@@ -372,6 +377,79 @@ fn fuzz_mesh(spec: &GeometrySpec, payload: &[u8], input: &[u8]) {
         }
         panic!(
             "encoder produced a mesh stream the decoder rejects: {error}\ninput: {}\n{}",
+            hex(input),
+            describe(spec)
+        );
+    }
+
+    // Oracle 3: the description matches what the stream decodes to. A glTF
+    // accessor's `count` is taken from it without decoding, so a count the
+    // decoder disagrees with is a file that lies about its own data.
+    if !info_is_claimed(spec) {
+        return;
+    }
+    let mut mismatches = Vec::new();
+    if info.num_encoded_points != decoded.num_points() {
+        mismatches.push(format!(
+            "points: reported {}, decoded {}",
+            info.num_encoded_points,
+            decoded.num_points()
+        ));
+    }
+    if info.num_encoded_faces != decoded.num_faces() {
+        mismatches.push(format!(
+            "faces: reported {}, decoded {}",
+            info.num_encoded_faces,
+            decoded.num_faces()
+        ));
+    }
+    if decoded.num_points() == 0 {
+        // An EdgeBreaker stream without faces decodes to a mesh with no
+        // attributes at all, while the description still lists each one, with
+        // no values. Both say there is no data.
+        for (att_id, reported) in info.attributes.iter().enumerate() {
+            if reported.num_encoded_values != 0 {
+                mismatches.push(format!(
+                    "attribute {att_id} values: reported {}, decoded none",
+                    reported.num_encoded_values
+                ));
+            }
+        }
+    } else if info.attributes.len() != decoded.num_attributes() as usize {
+        mismatches.push(format!(
+            "attributes: reported {}, decoded {}",
+            info.attributes.len(),
+            decoded.num_attributes()
+        ));
+    } else {
+        // Matched by unique id, not by position: the decoder lists attributes
+        // in the stream's group order, the position's group first, and the
+        // description in source order.
+        for reported in &info.attributes {
+            let att_id = reported.source_attribute_id;
+            let decoded_attribute = (0..decoded.num_attributes())
+                .map(|index| decoded.attribute(index))
+                .find(|attribute| attribute.unique_id() == reported.unique_id);
+            match decoded_attribute {
+                Some(attribute) if attribute.size() != reported.num_encoded_values => {
+                    mismatches.push(format!(
+                        "attribute {att_id} values: reported {}, decoded {}",
+                        reported.num_encoded_values,
+                        attribute.size()
+                    ));
+                }
+                Some(_) => {}
+                None => mismatches.push(format!(
+                    "attribute {att_id}: unique id {} not in the decoded mesh",
+                    reported.unique_id
+                )),
+            }
+        }
+    }
+    if !mismatches.is_empty() {
+        panic!(
+            "encoder description disagrees with its stream: {}\ninput: {}\n{}",
+            mismatches.join("; "),
             hex(input),
             describe(spec)
         );
@@ -425,6 +503,11 @@ fn round_trip_is_claimed(_spec: &GeometrySpec) -> bool {
     // encoder/decoder disagreement and reports only panics. Used when one
     // known disagreement keeps ending the run before the panics behind it.
     std::env::var_os("ENCODE_DRC_NO_DECODE_ORACLE").is_none()
+}
+
+fn info_is_claimed(_spec: &GeometrySpec) -> bool {
+    // The same triage knob for oracle 3.
+    std::env::var_os("ENCODE_DRC_NO_INFO_ORACLE").is_none()
 }
 
 /// Hex of the whole fuzz input, printed with an oracle failure.
