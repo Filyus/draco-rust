@@ -9,6 +9,15 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- GLB version 3 files use the chunk layout the glTF 2.1 draft defines. A chunk
+  header is now the chunk type, the encoding and then the 64-bit length, and
+  every chunk starts on an 8-byte boundary; this crate had the length first and
+  padded chunks to 4. A file written by an earlier version has the old layout
+  and no longer reads, and a file from another writer of the draft now does.
+  Version 2 is unchanged.
+
 ## [0.4.2](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.4.1...draco-gltf-v0.4.2) - 2026-09-29
 
 Requires `draco-core` 2.2.1. Earlier versions can report wrong point and face

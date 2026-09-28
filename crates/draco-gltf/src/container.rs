@@ -11,6 +11,8 @@ const GLB_VERSION_V2: u32 = 2;
 const GLB_VERSION_V3: u32 = 3;
 const GLB_CHUNK_JSON: u32 = 0x4e4f_534a;
 const GLB_CHUNK_BIN: u32 = 0x004e_4942;
+/// Version 3 starts every chunk on this boundary, counted from the file start.
+const V3_CHUNK_ALIGNMENT: u64 = 8;
 
 /// Container used by an input glTF document.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,15 +50,18 @@ pub fn build_glb_from_json(
             "GLB output requires a GLB format".into(),
         ));
     }
+    let v3 = format == GltfContainerFormat::GlbV3;
+    // Version 3 starts every chunk on an 8-byte boundary; padding the JSON
+    // chunk to 8 keeps the BIN chunk aligned without a gap between them.
+    let json_alignment = if v3 { 8 } else { 4 };
     let mut json = json.to_vec();
-    while !json.len().is_multiple_of(4) {
+    while !json.len().is_multiple_of(json_alignment) {
         json.push(b' ');
     }
     let mut bin = bin.to_vec();
     while !bin.len().is_multiple_of(4) {
         bin.push(0);
     }
-    let v3 = format == GltfContainerFormat::GlbV3;
     let header = if v3 { 16 } else { 12 };
     let chunk_header = if v3 { 16 } else { 8 };
     let total = header
@@ -84,9 +89,9 @@ pub fn build_glb_from_json(
             continue;
         }
         if v3 {
-            out.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
             out.extend_from_slice(&kind.to_le_bytes());
             out.extend_from_slice(&0u32.to_le_bytes());
+            out.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
         } else {
             out.extend_from_slice(
                 &u32::try_from(bytes.len())
@@ -132,6 +137,89 @@ mod glb_tests {
         let bin = reader.layout().chunks[1];
         assert_eq!(reader.read_chunk(bin, Some(4)).unwrap(), [1, 2, 3, 4]);
         assert!(reader.read_chunk(bin, Some(3)).is_err());
+    }
+
+    fn u32_at(bytes: &[u8], offset: usize) -> u32 {
+        u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+    }
+
+    fn u64_at(bytes: &[u8], offset: usize) -> u64 {
+        u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
+    }
+
+    /// The draft's version 3 chunk header is `chunkType`, `chunkEncoding`,
+    /// `chunkLength`, in that order, and every chunk starts 8-byte aligned.
+    #[test]
+    fn glb_v3_chunks_carry_the_header_the_draft_defines() {
+        let bytes = build_glb_from_json(
+            br#"{"asset":{"version":"2.1"}}"#,
+            &[1, 2, 3, 4],
+            GltfContainerFormat::GlbV3,
+        )
+        .unwrap();
+        assert_eq!(u32_at(&bytes, 4), 3);
+        assert_eq!(u64_at(&bytes, 8), bytes.len() as u64);
+
+        assert_eq!(u32_at(&bytes, 16), GLB_CHUNK_JSON);
+        assert_eq!(u32_at(&bytes, 20), 0, "chunkEncoding");
+        let json_length = u64_at(&bytes, 24) as usize;
+        let bin_header = 32 + json_length;
+        assert_eq!(bin_header % 8, 0, "the BIN chunk starts 8-byte aligned");
+
+        assert_eq!(u32_at(&bytes, bin_header), GLB_CHUNK_BIN);
+        assert_eq!(u32_at(&bytes, bin_header + 4), 0, "chunkEncoding");
+        assert_eq!(u64_at(&bytes, bin_header + 8), 4);
+        assert_eq!(&bytes[bin_header + 16..], [1, 2, 3, 4]);
+    }
+
+    /// A v3 chunk's length is not padded to anything: the next chunk starts at
+    /// the next 8-byte boundary after its end, with the gap outside both.
+    #[test]
+    fn glb_v3_reads_chunks_that_end_before_the_next_aligned_start() {
+        let json = br#"{"asset":{"version":"2.1"}}"#;
+        assert_eq!(json.len() % 8, 3);
+        let bin = [9u8, 8, 7];
+        let json_end = 32 + json.len();
+        let bin_start = json_end.next_multiple_of(8);
+        let total = bin_start + 16 + bin.len();
+
+        let mut file = Vec::new();
+        file.extend_from_slice(&GLB_MAGIC.to_le_bytes());
+        file.extend_from_slice(&GLB_VERSION_V3.to_le_bytes());
+        file.extend_from_slice(&(total as u64).to_le_bytes());
+        file.extend_from_slice(&GLB_CHUNK_JSON.to_le_bytes());
+        file.extend_from_slice(&0u32.to_le_bytes());
+        file.extend_from_slice(&(json.len() as u64).to_le_bytes());
+        file.extend_from_slice(json);
+        file.resize(bin_start, 0);
+        file.extend_from_slice(&GLB_CHUNK_BIN.to_le_bytes());
+        file.extend_from_slice(&0u32.to_le_bytes());
+        file.extend_from_slice(&(bin.len() as u64).to_le_bytes());
+        file.extend_from_slice(&bin);
+        assert_eq!(file.len(), total);
+
+        let parsed = parse_gltf_container(&file).unwrap();
+        assert_eq!(parsed.json, json);
+        assert_eq!(parsed.bin.unwrap(), bin);
+
+        let mut reader = GlbRangeReader::open(std::io::Cursor::new(file)).unwrap();
+        let chunks = reader.layout().chunks.clone();
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[1].offset, bin_start as u64 + 16);
+        assert_eq!(reader.read_chunk(chunks[1], None).unwrap(), bin);
+    }
+
+    #[test]
+    fn glb_v3_refuses_a_chunk_encoding_it_does_not_know() {
+        let mut bytes = build_glb_from_json(
+            br#"{"asset":{"version":"2.1"}}"#,
+            &[1, 2, 3, 4],
+            GltfContainerFormat::GlbV3,
+        )
+        .unwrap();
+        bytes[20] = 1;
+        assert!(parse_gltf_container(&bytes).is_err());
+        assert!(GlbRangeReader::open(std::io::Cursor::new(bytes)).is_err());
     }
 }
 
@@ -271,23 +359,21 @@ pub fn inspect_glb<R: Read + Seek>(input: &mut R) -> Result<GlbLayout> {
         if length - offset < chunk_header {
             return Err(GltfError::InvalidGlb("partial GLB chunk header".into()));
         }
-        let chunk_length = if format == GltfContainerFormat::GlbV3 {
-            read_u64_stream(input)?
+        let (chunk_length, kind, encoding) = if format == GltfContainerFormat::GlbV3 {
+            let kind = read_u32_stream(input)?;
+            let encoding = read_u32_stream(input)?;
+            (read_u64_stream(input)?, kind, encoding)
         } else {
-            u64::from(read_u32_stream(input)?)
-        };
-        let kind = read_u32_stream(input)?;
-        let encoding = if format == GltfContainerFormat::GlbV3 {
-            read_u32_stream(input)?
-        } else {
-            0
+            let chunk_length = u64::from(read_u32_stream(input)?);
+            (chunk_length, read_u32_stream(input)?, 0)
         };
         if encoding != 0 {
             return Err(GltfError::InvalidGlb(
-                "GLB v3 chunk encoding is reserved and must be zero".into(),
+                "GLB v3 chunk encoding is not plain and this crate cannot decode it".into(),
             ));
         }
-        if chunk_length % 4 != 0 || chunk_length > length - offset - chunk_header {
+        let aligned_length = format == GltfContainerFormat::GlbV3 || chunk_length % 4 == 0;
+        if !aligned_length || chunk_length > length - offset - chunk_header {
             return Err(GltfError::InvalidGlb("invalid GLB chunk length".into()));
         }
         chunks.push(GlbChunkDescriptor {
@@ -300,6 +386,10 @@ pub fn inspect_glb<R: Read + Seek>(input: &mut R) -> Result<GlbLayout> {
             .checked_add(chunk_header)
             .and_then(|value| value.checked_add(chunk_length))
             .ok_or_else(|| GltfError::InvalidGlb("GLB chunk offset overflow".into()))?;
+        if format == GltfContainerFormat::GlbV3 {
+            // The gap up to the next 8-byte boundary belongs to no chunk.
+            offset = offset.next_multiple_of(V3_CHUNK_ALIGNMENT);
+        }
         input.seek(SeekFrom::Start(offset))?;
     }
     Ok(GlbLayout {
@@ -558,10 +648,12 @@ pub fn parse_gltf_container(data: &[u8]) -> Result<GltfContainer<'_>> {
     })
 }
 
-/// Parses the current draft GLB v3 wire format. Its header is
+/// Parses the draft GLB v3 wire format. Its header is
 /// `magic:u32, version:u32, length:u64`; each chunk header is
-/// `length:u64, type:u32, encoding:u32`. glTF 2.1 reserves `encoding` and
-/// requires it to be zero.
+/// `type:u32, encoding:u32, length:u64`, and every chunk starts on an 8-byte
+/// boundary, so a chunk's length is not padded and the gap after it belongs to
+/// no chunk. `encoding` zero means plain data; any other value needs a decoder
+/// this crate does not have.
 fn parse_glb_v3(data: &[u8]) -> Result<GltfContainer<'_>> {
     if data.len() < 16 {
         return Err(GltfError::InvalidGlb(
@@ -586,19 +678,14 @@ fn parse_glb_v3(data: &[u8]) -> Result<GltfContainer<'_>> {
             .checked_add(16)
             .filter(|end| *end <= data.len())
             .ok_or_else(|| GltfError::InvalidGlb("partial GLB v3 chunk header".into()))?;
-        let length = usize::try_from(read_u64(data, offset)?).map_err(|_| {
+        let kind = read_u32(data, offset)?;
+        let encoding = read_u32(data, offset + 4)?;
+        let length = usize::try_from(read_u64(data, offset + 8)?).map_err(|_| {
             GltfError::ResourceLimitExceeded("GLB v3 chunk exceeds platform address space".into())
         })?;
-        let kind = read_u32(data, offset + 8)?;
-        let encoding = read_u32(data, offset + 12)?;
         if encoding != 0 {
             return Err(GltfError::InvalidGlb(
-                "GLB v3 chunk encoding is reserved and must be zero".into(),
-            ));
-        }
-        if !length.is_multiple_of(4) {
-            return Err(GltfError::InvalidGlb(
-                "GLB v3 chunk length is not 4-byte aligned".into(),
+                "GLB v3 chunk encoding is not plain and this crate cannot decode it".into(),
             ));
         }
         let end = header_end
@@ -633,7 +720,7 @@ fn parse_glb_v3(data: &[u8]) -> Result<GltfContainer<'_>> {
             }
             _ => {}
         }
-        offset = end;
+        offset = end.next_multiple_of(V3_CHUNK_ALIGNMENT as usize);
         chunk_index = chunk_index
             .checked_add(1)
             .ok_or_else(|| GltfError::InvalidGlb("too many GLB v3 chunks".into()))?;
