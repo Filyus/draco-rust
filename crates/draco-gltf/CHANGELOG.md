@@ -9,6 +9,12 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.4.2...draco-gltf-v0.5.0) - 2026-09-29
+
+Follows the glTF 2.1 draft as it stands on Khronos's `draft-2.1` branch. GLB
+version 3 files written by earlier versions no longer read, and the buffer
+resolution API changed. Both are under Changed.
+
 ### Added
 
 - A GLB version 3 buffer can name the chunk that holds it with `chunk`, so a
@@ -16,58 +22,54 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   from zero. Buffer 0 with neither `chunk` nor `uri` still uses the chunk at
   index 1, as in glTF 2.0. Naming a chunk that is not a BIN chunk, naming both
   a chunk and a URI, and naming a chunk in a file that is not a GLB are
-  errors. Writing still puts every buffer in one chunk, and a `.gltf` bundle
-  drops the `chunk` property when the bytes move to a companion file.
-- With `strict-validation`, shapes are checked against the draft's schema: the
-  box, capsule, cylinder, plane and sphere parameters must be numbers in
-  range, degenerate shapes are refused, and a core shape must not carry
-  another core shape's parameters. A bounding volume's `rotation`, `scale` and
-  `translation` must be arrays of the right length, and `rotation` a unit
-  quaternion in range.
-- A `files` entry can list `aliases`, and a nested glTF loaded from it reads
-  any URI that matches an alias exactly from the file the alias names, whether
-  that file is a buffer view or a URI, before asking the caller's resolver.
-  `File::aliases` lists them and validation checks their shape. Aliases apply
-  to the one file that lists them and are not inherited by files nested
-  deeper.
+  errors. Writing still puts every buffer in one chunk.
 - `GlbBinChunk` and `GltfContainer::bin_chunks` list the BIN chunks of a
   container with their indices. `GltfBufferReference::chunk` carries a
   buffer's `chunk`.
+- A `files` entry can list `aliases`. A nested glTF loaded from it reads a URI
+  that matches an alias exactly from the file the alias names, a buffer view or
+  a URI, before asking the caller's resolver. `File::aliases` lists them and
+  validation checks their shape. Aliases are not inherited by files nested
+  deeper.
+- With `strict-validation`, shape parameters are checked against the draft's
+  schema and degenerate shapes are refused. A core shape must not carry another
+  core shape's parameters. A bounding volume's `rotation`, `scale` and
+  `translation` must be arrays of the right length, with `rotation` a
+  quaternion in range.
 - `KHR_materials_diffuse_transmission`, `KHR_materials_retroreflection`,
   `KHR_node_visibility`, `KHR_node_hoverability` and `KHR_node_selectability`
-  no longer block Draco compression of a document that uses them. Their
-  schemas hold factors, booleans and texture bindings and no accessor or
-  buffer view, so compression has nothing to remap. Before, one of them
-  anywhere in a file refused the whole file.
+  no longer block Draco compression of a document that uses them. They hold no
+  accessor or buffer view, so compression has nothing to remap. Before, one of
+  them anywhere in a file refused the whole file.
 
 ### Changed
 
-- A core shape's own parameter object is optional, as the draft has it, and its
-  parameters take their defaults. A `{"type": "box"}` with no `box` object was
-  refused before.
-- A nested glTF embedded in a buffer view no longer finds sibling files by
-  their `name`. The 2.1 draft redirects URIs with `aliases` on the file that
-  contains them, and a `name` has no such meaning. Files that relied on names
-  need an `aliases` entry for each URI.
-- Breaking: `resolve_gltf_buffers` takes the BIN chunks as a
-  `&[GlbBinChunk]` instead of an `Option<&[u8]>`. `GltfContainer` is no longer
-  `Copy`, and `GltfBufferReference` has the new `chunk` field.
+- Breaking: GLB version 3 files use the chunk layout the draft defines. A chunk
+  header is the type, the encoding and then the 64-bit length, and every chunk
+  starts on an 8-byte boundary. This crate had the length first and padded
+  chunks to 4, so a file written by an earlier version has the old layout and
+  no longer reads, and a file from another writer of the draft now does.
+  Version 2 is unchanged.
+- Breaking: `resolve_gltf_buffers` takes the BIN chunks as a `&[GlbBinChunk]`
+  instead of an `Option<&[u8]>`. `GltfContainer` is no longer `Copy`, and
+  `GltfBufferReference` has the new `chunk` field.
 - A version 3 file may have chunks of unknown type anywhere, more than one JSON
   chunk (the first is the glTF JSON, wherever it sits) and BIN chunks in any
-  position, and its BIN chunk may be up to 7 bytes longer than the buffer it
-  holds, which is the padding to 8. Version 2 is unchanged, at 3.
+  position. Its BIN chunk may be up to 7 bytes longer than the buffer it holds,
+  the padding to 8. Version 2 keeps its limit of 3.
+- A nested glTF embedded in a buffer view no longer finds sibling files by
+  their `name`. The draft redirects URIs with `aliases` on the file that
+  contains them and gives `name` no such meaning. Files that relied on names
+  need an `aliases` entry for each URI.
+- A core shape's own parameter object is optional, as in the draft, and its
+  parameters take their defaults. A `{"type": "box"}` with no `box` object was
+  refused before.
 
 ### Fixed
 
 - With `strict-validation`, a `uid` equal to a name is a conflict with every
-  other object of that name. When two objects shared a name, only the last was
-  compared, so a `uid` matching the earlier one passed.
-- GLB version 3 files use the chunk layout the glTF 2.1 draft defines. A chunk
-  header is now the chunk type, the encoding and then the 64-bit length, and
-  every chunk starts on an 8-byte boundary; this crate had the length first and
-  padded chunks to 4. A file written by an earlier version has the old layout
-  and no longer reads, and a file from another writer of the draft now does.
-  Version 2 is unchanged.
+  other object of that name. When two objects shared a name only the last was
+  compared, so a `uid` equal to the earlier one passed.
 
 ## [0.4.2](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.4.1...draco-gltf-v0.4.2) - 2026-09-29
 
