@@ -140,6 +140,17 @@ impl DracoGeometryLayout {
                 } else {
                     None
                 };
+                // glTF requires POSITION bounds and requires them finite, and
+                // an unquantized stream carries whatever floats it was given.
+                if position_bounds
+                    .as_ref()
+                    .is_some_and(|(min, max)| min.iter().chain(max).any(|bound| !bound.is_finite()))
+                {
+                    return Err(Error::Extension(
+                        "POSITION holds values that are not finite, which glTF bounds cannot state"
+                            .into(),
+                    ));
+                }
                 Ok(DracoAttributeLayout {
                     components: attribute.num_components,
                     component_type: gltf20_component_type(

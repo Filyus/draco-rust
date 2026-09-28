@@ -536,3 +536,26 @@ fn host_neutral_draco_encode_describes_the_decoded_stream() {
     .unwrap();
     assert!(sequential.keeps_vertex_order(&geometry).unwrap());
 }
+
+/// glTF requires POSITION bounds to be finite, so a position that is not
+/// cannot be compressed into a valid document.
+#[test]
+fn draco_encode_refuses_positions_that_are_not_finite() {
+    use draco_gltf::{
+        ComponentType, DracoPrimitiveEncoding, PackedAttribute, PackedGeometry, PrimitiveMode,
+    };
+
+    let values = [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, f32::INFINITY, 0.0];
+    let bytes = values
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect();
+    let position =
+        PackedAttribute::new("POSITION", 3, 3, ComponentType::F32, false, bytes).unwrap();
+    let triangle = PackedGeometry::new(PrimitiveMode::Triangles, vec![position], None).unwrap();
+    let Err(error) = DracoPrimitiveEncoding::encode(&triangle, &CompressionOptions::default())
+    else {
+        panic!("an infinite position must be refused");
+    };
+    assert!(error.to_string().contains("not finite"), "got: {error}");
+}
