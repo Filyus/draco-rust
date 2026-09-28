@@ -72,6 +72,9 @@ compressed output, and `accessors` when animation, skin, morph, or other
 non-primitive payloads must be materialized. Every profile uses the same
 document and packed-geometry types; no second parser or scene model exists.
 
+An engine with its own glTF reader can still use just the Draco codec.
+[`HOST_INTEGRATION.md`](HOST_INTEGRATION.md) shows how.
+
 See [`GLTF_2_1_SUPPORT.md`](GLTF_2_1_SUPPORT.md) for the support matrix and
 upstream links. `GLTF_2_1_SNAPSHOT.md` records the pinned draft and update
 policy.

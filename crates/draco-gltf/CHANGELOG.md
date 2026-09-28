@@ -9,6 +9,50 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.2](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.4.1...draco-gltf-v0.4.2) - 2026-09-29
+
+Requires `draco-core` 2.2.1. Earlier versions can report wrong point and face
+counts, and `DracoOnly` writes its accessor counts from that report.
+
+### Added
+
+- `DracoPrimitiveExtension` and `DracoPrimitiveContract`: decode a
+  `KHR_draco_mesh_compression` primitive for a host that parsed the file with
+  another glTF reader and loaded the buffers through its own asset system,
+  without re-parsing the document here. `Import::read_primitive` and
+  `Import::decode_draco_primitive` go through the same path, so all of them
+  give identical output.
+- `DracoPrimitiveEncoding` and `DracoAccessor`: the encoding counterpart. It
+  takes a `PackedGeometry` and returns the bitstream, the extension object for
+  the buffer view the host stores it in, and what each accessor has to declare
+  (count, type, component type, `normalized`, POSITION bounds) plus the index
+  count. The declarations come from the encoder's report, since the encoder
+  may merge duplicate points. `decoded()` gives the data for the host's own
+  fallback and `keeps_vertex_order` tells a host with morph targets whether
+  its vertices survive. `DracoPrimitiveExtension::to_json` writes the
+  extension object. `HOST_INTEGRATION.md` walks through both directions,
+  including what a host must write from the stream and not from its input.
+
+### Fixed
+
+- `Fallback` compression writes the uncompressed accessors from the stream
+  decoded back, as the extension requires, instead of leaving the source
+  accessors in place. Where the encoder merged vertices, the source accessors
+  no longer matched the stream, and a reader with Draco and one without saw
+  different geometry. The cost is the decode and the copy: `Fallback` is about
+  1.2 to 1.4 times slower, `DracoOnly` is unchanged.
+- A primitive with morph targets is encoded sequentially and refused if its
+  vertices do not decode at their own indices, or if EdgeBreaker was forced.
+  EdgeBreaker renumbers vertices, which left every Draco reader animating the
+  wrong ones.
+- `Import::read_primitive` also returns the attributes a Draco primitive
+  keeps outside the extension, which the extension says a loader must read as
+  usual. Before, `decompress_in_place` silently dropped them. A count that
+  disagrees with the stream is an error.
+- Compressing a primitive whose POSITION holds an infinity is refused. The
+  document it wrote carried non-finite bounds, which glTF forbids and this
+  crate's own import rejected.
+
 ## [0.4.1](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.4.0...draco-gltf-v0.4.1) - 2026-09-25
 
 ### Added

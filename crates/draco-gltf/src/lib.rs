@@ -2,6 +2,15 @@
 //!
 //! [`Document`] is the public scene model, and all unknown JSON remains part
 //! of that model.
+//!
+//! # Hosts with their own document model
+//!
+//! An engine with its own glTF reader can decode and encode a
+//! `KHR_draco_mesh_compression` primitive without [`Import`] through
+//! [`DracoPrimitiveExtension`], [`DracoPrimitiveContract`] and
+//! [`DracoPrimitiveEncoding`]. What to declare, and what to write from the
+//! stream instead of the input, is in
+//! [`HOST_INTEGRATION.md`](https://github.com/Filyus/draco-rust/blob/main/crates/draco-gltf/HOST_INTEGRATION.md).
 
 #![deny(missing_docs)]
 
@@ -256,3 +265,8 @@ pub fn validate(document: &Document) -> Result<()> {
 
 #[cfg(test)]
 mod document_tests;
+
+/// The example in `HOST_INTEGRATION.md`, compiled so it cannot go stale.
+#[cfg(all(doctest, feature = "draco-encode"))]
+#[doc = include_str!("../HOST_INTEGRATION.md")]
+struct HostIntegrationDoctests;
