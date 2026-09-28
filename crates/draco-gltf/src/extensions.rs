@@ -76,8 +76,14 @@ pub const BINARY_FREE_EXTENSIONS: &[&str] = &[
     "KHR_materials_iridescence",
     "KHR_materials_sheen",
     "KHR_materials_clearcoat",
+    "KHR_materials_diffuse_transmission",
+    "KHR_materials_retroreflection",
     // Archived by Khronos, still present in assets, and equally binary-free.
     "KHR_materials_pbrSpecularGlossiness",
+    // A boolean each on a node, in the node's own object.
+    "KHR_node_visibility",
+    "KHR_node_hoverability",
+    "KHR_node_selectability",
     // Rides on a texture binding: offset, scale, rotation and a texCoord set.
     "KHR_texture_transform",
     // Name an alternate `images[]` entry; the image itself is an ordinary one.

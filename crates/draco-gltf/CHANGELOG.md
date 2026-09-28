@@ -33,6 +33,12 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `GlbBinChunk` and `GltfContainer::bin_chunks` list the BIN chunks of a
   container with their indices. `GltfBufferReference::chunk` carries a
   buffer's `chunk`.
+- `KHR_materials_diffuse_transmission`, `KHR_materials_retroreflection`,
+  `KHR_node_visibility`, `KHR_node_hoverability` and `KHR_node_selectability`
+  no longer block Draco compression of a document that uses them. Their
+  schemas hold factors, booleans and texture bindings and no accessor or
+  buffer view, so compression has nothing to remap. Before, one of them
+  anywhere in a file refused the whole file.
 
 ### Changed
 

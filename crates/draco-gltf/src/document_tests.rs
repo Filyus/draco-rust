@@ -1102,6 +1102,25 @@ mod compression_tests {
         );
     }
 
+    /// Extensions Khronos ratified or released after the list was first
+    /// written, checked against their published schemas: factors, booleans and
+    /// texture bindings, no accessor or buffer view.
+    #[test]
+    fn the_binary_free_list_covers_the_newer_khronos_extensions() {
+        for extension in [
+            "KHR_materials_diffuse_transmission",
+            "KHR_materials_retroreflection",
+            "KHR_node_visibility",
+            "KHR_node_hoverability",
+            "KHR_node_selectability",
+        ] {
+            assert!(
+                crate::BINARY_FREE_EXTENSIONS.contains(&extension),
+                "{extension} is missing"
+            );
+        }
+    }
+
     #[cfg(feature = "draco-encode")]
     #[test]
     fn compression_uses_the_encoded_topology_for_accessor_metadata() {
