@@ -29,6 +29,8 @@ pub use document::{
 };
 #[cfg(feature = "draco-decode")]
 mod draco_primitive;
+#[cfg(feature = "draco-encode")]
+pub use draco_primitive::{DracoAccessor, DracoPrimitiveEncoding};
 #[cfg(feature = "draco-decode")]
 pub use draco_primitive::{DracoPrimitiveContract, DracoPrimitiveExtension};
 #[cfg(feature = "geometry")]

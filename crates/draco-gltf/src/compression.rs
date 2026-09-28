@@ -89,22 +89,29 @@ fn detach_draco_only_accessors(
     Ok(())
 }
 
+/// What one encoded attribute's accessor has to declare.
 #[derive(Clone)]
-struct DracoAttributeLayout {
-    unique_id: u32,
-    components: u8,
-    data_type: DataType,
-    position_bounds: Option<(Vec<f64>, Vec<f64>)>,
+pub(crate) struct DracoAttributeLayout {
+    pub(crate) unique_id: u32,
+    pub(crate) components: u8,
+    pub(crate) data_type: DataType,
+    pub(crate) position_bounds: Option<(Vec<f64>, Vec<f64>)>,
 }
 
-struct DracoGeometryLayout {
-    points: usize,
-    faces: usize,
-    attributes: Vec<DracoAttributeLayout>,
+/// What the accessors of an encoded primitive have to declare. It is taken
+/// from the encoder's report rather than from the input geometry: the encoder
+/// may merge duplicate points, and POSITION bounds are the ones it quantized.
+pub(crate) struct DracoGeometryLayout {
+    pub(crate) points: usize,
+    pub(crate) faces: usize,
+    pub(crate) attributes: Vec<DracoAttributeLayout>,
 }
 
 impl DracoGeometryLayout {
-    fn from_encoded_info(info: &EncodedMeshInfo, mapping: &[(String, u32)]) -> Result<Self> {
+    pub(crate) fn from_encoded_info(
+        info: &EncodedMeshInfo,
+        mapping: &[(String, u32)],
+    ) -> Result<Self> {
         let attributes = mapping
             .iter()
             .map(|(semantic, unique_id)| {
@@ -164,19 +171,7 @@ fn set_draco_accessor_layout(
     data_type: DataType,
     position_bounds: Option<&(Vec<f64>, Vec<f64>)>,
 ) -> Result<()> {
-    let component_type = match data_type {
-        DataType::Int8 => 5120,
-        DataType::Uint8 => 5121,
-        DataType::Int16 => 5122,
-        DataType::Uint16 => 5123,
-        DataType::Uint32 => 5125,
-        DataType::Float32 => 5126,
-        _ => {
-            return Err(Error::Extension(format!(
-                "Draco attribute data type {data_type:?} cannot be represented by glTF 2.0"
-            )))
-        }
-    };
+    let component_type = gltf20_component_type(data_type)?.to_gltf();
     let accessor_type = match components {
         1 => "SCALAR",
         2 => "VEC2",
@@ -216,6 +211,23 @@ fn set_draco_accessor_layout(
         );
     }
     Ok(())
+}
+
+/// The glTF 2.0 component type an encoded Draco attribute is declared with.
+pub(crate) fn gltf20_component_type(data_type: DataType) -> Result<crate::ComponentType> {
+    Ok(match data_type {
+        DataType::Int8 => crate::ComponentType::I8,
+        DataType::Uint8 => crate::ComponentType::U8,
+        DataType::Int16 => crate::ComponentType::I16,
+        DataType::Uint16 => crate::ComponentType::U16,
+        DataType::Uint32 => crate::ComponentType::U32,
+        DataType::Float32 => crate::ComponentType::F32,
+        _ => {
+            return Err(Error::Extension(format!(
+                "Draco attribute data type {data_type:?} cannot be represented by glTF 2.0"
+            )))
+        }
+    })
 }
 
 fn compact_draco_only_resources(
@@ -865,44 +877,43 @@ fn prediction_summary(info: &EncodedMeshInfo, mapping: &[(String, u32)]) -> Opti
     (!schemes.is_empty()).then(|| schemes.join("; "))
 }
 
-impl Import {
-    /// Encodes an already decoded mesh to a raw Draco payload.
-    pub(crate) fn encode_draco_geometry(
-        &self,
-        mesh: draco_core::Mesh,
-        options: CompressionOptions,
-    ) -> Result<(Vec<u8>, EncodedMeshInfo)> {
-        let mut settings = EncoderOptions::new();
-        settings.set_global_int("encoding_speed", options.encoding_speed as i32);
-        settings.set_global_int("decoding_speed", options.decoding_speed as i32);
-        // Left untouched for "auto" (0): the encoder's own default, applied by
-        // never calling this, is what every caller got before this field
-        // existed and what `CompressionOptions::default()` still asks for.
-        match options.encoding_method {
-            1 => settings.set_encoding_method(0), // force sequential
-            2 => settings.set_encoding_method(1), // force EdgeBreaker
-            _ => {}
-        }
-        // Quantization is keyed by attribute id here, while the caller names
-        // attribute types, so the mapping has to happen against the mesh that is
-        // about to be encoded rather than in the options.
-        for attribute_id in 0..mesh.num_attributes() {
-            let attribute_type = mesh.attribute(attribute_id).attribute_type();
-            if let Some(bits) = options.quantization.for_attribute(attribute_type) {
-                settings.set_attribute_int(attribute_id, "quantization_bits", bits as i32);
-            }
-        }
-        let mut encoder = MeshEncoder::new();
-        encoder.set_mesh(mesh);
-        let mut output = EncoderBuffer::new();
-        // The extension needs the description, so this is the entry point that
-        // derives it; plain `encode` would leave it uncomputed.
-        let info = encoder
-            .encode_with_info(&settings, &mut output)
-            .map_err(|error| Error::Extension(error.to_string()))?;
-        Ok((output.data().to_vec(), info))
+/// Encodes an already decoded mesh to a raw Draco payload and its report.
+pub(crate) fn encode_draco_mesh(
+    mesh: draco_core::Mesh,
+    options: &CompressionOptions,
+) -> Result<(Vec<u8>, EncodedMeshInfo)> {
+    let mut settings = EncoderOptions::new();
+    settings.set_global_int("encoding_speed", options.encoding_speed as i32);
+    settings.set_global_int("decoding_speed", options.decoding_speed as i32);
+    // Left untouched for "auto" (0): the encoder's own default, applied by
+    // never calling this, is what every caller got before this field
+    // existed and what `CompressionOptions::default()` still asks for.
+    match options.encoding_method {
+        1 => settings.set_encoding_method(0), // force sequential
+        2 => settings.set_encoding_method(1), // force EdgeBreaker
+        _ => {}
     }
+    // Quantization is keyed by attribute id here, while the caller names
+    // attribute types, so the mapping has to happen against the mesh that is
+    // about to be encoded rather than in the options.
+    for attribute_id in 0..mesh.num_attributes() {
+        let attribute_type = mesh.attribute(attribute_id).attribute_type();
+        if let Some(bits) = options.quantization.for_attribute(attribute_type) {
+            settings.set_attribute_int(attribute_id, "quantization_bits", bits as i32);
+        }
+    }
+    let mut encoder = MeshEncoder::new();
+    encoder.set_mesh(mesh);
+    let mut output = EncoderBuffer::new();
+    // The extension needs the description, so this is the entry point that
+    // derives it; plain `encode` would leave it uncomputed.
+    let info = encoder
+        .encode_with_info(&settings, &mut output)
+        .map_err(|error| Error::Extension(error.to_string()))?;
+    Ok((output.data().to_vec(), info))
+}
 
+impl Import {
     /// Compresses one ordinary triangle, triangle-strip or triangle-fan
     /// primitive atomically.
     ///
@@ -957,7 +968,7 @@ impl Import {
             )));
         }
         let (geometry, mapping) = self.decode_geometry_primitive(reference)?;
-        let (bytes, encoded_info) = self.encode_draco_geometry(geometry, options)?;
+        let (bytes, encoded_info) = encode_draco_mesh(geometry, &options)?;
         let encoding_method = encoded_info.encoding_method;
         let encoding_speed = encoded_info.speed;
         let prediction_scheme = prediction_summary(&encoded_info, &mapping);

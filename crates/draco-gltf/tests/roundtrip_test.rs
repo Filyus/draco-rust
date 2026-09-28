@@ -157,3 +157,117 @@ fn host_neutral_draco_decode_matches_read_primitive() {
         "{error}"
     );
 }
+
+/// The host-neutral encoder writes what `compress_primitive` writes.
+#[test]
+fn host_neutral_draco_encode_matches_compress_primitive() {
+    use draco_gltf::{
+        CompressionMode, DracoPrimitiveContract, DracoPrimitiveEncoding, DracoPrimitiveExtension,
+        PrimitiveIndex, QuantizationBits, KHR_DRACO_MESH_COMPRESSION,
+    };
+
+    let first = PrimitiveIndex {
+        mesh: MeshIndex(0),
+        primitive: 0,
+    };
+    let options = CompressionOptions {
+        mode: CompressionMode::DracoOnly,
+        quantization: QuantizationBits::GLTF,
+        ..CompressionOptions::default()
+    };
+    let source = open(
+        fixture("testdata/Box/glTF_Binary/Box.glb"),
+        ValidationProfile::Gltf20,
+    )
+    .unwrap();
+    let geometry = source.read_primitive(first).unwrap();
+    let encoded = DracoPrimitiveEncoding::encode(&geometry, &options).unwrap();
+
+    let mut compressed = source.clone();
+    compressed
+        .compress_primitive(MeshIndex(0), 0, options)
+        .unwrap();
+    let primitive = compressed.document.primitive(MeshIndex(0), 0).unwrap();
+    let extension = DracoPrimitiveExtension::from_json(
+        primitive.extension(KHR_DRACO_MESH_COMPRESSION).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(encoded.extension(extension.buffer_view()), extension);
+    assert_eq!(
+        DracoPrimitiveExtension::from_json(&extension.to_json()).unwrap(),
+        extension
+    );
+
+    let root = compressed.document.as_value();
+    let view = &root["bufferViews"].as_array().unwrap()[extension.buffer_view()];
+    let buffer = &compressed.resources.buffers[view["buffer"].as_u64().unwrap() as usize];
+    let start = view.get("byteOffset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+    let payload = &buffer[start..start + view["byteLength"].as_u64().unwrap() as usize];
+    assert_eq!(encoded.bytes(), payload);
+
+    // Same accessor declarations.
+    let accessors = root["accessors"].as_array().unwrap();
+    for declared in encoded.accessors() {
+        let (_, index) = primitive
+            .attribute_indices()
+            .find(|(semantic, _)| *semantic == declared.semantic())
+            .unwrap();
+        let accessor = &accessors[index.0];
+        assert_eq!(accessor["count"].as_u64(), Some(declared.count() as u64));
+        assert_eq!(
+            accessor["componentType"].as_u64(),
+            Some(u64::from(declared.component_type().to_gltf()))
+        );
+        assert_eq!(accessor["type"].as_str(), Some(declared.accessor_type()));
+        assert!(accessor.get("bufferView").is_none());
+        let bounds = accessor.get("min").map(|min| {
+            let values = |v: &draco_gltf::JsonValue| {
+                v.as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|n| n.as_f64().unwrap())
+                    .collect::<Vec<_>>()
+            };
+            (values(min), values(&accessor["max"]))
+        });
+        assert_eq!(
+            bounds,
+            declared
+                .bounds()
+                .map(|(min, max)| (min.to_vec(), max.to_vec()))
+        );
+    }
+    let indices = &accessors[primitive.indices().unwrap().0];
+    assert_eq!(
+        indices["count"].as_u64(),
+        Some(encoded.index_count() as u64)
+    );
+
+    // Same geometry read back.
+    let mut contract = DracoPrimitiveContract::new().with_indices(encoded.index_count() as u64);
+    for declared in encoded.accessors() {
+        contract = contract.with_attribute(
+            declared.semantic(),
+            declared.count() as u64,
+            declared.normalized(),
+        );
+    }
+    let decoded = encoded
+        .extension(0)
+        .decode(encoded.bytes(), &contract)
+        .unwrap();
+    assert_eq!(decoded, compressed.read_primitive(first).unwrap());
+    assert_eq!(decoded.vertex_count(), encoded.accessors()[0].count());
+}
+
+#[test]
+fn host_neutral_draco_encode_refuses_points() {
+    use draco_gltf::{
+        ComponentType, DracoPrimitiveEncoding, PackedAttribute, PackedGeometry, PrimitiveMode,
+    };
+
+    let position =
+        PackedAttribute::new("POSITION", 1, 3, ComponentType::F32, false, vec![0; 12]).unwrap();
+    let points = PackedGeometry::new(PrimitiveMode::Points, vec![position], None).unwrap();
+    assert!(DracoPrimitiveEncoding::encode(&points, &CompressionOptions::default()).is_err());
+}
