@@ -1,10 +1,10 @@
 # glTF 2.1 draft support status
 
-Status as of 2026-07-18 for `draco-gltf` 0.2 and `draco-io` 0.3.
+Status as of 2026-09-29 for `draco-gltf`.
 
 glTF 2.1 is still a draft. This implementation targets the Khronos glTF
-repository at commit
-[`77b44be7bef26e01fb0b140e3d5bb1716421c5e9`](https://github.com/KhronosGroup/glTF/commit/77b44be7bef26e01fb0b140e3d5bb1716421c5e9).
+repository's `draft-2.1` branch at commit
+[`8e4bd40310d84bfb34f454fc696eafb2c20d8e51`](https://github.com/KhronosGroup/glTF/commit/8e4bd40310d84bfb34f454fc696eafb2c20d8e51).
 It does not claim conformance with a future final glTF 2.1 specification.
 Updating the snapshot is an explicit compatibility change, not an automatic
 dependency update.
@@ -16,7 +16,7 @@ dependency update.
 | glTF 2.0 core | Supported | Lossless JSON document, typed root views, resources, accessors, scenes, animations, skins and materials. Complete cross-reference validation is available with `strict-validation`. |
 | Unknown JSON and extensions | Supported | Unknown properties, `extras`, number lexemes and unregistered extension payloads survive parse/edit/write. Untouched JSON is returned byte-for-byte. |
 | GLB v2 | Supported | Read, write and validation. |
-| GLB v3 draft | Partly supported | Read/write of the chunk layout in the `draft-2.1` branch (`8e4bd403`, #2628): chunk header `type`, `encoding`, `u64 length`, chunks starting on 8-byte boundaries, plain (zero) chunk encoding only, checked range descriptors and seekable input. Several BIN chunks, named by `buffer.chunk`; unknown chunks are skipped. Writing uses one BIN chunk. Slice APIs remain available for small files. |
+| GLB v3 draft | Supported | The chunk layout of the `draft-2.1` branch (#2628): chunk header `type`, `encoding`, `u64 length`, chunks starting on 8-byte boundaries, several BIN chunks named by `buffer.chunk`, unknown chunks skipped. Only plain (zero) chunk encoding is read, and any other is refused as the draft requires. Writing puts every buffer in one BIN chunk. Checked range descriptors and seekable input; slice APIs remain available for small files. |
 | Unified `files` references | Supported | URI and buffer-view payloads, `aliases` that redirect the URIs of a nested file, explicit loading, quotas, provenance, chain-depth limits and cycle rejection. |
 | External assets | Supported | References are exposed by typed views and loaded explicitly. Automatic recursive scene composition is intentionally left to the caller. |
 | Shapes | Supported | Typed shape views and root references. With `strict-validation`, the box, capsule, cylinder, plane and sphere parameters are checked against the draft schema, degenerate shapes are refused, and a core shape may not carry another core shape's parameters. Shapes of other types are left to their extension. |
@@ -27,7 +27,7 @@ dependency update.
 | Non-sequential attributes | Supported | `TEXCOORD_n` and `COLOR_n` no longer need to start at zero or be consecutive under the draft profile. |
 | Expanded component definitions | Supported in the document/raw path | `i32`, `f16`, `f64`, `i64` and `u64` definitions are parsed and written without normalization or conversion. Individual consumers still enforce their allowed types. |
 | Promoted 2.0 extension functionality | Pass-through | Unknown syntax is preserved, but there is no dedicated typed API or required-consumer conformance claim yet for WebP, emissive strength, mesh quantization or node visibility in their future core form. |
-| Full final 2.1 schema validation | Not available | Khronos had not published the final 2.1 schema at the pinned snapshot. Validation intentionally avoids speculative rules. |
+| Full final 2.1 schema validation | Not available | The `draft-2.1` branch carries a schema that Khronos still changes and that defines nothing for UIDs. Validation follows it where this table says so and avoids speculative rules elsewhere. |
 
 ## Draco behavior
 
@@ -133,7 +133,7 @@ it ever changed.
 
 - [Khronos: Introducing glTF 2.1 with Complex Scenes](https://www.khronos.org/blog/introducing-gltf-2.1-with-complex-scenes)
 - [Khronos glTF repository](https://github.com/KhronosGroup/glTF)
-- [Pinned upstream commit](https://github.com/KhronosGroup/glTF/commit/77b44be7bef26e01fb0b140e3d5bb1716421c5e9)
+- [Pinned upstream commit](https://github.com/KhronosGroup/glTF/commit/8e4bd40310d84bfb34f454fc696eafb2c20d8e51)
 - [glTF 2.0 specification](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html)
 - [`KHR_draco_mesh_compression` specification](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_draco_mesh_compression)
 - [Snapshot and update policy](GLTF_2_1_SNAPSHOT.md)

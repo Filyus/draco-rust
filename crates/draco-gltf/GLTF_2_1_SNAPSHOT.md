@@ -1,22 +1,25 @@
 # glTF 2.1 draft snapshot
 
-`draco-gltf` 0.2 targets the glTF 2.1 draft at KhronosGroup/glTF commit
-[`77b44be7bef26e01fb0b140e3d5bb1716421c5e9`](https://github.com/KhronosGroup/glTF/commit/77b44be7bef26e01fb0b140e3d5bb1716421c5e9),
-resolved on 2026-07-18.
+`draco-gltf` targets the glTF 2.1 draft at the tip of the `draft-2.1` branch of
+KhronosGroup/glTF, commit
+[`8e4bd40310d84bfb34f454fc696eafb2c20d8e51`](https://github.com/KhronosGroup/glTF/commit/8e4bd40310d84bfb34f454fc696eafb2c20d8e51),
+resolved on 2026-09-29. It replaces the earlier snapshot, `77b44be7`, resolved
+on 2026-07-18, which predates the draft's specification text and schemas.
 
 The draft is not a moving build dependency. Updating this snapshot requires a
 dedicated compatibility change: update this file, add/adjust fixtures and
 validation tests, and document every public API or serialization change.
 
-At this SHA Khronos has published the 2.1 design announcement but not a 2.1
-JSON schema. The crate therefore applies strict checks only to published,
-syntax-stable invariants and preserves the remaining draft fields losslessly.
-Published explainers currently define `files`, `externalAssets`, core shape
-type/subobject links, `node.boundingVolume.shape`, and `asset.thumbnail`.
-Numeric shape parameters, bounding-volume transforms, and UID character rules
-gain additional semantic checks only with a pinned upstream schema or explainer
-that defines their exact JSON shape; no speculative schema is accepted as
-strict validation.
+At this SHA the branch carries the draft specification text and JSON schemas
+under `specification/2.1`. Strict checks follow them for `files` and their
+`aliases`, `externalAssets`, shapes, bounding volumes, `asset.thumbnail`, the
+GLB version 3 layout and `buffer.chunk`. The branch defines no schema for UIDs,
+so their character rules stay unchecked, and no speculative schema is accepted
+as strict validation. The remaining draft fields are preserved losslessly.
+
+The branch is a work in progress and has moved since earlier snapshots, for
+example the GLB version 3 chunk header. Compare a new snapshot against
+`specification/2.1` before adopting it, not against the explainers.
 
 ## Targeted draft surface
 
