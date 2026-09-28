@@ -110,6 +110,15 @@ pub struct MeshEncoder {
     active_corner_table: Option<CornerTable>,
     active_data_to_corner_map: Option<Vec<u32>>,
     active_vertex_to_data_map: Option<Vec<i32>>,
+    /// What the per-attribute-connectivity encode found, kept for
+    /// [`Self::encode_with_info`] so the report does not walk every attribute
+    /// again: the values each attribute encoded, by attribute id, and
+    /// [`AttributeSeamCorners`] over the attributes with interior seams.
+    split_value_counts: Vec<(i32, usize)>,
+    attribute_seam_corners: AttributeSeamCorners,
+    /// Set by [`Self::encode_with_info`] for its encode alone, so a plain
+    /// encode does not mark seam corners nobody reads.
+    mark_attribute_seam_corners: bool,
     /// Depth-first order for the non-position attribute groups, present only
     /// when the position group uses a different one (speed 0).
     #[allow(clippy::type_complexity)]
@@ -436,6 +445,9 @@ impl MeshEncoder {
             active_corner_table: None,
             active_data_to_corner_map: None,
             active_vertex_to_data_map: None,
+            split_value_counts: Vec::new(),
+            attribute_seam_corners: AttributeSeamCorners::default(),
+            mark_attribute_seam_corners: false,
             attribute_traversal: None,
             parent_attributes: ParentAttributes::new(),
             edgebreaker_encoder: None,
@@ -476,6 +488,8 @@ impl MeshEncoder {
         self.active_corner_table = None;
         self.active_data_to_corner_map = None;
         self.active_vertex_to_data_map = None;
+        self.split_value_counts.clear();
+        self.attribute_seam_corners = AttributeSeamCorners::default();
         self.attribute_traversal = None;
         self.method = 0;
         self.use_single_connectivity = false;
@@ -543,8 +557,9 @@ impl MeshEncoder {
     /// Encodes the assigned mesh and describes what the encode did.
     ///
     /// The description is derived from the encode rather than produced by it,
-    /// and deriving it costs a sweep of every position for its bounds plus a
-    /// copy of the encoded point order per attribute. So it is the caller who
+    /// and deriving it costs a sweep of every position for its bounds, a pass
+    /// over the corners of each attribute with interior seams, and a walk
+    /// around every vertex for the point count. So it is the caller who
     /// decides whether that work happens: [`encode`](MeshEncoder::encode) never
     /// does it, and this does it exactly once, here, where it was asked for.
     ///
@@ -558,8 +573,12 @@ impl MeshEncoder {
         options: &EncoderOptions,
         out_buffer: &mut EncoderBuffer,
     ) -> Result<EncodedMeshInfo, DracoError> {
-        self.encode(options, out_buffer)?;
-        self.build_encoded_mesh_info()
+        self.mark_attribute_seam_corners = true;
+        let encoded = self.encode(options, out_buffer);
+        self.mark_attribute_seam_corners = false;
+        let info = encoded.and_then(|()| self.build_encoded_mesh_info());
+        self.attribute_seam_corners = AttributeSeamCorners::default();
+        info
     }
 
     fn encode_metadata(&self, buffer: &mut EncoderBuffer) -> Status {
@@ -1602,6 +1621,15 @@ impl MeshEncoder {
                 &point_ids,
                 out_buffer,
             )?;
+            self.split_value_counts
+                .extend(attr_ids.iter().map(|&att_id| (att_id, point_ids.len())));
+            if let (true, Some(table), Some(corner_table)) = (
+                self.mark_attribute_seam_corners,
+                self.active_corner_table.as_ref(),
+                self.corner_table.as_ref(),
+            ) {
+                self.attribute_seam_corners.mark(corner_table, table);
+            }
         }
 
         self.active_corner_table = None;
@@ -1953,15 +1981,18 @@ impl MeshEncoder {
             .expect("mesh must be set before encoding")
             .num_attributes();
         let mut attributes = Vec::with_capacity(num_attributes as usize);
-        let mut encoded_num_points = self.point_ids.len();
 
         for att_id in 0..num_attributes {
-            let point_ids = self.encoded_point_ids_for_attribute(att_id)?;
-            let num_encoded_values = point_ids.len();
-            encoded_num_points = encoded_num_points.max(num_encoded_values);
+            // Every attribute outside the split encode, and the position
+            // inside it, is walked in the position's order.
+            let num_encoded_values = self
+                .split_value_counts
+                .iter()
+                .find(|(id, _)| *id == att_id)
+                .map_or(self.point_ids.len(), |&(_, count)| count);
 
             let (position_min, position_max) =
-                self.position_bounds_for_attribute(att_id, &point_ids)?;
+                self.position_bounds_for_attribute(att_id, &self.point_ids)?;
             let mesh = self
                 .mesh
                 .as_ref()
@@ -2007,15 +2038,11 @@ impl MeshEncoder {
             .as_ref()
             .map(|mesh| (mesh.num_points(), mesh.num_faces()))
             .expect("mesh must be set before encoding");
-        if self.method == 0 {
-            encoded_num_points = source_num_points;
+        let encoded_num_points = if self.method == 0 {
+            source_num_points
         } else {
-            encoded_num_points = self.encoded_num_points_for_mesh(encoded_num_points)?;
-        }
-
-        self.active_corner_table = None;
-        self.active_data_to_corner_map = None;
-        self.active_vertex_to_data_map = None;
+            self.encoded_num_points_for_mesh()?
+        };
 
         let (mut major, mut minor) = self.options.get_version();
         if major == 0 && minor == 0 {
@@ -2040,34 +2067,12 @@ impl MeshEncoder {
         })
     }
 
-    fn encoded_point_ids_for_attribute(
-        &mut self,
-        att_id: i32,
-    ) -> Result<Vec<PointIndex>, DracoError> {
-        if self.method == 0 || self.use_single_connectivity {
-            return Ok(self.point_ids.clone());
-        }
-
-        if let Some(data_id) = self
-            .edgebreaker_attribute_connectivity
-            .iter()
-            .position(|connectivity| connectivity.attribute_id == att_id)
-        {
-            return self.prepare_active_attribute_connectivity(data_id);
-        }
-
-        Ok(self.point_ids.clone())
-    }
-
     /// The points a decoder reconstructs from an EdgeBreaker stream, as C++
     /// `MeshEdgebreakerEncoder::ComputeNumberOfEncodedPoints` counts them.
     ///
     /// Its point-id check is left out: a point change the decoder can see is
     /// also an attribute-vertex change, and identical unwelded points merge.
-    fn encoded_num_points_for_mesh(&mut self, base_num_points: usize) -> Result<usize, DracoError> {
-        if self.method == 0 {
-            return Ok(base_num_points);
-        }
+    fn encoded_num_points_for_mesh(&self) -> Result<usize, DracoError> {
         let mesh = self
             .mesh
             .as_ref()
@@ -2082,19 +2087,8 @@ impl MeshEncoder {
         }
 
         // Without interior seams an attribute shares the position's table.
-        let attribute_tables = self
-            .edgebreaker_attribute_connectivity
-            .iter()
-            .filter(|connectivity| !connectivity.no_interior_seams)
-            .map(|connectivity| {
-                crate::mesh_attribute_corner_table::cut_seam_edges_and_recompute_vertices(
-                    corner_table,
-                    &connectivity.seam_edges,
-                )
-                .map(|(table, _)| table)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        if attribute_tables.is_empty() {
+        let seams = &self.attribute_seam_corners;
+        if seams.is_empty() {
             return Ok(num_points);
         }
 
@@ -2108,10 +2102,7 @@ impl MeshEncoder {
             let mut corner = corner_table.swing_right(first_corner);
             let mut num_attribute_seams = 0usize;
             while corner != INVALID_CORNER_INDEX {
-                if attribute_tables
-                    .iter()
-                    .any(|table| table.vertex(corner) != table.vertex(last_corner))
-                {
+                if seams.contains(last_corner) {
                     num_attribute_seams += 1;
                 }
                 if corner == first_corner {
@@ -2284,5 +2275,46 @@ impl MeshEncoder {
 impl Default for MeshEncoder {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// The corners after which some attribute changes vertex going around a
+/// position vertex: bit `c` is set when an attribute's table gives
+/// `swing_right(c)` a different vertex than `c`, `swing_right` taken in the
+/// position's table.
+///
+/// This is all the point count needs from the attribute tables, so each one is
+/// folded in while the encode still has it and freed as before, instead of
+/// being held until the report: one bit per corner rather than a table's
+/// twelve bytes.
+#[derive(Debug, Default)]
+struct AttributeSeamCorners {
+    words: Vec<u64>,
+}
+
+impl AttributeSeamCorners {
+    fn mark(&mut self, corner_table: &CornerTable, attribute_table: &CornerTable) {
+        let num_corners = corner_table.num_corners();
+        self.words.resize(num_corners.div_ceil(64), 0);
+        for c in 0..num_corners {
+            let corner = crate::geometry_indices::CornerIndex(c as u32);
+            let next = corner_table.swing_right(corner);
+            if next != INVALID_CORNER_INDEX
+                && attribute_table.vertex(next) != attribute_table.vertex(corner)
+            {
+                self.words[c / 64] |= 1 << (c % 64);
+            }
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.words.is_empty()
+    }
+
+    fn contains(&self, corner: crate::geometry_indices::CornerIndex) -> bool {
+        let c = corner.0 as usize;
+        self.words
+            .get(c / 64)
+            .is_some_and(|word| word & (1 << (c % 64)) != 0)
     }
 }
