@@ -18,12 +18,22 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a chunk and a URI, and naming a chunk in a file that is not a GLB are
   errors. Writing still puts every buffer in one chunk, and a `.gltf` bundle
   drops the `chunk` property when the bytes move to a companion file.
+- A `files` entry can list `aliases`, and a nested glTF loaded from it reads
+  any URI that matches an alias exactly from the file the alias names, whether
+  that file is a buffer view or a URI, before asking the caller's resolver.
+  `File::aliases` lists them and validation checks their shape. Aliases apply
+  to the one file that lists them and are not inherited by files nested
+  deeper.
 - `GlbBinChunk` and `GltfContainer::bin_chunks` list the BIN chunks of a
   container with their indices. `GltfBufferReference::chunk` carries a
   buffer's `chunk`.
 
 ### Changed
 
+- A nested glTF embedded in a buffer view no longer finds sibling files by
+  their `name`. The 2.1 draft redirects URIs with `aliases` on the file that
+  contains them, and a `name` has no such meaning. Files that relied on names
+  need an `aliases` entry for each URI.
 - Breaking: `resolve_gltf_buffers` takes the BIN chunks as a
   `&[GlbBinChunk]` instead of an `Option<&[u8]>`. `GltfContainer` is no longer
   `Copy`, and `GltfBufferReference` has the new `chunk` field.

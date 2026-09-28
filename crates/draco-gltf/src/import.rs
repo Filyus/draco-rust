@@ -65,26 +65,27 @@ pub struct GltfResource {
 /// Default maximum explicit nested-asset depth for [`Import::load_asset`].
 pub const DEFAULT_EXTERNAL_ASSET_DEPTH: usize = 32;
 
-/// Resolves URIs in an embedded child against the parent's virtual `files`
-/// directory before falling back to the caller's resolver.
+/// Redirects the URIs a nested file contains to the `files` entries its own
+/// `aliases` name, and hands every other URI to the caller's resolver.
+///
+/// An alias matches a URI exactly. It applies to the one file that lists it:
+/// files nested deeper do not inherit it.
 #[cfg(feature = "resources")]
-struct PackagedResolver<'a> {
+struct AliasResolver<'a> {
     import: &'a Import,
+    aliases: Vec<(&'a str, FileIndex)>,
     fallback: &'a dyn ResourceResolver,
 }
 
 #[cfg(feature = "resources")]
-impl ResourceResolver for PackagedResolver<'_> {
+impl ResourceResolver for AliasResolver<'_> {
     fn resolve(&self, uri: &str) -> std::result::Result<Vec<u8>, crate::GltfError> {
-        let Some(file) = self
-            .import
-            .document
-            .files()
-            .into_iter()
-            .find(|file| file.name() == Some(uri))
-        else {
+        let Some((_, target)) = self.aliases.iter().find(|(alias, _)| *alias == uri) else {
             return self.fallback.resolve(uri);
         };
+        let file = self.import.document.file(*target).ok_or_else(|| {
+            crate::GltfError::InvalidGltf(format!("alias {uri:?} names a missing file"))
+        })?;
         if file.value().get("bufferView").is_some() {
             return self
                 .import
@@ -95,7 +96,7 @@ impl ResourceResolver for PackagedResolver<'_> {
             return crate::resolve_resource_uri(source, Some(self.fallback), None);
         }
         Err(crate::GltfError::InvalidGltf(format!(
-            "packaged file {uri:?} has no source"
+            "alias {uri:?} names a file with no source"
         )))
     }
 }
@@ -652,8 +653,6 @@ impl Import {
             .document
             .file(file)
             .ok_or_else(|| Error::Extension(format!("file {} is out of range", file.0)))?;
-        let packaged = entry.buffer_view().is_some()
-            || entry.uri().is_some_and(|uri| uri.starts_with("data:"));
         let source = entry.uri().map(str::to_owned).unwrap_or_else(|| {
             format!(
                 "bufferView:{}",
@@ -670,37 +669,23 @@ impl Import {
         } else {
             self.embedded_file_bytes(entry.value())?
         };
-        let mut loaded = if packaged {
-            let packaged_resolver = PackagedResolver {
-                import: self,
-                fallback: resolver,
-            };
-            parse_with_options(
-                &bytes,
-                None,
-                Some(&packaged_resolver),
-                limits,
-                #[cfg(feature = "draco-decode")]
-                &self.draco_decode_limits,
-                #[cfg(not(feature = "draco-decode"))]
-                &draco_core::DecodeLimits::default(),
-                profile,
-                extensions,
-            )?
-        } else {
-            parse_with_options(
-                &bytes,
-                None,
-                Some(resolver),
-                limits,
-                #[cfg(feature = "draco-decode")]
-                &self.draco_decode_limits,
-                #[cfg(not(feature = "draco-decode"))]
-                &draco_core::DecodeLimits::default(),
-                profile,
-                extensions,
-            )?
+        let alias_resolver = AliasResolver {
+            import: self,
+            aliases: entry.aliases().collect(),
+            fallback: resolver,
         };
+        let mut loaded = parse_with_options(
+            &bytes,
+            None,
+            Some(&alias_resolver),
+            limits,
+            #[cfg(feature = "draco-decode")]
+            &self.draco_decode_limits,
+            #[cfg(not(feature = "draco-decode"))]
+            &draco_core::DecodeLimits::default(),
+            profile,
+            extensions,
+        )?;
         loaded.provenance = self.provenance.clone();
         loaded.provenance.push(source);
         Ok(loaded)

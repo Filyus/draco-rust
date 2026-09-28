@@ -17,7 +17,7 @@ dependency update.
 | Unknown JSON and extensions | Supported | Unknown properties, `extras`, number lexemes and unregistered extension payloads survive parse/edit/write. Untouched JSON is returned byte-for-byte. |
 | GLB v2 | Supported | Read, write and validation. |
 | GLB v3 draft | Partly supported | Read/write of the chunk layout in the `draft-2.1` branch (`8e4bd403`, #2628): chunk header `type`, `encoding`, `u64 length`, chunks starting on 8-byte boundaries, plain (zero) chunk encoding only, checked range descriptors and seekable input. Several BIN chunks, named by `buffer.chunk`; unknown chunks are skipped. Writing uses one BIN chunk. Slice APIs remain available for small files. |
-| Unified `files` references | Supported | URI and buffer-view payloads, packaged nested assets, explicit loading, quotas, provenance, chain-depth limits and cycle rejection. |
+| Unified `files` references | Supported | URI and buffer-view payloads, `aliases` that redirect the URIs of a nested file, explicit loading, quotas, provenance, chain-depth limits and cycle rejection. |
 | External assets | Supported | References are exposed by typed views and loaded explicitly. Automatic recursive scene composition is intentionally left to the caller. |
 | Shapes | Structural support | Typed shape views, root references and shape type/subobject structure are validated. Exact numeric parameters await a pinned Khronos schema. |
 | Bounding volumes / BVH links | Structural support | `node.boundingVolume.shape` is typed and range-checked, and the surrounding node hierarchy retains its normal reference checks. Transform and shape-parameter semantics are not claimed yet. |

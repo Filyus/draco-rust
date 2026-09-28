@@ -150,12 +150,12 @@ fn external_asset_models_load_explicitly() {
 
 #[cfg(feature = "resources")]
 #[test]
-fn embedded_external_assets_resolve_packaged_file_names() {
+fn embedded_external_assets_resolve_their_aliases() {
     let child = br#"{"asset":{"version":"2.1"},"buffers":[{"byteLength":36,"uri":"mesh.bin"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
     let mut package = child.to_vec();
     package.extend_from_slice(&[0; 36]);
     let root = format!(
-        r#"{{"asset":{{"version":"2.1"}},"buffers":[{{"byteLength":{},"uri":"package.bin"}}],"bufferViews":[{{"buffer":0,"byteLength":{}}},{{"buffer":0,"byteOffset":{},"byteLength":36}}],"files":[{{"name":"part.gltf","bufferView":0,"mimeType":"model/gltf+json"}},{{"name":"mesh.bin","bufferView":1,"mimeType":"application/octet-stream"}}],"externalAssets":[{{"file":0}}]}}"#,
+        r#"{{"asset":{{"version":"2.1"}},"buffers":[{{"byteLength":{},"uri":"package.bin"}}],"bufferViews":[{{"buffer":0,"byteLength":{}}},{{"buffer":0,"byteOffset":{},"byteLength":36}}],"files":[{{"bufferView":0,"mimeType":"model/gltf+json","aliases":[{{"alias":"mesh.bin","file":1}}]}},{{"bufferView":1,"mimeType":"application/octet-stream"}}],"externalAssets":[{{"file":0}}]}}"#,
         package.len(),
         child.len(),
         child.len(),
@@ -184,6 +184,116 @@ fn embedded_external_assets_resolve_packaged_file_names() {
         )
         .unwrap();
     assert_eq!(child.resources.buffers, vec![vec![0; 36]]);
+}
+
+#[cfg(feature = "resources")]
+const ALIAS_CHILD: &[u8] = br#"{"asset":{"version":"2.1"},"buffers":[{"byteLength":36,"uri":"mesh.bin"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
+
+/// Loads file 0 of `files` from a root whose only buffer holds 36 bytes of 7,
+/// with `served` handing out everything else by URI.
+#[cfg(feature = "resources")]
+fn load_alias_child(
+    files: &str,
+    served: &dyn Fn(&str) -> std::result::Result<Vec<u8>, crate::GltfError>,
+) -> crate::Result<crate::Import> {
+    let root = format!(
+        r#"{{"asset":{{"version":"2.1"}},"buffers":[{{"byteLength":36,"uri":"package.bin"}}],"bufferViews":[{{"buffer":0,"byteLength":36}}],"files":{files},"externalAssets":[{{"file":0}}]}}"#
+    );
+    let resolver = |uri: &str| match uri {
+        "package.bin" => Ok(vec![7; 36]),
+        other => served(other),
+    };
+    let root = crate::parse_with_options(
+        root.as_bytes(),
+        None,
+        Some(&resolver),
+        &crate::ResourceLimits::default(),
+        &draco_core::DecodeLimits::default(),
+        ValidationProfile::Gltf21Draft,
+        &crate::ExtensionRegistry::default(),
+    )?;
+    root.load_external_asset(
+        crate::ExternalAssetIndex(0),
+        &resolver,
+        &crate::ResourceLimits::default(),
+        ValidationProfile::Gltf21Draft,
+        &crate::ExtensionRegistry::default(),
+    )
+}
+
+/// An alias applies to a nested file read from a URI too, not only to one
+/// embedded in a buffer view, and the resolver never sees the aliased URI.
+#[cfg(feature = "resources")]
+#[test]
+fn aliases_redirect_the_uris_of_a_nested_file_read_from_a_uri() {
+    let served = |uri: &str| match uri {
+        "child.gltf" => Ok(ALIAS_CHILD.to_vec()),
+        _ => Err(crate::GltfError::ExternalResourceDenied(uri.into())),
+    };
+    let child = load_alias_child(
+        r#"[{"uri":"child.gltf","mimeType":"model/gltf+json","aliases":[{"alias":"mesh.bin","file":1}]},{"bufferView":0,"mimeType":"application/gltf-buffer"}]"#,
+        &served,
+    )
+    .unwrap();
+    assert_eq!(child.resources.buffers, vec![vec![7; 36]]);
+}
+
+/// A URI no alias names goes to the caller's resolver, and a file's `name`
+/// alone redirects nothing.
+#[cfg(feature = "resources")]
+#[test]
+fn only_a_matching_alias_redirects_a_nested_uri() {
+    let served = |uri: &str| match uri {
+        "child.gltf" => Ok(ALIAS_CHILD.to_vec()),
+        "mesh.bin" => Ok(vec![9; 36]),
+        _ => Err(crate::GltfError::ExternalResourceDenied(uri.into())),
+    };
+    let unaliased = load_alias_child(
+        r#"[{"uri":"child.gltf","mimeType":"model/gltf+json","aliases":[{"alias":"other.bin","file":1}]},{"bufferView":0,"mimeType":"application/gltf-buffer"}]"#,
+        &served,
+    )
+    .unwrap();
+    assert_eq!(unaliased.resources.buffers, vec![vec![9; 36]]);
+
+    let named = load_alias_child(
+        r#"[{"uri":"child.gltf","mimeType":"model/gltf+json"},{"name":"mesh.bin","bufferView":0,"mimeType":"application/gltf-buffer"}]"#,
+        &served,
+    )
+    .unwrap();
+    assert_eq!(named.resources.buffers, vec![vec![9; 36]]);
+}
+
+#[cfg(feature = "strict-validation")]
+#[test]
+fn validation_rejects_malformed_file_aliases() {
+    let document = |aliases: &str| {
+        Document::from_json_bytes(
+            format!(
+                r#"{{"asset":{{"version":"2.1"}},"files":[{{"uri":"a.gltf","mimeType":"model/gltf+json","aliases":{aliases}}},{{"uri":"a.bin","mimeType":"application/gltf-buffer"}}]}}"#
+            )
+            .as_bytes(),
+        )
+        .unwrap()
+    };
+    let profile = ValidationProfile::Gltf21Draft;
+    document(r#"[{"alias":"a.bin","file":1}]"#)
+        .validate(profile)
+        .unwrap();
+    for bad in [
+        r#"{"alias":"a.bin","file":1}"#,
+        r#"[{"file":1}]"#,
+        r#"[{"alias":"a.bin"}]"#,
+        r#"[{"alias":"a.bin","file":2}]"#,
+        r#"[{"alias":4,"file":1}]"#,
+    ] {
+        assert!(document(bad).validate(profile).is_err(), "{bad}");
+    }
+    let listed = document(r#"[{"alias":"a.bin","file":1}]"#);
+    let file = listed.file(crate::FileIndex(0)).unwrap();
+    assert_eq!(
+        file.aliases().collect::<Vec<_>>(),
+        [("a.bin", crate::FileIndex(1))]
+    );
 }
 
 #[cfg(feature = "strict-validation")]

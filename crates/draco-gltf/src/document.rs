@@ -569,6 +569,24 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
                 "file must contain exactly one of uri or bufferView".into(),
             ]));
         }
+        if let Some(aliases) = file.get("aliases") {
+            let aliases = aliases
+                .as_array()
+                .ok_or_else(|| Error::Validation(vec!["file aliases is not an array".into()]))?;
+            for entry in aliases {
+                if entry.get("alias").and_then(Value::as_str).is_none() {
+                    return Err(Error::Validation(vec![
+                        "file alias is missing or not a string".into(),
+                    ]));
+                }
+                if entry.get("file").and_then(Value::as_u64).is_none() {
+                    return Err(Error::Validation(vec![
+                        "file alias target is missing or not an index".into(),
+                    ]));
+                }
+                check(entry, "file", "files")?;
+            }
+        }
     }
     for asset in root
         .get("externalAssets")
@@ -1341,6 +1359,24 @@ impl<'a> File<'a> {
     /// Returns the optional embedded buffer-view index.
     pub fn buffer_view(self) -> Option<BufferViewIndex> {
         index_value(self.value(), "bufferView").map(BufferViewIndex)
+    }
+    /// Lists the aliases this file redirects for the URIs it contains.
+    ///
+    /// Each pair is a URI as it appears inside this file and the `files` entry
+    /// to use instead. Aliases are not inherited by files nested deeper, and
+    /// entries that are malformed are left out; validation rejects them.
+    pub fn aliases(self) -> impl Iterator<Item = (&'a str, FileIndex)> {
+        self.value()
+            .get("aliases")
+            .and_then(Value::as_array)
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|entry| {
+                Some((
+                    entry.get("alias")?.as_str()?,
+                    FileIndex(index_value(entry, "file")?),
+                ))
+            })
     }
 }
 
