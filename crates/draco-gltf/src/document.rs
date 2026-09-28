@@ -1196,7 +1196,9 @@ fn validate_bounding_volume_transform(node: usize, volume: &Value) -> Result<()>
 fn validate_uids(root: &Value) -> Result<()> {
     use std::collections::BTreeMap;
 
-    let mut names = BTreeMap::new();
+    // Several objects may share a name, so every holder is kept: a UID that
+    // equals the name of any other object is a conflict, not only of the last.
+    let mut names: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     let mut uids = BTreeMap::new();
     for kind in [
         "accessors",
@@ -1225,7 +1227,7 @@ fn validate_uids(root: &Value) -> Result<()> {
         {
             let location = format!("{kind}[{index}]");
             if let Some(name) = value.get("name").and_then(Value::as_str) {
-                names.insert(name, location.clone());
+                names.entry(name).or_default().push(location.clone());
             }
             if let Some(uid) = value.get("uid") {
                 let uid = uid.as_str().ok_or_else(|| {
@@ -1240,12 +1242,13 @@ fn validate_uids(root: &Value) -> Result<()> {
         }
     }
     for (uid, location) in &uids {
-        if let Some(named) = names.get(uid) {
-            if named != location {
-                return Err(Error::Validation(vec![format!(
-                    "{location}.uid conflicts with {named}.name"
-                )]));
-            }
+        if let Some(named) = names
+            .get(uid)
+            .and_then(|holders| holders.iter().find(|holder| *holder != location))
+        {
+            return Err(Error::Validation(vec![format!(
+                "{location}.uid conflicts with {named}.name"
+            )]));
         }
     }
     Ok(())

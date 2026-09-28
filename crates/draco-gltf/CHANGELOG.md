@@ -59,6 +59,9 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- With `strict-validation`, a `uid` equal to a name is a conflict with every
+  other object of that name. When two objects shared a name, only the last was
+  compared, so a `uid` matching the earlier one passed.
 - GLB version 3 files use the chunk layout the glTF 2.1 draft defines. A chunk
   header is now the chunk type, the encoding and then the 64-bit length, and
   every chunk starts on an 8-byte boundary; this crate had the length first and

@@ -21,7 +21,7 @@ dependency update.
 | External assets | Supported | References are exposed by typed views and loaded explicitly. Automatic recursive scene composition is intentionally left to the caller. |
 | Shapes | Supported | Typed shape views and root references. With `strict-validation`, the box, capsule, cylinder, plane and sphere parameters are checked against the draft schema, degenerate shapes are refused, and a core shape may not carry another core shape's parameters. Shapes of other types are left to their extension. |
 | Bounding volumes / BVH links | Supported | `node.boundingVolume.shape` is typed and range-checked, and `rotation`, `scale` and `translation` are checked for length and numeric form. Whether a volume encloses its geometry is not checked. |
-| UIDs | Partial semantic support | UIDs are exposed, must be strings, are file-wide unique and may not collide with names. Final character-set rules are deferred until Khronos pins them. |
+| UIDs | Partial semantic support | UIDs are exposed, must be strings, are file-wide unique and may not equal the name of any other object. Only the explainer ([#2597](https://github.com/KhronosGroup/glTF/issues/2597)) defines them: the `draft-2.1` branch has no text or schema for `uid`, and the explainer leaves the character set to be chosen, so it is not checked. |
 | Asset thumbnail | Supported | `asset.thumbnail` is exposed and validated as an image index. Image pixel decoding is outside this crate. |
 | Single preferred scene | Supported | New assets use one preferred scene; readers retain glTF 2.0 multiple-scene compatibility. |
 | Non-sequential attributes | Supported | `TEXCOORD_n` and `COLOR_n` no longer need to start at zero or be consecutive under the draft profile. |

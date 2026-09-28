@@ -418,6 +418,16 @@ fn draft_validation_enforces_file_wide_uids() {
     assert!(name_conflict
         .validate(ValidationProfile::Gltf21Draft)
         .is_err());
+
+    // Two objects may share a name, but a UID equal to that name is a
+    // conflict with the one that is not its holder, whichever comes last.
+    let shared_name = Document::from_json_bytes(
+        br#"{"asset":{"version":"2.1"},"nodes":[{"name":"part-a"},{"name":"part-a","uid":"part-a"}]}"#,
+    )
+    .unwrap();
+    assert!(shared_name
+        .validate(ValidationProfile::Gltf21Draft)
+        .is_err());
 }
 
 #[test]
