@@ -7,7 +7,9 @@ use crate::draco_types::DataType;
 use crate::encoder_buffer::EncoderBuffer;
 use crate::encoder_options::EncoderOptions;
 use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
-use crate::geometry_indices::{FaceIndex, PointIndex, INVALID_ATTRIBUTE_VALUE_INDEX};
+use crate::geometry_indices::{
+    FaceIndex, PointIndex, INVALID_ATTRIBUTE_VALUE_INDEX, INVALID_CORNER_INDEX,
+};
 use crate::mesh::Mesh;
 use crate::mesh_edgebreaker_encoder::{
     select_edgebreaker_traversal, EdgebreakerAttributeConnectivity, EdgebreakerTraversal,
@@ -2057,22 +2059,74 @@ impl MeshEncoder {
         Ok(self.point_ids.clone())
     }
 
+    /// The points a decoder reconstructs from an EdgeBreaker stream, as C++
+    /// `MeshEdgebreakerEncoder::ComputeNumberOfEncodedPoints` counts them.
+    ///
+    /// Its point-id check is left out: a point change the decoder can see is
+    /// also an attribute-vertex change, and identical unwelded points merge.
     fn encoded_num_points_for_mesh(&mut self, base_num_points: usize) -> Result<usize, DracoError> {
-        if self.method == 0 || self.use_single_connectivity {
+        if self.method == 0 {
             return Ok(base_num_points);
         }
+        let mesh = self
+            .mesh
+            .as_ref()
+            .expect("mesh must be set before encoding");
+        let corner_table = self
+            .corner_table
+            .as_ref()
+            .ok_or_else(|| DracoError::general("corner_table must be set".to_string()))?;
+        let mut num_points = corner_table.num_vertices() - corner_table.num_isolated_vertices();
+        if self.use_single_connectivity || mesh.num_attributes() <= 1 {
+            return Ok(num_points);
+        }
 
-        let mut num_points = base_num_points;
-        for data_id in 0..self.edgebreaker_attribute_connectivity.len() {
-            if self.edgebreaker_attribute_connectivity[data_id].no_interior_seams {
+        // Without interior seams an attribute shares the position's table.
+        let attribute_tables = self
+            .edgebreaker_attribute_connectivity
+            .iter()
+            .filter(|connectivity| !connectivity.no_interior_seams)
+            .map(|connectivity| {
+                crate::mesh_attribute_corner_table::cut_seam_edges_and_recompute_vertices(
+                    corner_table,
+                    &connectivity.seam_edges,
+                )
+                .map(|(table, _)| table)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if attribute_tables.is_empty() {
+            return Ok(num_points);
+        }
+
+        for vertex in 0..corner_table.num_vertices() {
+            let vertex = crate::geometry_indices::VertexIndex(vertex as u32);
+            let first_corner = corner_table.left_most_corner(vertex);
+            if first_corner == INVALID_CORNER_INDEX {
                 continue;
             }
-            let point_ids = self.prepare_active_attribute_connectivity(data_id)?;
-            num_points = num_points.max(point_ids.len());
+            let mut last_corner = first_corner;
+            let mut corner = corner_table.swing_right(first_corner);
+            let mut num_attribute_seams = 0usize;
+            while corner != INVALID_CORNER_INDEX {
+                if attribute_tables
+                    .iter()
+                    .any(|table| table.vertex(corner) != table.vertex(last_corner))
+                {
+                    num_attribute_seams += 1;
+                }
+                if corner == first_corner {
+                    break;
+                }
+                last_corner = corner;
+                corner = corner_table.swing_right(corner);
+            }
+            // A full turn around an interior vertex crosses its first seam twice.
+            if !corner_table.is_vertex_on_boundary(vertex) && num_attribute_seams > 0 {
+                num_points += num_attribute_seams - 1;
+            } else {
+                num_points += num_attribute_seams;
+            }
         }
-        self.active_corner_table = None;
-        self.active_data_to_corner_map = None;
-        self.active_vertex_to_data_map = None;
         Ok(num_points)
     }
 

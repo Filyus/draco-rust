@@ -611,3 +611,185 @@ fn encoded_point_cloud_info_reports_the_method_chosen() {
     );
     assert_eq!(info.attributes[0].quantization_bits, Some(12));
 }
+
+/// A welded grid with deduplicated values: a normal seam down the middle
+/// column and a texture-coordinate seam across the middle row. Where they
+/// cross a vertex decodes to four points; where the normal seam stops at the
+/// bottom edge, one point is still split by the seam edge above it.
+fn build_crossing_seams_mesh(cells: usize) -> Mesh {
+    let side = cells + 1;
+    let half = cells / 2;
+    let mut positions = Vec::new();
+    for y in 0..side {
+        for x in 0..side {
+            positions.extend_from_slice(&[x as f32, y as f32, ((x * 7 + y * 3) % 5) as f32 * 0.1]);
+        }
+    }
+    let normals = [0.0f32, 0.0, 1.0, 0.0, 0.6, 0.8, 0.0, 0.3, 0.95];
+    let mut tex_coords = Vec::new();
+    for region in 0..2 {
+        for vertex in 0..side * side {
+            tex_coords.extend_from_slice(&[vertex as f32 / 100.0, region as f32]);
+        }
+    }
+
+    // One point per distinct (vertex, normal, texture coordinate).
+    let mut points: Vec<(u32, u32, u32)> = Vec::new();
+    let mut faces = Vec::new();
+    for y in 0..cells {
+        for x in 0..cells {
+            let normal = u32::from(x >= half);
+            let region = u32::from(y >= half);
+            let corner = |vx: usize, vy: usize| {
+                let vertex = (vy * side + vx) as u32;
+                let normal = if vx == half && vy == 0 { 2 } else { normal };
+                (vertex, normal, region * (side * side) as u32 + vertex)
+            };
+            let quad = [
+                corner(x, y),
+                corner(x + 1, y),
+                corner(x + 1, y + 1),
+                corner(x, y + 1),
+            ];
+            for triangle in [[0, 1, 2], [0, 2, 3]] {
+                faces.push(triangle.map(|i| {
+                    let key = quad[i];
+                    let index = points.iter().position(|p| *p == key).unwrap_or_else(|| {
+                        points.push(key);
+                        points.len() - 1
+                    });
+                    PointIndex(index as u32)
+                }));
+            }
+        }
+    }
+
+    let mut mesh = Mesh::new();
+    mesh.set_num_points(points.len());
+    for (attribute_type, components, values, pick) in [
+        (GeometryAttributeType::Position, 3u8, &positions, 0usize),
+        (GeometryAttributeType::Normal, 3, &normals.to_vec(), 1),
+        (GeometryAttributeType::TexCoord, 2, &tex_coords, 2),
+    ] {
+        let mut attribute = PointAttribute::new();
+        attribute.init(
+            attribute_type,
+            components,
+            DataType::Float32,
+            false,
+            values.len() / components as usize,
+        );
+        write_f32s(&mut attribute, values);
+        attribute.set_explicit_mapping(points.len());
+        for (point, key) in points.iter().enumerate() {
+            let value = [key.0, key.1, key.2][pick];
+            attribute.set_point_map_entry(PointIndex(point as u32), AttributeValueIndex(value));
+        }
+        mesh.add_attribute(attribute);
+    }
+    for face in faces {
+        mesh.add_face(face);
+    }
+    mesh
+}
+
+/// The reported point count is what the decoder reconstructs. The largest
+/// per-attribute value count, reported before, falls short here.
+#[test]
+fn crossing_seam_encoded_point_count_matches_decoded_mesh() {
+    for speed in [0, 3, 5] {
+        let mut options = EncoderOptions::new();
+        options.set_global_int("encoding_method", 1);
+        options.set_global_int("encoding_speed", speed);
+        options.set_global_int("decoding_speed", speed);
+
+        let mesh = build_crossing_seams_mesh(6);
+        let input_points = mesh.num_points();
+        let (info, decoded) = encode_decode_with_info(mesh, options);
+
+        assert_eq!(info.encoding_method, 1, "speed {speed}");
+        assert_eq!(
+            info.num_encoded_points,
+            decoded.num_points(),
+            "speed {speed}: {input_points} input points"
+        );
+        assert_info_matches_decoded(&info, &decoded);
+    }
+}
+
+/// Identical unwelded points across an interior edge decode to one point.
+#[test]
+fn identical_unwelded_points_are_counted_once() {
+    // 2x2 cells, a texture-coordinate seam down the middle, and a duplicate
+    // centre point in the top-left cell.
+    let side = 3usize;
+    let mut points: Vec<(u32, u32, bool)> = Vec::new();
+    let mut faces = Vec::new();
+    for y in 0..2 {
+        for x in 0..2 {
+            let region = u32::from(x >= 1);
+            let corner = |vx: usize, vy: usize| {
+                let vertex = (vy * side + vx) as u32;
+                (vertex, region * 9 + vertex, vertex == 4 && x == 0 && y == 1)
+            };
+            let quad = [
+                corner(x, y),
+                corner(x + 1, y),
+                corner(x + 1, y + 1),
+                corner(x, y + 1),
+            ];
+            for triangle in [[0, 1, 2], [0, 2, 3]] {
+                faces.push(triangle.map(|i| {
+                    let key = quad[i];
+                    let index = points.iter().position(|p| *p == key).unwrap_or_else(|| {
+                        points.push(key);
+                        points.len() - 1
+                    });
+                    PointIndex(index as u32)
+                }));
+            }
+        }
+    }
+
+    let mut mesh = Mesh::new();
+    mesh.set_num_points(points.len());
+    let positions: Vec<f32> = (0..9)
+        .flat_map(|v| [(v % 3) as f32, (v / 3) as f32, 0.0])
+        .collect();
+    let tex_coords: Vec<f32> = (0..18)
+        .flat_map(|v| [v as f32 / 20.0, (v / 9) as f32])
+        .collect();
+    for (attribute_type, components, values, pick) in [
+        (GeometryAttributeType::Position, 3u8, &positions, 0usize),
+        (GeometryAttributeType::TexCoord, 2, &tex_coords, 1),
+    ] {
+        let mut attribute = PointAttribute::new();
+        attribute.init(
+            attribute_type,
+            components,
+            DataType::Float32,
+            false,
+            values.len() / components as usize,
+        );
+        write_f32s(&mut attribute, values);
+        attribute.set_explicit_mapping(points.len());
+        for (point, key) in points.iter().enumerate() {
+            let value = [key.0, key.1][pick];
+            attribute.set_point_map_entry(PointIndex(point as u32), AttributeValueIndex(value));
+        }
+        mesh.add_attribute(attribute);
+    }
+    for face in faces {
+        mesh.add_face(face);
+    }
+    assert_eq!(mesh.num_points(), 13);
+
+    let mut options = EncoderOptions::new();
+    options.set_global_int("encoding_method", 1);
+    options.set_global_int("encoding_speed", 5);
+    options.set_global_int("decoding_speed", 5);
+    let (info, decoded) = encode_decode_with_info(mesh, options);
+
+    assert_eq!(decoded.num_points(), 12);
+    assert_info_matches_decoded(&info, &decoded);
+}
