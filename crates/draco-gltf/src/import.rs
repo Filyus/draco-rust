@@ -298,7 +298,26 @@ impl Import {
                 .map(crate::DracoPrimitiveExtension::from_contract)
                 .ok_or_else(|| Error::Extension("missing Draco extension".into()))?;
                 let (decoded, contract) = self.decode_draco_mesh(reference)?;
-                return extension.pack(&decoded, &contract);
+                let compressed = extension.pack(&decoded, &contract)?;
+                // The spec: attributes the extension does not list "must be
+                // processed as usual". Their count must match the stream.
+                let source = crate::DocumentAccessorSource::new(&self.document, &self.resources);
+                let mut attributes = compressed.attributes().to_vec();
+                for (semantic, index) in reference.attribute_indices() {
+                    if extension.unique_id(semantic).is_none() {
+                        attributes.push(read_packed_attribute(&source, semantic, index)?);
+                    }
+                }
+                if attributes.len() == compressed.attributes().len() {
+                    return Ok(compressed);
+                }
+                let geometry = crate::PackedGeometry::new(
+                    compressed.mode(),
+                    attributes,
+                    compressed.indices().cloned(),
+                )?;
+                geometry.validate(self.profile)?;
+                return Ok(geometry);
             }
             #[cfg(not(feature = "draco-decode"))]
             return Err(Error::Extension(
@@ -309,30 +328,7 @@ impl Import {
         let source = crate::DocumentAccessorSource::new(&self.document, &self.resources);
         let attributes = reference
             .attribute_indices()
-            .map(|(semantic, index)| {
-                let data = source.read_geometry_accessor(index.0)?;
-                let component_type = crate::ComponentType::from_gltf(data.component_type as u64)
-                    .ok_or_else(|| {
-                        Error::Extension(format!(
-                            "unsupported accessor componentType {}",
-                            data.component_type
-                        ))
-                    })?;
-                crate::PackedAttribute::new(
-                    semantic,
-                    data.count,
-                    data.components,
-                    component_type,
-                    data.normalized,
-                    data.bytes,
-                )
-                // Only the uncompressed path can name a source accessor. A
-                // Draco primitive's bytes come from its own codec stream, so
-                // two primitives naming one accessor say nothing about whether
-                // their vertex data is the same.
-                .map(|attribute| attribute.with_source_accessor(index.0))
-                .map_err(Error::Geometry)
-            })
+            .map(|(semantic, index)| read_packed_attribute(&source, semantic, index))
             .collect::<Result<Vec<_>>>()?;
         let indices = reference
             .indices()
@@ -930,6 +926,37 @@ pub fn parse_with_options(
         #[cfg(feature = "resources")]
         provenance: Vec::new(),
     })
+}
+
+/// Materializes one ordinary attribute accessor.
+#[cfg(feature = "geometry")]
+fn read_packed_attribute(
+    source: &crate::DocumentAccessorSource<'_>,
+    semantic: &str,
+    index: crate::AccessorIndex,
+) -> Result<crate::PackedAttribute> {
+    let data = source.read_geometry_accessor(index.0)?;
+    let component_type =
+        crate::ComponentType::from_gltf(data.component_type as u64).ok_or_else(|| {
+            Error::Extension(format!(
+                "unsupported accessor componentType {}",
+                data.component_type
+            ))
+        })?;
+    crate::PackedAttribute::new(
+        semantic,
+        data.count,
+        data.components,
+        component_type,
+        data.normalized,
+        data.bytes,
+    )
+    // Only the uncompressed path can name a source accessor. A
+    // Draco primitive's bytes come from its own codec stream, so
+    // two primitives naming one accessor say nothing about whether
+    // their vertex data is the same.
+    .map(|attribute| attribute.with_source_accessor(index.0))
+    .map_err(Error::Geometry)
 }
 
 #[cfg(test)]

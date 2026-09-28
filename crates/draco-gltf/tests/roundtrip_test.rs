@@ -271,3 +271,82 @@ fn host_neutral_draco_encode_refuses_points() {
     let points = PackedGeometry::new(PrimitiveMode::Points, vec![position], None).unwrap();
     assert!(DracoPrimitiveEncoding::encode(&points, &CompressionOptions::default()).is_err());
 }
+
+/// Attributes the extension does not list are read as ordinary accessors.
+#[test]
+fn draco_primitive_keeps_uncompressed_extra_attributes() {
+    use draco_gltf::{JsonValue, PrimitiveIndex};
+
+    let first = PrimitiveIndex {
+        mesh: MeshIndex(0),
+        primitive: 0,
+    };
+    let mut compressed = open(
+        fixture("testdata/Box/glTF_Binary/Box.glb"),
+        ValidationProfile::Gltf20,
+    )
+    .unwrap();
+    compressed
+        .compress_primitive(MeshIndex(0), 0, CompressionOptions::default())
+        .unwrap();
+    let decoded = compressed.read_primitive(first).unwrap();
+    let vertices = decoded.vertex_count();
+
+    // One float per decoded vertex, in an ordinary accessor.
+    let with_extra = |count: usize| {
+        let mut import = compressed.clone();
+        let values: Vec<f32> = (0..count).map(|i| i as f32).collect();
+        let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let buffer = import.resources.buffers.len();
+        let root = import.document.as_value_mut();
+        root["buffers"]
+            .as_array_mut()
+            .unwrap()
+            .push(JsonValue::object([(
+                "byteLength",
+                JsonValue::from(bytes.len()),
+            )]));
+        let view = root["bufferViews"].as_array().unwrap().len();
+        root["bufferViews"]
+            .as_array_mut()
+            .unwrap()
+            .push(JsonValue::object([
+                ("buffer", JsonValue::from(buffer)),
+                ("byteLength", JsonValue::from(bytes.len())),
+            ]));
+        let accessor = root["accessors"].as_array().unwrap().len();
+        root["accessors"]
+            .as_array_mut()
+            .unwrap()
+            .push(JsonValue::object([
+                ("bufferView", JsonValue::from(view)),
+                ("componentType", JsonValue::from(5126u64)),
+                ("count", JsonValue::from(count)),
+                ("type", JsonValue::from("SCALAR")),
+            ]));
+        root["meshes"][0]["primitives"][0]["attributes"]["_INDEX"] = JsonValue::from(accessor);
+        import.resources.buffers.push(bytes.clone());
+        (import, bytes)
+    };
+
+    let (import, bytes) = with_extra(vertices);
+    let geometry = import.read_primitive(first).unwrap();
+    assert_eq!(geometry.attributes().len(), decoded.attributes().len() + 1);
+    let extra = geometry.attributes().last().unwrap();
+    assert_eq!(extra.semantic(), "_INDEX");
+    assert_eq!(extra.bytes(), bytes.as_slice());
+    // The compressed attributes are unchanged.
+    assert_eq!(
+        &geometry.attributes()[..decoded.attributes().len()],
+        decoded.attributes()
+    );
+
+    // Decompression keeps it.
+    let mut decompressed = import.clone();
+    decompressed.decompress_in_place().unwrap();
+    assert_eq!(decompressed.read_primitive(first).unwrap(), geometry);
+
+    // A count that does not match the stream is refused.
+    let (mismatched, _) = with_extra(vertices + 1);
+    assert!(mismatched.read_primitive(first).is_err());
+}
