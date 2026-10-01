@@ -4407,6 +4407,36 @@ cut to 17 bits now fails a test where no test failed before. Cut to 19 bits
 nothing can fail: the raw coder takes 18-bit symbols at most, so the field's
 upper bits only defend against streams no encoder writes.
 
+**And on lidar captures.** Two airborne scans (10.7M and 29.4M points, LAZ
+converted to PLY in file order), a terrestrial single-station scan (29.7M), a
+rotating sensor's frames one at a time (121K) and concatenated (13.2M):
+
+| | decode, 1 thread | decode, 16 | encode, 1 thread | encode, 16 |
+| --- | ---: | ---: | ---: | ---: |
+| airborne, 10.7M | `-17.5%` | `-19%` | `-38%` | `-41%` |
+| airborne, 29.4M | -- | -- | `-45%` | `-48%` |
+| terrestrial, 29.7M | `-14%` | `-8%` | `-42%` | `-51%` |
+| rotating, 13.2M / one frame | `-19%` / `-16%` | `-1%` / `-17%` | `-35%` / `-28%` | `-52%` / `-17%` |
+
+The order search keeps a rotating sensor's frame in firing order, which beats
+the curve by 8%, and takes 11% off the terrestrial scan where the curve alone
+takes 1.4%. On an airborne scan with time as integer ticks it wrote 161 MB
+where scan order takes 115 MB: its columns were priced on bytes, which cap a
+column's cost at eight bits a step. They are now priced on the encoder's own
+grid, and components the encoder copies raw are not priced at all; the scan
+keeps its order (`-28.5%`), every other cloud is byte-identical.
+
+Two things the captures showed that are not speed:
+
+- **A `f64` attribute is copied raw**, eight bytes a point; GPS time was 70%
+  of one airborne stream (235 of 333 MB). Written as integer ticks from the
+  first point it codes at about 17 bits a point, which is the user's choice
+  to make, not the bitstream's.
+- **The decoder refused a stream its own encoder wrote**: 29.4M points whose
+  RGB is all zeros make one constant three-component attribute, 88M symbols
+  with no payload, past `MAX_UNBACKED_BYTES`. Split off as its own task; it
+  is on main, not this branch.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
@@ -4441,6 +4471,15 @@ by the round after it, below. What is left:
   0.901, uniform loses at 0.917). The smallest next step is to encode a
   trial block both ways with the real attribute coder and compare bytes, and
   price that against the search's time.
+- **The estimate prices a step by its size; the coder prices how steps are
+  distributed.** A step that is always about the same -- time at a constant
+  pulse rate, a periodic pattern -- costs the coder next to nothing and the
+  estimate the logarithm of its size. A scan of 60K points on a 0.5 m grid
+  with a periodic height and time at a near-constant 1,000 ticks a point
+  searched to 203 KB where the scan order takes 62 KB. Pricing columns for
+  the decision by the entropy of their sampled steps, rather than their
+  sizes, is the smallest step; the same trial-block encode as above would
+  settle both.
 - **The PLY reader still matches property names as strings** for every
   property of every vertex. It no longer shows in the profile after the
   allocations went, but a per-property action table built once would remove
