@@ -58,6 +58,19 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   search's estimates are summed in pieces side by side, where both ran on the
   calling thread. Encoding that scan with the order search on sixteen threads
   takes 0.81 s instead of 1.16 s; the order is the same on any thread count.
+- A sequential point cloud's attributes decode two at a time, their rANS
+  symbols in one loop, which the core runs about twice as fast as one stream
+  after another. This now happens on one thread as well, and so on
+  WebAssembly: the 742-thousand-point splat decodes in 0.27 s on one thread,
+  0.40 s before this release.
+- A rANS table finer than 16 bits -- a 16-bit position's -- is summarized in
+  4096 buckets that stay in the first-level cache, where most of the
+  probability lies in buckets one symbol owns. Scans decode 13-25% faster.
+- When an encode has more threads than attributes, the spare ones go to the
+  attributes' own passes -- quantization, prediction, the symbol plan. The
+  eight-million-point scan encodes on sixteen threads in 0.26 s instead of
+  0.45 s, 0.69 s instead of 1.16 s with the order search. The stream is the
+  same on any number of threads.
 
 ### Fixed
 

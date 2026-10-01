@@ -36,7 +36,7 @@ figure at all.
 `rejected` -- tried, deliberately not kept. `retracted` -- an earlier claim
 here was withdrawn. `diagnostic` -- measured only, no change proposed.
 
-72 rounds: 42 landed, 10 diagnostic, 10 null, 8 retracted, 2 rejected.
+73 rounds: 43 landed, 10 diagnostic, 10 null, 8 retracted, 2 rejected.
 
 | Round | Verdict | Headline |
 | --- | --- | ---: |
@@ -112,6 +112,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [KTX2: The BC7 Block Writer](#ktx2-the-bc7-block-writer) | landed | `1.02x -> 0.93x` |
 | [KTX2: Zstd, And Which Decoder](#ktx2-zstd-and-which-decoder) | landed | `3.4 -> 2.5 ms` |
 | [Point Clouds On One Thread: Zeros Nobody Read, And Reads In A Row](#point-clouds-on-one-thread-zeros-nobody-read-and-reads-in-a-row) | landed | `-21 to -34%` |
+| [Point Clouds, Continued: Two Chains At Once, Buckets, And Threads Inside An Attribute](#point-clouds-continued-two-chains-at-once-buckets-and-threads-inside-an-attribute) | landed | `-13 to -43%` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -4310,6 +4311,55 @@ fixed-width vertex property read back from all three encodings -- the
 big-endian write had been tested by its point count only, and passed with
 positions in the wrong byte order.
 
+### Point Clouds, Continued: Two Chains At Once, Buckets, And Threads Inside An Attribute
+
+2026-10-01, same machine, harness and reference tree (`7802fd6c`) as the
+round above, which left three leads; this round took them. Each figure is
+best-of, every pair checked equal in bytes before it was timed.
+
+**Two rANS streams in one loop.** A raw run is one dependent chain. On eight
+splat-like streams in a microbenchmark the rANS stage cost 4.4 ns a symbol
+stream by stream, 2.3 paired with a branchless refill, 3.0 four at a time.
+With a branching refill, paired was 3.1: a mispredicted refill stalls both
+chains. Paired streams need both runs at once, which the side-by-side decode
+already has -- the walk steps over each stream and makes it a job -- so jobs
+now run two at a time, their symbols decoded together
+(`decode_raw_symbol_pair`) and handed to each job, which steps over its own.
+The path now runs on one thread too, which is where WebAssembly always is.
+Two mistakes found on the way, both caught by measurement rather than by a
+test failing, since both were correct and only slow: a normal's stream codes
+two octahedral components, not the attribute's three, so every pair with a
+normal declined and decoded twice; and a worker that waited for a second job
+held a scan's one job until the walk had decoded its colours in place. A
+test now counts the paired jobs on one thread.
+
+**A fine slot table summarized in 4096 buckets** (32 KB, in L1): a bucket
+one symbol owns is the whole step in one read, a shared one names its first
+symbol and the run walks to the owner. On castle's position stream at 18 bits
+a symbol cost 5.7 ns with 92% of the mass in owned buckets (order search),
+9.7 ns with 51% (scan order), and 7.3-7.6 ns through the slot table, so the
+buckets are kept only from 80%.
+
+**An attribute's own passes on the threads its siblings leave idle.** Two or
+three attributes kept two or three threads busy. Threads beyond one an
+attribute now split quantization, the gather, the wrap bounds and delta
+corrections, zigzag and the symbol plan; the rANS write stays one chain.
+Bounds are folded in piece order with the single pass's comparison, so
+`0.0` and `-0.0` resolve as they did. One regression was found and fixed
+inside the change: the shared bounds helper first took `min()` and `max()` as
+two passes, +5% on a splat's single-thread encode, where the old wrap code
+had one; folded into one pass it is 6% faster than before.
+
+| | before the series | after this round |
+| --- | ---: | ---: |
+| decode, one thread, train_7000 | `0.392 s` | `0.267 s` (`-31.6%`) |
+| decode, one thread, castle by order search | `0.364 s` | `0.315 s` (`-13.4%`) |
+| decode, one thread, district / statue, scan order | `0.093` / `0.056 s` | `0.070` / `0.044 s` (`-25%` / `-21%`) |
+| decode, sixteen threads, castle by order search | `0.275 s` | `0.223 s` (`-19%`) |
+| encode, one thread, train_7000 | `0.791 s` | `0.527 s` (`-33%`) |
+| encode, sixteen threads, castle, scan order | `0.453 s` | `0.258 s` (`-43%`) |
+| encode, sixteen threads, castle by order search | `1.158 s` | `0.693 s` (`-40%`) |
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
@@ -4319,22 +4369,23 @@ one line.
 
 ### What the point-cloud round left behind
 
-- **Two rANS streams in one loop.** After the round a splat decode is 42%
-  in the rANS run, a single dependent chain of about 18 cycles a symbol. Two
-  attributes' runs interleaved in one loop are independent chains the core
-  can overlap -- the only way a single thread, and so WebAssembly, gets more
-  out of this stage. The prescan the parallel decode already does knows where
-  each stream starts; what is missing is splitting `decode_values` into the
-  part before the run, the run, and the part after.
-- **The scans' slot table.** A two-level table -- 4096 coarse buckets, 84-96%
-  of the probability mass in buckets one symbol owns -- would keep the common
-  read in L1. Measured only as bucket statistics, not built.
-- **One huge attribute on many threads.** A scan's position is one attribute
-  of 24M values, and the encode's attribute stage runs it on one thread for
-  410 ms of castle's 0.81 s. Quantization, the delta, zigzag and the plan are
-  per value; only the rANS write is a chain.
-- **The parallel dequantization** still sizes its target with zeros, since
-  its threads write disjoint chunks of it.
+The first three leads this section held -- two rANS streams in one loop, a
+two-level slot table, an attribute's passes on several threads -- were taken
+by the round after it, below. What is left:
+
+- **One attribute's dequantization on several threads.** The decode
+  dequantizes one attribute a thread, so a scan's 24-million-value position
+  is one thread's 25 ms or so of a 0.22 s sixteen-thread decode. Splitting
+  it needs a target written in pieces, which in safe code means sizing it
+  with zeros or building pieces and copying them in -- a full pass either
+  way, about what the split would save. Worth it only with a zeroed
+  allocation that does not touch the pages.
+- **The tagged values on several threads.** A scan's colours code tagged;
+  the bit packing is a serial walk, though each value's bit offset is a
+  prefix sum of the lengths and could be found in pieces.
+- **Four streams in one loop** measured slower than two (3.0 against 2.3 ns
+  a symbol), out of registers; two of them in a register-lean loop are not
+  ruled out.
 - **The PLY reader still matches property names as strings** for every
   property of every vertex. It no longer shows in the profile after the
   allocations went, but a per-property action table built once would remove
