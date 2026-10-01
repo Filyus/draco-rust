@@ -701,3 +701,478 @@ fn how_much_is_left_in_the_order() {
         );
     }
 }
+
+#[derive(Clone, Copy, Debug)]
+enum Cost {
+    /// The plain length of the step.
+    Linear,
+    /// `sqrt` of the length: a long step is dear but not twice as dear.
+    Root,
+    /// `ln(1 + length)`: what a residual costs to code, roughly.
+    Log,
+}
+
+impl Cost {
+    #[inline]
+    fn of(self, a: &[i32; 3], b: &[i32; 3]) -> f64 {
+        let dx = i64::from(a[0] - b[0]);
+        let dy = i64::from(a[1] - b[1]);
+        let dz = i64::from(a[2] - b[2]);
+        let squared = (dx * dx + dy * dy + dz * dz) as f64;
+        match self {
+            Cost::Linear => squared.sqrt(),
+            Cost::Root => squared.sqrt().sqrt(),
+            Cost::Log => (1.0 + squared.sqrt()).ln(),
+        }
+    }
+}
+
+/// Reverses a stretch of the path whenever that shortens it under `cost`,
+/// looking no further than `window` points ahead of the stretch's start. The
+/// points are copied into path order first, so the walk reads memory in order
+/// instead of chasing indices into the file's own order.
+fn two_opt_in_window(
+    cells: &[[u32; 3]],
+    order: &mut [u32],
+    window: usize,
+    passes: usize,
+    cost: Cost,
+) {
+    let n = order.len();
+    let mut points: Vec<[i32; 3]> = order
+        .iter()
+        .map(|&p| {
+            let c = cells[p as usize];
+            [c[0] as i32, c[1] as i32, c[2] as i32]
+        })
+        .collect();
+    for _ in 0..passes {
+        let mut improved = false;
+        for i in 0..n.saturating_sub(1) {
+            for j in i + 1..(i + window).min(n) {
+                let b = points[i];
+                let c = points[j];
+                let mut old = 0.0;
+                let mut new = 0.0;
+                if i > 0 {
+                    old += cost.of(&points[i - 1], &b);
+                    new += cost.of(&points[i - 1], &c);
+                }
+                if j + 1 < n {
+                    old += cost.of(&c, &points[j + 1]);
+                    new += cost.of(&b, &points[j + 1]);
+                }
+                if new + 1e-9 < old {
+                    points[i..=j].reverse();
+                    order[i..=j].reverse();
+                    improved = true;
+                }
+            }
+        }
+        if !improved {
+            break;
+        }
+    }
+}
+
+fn scene_cloud() -> Option<(PathBuf, PointCloud)> {
+    let path = std::env::var_os("DRACO_SPLAT_PLY").map(PathBuf::from)?;
+    let source = std::fs::read(&path).expect("the scene reads");
+    let mesh = draco_io::ply_reader::PlyReader::from_bytes(source)
+        .with_generic_attributes(true)
+        .read_mesh()
+        .expect("the scene parses");
+    Some((path, mesh.into_point_cloud()))
+}
+
+#[test]
+#[ignore = "needs a scene in DRACO_SPLAT_PLY: run with --release --ignored --nocapture"]
+fn how_far_a_local_refinement_gets() {
+    let Some((path, cloud)) = scene_cloud() else {
+        println!("DRACO_SPLAT_PLY is not set; nothing to measure");
+        return;
+    };
+    let num_points = cloud.num_points();
+    println!("scene: {} ({num_points} points)", path.display());
+    let cells = quantized_positions(&cloud).expect("positions");
+
+    let morton = morton_order(&cells);
+    let hilbert = hilbert_order(&cells);
+    let mut arms: Vec<(String, Vec<u32>, f64)> = vec![
+        ("Morton".into(), morton.clone(), 0.0),
+        ("Hilbert".into(), hilbert.clone(), 0.0),
+    ];
+    for cost in [Cost::Linear, Cost::Root, Cost::Log] {
+        for (window, passes) in [(8usize, 1usize), (16, 2), (32, 3)] {
+            let mut order = hilbert.clone();
+            let started = std::time::Instant::now();
+            two_opt_in_window(&cells, &mut order, window, passes, cost);
+            let seconds = started.elapsed().as_secs_f64();
+            let mut check = order.clone();
+            check.sort_unstable();
+            assert!(
+                check.iter().enumerate().all(|(i, &p)| p == i as u32),
+                "a point was lost"
+            );
+            arms.push((
+                format!("H + 2-opt {cost:?} w{window}x{passes}"),
+                order,
+                seconds,
+            ));
+        }
+    }
+
+    println!(
+        "{:<30} {:>10} {:>9} {:>12} {:>10} {:>12} {:>10}",
+        "order", "mean step", "refine s", "search off", "vs Morton", "search on", "vs Morton"
+    );
+    let mut reference = (0usize, 0usize);
+    for (label, order, seconds) in &arms {
+        let permuted = permute(&cloud, order);
+        let plain = encode(&permuted, false);
+        let searched = encode(&permuted, true);
+        if label == "Morton" {
+            reference = (plain, searched);
+        }
+        let against = |bytes: usize, base: usize| {
+            format!("{:+.2}%", (bytes as f64 / base as f64 - 1.0) * 100.0)
+        };
+        println!(
+            "{label:<30} {:>10.1} {:>9.2} {:>12.3} {:>10} {:>12.3} {:>10}",
+            mean_step(&cells, order),
+            seconds,
+            plain as f64 / num_points as f64,
+            against(plain, reference.0),
+            searched as f64 / num_points as f64,
+            against(searched, reference.1),
+        );
+    }
+}
+
+/// 2-opt in a window where a step costs `ln(1 + d)`, with `d` measured over the
+/// position cells and the standardized attributes together: an attribute's
+/// standard deviation counts as `weight` position cells.
+fn two_opt_with_attributes(
+    cells: &[[u32; 3]],
+    attributes: &[Vec<f32>],
+    weight: f32,
+    order: &mut [u32],
+    window: usize,
+    passes: usize,
+) {
+    const K: usize = 16;
+    let n = order.len();
+    let scales: Vec<(f32, f32)> = attributes
+        .iter()
+        .map(|values| {
+            let mean = values.iter().sum::<f32>() / values.len() as f32;
+            let variance =
+                values.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / values.len() as f32;
+            (mean, weight / variance.sqrt().max(1e-9))
+        })
+        .collect();
+    let mut points: Vec<[f32; K]> = order
+        .iter()
+        .map(|&p| {
+            let mut v = [0f32; K];
+            for axis in 0..3 {
+                v[axis] = cells[p as usize][axis] as f32;
+            }
+            for (k, values) in attributes.iter().enumerate().take(K - 3) {
+                v[3 + k] = (values[p as usize] - scales[k].0) * scales[k].1;
+            }
+            v
+        })
+        .collect();
+    let cost = |a: &[f32; K], b: &[f32; K]| -> f32 {
+        let mut squared = 0f32;
+        for k in 0..K {
+            let d = a[k] - b[k];
+            squared += d * d;
+        }
+        (1.0 + squared.sqrt()).ln()
+    };
+    for _ in 0..passes {
+        let mut improved = false;
+        for i in 0..n.saturating_sub(1) {
+            for j in i + 1..(i + window).min(n) {
+                let b = points[i];
+                let c = points[j];
+                let mut old = 0.0;
+                let mut new = 0.0;
+                if i > 0 {
+                    old += cost(&points[i - 1], &b);
+                    new += cost(&points[i - 1], &c);
+                }
+                if j + 1 < n {
+                    old += cost(&c, &points[j + 1]);
+                    new += cost(&b, &points[j + 1]);
+                }
+                if new + 1e-6 < old {
+                    points[i..=j].reverse();
+                    order[i..=j].reverse();
+                    improved = true;
+                }
+            }
+        }
+        if !improved {
+            break;
+        }
+    }
+}
+
+#[test]
+#[ignore = "needs a scene in DRACO_SPLAT_PLY: run with --release --ignored --nocapture"]
+fn would_the_attributes_belong_in_the_order() {
+    let Some((path, cloud)) = scene_cloud() else {
+        println!("DRACO_SPLAT_PLY is not set; nothing to measure");
+        return;
+    };
+    let num_points = cloud.num_points();
+    println!("scene: {} ({num_points} points)", path.display());
+    let cells = quantized_positions(&cloud).expect("positions");
+    let names = attribute_names(&cloud);
+    println!("attributes: {}", names.iter().flatten().count());
+    let wanted: Vec<&str> = match std::env::var("DRACO_ORDER_ATTRS").as_deref() {
+        Ok("colour") => vec!["f_dc_0", "f_dc_1", "f_dc_2"],
+        Ok("shape") => vec!["opacity", "scale_0", "scale_1", "scale_2"],
+        Ok("all13") => vec![
+            "f_dc_0",
+            "f_dc_1",
+            "f_dc_2",
+            "opacity",
+            "scale_0",
+            "scale_1",
+            "scale_2",
+            "rot_0",
+            "rot_1",
+            "rot_2",
+            "rot_3",
+            "f_rest_0",
+            "f_rest_15",
+        ],
+        _ => vec![
+            "f_dc_0", "f_dc_1", "f_dc_2", "opacity", "scale_0", "scale_1", "scale_2",
+        ],
+    };
+    println!("attributes in the cost: {wanted:?}");
+    let attributes: Vec<Vec<f32>> = wanted
+        .iter()
+        .map(|name| {
+            let id = names
+                .iter()
+                .position(|n| n.as_deref() == Some(name))
+                .unwrap_or_else(|| panic!("no attribute named {name}"));
+            let attribute = cloud.attribute(id as i32);
+            (0..num_points)
+                .map(|p| {
+                    read_f32(
+                        attribute,
+                        attribute.mapped_index(PointIndex(p as u32)).0 as usize,
+                        0,
+                    )
+                })
+                .collect()
+        })
+        .collect();
+
+    let morton = morton_order(&cells);
+    let hilbert = hilbert_order(&cells);
+    let mut arms: Vec<(String, Vec<u32>, f64)> = vec![
+        ("Morton".into(), morton, 0.0),
+        ("Hilbert".into(), hilbert.clone(), 0.0),
+    ];
+    let weights: Vec<f32> = std::env::var("DRACO_ORDER_WEIGHTS")
+        .ok()
+        .map(|w| w.split(',').filter_map(|x| x.parse().ok()).collect())
+        .unwrap_or_else(|| vec![0.0, 0.5, 1.0, 2.0, 4.0]);
+    for weight in weights {
+        let mut order = hilbert.clone();
+        let started = std::time::Instant::now();
+        two_opt_with_attributes(&cells, &attributes, weight, &mut order, 16, 2);
+        arms.push((
+            format!("H + 2-opt Log+attrs w16x2 a{weight}"),
+            order,
+            started.elapsed().as_secs_f64(),
+        ));
+    }
+    println!(
+        "{:<38} {:>10} {:>9} {:>12} {:>10}",
+        "order", "mean step", "refine s", "search off", "vs Morton"
+    );
+    let mut reference = 0usize;
+    for (label, order, seconds) in &arms {
+        let plain = encode(&permute(&cloud, order), false);
+        if label == "Morton" {
+            reference = plain;
+        }
+        println!(
+            "{label:<38} {:>10.1} {:>9.2} {:>12.3} {:>9.2}%",
+            mean_step(&cells, order),
+            seconds,
+            plain as f64 / num_points as f64,
+            (plain as f64 / reference as f64 - 1.0) * 100.0,
+        );
+    }
+}
+
+/// Every attribute but the position, quantized to the byte the encode uses
+/// (`quantization_bits` 8 over each component's own range), one row a point.
+fn byte_rows(cloud: &PointCloud) -> Vec<[u8; 64]> {
+    let num_points = cloud.num_points();
+    let mut rows = vec![[0u8; 64]; num_points];
+    let mut column = 0usize;
+    for id in 0..cloud.num_attributes() {
+        let attribute = cloud.attribute(id);
+        if attribute.attribute_type() == GeometryAttributeType::Position {
+            continue;
+        }
+        for component in 0..attribute.num_components() as usize {
+            let values: Vec<f32> = (0..num_points)
+                .map(|p| {
+                    read_f32(
+                        attribute,
+                        attribute.mapped_index(PointIndex(p as u32)).0 as usize,
+                        component,
+                    )
+                })
+                .collect();
+            let low = values.iter().copied().fold(f32::INFINITY, f32::min);
+            let high = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let span = (high - low).max(1e-12);
+            for (p, v) in values.iter().enumerate() {
+                rows[p][column] = (((v - low) / span) * 255.0 + 0.5) as u8;
+            }
+            column += 1;
+        }
+    }
+    assert!(column <= 64, "{column} attribute columns do not fit a row");
+    rows
+}
+
+/// 2-opt in a window where a step costs the estimated bits of the residuals it
+/// leaves: `log2(1 + |delta|)` summed over the position and every attribute
+/// column, each in the units the encode quantizes it to. `columns` limits how
+/// many attribute columns count.
+fn two_opt_by_estimated_bits(
+    cells: &[[u32; 3]],
+    rows: &[[u8; 64]],
+    columns: usize,
+    order: &mut [u32],
+    window: usize,
+    passes: usize,
+) {
+    #[derive(Clone, Copy)]
+    struct Point {
+        position: [i32; 3],
+        row: [u8; 64],
+    }
+    let lut8: Vec<f32> = (0..256).map(|d| (1.0 + d as f32).log2()).collect();
+    let lut16: Vec<f32> = (0..65536).map(|d| (1.0 + d as f32).log2()).collect();
+    let n = order.len();
+    let mut points: Vec<Point> = order
+        .iter()
+        .map(|&p| Point {
+            position: [
+                cells[p as usize][0] as i32,
+                cells[p as usize][1] as i32,
+                cells[p as usize][2] as i32,
+            ],
+            row: rows[p as usize],
+        })
+        .collect();
+    let cost = |a: &Point, b: &Point| -> f32 {
+        let mut bits = 0f32;
+        for axis in 0..3 {
+            bits += lut16[(a.position[axis] - b.position[axis]).unsigned_abs() as usize];
+        }
+        for k in 0..columns {
+            bits += lut8[a.row[k].abs_diff(b.row[k]) as usize];
+        }
+        bits
+    };
+    for _ in 0..passes {
+        let mut improved = false;
+        for i in 0..n.saturating_sub(1) {
+            for j in i + 1..(i + window).min(n) {
+                let b = points[i];
+                let c = points[j];
+                let mut old = 0.0;
+                let mut new = 0.0;
+                if i > 0 {
+                    old += cost(&points[i - 1], &b);
+                    new += cost(&points[i - 1], &c);
+                }
+                if j + 1 < n {
+                    old += cost(&c, &points[j + 1]);
+                    new += cost(&b, &points[j + 1]);
+                }
+                if new + 1e-4 < old {
+                    points[i..=j].reverse();
+                    order[i..=j].reverse();
+                    improved = true;
+                }
+            }
+        }
+        if !improved {
+            break;
+        }
+    }
+}
+
+#[test]
+#[ignore = "needs a scene in DRACO_SPLAT_PLY: run with --release --ignored --nocapture"]
+fn what_the_estimated_bits_objective_reaches() {
+    let Some((path, cloud)) = scene_cloud() else {
+        println!("DRACO_SPLAT_PLY is not set; nothing to measure");
+        return;
+    };
+    let num_points = cloud.num_points();
+    println!("scene: {} ({num_points} points)", path.display());
+    let cells = quantized_positions(&cloud).expect("positions");
+    let rows = byte_rows(&cloud);
+    let hilbert = hilbert_order(&cells);
+    let mut arms: Vec<(String, Vec<u32>, f64)> = vec![
+        ("Morton".into(), morton_order(&cells), 0.0),
+        ("Hilbert".into(), hilbert.clone(), 0.0),
+    ];
+    let configs: Vec<(usize, usize, usize)> = std::env::var("DRACO_ORDER_CONFIGS")
+        .ok()
+        .map(|c| {
+            c.split(';')
+                .filter_map(|t| {
+                    let v: Vec<usize> = t.split(',').filter_map(|x| x.parse().ok()).collect();
+                    (v.len() == 3).then(|| (v[0], v[1], v[2]))
+                })
+                .collect()
+        })
+        .unwrap_or_else(|| vec![(56, 16, 2)]);
+    for (columns, window, passes) in configs {
+        let mut order = hilbert.clone();
+        let started = std::time::Instant::now();
+        two_opt_by_estimated_bits(&cells, &rows, columns, &mut order, window, passes);
+        arms.push((
+            format!("H + 2-opt bits c{columns} w{window}x{passes}"),
+            order,
+            started.elapsed().as_secs_f64(),
+        ));
+    }
+    println!(
+        "{:<34} {:>10} {:>9} {:>12} {:>10}",
+        "order", "mean step", "refine s", "search off", "vs Morton"
+    );
+    let mut reference = 0usize;
+    for (label, order, seconds) in &arms {
+        let plain = encode(&permute(&cloud, order), false);
+        if label == "Morton" {
+            reference = plain;
+        }
+        println!(
+            "{label:<34} {:>10.1} {:>9.2} {:>12.3} {:>9.2}%",
+            mean_step(&cells, order),
+            seconds,
+            plain as f64 / num_points as f64,
+            (plain as f64 / reference as f64 - 1.0) * 100.0,
+        );
+    }
+}

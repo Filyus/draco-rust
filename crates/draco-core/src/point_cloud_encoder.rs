@@ -1104,3 +1104,234 @@ mod hilbert_tests {
         }
     }
 }
+
+/// EXPERIMENT: what the ordering stage costs, apart from the encode it feeds.
+#[cfg(test)]
+mod order_stage_bench {
+    use super::*;
+    use std::time::Instant;
+
+    /// Gaussian blobs of very different widths, which is what a splat scene's
+    /// positions look like: dense cores and a sparse halo.
+    fn synthetic_cloud(points: usize) -> PointCloud {
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let centres: Vec<[f64; 4]> = (0..64)
+            .map(|_| {
+                [
+                    next() * 100.0,
+                    next() * 100.0,
+                    next() * 100.0,
+                    0.2 + next() * 6.0,
+                ]
+            })
+            .collect();
+        let mut cloud = PointCloud::new();
+        cloud.set_num_points(points);
+        let mut attribute = PointAttribute::new();
+        attribute.init(
+            GeometryAttributeType::Position,
+            3,
+            DataType::Float32,
+            false,
+            points,
+        );
+        let buffer = attribute.buffer_mut();
+        for point in 0..points {
+            let c = &centres[(next() * 64.0) as usize % 64];
+            for axis in 0..3 {
+                let gaussian = (next() + next() + next() + next() - 2.0) * 1.7;
+                let value = (c[axis] + gaussian * c[3]) as f32;
+                buffer.write((point * 3 + axis) * 4, &value.to_le_bytes());
+            }
+        }
+        cloud.add_attribute(attribute);
+        cloud
+    }
+
+    fn pair_lut() -> Vec<u16> {
+        let mut table = vec![0u16; 24 * 64];
+        for state in 0..24usize {
+            for m in 0..64usize {
+                let (x, y, z) = ((m >> 4) & 3, (m >> 2) & 3, m & 3);
+                let mut next = state;
+                let mut out = 0u16;
+                for bit in (0..2).rev() {
+                    let octant =
+                        (((x >> bit) & 1) << 2) | (((y >> bit) & 1) << 1) | ((z >> bit) & 1);
+                    let entry = HILBERT3_STEP_LUT[next * 8 + octant];
+                    out = (out << 3) | u16::from(entry & 7);
+                    next = (entry >> 3) as usize;
+                }
+                table[state * 64 + m] = ((next as u16) << 6) | out;
+            }
+        }
+        table
+    }
+
+    fn nibble_lut() -> Vec<u32> {
+        let mut table = vec![0u32; 24 * 4096];
+        for state in 0..24usize {
+            for m in 0..4096usize {
+                let (x, y, z) = ((m >> 8) & 15, (m >> 4) & 15, m & 15);
+                let mut next = state;
+                let mut out = 0u32;
+                for bit in (0..4).rev() {
+                    let octant =
+                        (((x >> bit) & 1) << 2) | (((y >> bit) & 1) << 1) | ((z >> bit) & 1);
+                    let entry = HILBERT3_STEP_LUT[next * 8 + octant];
+                    out = (out << 3) | u32::from(entry & 7);
+                    next = (entry >> 3) as usize;
+                }
+                table[state * 4096 + m] = ((next as u32) << 12) | out;
+            }
+        }
+        table
+    }
+
+    fn median_ms(mut f: impl FnMut() -> u64) -> (f64, u64) {
+        let mut times = Vec::new();
+        let mut check = 0;
+        for _ in 0..9 {
+            let start = Instant::now();
+            check = f();
+            times.push(start.elapsed().as_secs_f64() * 1000.0);
+        }
+        times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        (times[4], check)
+    }
+
+    #[test]
+    #[ignore = "a timing, run with --release --ignored --nocapture"]
+    fn where_the_order_time_goes() {
+        let points = 1_000_000usize;
+        let mut state = 0x1234_5678_9abc_def1u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let axes: Vec<[u32; 3]> = (0..points)
+            .map(|_| {
+                let r = next();
+                [
+                    (r & 0xffff) as u32,
+                    ((r >> 16) & 0xffff) as u32,
+                    ((r >> 32) & 0xffff) as u32,
+                ]
+            })
+            .collect();
+        let pair = pair_lut();
+        let nibble = nibble_lut();
+        let step = median_ms(|| {
+            axes.iter()
+                .fold(0u64, |h, a| h ^ hilbert_key(a[0], a[1], a[2], 16))
+        });
+        let pairs = median_ms(|| {
+            axes.iter().fold(0u64, |h, a| {
+                let (mut key, mut state, mut shift) = (0u64, 0usize, 16u32);
+                while shift > 0 {
+                    shift -= 2;
+                    let m = (((a[0] >> shift) & 3) << 4)
+                        | (((a[1] >> shift) & 3) << 2)
+                        | ((a[2] >> shift) & 3);
+                    let entry = pair[state * 64 + m as usize];
+                    key = (key << 6) | u64::from(entry & 0x3f);
+                    state = (entry >> 6) as usize;
+                }
+                h ^ key
+            })
+        });
+        let nibbles = median_ms(|| {
+            axes.iter().fold(0u64, |h, a| {
+                let (mut key, mut state, mut shift) = (0u64, 0usize, 16u32);
+                while shift > 0 {
+                    shift -= 4;
+                    let m = (((a[0] >> shift) & 15) << 8)
+                        | (((a[1] >> shift) & 15) << 4)
+                        | ((a[2] >> shift) & 15);
+                    let entry = nibble[state * 4096 + m as usize];
+                    key = (key << 12) | u64::from(entry & 0xfff);
+                    state = (entry >> 12) as usize;
+                }
+                h ^ key
+            })
+        });
+        println!("key only, 1M points: step {:.1} ms | pair LUT {:.1} ms | nibble LUT {:.1} ms (checks {:x} {:x} {:x})", step.0, pairs.0, nibbles.0, step.1, pairs.1, nibbles.1);
+
+        let keyed: Vec<(u64, u32)> = axes
+            .iter()
+            .enumerate()
+            .map(|(i, a)| (hilbert_key(a[0], a[1], a[2], 16), i as u32))
+            .collect();
+        let std_sort = median_ms(|| {
+            let mut v = keyed.clone();
+            v.sort_unstable();
+            v[points / 2].0
+        });
+        let radix = median_ms(|| {
+            let mut a = keyed.clone();
+            let mut tmp = vec![(0u64, 0u32); a.len()];
+            for pass in 0..6u32 {
+                let shift = pass * 8;
+                let mut counts = [0usize; 256];
+                let (src, dst): (&[(u64, u32)], &mut [(u64, u32)]) = if pass % 2 == 0 {
+                    (&a, &mut tmp)
+                } else {
+                    (&tmp, &mut a)
+                };
+                for &(k, _) in src {
+                    counts[((k >> shift) & 255) as usize] += 1;
+                }
+                let mut sum = 0;
+                for c in counts.iter_mut() {
+                    let t = *c;
+                    *c = sum;
+                    sum += t;
+                }
+                for &p in src {
+                    let b = ((p.0 >> shift) & 255) as usize;
+                    dst[counts[b]] = p;
+                    counts[b] += 1;
+                }
+            }
+            a[points / 2].0
+        });
+        println!("sort, 1M (key,u32): sort_unstable {:.1} ms (clone included) | LSD radix 6x8 bits {:.1} ms (clone+alloc included) (checks {:x} {:x})", std_sort.0, radix.0, std_sort.1, radix.1);
+    }
+
+    #[test]
+    #[ignore = "a timing, run with --release --ignored --nocapture"]
+    fn what_the_order_costs() {
+        let points: usize = std::env::var("DRACO_ORDER_POINTS")
+            .ok()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(1_000_000);
+        let cloud = synthetic_cloud(points);
+        let mut options = EncoderOptions::new();
+        options.set_attribute_int(0, "quantization_bits", 16);
+        for curve in [Curve::Morton, Curve::Hilbert] {
+            let mut times = Vec::new();
+            let mut checksum = 0u64;
+            for _ in 0..9 {
+                let start = Instant::now();
+                let order = spatial_point_order(&cloud, &options, curve).expect("an order");
+                times.push(start.elapsed().as_secs_f64() * 1000.0);
+                checksum = order.iter().enumerate().fold(0u64, |h, (i, p)| {
+                    h.wrapping_mul(31).wrapping_add(p.0 as u64 ^ i as u64)
+                });
+            }
+            times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            println!(
+                "{curve:?}: {points} points  median {:.1} ms  min {:.1}  max {:.1}  checksum {checksum:016x}",
+                times[4], times[0], times[8]
+            );
+        }
+    }
+}
