@@ -77,6 +77,35 @@ pub(crate) fn map<T: Send>(
         .collect()
 }
 
+/// Runs `work` on every one of `pieces`, which may be of any lengths. A piece
+/// is taken by whichever thread is free next, so a few long ones among many
+/// short ones still spread.
+#[cfg(feature = "encoder")]
+pub(crate) fn for_each_piece_mut<T: Send>(
+    pieces: Vec<&mut [T]>,
+    threads: usize,
+    work: impl Fn(&mut [T]) + Sync,
+) {
+    let threads = threads.min(pieces.len());
+    if threads <= 1 || cfg!(target_arch = "wasm32") {
+        for piece in pieces {
+            work(piece);
+        }
+        return;
+    }
+    let queue = Mutex::new(pieces.into_iter());
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| loop {
+                let Some(piece) = queue.lock().unwrap().next() else {
+                    break;
+                };
+                work(piece);
+            });
+        }
+    });
+}
+
 /// Runs `work(chunk_index, chunk)` over consecutive chunks of `data`, `chunk`
 /// elements each and the last one shorter.
 pub(crate) fn for_each_chunk_mut<T: Send>(

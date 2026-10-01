@@ -264,18 +264,68 @@ impl Grid {
 
     /// Point indices along the Hilbert curve; points sharing a cell keep the
     /// order they came in.
-    fn hilbert_order(&self) -> Vec<u32> {
+    ///
+    /// The order is that of the pairs `(key, index)`, which are all distinct,
+    /// so there is exactly one and every way of sorting arrives at it. This
+    /// one deals the indices into buckets by the top bits of their keys and
+    /// sorts the buckets side by side: the encode waits on this whole sort
+    /// before anything else can start, and one sort of millions of pairs is
+    /// the part of it no other thread could help with.
+    fn hilbert_order(&self, threads: usize) -> Vec<u32> {
+        const CHUNK: usize = 1 << 16;
         let bits = self.axis_bits;
-        let mut keyed: Vec<(u64, u32)> = (0..self.len())
-            .map(|p| {
-                let key = hilbert_key(self.cells[0][p], self.cells[1][p], self.cells[2][p], bits);
-                (key, p as u32)
-            })
-            .collect();
-        keyed.sort_unstable();
-        keyed.into_iter().map(|(_, p)| p).collect()
+        let mut keys = vec![0u64; self.len()];
+        parallel::for_each_chunk_mut(&mut keys, CHUNK, threads, |chunk, keys| {
+            for (offset, key) in keys.iter_mut().enumerate() {
+                let p = chunk * CHUNK + offset;
+                *key = hilbert_key(self.cells[0][p], self.cells[1][p], self.cells[2][p], bits);
+            }
+        });
+
+        let key_bits = 3 * bits;
+        let bucket_bits = key_bits.min(HILBERT_BUCKET_BITS);
+        let shift = key_bits - bucket_bits;
+        let mut starts = vec![0usize; (1 << bucket_bits) + 1];
+        for &key in &keys {
+            starts[(key >> shift) as usize + 1] += 1;
+        }
+        for bucket in 1..starts.len() {
+            starts[bucket] += starts[bucket - 1];
+        }
+        let mut next = starts.clone();
+        let mut order = vec![0u32; keys.len()];
+        for (p, &key) in keys.iter().enumerate() {
+            let slot = &mut next[(key >> shift) as usize];
+            order[*slot] = p as u32;
+            *slot += 1;
+        }
+
+        let mut buckets = Vec::with_capacity(starts.len() - 1);
+        let mut rest = order.as_mut_slice();
+        for bucket in starts.windows(2) {
+            let (piece, tail) = rest.split_at_mut(bucket[1] - bucket[0]);
+            if piece.len() > 1 {
+                buckets.push(piece);
+            }
+            rest = tail;
+        }
+        parallel::for_each_piece_mut(buckets, threads, |bucket| {
+            let mut keyed: Vec<(u64, u32)> =
+                bucket.iter().map(|&p| (keys[p as usize], p)).collect();
+            keyed.sort_unstable();
+            for (slot, (_, p)) in bucket.iter_mut().zip(keyed) {
+                *slot = p;
+            }
+        });
+        order
     }
 }
+
+/// How many top bits of a Hilbert key choose its bucket in `hilbert_order`:
+/// enough buckets that the occupied ones spread over every thread even when a
+/// scan's points sit in a few percent of the cube, few enough that dealing
+/// into them stays inside the cache.
+const HILBERT_BUCKET_BITS: u32 = 12;
 
 /// The values of one component of an attribute, one per point, as `f32`.
 ///
@@ -377,7 +427,12 @@ fn grid(pc: &PointCloud, options: &EncoderOptions, threads: usize) -> Option<(i3
 pub(crate) fn curve(pc: &PointCloud, options: &EncoderOptions) -> Option<Vec<PointIndex>> {
     let threads = parallel::resolve(options.get_threads());
     let (_, grid) = grid(pc, options, threads)?;
-    Some(grid.hilbert_order().into_iter().map(PointIndex).collect())
+    Some(
+        grid.hilbert_order(threads)
+            .into_iter()
+            .map(PointIndex)
+            .collect(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -691,7 +746,7 @@ pub(crate) fn search(pc: &PointCloud, options: &EncoderOptions) -> Option<Vec<Po
     let threads = parallel::resolve(options.get_threads());
     let (_, grid) = grid(pc, options, threads)?;
     let cells = grid.price_cells();
-    let curve_order = grid.hilbert_order();
+    let curve_order = grid.hilbert_order(threads);
     let columns = measure_columns(pc, options, &curve_order, threads);
 
     let steps = sampled_steps(count) as f64;
@@ -824,6 +879,60 @@ mod tests {
                     + previous.2.abs_diff(cell.2);
                 assert_eq!(step, 1, "step {key} jumps at {bits} bits");
                 previous = cell;
+            }
+        }
+    }
+
+    /// The bucketed sort is the plain one: every index in the order of its
+    /// `(key, index)` pair, on one thread and on several. Clustered points and
+    /// shared cells are what the buckets must not disturb, so the grid has a
+    /// dense cluster with repeats beside a sparse scatter, and depths both
+    /// above and below the bucket count's.
+    #[test]
+    fn the_hilbert_order_is_the_sorted_order_of_its_keys() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut draw = |range: u32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % u64::from(range)) as u32
+        };
+        for axis_bits in [3u32, 10, 16] {
+            let side = 1u32 << axis_bits;
+            let cells: [Vec<u32>; 3] = {
+                let mut cells = [Vec::new(), Vec::new(), Vec::new()];
+                for point in 0..50_000 {
+                    for axis in &mut cells {
+                        let value = if point % 3 == 0 {
+                            draw(side)
+                        } else {
+                            side / 2 + draw(side.min(16))
+                        };
+                        axis.push(value.min(side - 1));
+                    }
+                }
+                cells
+            };
+            let grid = Grid { axis_bits, cells };
+            let mut expected: Vec<(u64, u32)> = (0..grid.len())
+                .map(|p| {
+                    let key = hilbert_key(
+                        grid.cells[0][p],
+                        grid.cells[1][p],
+                        grid.cells[2][p],
+                        axis_bits,
+                    );
+                    (key, p as u32)
+                })
+                .collect();
+            expected.sort_unstable();
+            let expected: Vec<u32> = expected.into_iter().map(|(_, p)| p).collect();
+            for threads in [1, 4] {
+                assert_eq!(
+                    grid.hilbert_order(threads),
+                    expected,
+                    "{axis_bits} bits, {threads} threads"
+                );
             }
         }
     }
