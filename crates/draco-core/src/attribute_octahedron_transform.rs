@@ -330,6 +330,7 @@ mod tests {
     use crate::attribute_transform::AttributeTransform;
     use crate::attribute_transform::AttributeTransformType;
     use crate::attribute_transform_data::AttributeTransformData;
+    #[cfg(feature = "decoder")]
     use crate::decoder_buffer::DecoderBuffer;
     use crate::draco_types::DataType;
     use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
@@ -377,6 +378,7 @@ mod tests {
             .is_err());
     }
 
+    #[cfg(feature = "decoder")]
     #[test]
     fn decode_parameters_rejects_invalid_quantization_bits() {
         let attribute = PointAttribute::new();
@@ -393,6 +395,7 @@ mod tests {
             .is_err());
     }
 
+    #[cfg(feature = "decoder")]
     #[test]
     fn decode_parameters_accepts_valid_quantization_bits() {
         let attribute = PointAttribute::new();

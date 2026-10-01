@@ -819,6 +819,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "encoder")]
     /// A transform whose parameters were never computed refuses to write them.
     ///
     /// It used to write `-1 as u8`, that is `0xFF`, as the quantization-bits
@@ -932,6 +933,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "encoder")]
     /// The three refusals the trait used to report as one indistinguishable
     /// `false` now name themselves.
     ///

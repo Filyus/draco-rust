@@ -170,7 +170,7 @@ pub(crate) fn ensure_symbols_are_backed(count: usize, stream_bytes: usize) -> St
     Ok(())
 }
 
-#[cfg(all(test, feature = "decoder"))]
+#[cfg(all(test, feature = "point_cloud_decode"))]
 mod corpus {
     /// No file this crate is meant to read spends any of the budget.
     ///

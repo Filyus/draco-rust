@@ -369,19 +369,22 @@ where
     }
 }
 
-#[cfg(test)]
+// Every test here decodes; the encoder half joins only for the roundtrip.
+#[cfg(all(test, feature = "decoder"))]
 mod tests {
     use super::*;
     use crate::corner_table::CornerTable;
     use crate::geometry_indices::VertexIndex;
     use crate::prediction_scheme::{
-        PredictionSchemeDecoder, PredictionSchemeDecodingTransform, PredictionSchemeEncoder,
-        PredictionSchemeEncodingTransform, PredictionSchemeTransformType,
+        PredictionSchemeDecoder, PredictionSchemeDecodingTransform, PredictionSchemeTransformType,
     };
+    #[cfg(feature = "encoder")]
+    use crate::prediction_scheme::{PredictionSchemeEncoder, PredictionSchemeEncodingTransform};
 
     #[derive(Clone, Copy)]
     struct IdentityTransform;
 
+    #[cfg(feature = "encoder")]
     impl PredictionSchemeEncodingTransform<i32, i32> for IdentityTransform {
         fn init(&mut self, _orig_data: &[i32], _size: usize, _num_components: usize) {}
 
@@ -426,7 +429,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "decoder")]
     fn multi_parallelogram_decodes_with_fallback() {
         let mut table = CornerTable::new(1);
         assert!(table.init(&[[VertexIndex(0), VertexIndex(1), VertexIndex(2)]]));
@@ -450,7 +452,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "decoder")]
     fn multi_parallelogram_averages_multiple_valid_predictions() {
         let mut table = CornerTable::new(4);
         for (corner, vertex) in [
@@ -496,7 +497,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(all(feature = "encoder", feature = "decoder"))]
+    #[cfg(feature = "encoder")]
     fn multi_parallelogram_encoder_roundtrips_decoder() {
         let mut table = CornerTable::new(4);
         for (corner, vertex) in [

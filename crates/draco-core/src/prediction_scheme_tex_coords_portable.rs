@@ -919,10 +919,13 @@ mod tests {
 
     #[cfg(feature = "decoder")]
     use crate::corner_table::CornerTable;
+    #[cfg(feature = "decoder")]
     use crate::draco_types::DataType;
+    #[cfg(feature = "decoder")]
     use crate::geometry_attribute::PointAttribute;
     #[cfg(feature = "decoder")]
     use crate::geometry_indices::VertexIndex;
+    #[cfg(feature = "decoder")]
     use crate::portable_attribute::PredictionParent;
 
     #[cfg(feature = "decoder")]

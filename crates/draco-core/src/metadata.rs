@@ -478,12 +478,14 @@ fn decode_bounded_count(
 mod tests {
     use super::*;
 
+    #[cfg(feature = "encoder")]
     fn encode_metadata(metadata: &Metadata) -> Vec<u8> {
         let mut buffer = EncoderBuffer::new();
         metadata.encode(&mut buffer).expect("metadata encode");
         buffer.data().to_vec()
     }
 
+    #[cfg(all(feature = "encoder", feature = "decoder"))]
     #[test]
     fn metadata_codec_accepts_empty_metadata() {
         let metadata = Metadata::new();
@@ -494,6 +496,7 @@ mod tests {
         assert_eq!(Metadata::decode(&mut buffer).unwrap(), metadata);
     }
 
+    #[cfg(all(feature = "encoder", feature = "decoder"))]
     #[test]
     fn metadata_codec_roundtrips_raw_entry() {
         let mut metadata = Metadata::new();
@@ -618,6 +621,7 @@ mod tests {
         assert_eq!(metadata.get_raw("key"), Some(b"value".as_slice()));
     }
 
+    #[cfg(feature = "encoder")]
     #[test]
     fn metadata_codec_encodes_entries_in_sorted_order() {
         let mut metadata = Metadata::new();
@@ -631,6 +635,7 @@ mod tests {
         assert_eq!(bytes[2], b'a');
     }
 
+    #[cfg(all(feature = "encoder", feature = "decoder"))]
     #[test]
     fn metadata_codec_roundtrips_nested_metadata() {
         let mut child = Metadata::new();
@@ -651,6 +656,7 @@ mod tests {
         );
     }
 
+    #[cfg(all(feature = "encoder", feature = "decoder"))]
     #[test]
     fn geometry_metadata_roundtrips_attribute_metadata() {
         let mut attribute = Metadata::new();
@@ -713,6 +719,7 @@ mod tests {
         assert_eq!(metadata.get_raw("key"), Some(b"new".as_slice()));
     }
 
+    #[cfg(feature = "decoder")]
     #[test]
     fn metadata_decode_rejects_duplicate_sub_metadata() {
         let bytes = [
@@ -725,6 +732,7 @@ mod tests {
         assert!(Metadata::decode(&mut buffer).is_err());
     }
 
+    #[cfg(feature = "decoder")]
     #[test]
     fn metadata_decode_rejects_zero_length_entry_value() {
         let bytes = [1, 1, b'a', 0, 0];
@@ -733,6 +741,7 @@ mod tests {
         assert!(Metadata::decode(&mut buffer).is_err());
     }
 
+    #[cfg(feature = "decoder")]
     #[test]
     fn metadata_decode_rejects_truncated_name() {
         let bytes = [1, 5, b'a'];
@@ -741,6 +750,7 @@ mod tests {
         assert!(Metadata::decode(&mut buffer).is_err());
     }
 
+    #[cfg(feature = "decoder")]
     #[test]
     fn metadata_decode_rejects_truncated_value() {
         let bytes = [1, 1, b'a', 4, 1, 2];
@@ -749,6 +759,7 @@ mod tests {
         assert!(Metadata::decode(&mut buffer).is_err());
     }
 
+    #[cfg(feature = "decoder")]
     #[test]
     fn metadata_decode_rejects_unreasonable_sub_metadata_count() {
         let bytes = [0, 5];
@@ -757,6 +768,7 @@ mod tests {
         assert!(Metadata::decode(&mut buffer).is_err());
     }
 
+    #[cfg(feature = "decoder")]
     #[test]
     fn metadata_decode_rejects_excessive_nesting() {
         let mut bytes = Vec::new();

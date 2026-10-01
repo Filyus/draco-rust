@@ -152,7 +152,7 @@ impl<'a> DecoderBuffer<'a> {
 
     /// What this decode has reserved so far, for the tests that hold the
     /// budget to being a backstop no legitimate file reaches.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "point_cloud_decode"))]
     pub(crate) fn spent(&self) -> usize {
         self.spent
     }
