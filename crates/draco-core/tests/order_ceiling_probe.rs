@@ -3170,3 +3170,679 @@ fn greedy_against_the_window_at_equal_time() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// The preparation, cheap: columns from the start, no rows, no gather of rows.
+// ---------------------------------------------------------------------------
+
+/// Calls `work` for every index in `0..count` across `threads` threads, each
+/// taking the next undone index, and returns the results in index order.
+fn parallel_map<T: Send>(count: usize, threads: usize, work: impl Fn(usize) -> T + Sync) -> Vec<T> {
+    if threads <= 1 {
+        return (0..count).map(work).collect();
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let results: std::sync::Mutex<Vec<Option<T>>> =
+        std::sync::Mutex::new((0..count).map(|_| None).collect());
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if i >= count {
+                    break;
+                }
+                let value = work(i);
+                results.lock().unwrap()[i] = Some(value);
+            });
+        }
+    });
+    results
+        .into_inner()
+        .unwrap()
+        .into_iter()
+        .map(Option::unwrap)
+        .collect()
+}
+
+/// One component of an attribute read straight off its buffer, as `f32`.
+/// Assumes the attribute maps points to values one to one, as a cloud read
+/// from a file does.
+fn component_values(attribute: &PointAttribute, component: usize, count: usize) -> Vec<f32> {
+    use draco_core::DataType;
+    let data = attribute.buffer().data();
+    let stride = attribute.byte_stride() as usize;
+    // A cloud read from a file maps points to values one to one; a cloud whose
+    // equal values were merged does not, and then every read goes by the map.
+    let identity = data.len() / stride.max(1) == count;
+    let value = |p: usize| {
+        if identity {
+            p
+        } else {
+            attribute.mapped_index(PointIndex(p as u32)).0 as usize
+        }
+    };
+    match attribute.data_type() {
+        DataType::Float32 => (0..count)
+            .map(|p| {
+                let at = value(p) * stride + component * 4;
+                f32::from_le_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]])
+            })
+            .collect(),
+        DataType::Uint8 => (0..count)
+            .map(|p| f32::from(data[value(p) * stride + component]))
+            .collect(),
+        other => panic!("the fast reader does not read {other:?}"),
+    }
+}
+
+struct Prepared {
+    /// The position on its 16-bit grid, a column an axis, in file order.
+    cells: [Vec<u16>; 3],
+    /// The attribute columns that vary, quantized to the budget, file order.
+    columns: Vec<Vec<u8>>,
+}
+
+fn prepare(cloud: &PointCloud, threads: usize) -> Prepared {
+    let count = cloud.num_points();
+    let names = attribute_names(cloud);
+    let position_id = (0..cloud.num_attributes())
+        .find(|id| cloud.attribute(*id).attribute_type() == GeometryAttributeType::Position)
+        .expect("a position");
+    let position = cloud.attribute(position_id);
+    let axes = parallel_map(3, threads.min(3), |axis| {
+        let values = component_values(position, axis, count);
+        let low = values.iter().copied().fold(f32::INFINITY, f32::min);
+        let high = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let (low, span) = (f64::from(low), f64::from(high) - f64::from(low));
+        let levels = ((1u64 << AXIS_BITS) - 1) as f64;
+        values
+            .iter()
+            .map(|&v| {
+                let normalized = if span > 0.0 {
+                    (f64::from(v) - low) / span
+                } else {
+                    0.0
+                };
+                (normalized * levels) as u16
+            })
+            .collect::<Vec<u16>>()
+    });
+    let mut axes = axes.into_iter();
+    let cells = [
+        axes.next().unwrap(),
+        axes.next().unwrap(),
+        axes.next().unwrap(),
+    ];
+
+    let ids: Vec<i32> = (0..cloud.num_attributes())
+        .filter(|&id| id != position_id)
+        .collect();
+    let per_attribute = parallel_map(ids.len(), threads, |i| {
+        let id = ids[i];
+        let attribute = cloud.attribute(id);
+        let is_float = attribute.data_type() == draco_core::DataType::Float32;
+        let levels = if is_float {
+            ((1u32 << budget_bits(names[id as usize].as_deref())) - 1) as f32
+        } else {
+            255.0
+        };
+        let mut columns = Vec::new();
+        for component in 0..attribute.num_components() as usize {
+            let values = component_values(attribute, component, count);
+            let low = values.iter().copied().fold(f32::INFINITY, f32::min);
+            let high = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            if high - low < 1e-12 {
+                continue;
+            }
+            let (low, span) = if is_float {
+                (low, high - low)
+            } else {
+                (0.0, 255.0)
+            };
+            let scale = levels / span;
+            columns.push(
+                values
+                    .iter()
+                    .map(|&v| ((v - low) * scale + 0.5) as u8)
+                    .collect::<Vec<u8>>(),
+            );
+        }
+        columns
+    });
+    Prepared {
+        cells,
+        columns: per_attribute.into_iter().flatten().collect(),
+    }
+}
+
+fn aos_cells(cells: &[Vec<u16>; 3]) -> Vec<[u32; 3]> {
+    (0..cells[0].len())
+        .map(|p| {
+            [
+                u32::from(cells[0][p]),
+                u32::from(cells[1][p]),
+                u32::from(cells[2][p]),
+            ]
+        })
+        .collect()
+}
+
+/// The columns dearest along `order`, judged on every `stride`-th step.
+fn rank_columns_sampled(
+    columns: &[Vec<u8>],
+    order: &[u32],
+    stride: usize,
+    luts: &Luts,
+) -> Vec<usize> {
+    let sample: Vec<(u32, u32)> = order
+        .windows(2)
+        .step_by(stride)
+        .map(|w| (w[0], w[1]))
+        .collect();
+    let mut totals: Vec<(f64, usize)> = columns
+        .iter()
+        .enumerate()
+        .map(|(k, column)| {
+            let sum: f64 = sample
+                .iter()
+                .map(|&(a, b)| {
+                    f64::from(luts.l8[column[a as usize].abs_diff(column[b as usize]) as usize])
+                })
+                .sum();
+            (sum, k)
+        })
+        .collect();
+    totals.sort_by(|x, y| y.0.partial_cmp(&x.0).unwrap());
+    totals.into_iter().map(|(_, k)| k).collect()
+}
+
+impl Lanes {
+    /// A block of the path built column by column from the file-order
+    /// columns: the block's ids pick the entries, one column at a time, so the
+    /// reads stay inside one column's worth of memory.
+    fn gather(prepared: &Prepared, chosen: &[usize], ids: &[u32]) -> Self {
+        let n = ids.len();
+        let pad = |mut v: Vec<u8>| {
+            v.resize(n + LANE_PAD, 0);
+            v
+        };
+        let cols: Vec<Vec<u8>> = chosen
+            .iter()
+            .map(|&k| {
+                pad(ids
+                    .iter()
+                    .map(|&p| prepared.columns[k][p as usize])
+                    .collect())
+            })
+            .collect();
+        let pos: [Vec<u16>; 3] = std::array::from_fn(|axis| {
+            let mut v: Vec<u16> = ids
+                .iter()
+                .map(|&p| prepared.cells[axis][p as usize])
+                .collect();
+            v.resize(n + LANE_PAD, 0);
+            v
+        });
+        let mut lanes = Lanes {
+            n,
+            weights: vec![1; cols.len()],
+            cols,
+            pos,
+            ids: ids.to_vec(),
+            edges: vec![0; n + LANE_PAD],
+            evals: 0,
+            moves: 0,
+            reversed: 0,
+            skipped: 0,
+            pos_weight: 1,
+        };
+        for i in 0..n.saturating_sub(1) {
+            lanes.edges[i] = lanes.edge(i, i + 1);
+        }
+        lanes
+    }
+}
+
+struct PipelineTimes {
+    hilbert: f64,
+    quantize: f64,
+    rank: f64,
+    refine: f64,
+}
+
+fn order_pipeline<const L: usize>(
+    cloud: &PointCloud,
+    threads: usize,
+    top: usize,
+    passes: usize,
+    block: usize,
+    luts: &Luts,
+) -> (Vec<u32>, PipelineTimes) {
+    let t = std::time::Instant::now();
+    let prepared = prepare(cloud, threads);
+    let quantize = t.elapsed().as_secs_f64();
+    let t = std::time::Instant::now();
+    let cells = aos_cells(&prepared.cells);
+    let mut order = hilbert_order(&cells);
+    let hilbert = t.elapsed().as_secs_f64();
+    let t = std::time::Instant::now();
+    let ranked = rank_columns_sampled(&prepared.columns, &order, 16, luts);
+    let chosen: Vec<usize> = ranked.into_iter().take(top).collect();
+    let rank = t.elapsed().as_secs_f64();
+    let t = std::time::Instant::now();
+    let work = std::sync::Mutex::new(order.chunks_mut(block));
+    std::thread::scope(|scope| {
+        for _ in 0..threads.max(1) {
+            scope.spawn(|| loop {
+                let Some(ids) = work.lock().unwrap().next() else {
+                    break;
+                };
+                if ids.len() < 4 {
+                    continue;
+                }
+                let mut lanes = Lanes::gather(&prepared, &chosen, ids);
+                lanes.refine::<L>(passes, 0, usize::MAX);
+                ids.copy_from_slice(&lanes.ids);
+            });
+        }
+    });
+    let refine = t.elapsed().as_secs_f64();
+    (
+        order,
+        PipelineTimes {
+            hilbert,
+            quantize,
+            rank,
+            refine,
+        },
+    )
+}
+
+#[test]
+#[ignore = "needs a scene in DRACO_SPLAT_PLY: run with --release --ignored --nocapture"]
+fn what_the_prepared_pipeline_costs() {
+    let Some((path, cloud)) = scene_cloud() else {
+        println!("DRACO_SPLAT_PLY is not set; nothing to measure");
+        return;
+    };
+    let num_points = cloud.num_points();
+    println!("scene: {} ({num_points} points)", path.display());
+    let luts = Luts::new();
+    let cells_slow = quantized_positions(&cloud).expect("positions");
+    let morton_bytes = encode(&permute(&cloud, &morton_order(&cells_slow)), false);
+    let vs = |bytes: usize| {
+        format!(
+            "{:+.2}%",
+            (bytes as f64 / morton_bytes as f64 - 1.0) * 100.0
+        )
+    };
+    println!(
+        "{:>7} {:>8} {:>10} {:>10} {:>9} {:>9} {:>9} {:>10}",
+        "columns",
+        "threads",
+        "quantize s",
+        "Hilbert s",
+        "rank s",
+        "refine s",
+        "total s",
+        "vs Morton"
+    );
+    for top in [16usize, 56] {
+        for threads in [1usize, 4, 16] {
+            let mut best: Option<(f64, PipelineTimes, Vec<u32>)> = None;
+            for _ in 0..3 {
+                let (ids, times) = order_pipeline::<16>(&cloud, threads, top, 2, 8192, &luts);
+                let total = times.quantize + times.hilbert + times.rank + times.refine;
+                if best.as_ref().map_or(true, |b| total < b.0) {
+                    best = Some((total, times, ids));
+                }
+            }
+            let (total, times, ids) = best.unwrap();
+            let mut check = ids.clone();
+            check.sort_unstable();
+            assert!(
+                check.iter().enumerate().all(|(i, &p)| p == i as u32),
+                "a point was lost"
+            );
+            let bytes = encode(&permute(&cloud, &ids), false);
+            println!(
+                "{top:>7} {threads:>8} {:>10.3} {:>10.3} {:>9.3} {:>9.3} {total:>9.3} {:>10}",
+                times.quantize,
+                times.hilbert,
+                times.rank,
+                times.refine,
+                vs(bytes)
+            );
+        }
+    }
+}
+
+/// The objective over a whole path, exactly: `log2(1 + |delta|)` summed over
+/// the position and every column, however many there are.
+fn estimated_bits_per_point(
+    cells: &[[u32; 3]],
+    rows: &[[u8; 64]],
+    columns: usize,
+    order: &[u32],
+    luts: &Luts,
+) -> f64 {
+    let mut total = 0f64;
+    for pair in order.windows(2) {
+        let (a, b) = (pair[0] as usize, pair[1] as usize);
+        for axis in 0..3 {
+            total +=
+                f64::from(luts.l16[cells[a][axis].abs_diff(cells[b][axis]).min(65535) as usize]);
+        }
+        for k in 0..columns {
+            total += f64::from(luts.l8[rows[a][k].abs_diff(rows[b][k]) as usize]);
+        }
+    }
+    total / order.len() as f64
+}
+
+#[test]
+#[ignore = "needs a scene in DRACO_SPLAT_PLY: run with --release --ignored --nocapture"]
+fn does_the_estimate_say_when_to_leave_the_order_alone() {
+    let Some((path, cloud)) = scene_cloud() else {
+        println!("DRACO_SPLAT_PLY is not set; nothing to measure");
+        return;
+    };
+    let num_points = cloud.num_points();
+    println!("scene: {} ({num_points} points)", path.display());
+    let cells = quantized_positions(&cloud).expect("positions");
+    let (rows, map) = byte_rows_mapped(&cloud);
+    let columns_total = map.iter().flatten().count()
+        + (0..cloud.num_attributes())
+            .filter(|&id| cloud.attribute(id).num_components() > 1)
+            .map(|id| cloud.attribute(id).num_components() as usize - 1)
+            .sum::<usize>();
+    let columns_total = columns_total.min(56);
+    let luts = Luts::new();
+    let tables = Tables::new();
+    let file: Vec<u32> = (0..num_points as u32).collect();
+    let morton = morton_order(&cells);
+    let hilbert = hilbert_order(&cells);
+    let by_cost = columns_by_cost(&rows, &hilbert, &luts);
+    let top = columns_total.min(16);
+
+    let refine_from = |start: &[u32], columns: usize| -> Vec<u32> {
+        let points = pack(&cells, &rows, &by_cost, start);
+        let mut lanes = Lanes::new(&points, start, columns);
+        lanes.refine::<16>(2, 0, usize::MAX);
+        lanes.ids
+    };
+    let arms: Vec<(String, Vec<u32>)> = vec![
+        ("file order".into(), file.clone()),
+        ("Morton".into(), morton),
+        ("Hilbert".into(), hilbert.clone()),
+        (
+            format!("Hilbert, refined ({top} cols)"),
+            refine_from(&hilbert, top),
+        ),
+        (
+            format!("Hilbert, refined ({columns_total} cols)"),
+            refine_from(&hilbert, columns_total),
+        ),
+        (
+            format!("file order, refined ({top} cols)"),
+            refine_from(&file, top),
+        ),
+        (
+            format!("file order, refined ({columns_total} cols)"),
+            refine_from(&file, columns_total),
+        ),
+    ];
+    let _ = &tables;
+    println!(
+        "{columns_total} columns; estimate over all of them, the coder's own size, bits a point"
+    );
+    println!(
+        "{:<34} {:>10} {:>10} {:>9}",
+        "order", "estimate", "coder", "ratio"
+    );
+    for (label, order) in &arms {
+        let est = estimated_bits_per_point(&cells, &rows, columns_total, order, &luts);
+        let real = encode(&permute(&cloud, order), false) as f64 * 8.0 / num_points as f64;
+        println!("{label:<34} {est:>10.2} {real:>10.2} {:>9.3}", real / est);
+    }
+}
+
+#[test]
+#[ignore = "needs a scene in DRACO_SPLAT_PLY: run with --release --ignored --nocapture"]
+fn when_does_the_estimate_pick_wrong() {
+    let Some((path, cloud)) = scene_cloud() else {
+        println!("DRACO_SPLAT_PLY is not set; nothing to measure");
+        return;
+    };
+    let num_points = cloud.num_points();
+    println!("scene: {} ({num_points} points)", path.display());
+    let cells = quantized_positions(&cloud).expect("positions");
+    let (rows, _) = byte_rows_mapped(&cloud);
+    let luts = Luts::new();
+    let columns_total = std::env::var("DRACO_ORDER_ALL_COLUMNS")
+        .ok()
+        .and_then(|c| c.parse().ok())
+        .unwrap_or(56usize);
+    let file: Vec<u32> = (0..num_points as u32).collect();
+    let morton = morton_order(&cells);
+    let hilbert = hilbert_order(&cells);
+    let by_cost = columns_by_cost(&rows, &hilbert, &luts);
+    let top = columns_total.min(16);
+    let refine_from = |start: &[u32]| -> Vec<u32> {
+        let points = pack(&cells, &rows, &by_cost, start);
+        let mut lanes = Lanes::new(&points, start, top);
+        lanes.refine::<16>(2, 0, usize::MAX);
+        lanes.ids
+    };
+    let refined_hilbert = refine_from(&hilbert);
+    let mut inputs: Vec<(&str, Vec<u32>)> = vec![
+        ("file", file),
+        ("Morton", morton),
+        ("Hilbert", hilbert.clone()),
+    ];
+    if std::env::var("DRACO_ORDER_ALL_COLUMNS").is_err() {
+        inputs.push(("Hilbert refined", refined_hilbert.clone()));
+    }
+    println!("an input order X, and what could be written instead; estimate and the coder's own size, bits a point");
+    println!(
+        "{:<18} {:<26} {:>9} {:>9}",
+        "input X", "candidate", "estimate", "coder"
+    );
+    for (name, x) in &inputs {
+        let candidates: Vec<(String, Vec<u32>)> = vec![
+            ("X as it is".into(), x.clone()),
+            ("X refined".into(), refine_from(x)),
+            ("Hilbert refined".into(), refined_hilbert.clone()),
+        ];
+        let measured: Vec<(f64, f64)> = candidates
+            .iter()
+            .map(|(_, order)| {
+                (
+                    estimated_bits_per_point(&cells, &rows, columns_total, order, &luts),
+                    encode(&permute(&cloud, order), false) as f64 * 8.0 / num_points as f64,
+                )
+            })
+            .collect();
+        let by_estimate = (0..3)
+            .min_by(|&a, &b| measured[a].0.partial_cmp(&measured[b].0).unwrap())
+            .unwrap();
+        let by_coder = (0..3)
+            .min_by(|&a, &b| measured[a].1.partial_cmp(&measured[b].1).unwrap())
+            .unwrap();
+        for (k, ((label, _), (est, real))) in candidates.iter().zip(&measured).enumerate() {
+            println!(
+                "{:<18} {label:<26} {est:>9.2} {real:>9.2}  {}{}",
+                if k == 0 { *name } else { "" },
+                if k == by_estimate {
+                    "<- estimate's pick "
+                } else {
+                    ""
+                },
+                if k == by_coder { "<- coder's pick" } else { "" }
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Leave the order alone, or touch it.
+// ---------------------------------------------------------------------------
+
+/// How much better than the Hilbert order the input order may be before the
+/// refinement, which starts from Hilbert, is not worth running: the estimate of
+/// the input over the estimate of Hilbert must stay above this. Refining
+/// Hilbert takes the estimate to about 0.8 of it on a splat and 0.85 on a scan,
+/// so 0.93 leaves room for a worse refinement than either.
+const WORTH_TRYING_ABOVE: f64 = 0.93;
+
+/// The refined order must undercut the input by at least this, in estimate. The
+/// estimate and the coder disagree by a few percent of the estimate: on the
+/// scan, refining its file order lowered the estimate 1.7% and raised the
+/// coder's size 0.9%.
+const WORTH_KEEPING_BELOW: f64 = 0.97;
+
+/// Mean estimated bits a step over every `stride`-th step of `order`, all
+/// columns and the position.
+fn sampled_estimate(prepared: &Prepared, order: &[u32], stride: usize, luts: &Luts) -> f64 {
+    let mut total = 0f64;
+    let mut steps = 0usize;
+    for pair in order.windows(2).step_by(stride) {
+        let (a, b) = (pair[0] as usize, pair[1] as usize);
+        for axis in &prepared.cells {
+            total += f64::from(luts.l16[axis[a].abs_diff(axis[b]) as usize]);
+        }
+        for column in &prepared.columns {
+            total += f64::from(luts.l8[column[a].abs_diff(column[b]) as usize]);
+        }
+        steps += 1;
+    }
+    total / steps.max(1) as f64
+}
+
+struct Decision {
+    order: Vec<u32>,
+    touched: bool,
+    reason: String,
+    estimate_in: f64,
+    estimate_hilbert: f64,
+    estimate_out: Option<f64>,
+    seconds: f64,
+}
+
+/// The order to write for `cloud`, whose points are in the order it was read.
+fn decide_order<const L: usize>(cloud: &PointCloud, threads: usize, luts: &Luts) -> Decision {
+    let started = std::time::Instant::now();
+    let count = cloud.num_points();
+    let identity: Vec<u32> = (0..count as u32).collect();
+    let prepared = prepare(cloud, threads);
+    let hilbert = hilbert_order(&aos_cells(&prepared.cells));
+    let estimate_in = sampled_estimate(&prepared, &identity, 17, luts);
+    let estimate_hilbert = sampled_estimate(&prepared, &hilbert, 17, luts);
+    let keep = |reason: String, estimate_out: Option<f64>| Decision {
+        order: identity.clone(),
+        touched: false,
+        reason,
+        estimate_in,
+        estimate_hilbert,
+        estimate_out,
+        seconds: started.elapsed().as_secs_f64(),
+    };
+    if estimate_in < WORTH_TRYING_ABOVE * estimate_hilbert {
+        return keep(
+            format!(
+                "the input is already {:.0}% under Hilbert",
+                (1.0 - estimate_in / estimate_hilbert) * 100.0
+            ),
+            None,
+        );
+    }
+    let ranked = rank_columns_sampled(&prepared.columns, &hilbert, 16, luts);
+    let chosen: Vec<usize> = ranked.into_iter().take(16).collect();
+    let mut order = hilbert;
+    let work = std::sync::Mutex::new(order.chunks_mut(8192));
+    std::thread::scope(|scope| {
+        for _ in 0..threads.max(1) {
+            scope.spawn(|| loop {
+                let Some(ids) = work.lock().unwrap().next() else {
+                    break;
+                };
+                if ids.len() < 4 {
+                    continue;
+                }
+                let mut lanes = Lanes::gather(&prepared, &chosen, ids);
+                lanes.refine::<L>(2, 0, usize::MAX);
+                ids.copy_from_slice(&lanes.ids);
+            });
+        }
+    });
+    let estimate_out = sampled_estimate(&prepared, &order, 5, luts);
+    if estimate_out > WORTH_KEEPING_BELOW * estimate_in {
+        return keep(
+            format!(
+                "refined only {:.1}% under the input",
+                (1.0 - estimate_out / estimate_in) * 100.0
+            ),
+            Some(estimate_out),
+        );
+    }
+    Decision {
+        order,
+        touched: true,
+        reason: format!(
+            "refined {:.0}% under the input",
+            (1.0 - estimate_out / estimate_in) * 100.0
+        ),
+        estimate_in,
+        estimate_hilbert,
+        estimate_out: Some(estimate_out),
+        seconds: started.elapsed().as_secs_f64(),
+    }
+}
+
+#[test]
+#[ignore = "needs a scene in DRACO_SPLAT_PLY: run with --release --ignored --nocapture"]
+fn does_the_rule_leave_alone_what_it_should() {
+    let Some((path, cloud)) = scene_cloud() else {
+        println!("DRACO_SPLAT_PLY is not set; nothing to measure");
+        return;
+    };
+    let num_points = cloud.num_points();
+    println!("scene: {} ({num_points} points)", path.display());
+    let luts = Luts::new();
+    let cells = quantized_positions(&cloud).expect("positions");
+    let (rows, _) = byte_rows_mapped(&cloud);
+    let hilbert = hilbert_order(&cells);
+    let by_cost = columns_by_cost(&rows, &hilbert, &luts);
+    let columns = 16usize;
+    let refined_hilbert = {
+        let points = pack(&cells, &rows, &by_cost, &hilbert);
+        let mut lanes = Lanes::new(&points, &hilbert, columns);
+        lanes.refine::<16>(2, 0, usize::MAX);
+        lanes.ids
+    };
+    let inputs: Vec<(&str, PointCloud)> = vec![
+        ("file order", cloud.clone()),
+        ("Morton order", permute(&cloud, &morton_order(&cells))),
+        ("Hilbert order", permute(&cloud, &hilbert)),
+        ("Hilbert, refined", permute(&cloud, &refined_hilbert)),
+    ];
+    println!(
+        "{:<18} {:>9} {:>9} {:>9} {:>8} {:>10} {:>10}  {}",
+        "input", "est in", "est Hilb", "est out", "time s", "as read", "written", "decision"
+    );
+    for (label, input) in &inputs {
+        let d = decide_order::<16>(input, 16, &luts);
+        let as_read = encode(input, false) as f64 * 8.0 / num_points as f64;
+        let written = encode(&permute(input, &d.order), false) as f64 * 8.0 / num_points as f64;
+        println!(
+            "{label:<18} {:>9.2} {:>9.2} {:>9} {:>8.3} {as_read:>10.2} {written:>10.2}  {} ({})",
+            d.estimate_in,
+            d.estimate_hilbert,
+            d.estimate_out
+                .map_or("-".to_string(), |e| format!("{e:.2}")),
+            d.seconds,
+            if d.touched { "TOUCH" } else { "LEAVE" },
+            d.reason
+        );
+    }
+}
