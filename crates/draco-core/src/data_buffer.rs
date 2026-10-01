@@ -73,6 +73,45 @@ impl DataBuffer {
         Ok(())
     }
 
+    /// Makes `bytes` the buffer's first bytes, growing it to hold them.
+    ///
+    /// What `try_resize` followed by a write does, without the zeros: a buffer
+    /// too short for `bytes` is rebuilt from them rather than grown with zeros
+    /// that are overwritten straight after. Bytes past `bytes.len()` in a buffer
+    /// that was already long enough are kept.
+    #[cfg(feature = "decoder")]
+    pub(crate) fn try_write_prefix(
+        &mut self,
+        bytes: &[u8],
+    ) -> Result<(), std::collections::TryReserveError> {
+        if let Some(prefix) = self.data.get_mut(..bytes.len()) {
+            prefix.copy_from_slice(bytes);
+            return Ok(());
+        }
+        self.data.clear();
+        self.data.try_reserve_exact(bytes.len())?;
+        self.data.extend_from_slice(bytes);
+        Ok(())
+    }
+
+    /// Fills an empty buffer with `len` bytes that `fill` appends to the storage
+    /// it is handed, which has room for them.
+    ///
+    /// For a writer that produces the bytes in order, so the buffer is never
+    /// zero-filled first only to be overwritten.
+    pub(crate) fn try_fill_with(
+        &mut self,
+        len: usize,
+        fill: impl FnOnce(&mut Vec<u8>),
+    ) -> Result<(), std::collections::TryReserveError> {
+        debug_assert!(self.data.is_empty());
+        self.data.clear();
+        self.data.try_reserve_exact(len)?;
+        fill(&mut self.data);
+        debug_assert_eq!(self.data.len(), len);
+        Ok(())
+    }
+
     pub fn write_data_to_stream<W: Write>(&self, stream: &mut W) -> io::Result<()> {
         stream.write_all(&self.data)
     }

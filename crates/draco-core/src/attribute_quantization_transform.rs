@@ -554,6 +554,48 @@ impl AttributeTransform for AttributeQuantizationTransform {
                 "Negative source byte stride".to_string(),
             ));
         };
+        let overflow = || DracoError::general("Attribute byte range overflow".to_string());
+        let truncated =
+            || DracoError::general("Dequantization source or target data is truncated".to_string());
+
+        const COMPONENT_SIZE: usize = std::mem::size_of::<u32>();
+        let Some(tight_stride) = num_components.checked_mul(COMPONENT_SIZE) else {
+            return Err(overflow());
+        };
+        let tight = attribute.data_type() == DataType::Uint32
+            && num_components > 0
+            && src_stride == tight_stride
+            && dst_stride == tight_stride;
+
+        // The decode's case: an empty target, both sides tightly packed. The
+        // values are appended in order as they are made, so the target is
+        // written once, where sizing it first and then writing would fill it
+        // with zeros only to overwrite every one.
+        if tight && target_attribute.buffer().data_size() == 0 {
+            let Some(required) = num_values.checked_mul(tight_stride) else {
+                return Err(overflow());
+            };
+            let Some(src) = attribute.buffer().data().get(..required) else {
+                return Err(truncated());
+            };
+            let (src_values, _) = src.as_chunks::<4>();
+            let mins = &self.min_values[..num_components];
+            return target_attribute
+                .buffer_mut()
+                .try_fill_with(required, |out| {
+                    for entry in src_values.chunks_exact(num_components) {
+                        for (src_component, &min_value) in entry.iter().zip(mins) {
+                            let quantized = i32::from_le_bytes(*src_component);
+                            out.extend_from_slice(
+                                &(dequantizer.dequantize_float(quantized) + min_value)
+                                    .to_le_bytes(),
+                            );
+                        }
+                    }
+                })
+                .map_err(|_| DracoError::general("Failed to allocate dequantized values"));
+        }
+
         // The target arrives unreserved from a decode: the count came out of a
         // header, and reserving for a header is what let a 9 KB stream ask for
         // gigabytes. It is sized here instead, where the values to put in it
@@ -581,19 +623,7 @@ impl AttributeTransform for AttributeQuantizationTransform {
         let src_data = src_buffer.data();
         let dst_data = dst_buffer.data_mut();
 
-        let overflow = || DracoError::general("Attribute byte range overflow".to_string());
-        let truncated =
-            || DracoError::general("Dequantization source or target data is truncated".to_string());
-
-        const COMPONENT_SIZE: usize = std::mem::size_of::<u32>();
-        let Some(tight_stride) = num_components.checked_mul(COMPONENT_SIZE) else {
-            return Err(overflow());
-        };
-        if attribute.data_type() == DataType::Uint32
-            && num_components > 0
-            && src_stride == tight_stride
-            && dst_stride == tight_stride
-        {
+        if tight {
             let Some(required_src) = num_values.checked_mul(src_stride) else {
                 return Err(overflow());
             };
@@ -840,6 +870,65 @@ mod tests {
             buffer.data().is_empty(),
             "nothing should reach the stream on refusal"
         );
+    }
+
+    /// A decode's target arrives empty and is built value by value; a target
+    /// sized beforehand is written in place. Both give the same bytes, for one
+    /// component and for several.
+    #[cfg(feature = "decoder")]
+    #[test]
+    fn an_empty_target_dequantizes_to_what_a_sized_one_does() {
+        for num_components in [1u8, 3] {
+            let count = 1000usize;
+            let mut source = PointAttribute::new();
+            source.init(
+                GeometryAttributeType::Generic,
+                num_components,
+                DataType::Uint32,
+                false,
+                count,
+            );
+            for i in 0..count * num_components as usize {
+                let quantized = (i as u32).wrapping_mul(2_654_435_761) >> 20;
+                source.buffer_mut().write(i * 4, &quantized.to_le_bytes());
+            }
+            let mins = [-3.5f32, 0.25, 7.0];
+            let mut transform = AttributeQuantizationTransform::new();
+            transform
+                .set_parameters(12, &mins[..num_components as usize], 9.5)
+                .unwrap();
+
+            let mut built = PointAttribute::new();
+            built
+                .init_deferred(
+                    GeometryAttributeType::Generic,
+                    num_components,
+                    DataType::Float32,
+                    false,
+                    count,
+                )
+                .unwrap();
+            assert_eq!(built.buffer().data_size(), 0, "the target this is about");
+            let mut sized = PointAttribute::new();
+            sized.init(
+                GeometryAttributeType::Generic,
+                num_components,
+                DataType::Float32,
+                false,
+                count,
+            );
+            transform
+                .inverse_transform_attribute(&source, &mut built)
+                .unwrap();
+            transform
+                .inverse_transform_attribute(&source, &mut sized)
+                .unwrap();
+            assert_eq!(
+                built.buffer().data(),
+                sized.buffer().data(),
+                "{num_components} components"
+            );
+        }
     }
 
     #[test]
