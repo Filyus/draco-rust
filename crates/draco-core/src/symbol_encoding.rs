@@ -714,9 +714,7 @@ pub fn decode_raw_symbols(
         // tables, the input and the coder state out of the loop, which it can
         // only do over a span it owns. The chunk is already sized to the spare
         // capacity, so this fills without reallocating.
-        let filled = symbols.len();
-        symbols.resize(filled + (chunk_end - index), 0);
-        if !decoder.decode_run(&mut symbols[filled..]) {
+        if !decoder.decode_run(symbols, chunk_end - index) {
             return Err(DracoError::new(
                 crate::status::ErrorKind::AllocationExceedsInput,
                 format!(

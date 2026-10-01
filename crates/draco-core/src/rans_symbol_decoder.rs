@@ -266,14 +266,16 @@ impl<'a> RAnsSymbolDecoder<'a> {
         true
     }
 
-    /// Decodes one symbol into every slot of `out`.
+    /// Decodes `count` symbols onto the end of `out`.
     ///
     /// The per-symbol form below is what the tagged scheme needs, where each
     /// symbol is interleaved with reads from a second bit stream. The raw
     /// scheme decodes a run of them against nothing else, and this is that
     /// run: the two tables, the input and the coder state all become locals,
     /// so the loop carries no reload and no check the tables have not already
-    /// proved.
+    /// proved. The symbols are written where they land in `out`, which a run
+    /// into a slice could only do after the slice had been filled once with
+    /// zeros to exist.
     ///
     /// The arithmetic wraps by construction rather than by hope. `state` stays
     /// below `l_rans_base * 256`, so `quo` is under `256 * 4` and `quo * prob`
@@ -291,33 +293,33 @@ impl<'a> RAnsSymbolDecoder<'a> {
     /// alternative, bounding the count against the input size, does not exist:
     /// rANS spends well under a bit on a near-certain symbol, and this crate's
     /// own encoder writes 50,000 symbols into 82 bytes.
-    pub fn decode_run(&mut self, out: &mut [u32]) -> bool {
+    pub fn decode_run(&mut self, out: &mut Vec<u32>, count: usize) -> bool {
         // A single-symbol alphabet carries no rANS state at all -- the encoder
         // wrote nothing and `start_decoding` initialized nothing -- so the run
         // is that symbol repeated.
         if self.num_symbols <= 1 {
-            out.fill(0);
+            out.resize(out.len() + count, 0);
             return true;
         }
         let precision = self.rans_precision as usize;
         if self.lut.len() < precision || self.probability_table.is_empty() {
-            out.fill(0);
+            out.resize(out.len() + count, 0);
             return false;
         }
         // A table costs one write per slot, and a step saves the run a dependent
         // read per symbol; half a table's worth of symbols is past where the
         // two meet.
-        if self.steps.is_empty() && out.len() >= precision / 2 {
+        if self.steps.is_empty() && count >= precision / 2 {
             self.build_steps();
         }
         // The slot table is moved out for the length of the run so the loops
         // can borrow it next to the coder state they update.
         let lut = std::mem::replace(&mut self.lut, Slots::Narrow(Vec::new()));
         let backed = match (&lut, self.steps.is_empty()) {
-            (Slots::Narrow(slots), false) => self.run_steps(slots, out),
-            (Slots::Wide(slots), false) => self.run_steps(slots, out),
-            (Slots::Narrow(slots), true) => self.run_table(slots, out),
-            (Slots::Wide(slots), true) => self.run_table(slots, out),
+            (Slots::Narrow(slots), false) => self.run_steps(slots, out, count),
+            (Slots::Wide(slots), false) => self.run_steps(slots, out, count),
+            (Slots::Narrow(slots), true) => self.run_table(slots, out, count),
+            (Slots::Wide(slots), true) => self.run_table(slots, out, count),
         };
         self.lut = lut;
         backed
@@ -345,7 +347,12 @@ impl<'a> RAnsSymbolDecoder<'a> {
     /// the table form reads the slot's symbol id and then the symbol's entry,
     /// the second read waiting on the first. The id is still read, but nothing
     /// waits on it.
-    fn run_steps<T: Copy + Into<u32>>(&mut self, slots: &[T], out: &mut [u32]) -> bool {
+    fn run_steps<T: Copy + Into<u32>>(
+        &mut self,
+        slots: &[T],
+        out: &mut Vec<u32>,
+        count: usize,
+    ) -> bool {
         let precision = self.rans_precision as usize;
         let slots = &slots[..precision];
         let steps = &self.steps[..precision];
@@ -357,7 +364,7 @@ impl<'a> RAnsSymbolDecoder<'a> {
         let mut state = self.ans.state;
 
         let mut backed = true;
-        for slot in out.iter_mut() {
+        out.extend((0..count).map(|_| {
             while state < l_base && offset > 0 {
                 offset -= 1;
                 state = (state << 8) | buf[offset] as u32;
@@ -367,16 +374,21 @@ impl<'a> RAnsSymbolDecoder<'a> {
             let rem = (state & mask) as usize;
             // `rem <= mask` and both tables are `mask + 1` long.
             let step = steps[rem];
-            *slot = slots[rem].into();
             state = quo.wrapping_mul(step & 0xFFFF).wrapping_add(step >> 16);
-        }
+            slots[rem].into()
+        }));
 
         self.ans.buf_offset = offset;
         self.ans.state = state;
         backed
     }
 
-    fn run_table<T: Copy + Into<u32>>(&mut self, slots: &[T], out: &mut [u32]) -> bool {
+    fn run_table<T: Copy + Into<u32>>(
+        &mut self,
+        slots: &[T],
+        out: &mut Vec<u32>,
+        count: usize,
+    ) -> bool {
         let precision = self.rans_precision as usize;
         let slots = &slots[..precision];
         let table = &self.probability_table[..];
@@ -392,7 +404,7 @@ impl<'a> RAnsSymbolDecoder<'a> {
         // slot on the run is drawing on nothing. One predicated compare per
         // symbol, off the dependency chain the loop is actually waiting on.
         let mut backed = true;
-        for slot in out.iter_mut() {
+        out.extend((0..count).map(|_| {
             while state < l_base && offset > 0 {
                 offset -= 1;
                 state = (state << 8) | buf[offset] as u32;
@@ -407,8 +419,8 @@ impl<'a> RAnsSymbolDecoder<'a> {
             state = quo
                 .wrapping_mul(sym.prob)
                 .wrapping_add(rem.wrapping_sub(sym.cum_prob));
-            *slot = symbol_id;
-        }
+            symbol_id
+        }));
 
         self.ans.buf_offset = offset;
         self.ans.state = state;
@@ -505,15 +517,16 @@ mod tests {
             );
 
             let mut whole = decoder();
-            let mut out = vec![0; count];
-            assert!(whole.decode_run(&mut out));
+            let mut out = Vec::new();
+            assert!(whole.decode_run(&mut out, count));
             assert_eq!(matches!(whole.lut, Slots::Narrow(_)), narrow, "{alphabet}");
             assert_eq!(!whole.steps.is_empty(), steps, "{alphabet}");
 
             let mut pieces = decoder();
-            let mut cut = vec![0; count];
-            for piece in cut.chunks_mut(997) {
-                assert!(pieces.decode_run(piece));
+            let mut cut = Vec::new();
+            while cut.len() < count {
+                let piece = 997.min(count - cut.len());
+                assert!(pieces.decode_run(&mut cut, piece));
             }
             assert!(pieces.steps.is_empty());
 

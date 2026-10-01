@@ -1232,20 +1232,17 @@ fn store_i32_values_to_attribute(
     let Some(required) = num_points.checked_mul(byte_stride) else {
         return false;
     };
-    if attr.buffer().data_size() < required && attr.buffer_mut().try_resize(required).is_err() {
-        return false;
-    }
 
-    // Fast path: i32/u32 tightly packed — bulk memcpy the entire values array.
+    // Fast path: i32/u32 tightly packed — bulk memcpy the entire values array,
+    // which is then the whole of what the buffer needs to hold.
     if (data_type == DataType::Int32 || data_type == DataType::Uint32) && byte_stride == packed_row
     {
         let src: &[u8] = bytemuck::cast_slice(&values[..num_values_required]);
-        let dst = attr.buffer_mut().data_mut();
-        let Some(dst) = dst.get_mut(..src.len()) else {
-            return false;
-        };
-        dst.copy_from_slice(src);
-        return true;
+        return attr.buffer_mut().try_write_prefix(src).is_ok();
+    }
+
+    if attr.buffer().data_size() < required && attr.buffer_mut().try_resize(required).is_err() {
+        return false;
     }
 
     // Slow path: per-component write with type conversion.
