@@ -348,6 +348,12 @@ pub mod mesh_encoder;
 #[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 /// Point cloud encoder entry point.
 pub mod point_cloud_encoder;
+
+#[cfg(feature = "encoder")]
+mod parallel;
+
+#[cfg(feature = "encoder")]
+mod point_order;
 #[cfg(feature = "encoder")]
 #[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 #[doc(hidden)]

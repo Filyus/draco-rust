@@ -2,14 +2,15 @@ use crate::compression_config::EncodedGeometryType;
 use crate::draco_types::DataType;
 use crate::encoder_buffer::EncoderBuffer;
 use crate::encoder_options::EncoderOptions;
-use crate::geometry_attribute::GeometryAttributeType;
 use crate::geometry_attribute::PointAttribute;
 use crate::geometry_indices::PointIndex;
 use crate::kd_tree_attributes_encoder::KdTreeAttributesEncoder;
 use crate::mesh::Mesh;
 use crate::mesh_encoder::EncodedAttributeInfo;
 use crate::metadata::METADATA_FLAG_MASK;
+use crate::parallel;
 use crate::point_cloud::PointCloud;
+use crate::point_order as order;
 use crate::sequential_attribute_encoder::{
     select_sequential_encoder, SequentialAttributeEncoderType,
 };
@@ -153,263 +154,24 @@ fn validate_attribute_storage(att_id: i32, attribute: &PointAttribute) -> Status
 
 /// The order the sequential coder should walk the points in.
 ///
-/// Identity unless the caller asked for a spatial order and the geometry gives
-/// something to derive one from. Every attribute is read through the point
-/// index, so permuting this permutes all of them together and a point stays a
-/// point.
+/// What the caller asked for, if the geometry gives something to derive it
+/// from: a search for the order that makes the stream smallest, which may find
+/// the order it was handed already good and say so, or else a spatial order,
+/// which is always the curve. Otherwise the points go as they came. Every
+/// attribute is read through the point index, so permuting this permutes all of
+/// them together and a point stays a point.
 fn point_order(pc: &PointCloud, options: &EncoderOptions) -> Vec<PointIndex> {
-    let identity = || (0..pc.num_points()).map(|i| PointIndex(i as u32)).collect();
-    if !options.spatial_point_order() {
-        return identity();
-    }
-    let Some(order) = spatial_point_order(pc, options, Curve::from_env()) else {
-        return identity();
-    };
-    order
-}
-
-/// How finely the curve resolves each axis, from how finely the positions will
-/// be stored.
-///
-/// The grid is not a free parameter. Coarser than the quantization and
-/// distinct points share a cell, where their order is whatever the sort left
-/// them in rather than anything spatial: at ten bits an axis that was 86% of
-/// the points of a million-point splat, seven to a cell. Finer than the
-/// quantization and the order sorts by differences the encode then discards,
-/// which measurably buys nothing.
-///
-/// What a fixed grid costs depends entirely on how crowded its cells get, so
-/// it is worth 5% of that splat and 1% of two interiors whose points fill
-/// their bounding box. Following the quantization is never the worse of the
-/// two, which is the reason to do it; the size of the win is the scene's.
-///
-/// Twenty-one bits an axis is the ceiling either way, being what still
-/// interleaves into a `u64` key.
-fn curve_axis_bits(options: &EncoderOptions, att_id: i32) -> u32 {
-    const MAX_AXIS_BITS: i32 = 21;
-    let quantization = options.get_attribute_int(att_id, "quantization_bits", -1);
-    if quantization <= 0 {
-        // Nothing quantizes the positions, so they reach the decoder with
-        // every bit they arrived with and there is no coarser grid to match.
-        return MAX_AXIS_BITS as u32;
-    }
-    quantization.min(MAX_AXIS_BITS) as u32
-}
-
-/// Which space-filling curve the points are strung onto.
-///
-/// EXPERIMENT: selected by `DRACO_SPATIAL_CURVE`, defaulting to the shipped
-/// Morton order. Both curves read the same quantized coordinates, so the only
-/// difference between the two arms is the curve itself.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Curve {
-    Morton,
-    Hilbert,
-}
-
-impl Curve {
-    fn from_env() -> Self {
-        match std::env::var("DRACO_SPATIAL_CURVE").as_deref() {
-            Ok("hilbert") => Curve::Hilbert,
-            _ => Curve::Morton,
+    if options.point_order_search() {
+        if let Some(order) = order::search(pc, options) {
+            return order;
         }
     }
-}
-
-/// Point indices sorted along a space-filling curve over the position attribute.
-///
-/// `None` where there is nothing to sort by: no position attribute, or one
-/// whose values this cannot read. Returning the caller's order unchanged is the
-/// only honest answer there — a spatial order derived from values that were not
-/// the positions would be worse than none.
-fn spatial_point_order(
-    pc: &PointCloud,
-    options: &EncoderOptions,
-    curve: Curve,
-) -> Option<Vec<PointIndex>> {
-    let att_id = (0..pc.num_attributes())
-        .find(|id| pc.attribute(*id).attribute_type() == GeometryAttributeType::Position)?;
-    let attribute = pc.attribute(att_id);
-    if attribute.num_components() < 3 {
-        return None;
-    }
-
-    let num_points = pc.num_points();
-    let mut coordinates = Vec::with_capacity(num_points * 3);
-    let mut min = [f64::INFINITY; 3];
-    let mut max = [f64::NEG_INFINITY; 3];
-    for point in 0..num_points {
-        let value_index = attribute.mapped_index(PointIndex(point as u32));
-        for (axis, (low, high)) in min.iter_mut().zip(max.iter_mut()).enumerate() {
-            let value = read_component_as_f64(attribute, value_index, axis)?;
-            // A non-finite coordinate has no place on the curve and no sensible
-            // range to normalize against, so the whole reorder is declined
-            // rather than silently bucketing it somewhere.
-            if !value.is_finite() {
-                return None;
-            }
-            *low = low.min(value);
-            *high = high.max(value);
-            coordinates.push(value);
+    if options.spatial_point_order() {
+        if let Some(order) = order::curve(pc, options) {
+            return order;
         }
     }
-
-    let axis_bits = curve_axis_bits(options, att_id);
-    let levels = ((1u64 << axis_bits) - 1) as f64;
-    // Twenty-one bits an axis interleave into 63 and fit a u64 key.
-    let spread = |v: u32| -> u64 {
-        let mut x = u64::from(v) & 0x1f_ffff;
-        x = (x | (x << 32)) & 0x001f_0000_0000_ffff;
-        x = (x | (x << 16)) & 0x001f_0000_ff00_00ff;
-        x = (x | (x << 8)) & 0x100f_00f0_0f00_f00f;
-        x = (x | (x << 4)) & 0x10c3_0c30_c30c_30c3;
-        x = (x | (x << 2)) & 0x1249_2492_4924_9249;
-        x
-    };
-
-    let mut keyed: Vec<(u64, u32)> = (0..num_points)
-        .map(|point| {
-            let mut axes = [0u32; 3];
-            for (axis, (low, high)) in min.iter().zip(max.iter()).enumerate() {
-                let span = high - low;
-                let normalized = if span > 0.0 {
-                    (coordinates[point * 3 + axis] - low) / span
-                } else {
-                    0.0
-                };
-                axes[axis] = (normalized * levels) as u32;
-            }
-            let key = match curve {
-                Curve::Morton => {
-                    let mut key = 0u64;
-                    for (axis, &value) in axes.iter().enumerate() {
-                        key |= spread(value) << axis;
-                    }
-                    key
-                }
-                Curve::Hilbert => hilbert_key(axes[0], axes[1], axes[2], axis_bits),
-            };
-            (key, point as u32)
-        })
-        .collect();
-    // By key then by original index, so points sharing a cell keep the order
-    // they came in and the result does not depend on the sort's stability.
-    keyed.sort_unstable();
-    Some(
-        keyed
-            .into_iter()
-            .map(|(_, point)| PointIndex(point))
-            .collect(),
-    )
-}
-
-/// The index of `(x, y, z)` along a 3D Hilbert curve of `bits` levels.
-///
-/// Walks one level per bit through a 24-state automaton: eight octants times
-/// three axis rotations, each entry giving the octant's position on the curve
-/// and the state the next level starts in. Ported from
-/// `packed_spatial_index`'s `sort3d`, minus its coarsened lookup tables, which
-/// trade 384 KiB of table for four steps instead of sixteen.
-fn hilbert_key(x: u32, y: u32, z: u32, bits: u32) -> u64 {
-    let mut key = 0u64;
-    let mut state = 0usize;
-    let mut shift = bits;
-    while shift > 0 {
-        shift -= 1;
-        let octant = (((x >> shift) & 1) << 2) | (((y >> shift) & 1) << 1) | ((z >> shift) & 1);
-        let entry = HILBERT3_STEP_LUT[state * 8 + octant as usize];
-        key = (key << 3) | u64::from(entry & 7);
-        state = (entry >> 3) as usize;
-    }
-    key
-}
-
-/// 24 states x 8 octants: the low three bits are the octant's index along the
-/// curve, the rest is the next state.
-const HILBERT3_STEP_LUT: [u8; 192] = build_hilbert3_step_lut();
-
-const fn build_hilbert3_step_lut() -> [u8; 192] {
-    let mut table = [0u8; 192];
-    let mut state = 0usize;
-    while state < 24 {
-        let c = (state & 7) as u32;
-        let n = (state / 8) as u32;
-        let mut m = 0u32;
-        while m < 8 {
-            let gray = rotate_right_3(c ^ m, n);
-            let i = gray_to_integer_3(gray);
-            let without_high_bit = gray & 0b011;
-            let next_rotation = if without_high_bit == 0 {
-                1
-            } else if (without_high_bit & 1) != 0 {
-                2
-            } else {
-                3
-            };
-            let transform = if i == 0 {
-                0
-            } else {
-                let low_bit = i & 0u32.wrapping_sub(i);
-                gray ^ (low_bit | 1)
-            };
-            let next_c = c ^ rotate_left_3(transform, n);
-            let next_n = (n + next_rotation) % 3;
-            let next_state = next_n * 8 + next_c;
-            table[state * 8 + m as usize] = ((next_state as u8) << 3) | (i as u8);
-            m += 1;
-        }
-        state += 1;
-    }
-    table
-}
-
-const fn rotate_left_3(value: u32, shift: u32) -> u32 {
-    match shift {
-        0 => value & 7,
-        1 => ((value << 1) | (value >> 2)) & 7,
-        _ => ((value << 2) | (value >> 1)) & 7,
-    }
-}
-
-const fn rotate_right_3(value: u32, shift: u32) -> u32 {
-    match shift {
-        0 => value & 7,
-        1 => ((value >> 1) | (value << 2)) & 7,
-        _ => ((value >> 2) | (value << 1)) & 7,
-    }
-}
-
-const fn gray_to_integer_3(mut gray: u32) -> u32 {
-    gray ^= gray >> 1;
-    gray ^= gray >> 2;
-    gray & 7
-}
-
-/// One component of one value, as an `f64`, or `None` for a type this does not
-/// read.
-fn read_component_as_f64(
-    attribute: &PointAttribute,
-    value_index: crate::geometry_indices::AttributeValueIndex,
-    component: usize,
-) -> Option<f64> {
-    let data_type = attribute.data_type();
-    let size = data_type.byte_length();
-    let offset = value_index.0 as usize * attribute.byte_stride() as usize + component * size;
-    let mut bytes = [0u8; 8];
-    attribute.buffer().read(offset, &mut bytes[..size]);
-    Some(match data_type {
-        DataType::Float32 => f32::from_le_bytes(bytes[..4].try_into().ok()?) as f64,
-        DataType::Float64 => f64::from_le_bytes(bytes),
-        DataType::Int8 => bytes[0] as i8 as f64,
-        DataType::Uint8 => bytes[0] as f64,
-        DataType::Int16 => i16::from_le_bytes(bytes[..2].try_into().ok()?) as f64,
-        DataType::Uint16 => u16::from_le_bytes(bytes[..2].try_into().ok()?) as f64,
-        DataType::Int32 => i32::from_le_bytes(bytes[..4].try_into().ok()?) as f64,
-        DataType::Uint32 => u32::from_le_bytes(bytes[..4].try_into().ok()?) as f64,
-        DataType::Int64 => i64::from_le_bytes(bytes) as f64,
-        DataType::Uint64 => u64::from_le_bytes(bytes) as f64,
-        DataType::Bool | DataType::Invalid => return None,
-    })
+    (0..pc.num_points()).map(|i| PointIndex(i as u32)).collect()
 }
 
 /// Picks sequential or KD-tree encoding, as C++ `ExpertEncoder::EncodeToBuffer`
@@ -581,6 +343,18 @@ pub struct EncodedPointCloudInfo {
     /// KD-tree method, which encodes every attribute through one coder with no
     /// per-attribute choice to report.
     pub attributes: Vec<EncodedAttributeInfo>,
+}
+
+/// Attribute values below which an encode stays on the calling thread: a few
+/// milliseconds of work, which the threads would spend starting.
+const PARALLEL_MIN_VALUES: usize = 1 << 17;
+
+/// What one attribute's encoder leaves behind: its bytes, and the encoder
+/// itself where the transform data written after all the values is its to give.
+struct EncodedValues {
+    bytes: EncoderBuffer,
+    integer: Option<SequentialIntegerAttributeEncoder>,
+    normal: Option<SequentialNormalAttributeEncoder>,
 }
 
 impl GeometryEncoder for PointCloudEncoder {
@@ -828,79 +602,104 @@ impl PointCloudEncoder {
             let mut normal_encoders: Vec<Option<SequentialNormalAttributeEncoder>> =
                 Vec::with_capacity(num_attributes as usize);
 
-            // First pass: encode all values
-            for i in 0..num_attributes {
-                let att = pc.attribute(i);
-
-                match encoder_types[i as usize] {
-                    SequentialAttributeEncoderType::Normals => {
-                        let mut att_encoder = SequentialNormalAttributeEncoder::new();
-                        att_encoder.init(pc, i, &self.options).map_err(|e| {
-                            DracoError::general(format!(
-                                "Failed to init normal attribute encoder {i}: {e}"
-                            ))
-                        })?;
-
-                        att_encoder.encode_values(
-                            pc,
-                            &point_ids,
-                            out_buffer,
-                            &self.options,
-                            self,
-                        )?;
-
-                        integer_encoders.push(None);
-                        normal_encoders.push(Some(att_encoder));
-                        continue;
-                    }
-                    SequentialAttributeEncoderType::Quantization
-                    | SequentialAttributeEncoderType::Integer => {
-                        // The prediction search, when asked for, is decided
-                        // inside `encode_values`, where both candidates are
-                        // already in memory; nothing about the call changes.
-                        let mut att_encoder = SequentialIntegerAttributeEncoder::new();
-                        att_encoder.init(i);
-
-                        att_encoder.encode_values(
-                            pc,
-                            &point_ids,
-                            out_buffer,
-                            &self.options,
-                            self,
-                            None,
-                            false,
-                        )?;
-
-                        integer_encoders.push(Some(att_encoder));
-                    }
-                    SequentialAttributeEncoderType::Generic => {
-                        let entry_size = att.byte_stride() as usize;
-                        let data = att.buffer().data();
-                        for &point_id in &point_ids {
-                            let value_index = att.mapped_index(point_id).0 as usize;
-                            let offset = value_index.checked_mul(entry_size).ok_or_else(|| {
-                                DracoError::general(
-                                    "Point cloud raw attribute offset overflow".to_string(),
-                                )
+            // First pass: encode all values. An attribute's encoder reads the
+            // cloud and the point order and writes only its own bytes, so each
+            // writes into a buffer of its own and the buffers are appended in
+            // attribute order: the stream one buffer written in that order
+            // would hold, whatever number of threads did the writing. Below a
+            // few hundred thousand values the work does not repay the threads.
+            let values_to_encode = num_points.saturating_mul(num_attributes as usize);
+            let threads = if values_to_encode >= PARALLEL_MIN_VALUES {
+                parallel::resolve(self.options.get_threads())
+            } else {
+                1
+            };
+            let (major, minor) = (out_buffer.version_major(), out_buffer.version_minor());
+            let this: &PointCloudEncoder = self;
+            let encoded = parallel::map(
+                num_attributes as usize,
+                threads,
+                |index| -> Result<EncodedValues, DracoError> {
+                    let i = index as i32;
+                    let att = pc.attribute(i);
+                    let mut buffer = EncoderBuffer::new();
+                    buffer.set_version(major, minor);
+                    let mut values = EncodedValues {
+                        bytes: EncoderBuffer::new(),
+                        integer: None,
+                        normal: None,
+                    };
+                    match encoder_types[index] {
+                        SequentialAttributeEncoderType::Normals => {
+                            let mut att_encoder = SequentialNormalAttributeEncoder::new();
+                            att_encoder.init(pc, i, &this.options).map_err(|e| {
+                                DracoError::general(format!(
+                                    "Failed to init normal attribute encoder {i}: {e}"
+                                ))
                             })?;
-                            let end = offset.checked_add(entry_size).ok_or_else(|| {
-                                DracoError::general(
-                                    "Point cloud raw attribute byte range overflow".to_string(),
-                                )
-                            })?;
-                            if end > data.len() {
-                                return Err(DracoError::general(
-                                    "Point cloud raw attribute data out of bounds".to_string(),
-                                ));
-                            }
-                            out_buffer.encode_data(&data[offset..end]);
+
+                            att_encoder.encode_values(
+                                pc,
+                                &point_ids,
+                                &mut buffer,
+                                &this.options,
+                                this,
+                            )?;
+                            values.normal = Some(att_encoder);
                         }
+                        SequentialAttributeEncoderType::Quantization
+                        | SequentialAttributeEncoderType::Integer => {
+                            // The prediction search, when asked for, is decided
+                            // inside `encode_values`, where both candidates are
+                            // already in memory; nothing about the call changes.
+                            let mut att_encoder = SequentialIntegerAttributeEncoder::new();
+                            att_encoder.init(i);
 
-                        integer_encoders.push(None);
+                            att_encoder.encode_values(
+                                pc,
+                                &point_ids,
+                                &mut buffer,
+                                &this.options,
+                                this,
+                                None,
+                                false,
+                            )?;
+                            values.integer = Some(att_encoder);
+                        }
+                        SequentialAttributeEncoderType::Generic => {
+                            let entry_size = att.byte_stride() as usize;
+                            let data = att.buffer().data();
+                            for &point_id in &point_ids {
+                                let value_index = att.mapped_index(point_id).0 as usize;
+                                let offset =
+                                    value_index.checked_mul(entry_size).ok_or_else(|| {
+                                        DracoError::general(
+                                            "Point cloud raw attribute offset overflow".to_string(),
+                                        )
+                                    })?;
+                                let end = offset.checked_add(entry_size).ok_or_else(|| {
+                                    DracoError::general(
+                                        "Point cloud raw attribute byte range overflow".to_string(),
+                                    )
+                                })?;
+                                if end > data.len() {
+                                    return Err(DracoError::general(
+                                        "Point cloud raw attribute data out of bounds".to_string(),
+                                    ));
+                                }
+                                buffer.encode_data(&data[offset..end]);
+                            }
+                        }
                     }
-                }
-
-                normal_encoders.push(None);
+                    values.bytes = buffer;
+                    Ok(values)
+                },
+            );
+            for result in encoded {
+                let values = result?;
+                out_buffer.encode_data(values.bytes.data());
+                integer_encoders.push(values.integer);
+                normal_encoders.push(values.normal);
             }
 
             // Second pass: encode transform parameters (EncodeDataNeededByPortableTransforms)
@@ -1038,300 +837,5 @@ impl PointCloudEncoder {
     /// Returns the geometry type produced by this encoder.
     pub fn get_geometry_type(&self) -> EncodedGeometryType {
         EncodedGeometryType::PointCloud
-    }
-}
-
-#[cfg(test)]
-mod curve_grid_tests {
-    use super::curve_axis_bits;
-    use crate::encoder_options::EncoderOptions;
-
-    #[test]
-    fn the_grid_follows_the_positions_quantization() {
-        let mut options = EncoderOptions::new();
-        for bits in [4, 8, 14, 16, 21] {
-            options.set_attribute_int(0, "quantization_bits", bits);
-            assert_eq!(curve_axis_bits(&options, 0), bits as u32);
-        }
-
-        // Past what a u64 key can hold, the grid stops rather than wrapping.
-        options.set_attribute_int(0, "quantization_bits", 30);
-        assert_eq!(curve_axis_bits(&options, 0), 21);
-
-        // Unquantized positions keep every bit they arrived with, so the
-        // finest grid is the one that matches them.
-        let options = EncoderOptions::new();
-        assert_eq!(curve_axis_bits(&options, 0), 21);
-    }
-}
-
-#[cfg(test)]
-mod hilbert_tests {
-    use super::hilbert_key;
-
-    /// The curve is a curve: it visits every cell once, and each step is to a
-    /// face neighbour. Both halves matter -- a broken state table can still
-    /// produce a bijection while jumping across the grid, which is exactly the
-    /// property the experiment is trying to buy.
-    #[test]
-    fn the_hilbert_key_walks_every_cell_once_without_jumping() {
-        const BITS: u32 = 4;
-        let side = 1u32 << BITS;
-        let cells = (side * side * side) as usize;
-
-        let mut position_of = vec![None; cells];
-        for x in 0..side {
-            for y in 0..side {
-                for z in 0..side {
-                    let key = hilbert_key(x, y, z, BITS) as usize;
-                    assert!(key < cells, "key {key} outside the grid");
-                    assert!(
-                        position_of[key].replace((x, y, z)).is_none(),
-                        "two cells share key {key}"
-                    );
-                }
-            }
-        }
-
-        let mut previous = position_of[0].expect("cell 0 is visited");
-        for (key, cell) in position_of.iter().enumerate().skip(1) {
-            let cell = cell.expect("every cell is visited");
-            let step = previous.0.abs_diff(cell.0)
-                + previous.1.abs_diff(cell.1)
-                + previous.2.abs_diff(cell.2);
-            assert_eq!(step, 1, "step {key} jumps from {previous:?} to {cell:?}");
-            previous = cell;
-        }
-    }
-}
-
-/// EXPERIMENT: what the ordering stage costs, apart from the encode it feeds.
-#[cfg(test)]
-mod order_stage_bench {
-    use super::*;
-    use std::time::Instant;
-
-    /// Gaussian blobs of very different widths, which is what a splat scene's
-    /// positions look like: dense cores and a sparse halo.
-    fn synthetic_cloud(points: usize) -> PointCloud {
-        let mut state = 0x9e37_79b9_7f4a_7c15u64;
-        let mut next = move || {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            (state >> 11) as f64 / (1u64 << 53) as f64
-        };
-        let centres: Vec<[f64; 4]> = (0..64)
-            .map(|_| {
-                [
-                    next() * 100.0,
-                    next() * 100.0,
-                    next() * 100.0,
-                    0.2 + next() * 6.0,
-                ]
-            })
-            .collect();
-        let mut cloud = PointCloud::new();
-        cloud.set_num_points(points);
-        let mut attribute = PointAttribute::new();
-        attribute.init(
-            GeometryAttributeType::Position,
-            3,
-            DataType::Float32,
-            false,
-            points,
-        );
-        let buffer = attribute.buffer_mut();
-        for point in 0..points {
-            let c = &centres[(next() * 64.0) as usize % 64];
-            for axis in 0..3 {
-                let gaussian = (next() + next() + next() + next() - 2.0) * 1.7;
-                let value = (c[axis] + gaussian * c[3]) as f32;
-                buffer.write((point * 3 + axis) * 4, &value.to_le_bytes());
-            }
-        }
-        cloud.add_attribute(attribute);
-        cloud
-    }
-
-    fn pair_lut() -> Vec<u16> {
-        let mut table = vec![0u16; 24 * 64];
-        for state in 0..24usize {
-            for m in 0..64usize {
-                let (x, y, z) = ((m >> 4) & 3, (m >> 2) & 3, m & 3);
-                let mut next = state;
-                let mut out = 0u16;
-                for bit in (0..2).rev() {
-                    let octant =
-                        (((x >> bit) & 1) << 2) | (((y >> bit) & 1) << 1) | ((z >> bit) & 1);
-                    let entry = HILBERT3_STEP_LUT[next * 8 + octant];
-                    out = (out << 3) | u16::from(entry & 7);
-                    next = (entry >> 3) as usize;
-                }
-                table[state * 64 + m] = ((next as u16) << 6) | out;
-            }
-        }
-        table
-    }
-
-    fn nibble_lut() -> Vec<u32> {
-        let mut table = vec![0u32; 24 * 4096];
-        for state in 0..24usize {
-            for m in 0..4096usize {
-                let (x, y, z) = ((m >> 8) & 15, (m >> 4) & 15, m & 15);
-                let mut next = state;
-                let mut out = 0u32;
-                for bit in (0..4).rev() {
-                    let octant =
-                        (((x >> bit) & 1) << 2) | (((y >> bit) & 1) << 1) | ((z >> bit) & 1);
-                    let entry = HILBERT3_STEP_LUT[next * 8 + octant];
-                    out = (out << 3) | u32::from(entry & 7);
-                    next = (entry >> 3) as usize;
-                }
-                table[state * 4096 + m] = ((next as u32) << 12) | out;
-            }
-        }
-        table
-    }
-
-    fn median_ms(mut f: impl FnMut() -> u64) -> (f64, u64) {
-        let mut times = Vec::new();
-        let mut check = 0;
-        for _ in 0..9 {
-            let start = Instant::now();
-            check = f();
-            times.push(start.elapsed().as_secs_f64() * 1000.0);
-        }
-        times.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        (times[4], check)
-    }
-
-    #[test]
-    #[ignore = "a timing, run with --release --ignored --nocapture"]
-    fn where_the_order_time_goes() {
-        let points = 1_000_000usize;
-        let mut state = 0x1234_5678_9abc_def1u64;
-        let mut next = move || {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            state
-        };
-        let axes: Vec<[u32; 3]> = (0..points)
-            .map(|_| {
-                let r = next();
-                [
-                    (r & 0xffff) as u32,
-                    ((r >> 16) & 0xffff) as u32,
-                    ((r >> 32) & 0xffff) as u32,
-                ]
-            })
-            .collect();
-        let pair = pair_lut();
-        let nibble = nibble_lut();
-        let step = median_ms(|| {
-            axes.iter()
-                .fold(0u64, |h, a| h ^ hilbert_key(a[0], a[1], a[2], 16))
-        });
-        let pairs = median_ms(|| {
-            axes.iter().fold(0u64, |h, a| {
-                let (mut key, mut state, mut shift) = (0u64, 0usize, 16u32);
-                while shift > 0 {
-                    shift -= 2;
-                    let m = (((a[0] >> shift) & 3) << 4)
-                        | (((a[1] >> shift) & 3) << 2)
-                        | ((a[2] >> shift) & 3);
-                    let entry = pair[state * 64 + m as usize];
-                    key = (key << 6) | u64::from(entry & 0x3f);
-                    state = (entry >> 6) as usize;
-                }
-                h ^ key
-            })
-        });
-        let nibbles = median_ms(|| {
-            axes.iter().fold(0u64, |h, a| {
-                let (mut key, mut state, mut shift) = (0u64, 0usize, 16u32);
-                while shift > 0 {
-                    shift -= 4;
-                    let m = (((a[0] >> shift) & 15) << 8)
-                        | (((a[1] >> shift) & 15) << 4)
-                        | ((a[2] >> shift) & 15);
-                    let entry = nibble[state * 4096 + m as usize];
-                    key = (key << 12) | u64::from(entry & 0xfff);
-                    state = (entry >> 12) as usize;
-                }
-                h ^ key
-            })
-        });
-        println!("key only, 1M points: step {:.1} ms | pair LUT {:.1} ms | nibble LUT {:.1} ms (checks {:x} {:x} {:x})", step.0, pairs.0, nibbles.0, step.1, pairs.1, nibbles.1);
-
-        let keyed: Vec<(u64, u32)> = axes
-            .iter()
-            .enumerate()
-            .map(|(i, a)| (hilbert_key(a[0], a[1], a[2], 16), i as u32))
-            .collect();
-        let std_sort = median_ms(|| {
-            let mut v = keyed.clone();
-            v.sort_unstable();
-            v[points / 2].0
-        });
-        let radix = median_ms(|| {
-            let mut a = keyed.clone();
-            let mut tmp = vec![(0u64, 0u32); a.len()];
-            for pass in 0..6u32 {
-                let shift = pass * 8;
-                let mut counts = [0usize; 256];
-                let (src, dst): (&[(u64, u32)], &mut [(u64, u32)]) = if pass % 2 == 0 {
-                    (&a, &mut tmp)
-                } else {
-                    (&tmp, &mut a)
-                };
-                for &(k, _) in src {
-                    counts[((k >> shift) & 255) as usize] += 1;
-                }
-                let mut sum = 0;
-                for c in counts.iter_mut() {
-                    let t = *c;
-                    *c = sum;
-                    sum += t;
-                }
-                for &p in src {
-                    let b = ((p.0 >> shift) & 255) as usize;
-                    dst[counts[b]] = p;
-                    counts[b] += 1;
-                }
-            }
-            a[points / 2].0
-        });
-        println!("sort, 1M (key,u32): sort_unstable {:.1} ms (clone included) | LSD radix 6x8 bits {:.1} ms (clone+alloc included) (checks {:x} {:x})", std_sort.0, radix.0, std_sort.1, radix.1);
-    }
-
-    #[test]
-    #[ignore = "a timing, run with --release --ignored --nocapture"]
-    fn what_the_order_costs() {
-        let points: usize = std::env::var("DRACO_ORDER_POINTS")
-            .ok()
-            .and_then(|n| n.parse().ok())
-            .unwrap_or(1_000_000);
-        let cloud = synthetic_cloud(points);
-        let mut options = EncoderOptions::new();
-        options.set_attribute_int(0, "quantization_bits", 16);
-        for curve in [Curve::Morton, Curve::Hilbert] {
-            let mut times = Vec::new();
-            let mut checksum = 0u64;
-            for _ in 0..9 {
-                let start = Instant::now();
-                let order = spatial_point_order(&cloud, &options, curve).expect("an order");
-                times.push(start.elapsed().as_secs_f64() * 1000.0);
-                checksum = order.iter().enumerate().fold(0u64, |h, (i, p)| {
-                    h.wrapping_mul(31).wrapping_add(p.0 as u64 ^ i as u64)
-                });
-            }
-            times.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            println!(
-                "{curve:?}: {points} points  median {:.1} ms  min {:.1}  max {:.1}  checksum {checksum:016x}",
-                times[4], times[0], times[8]
-            );
-        }
     }
 }

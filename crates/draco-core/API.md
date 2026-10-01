@@ -504,9 +504,9 @@ CLI-equivalent convenience: `set_compression_level`, `get_compression_level`,
 `set_attribute_quantization`, and `get_attribute_quantization`.
 
 Point-cloud options upstream does not have: `set_prediction_search`,
-`prediction_search`, `set_spatial_point_order`, and `spatial_point_order`.
-Both are off by default, and left off the output is byte-identical to C++
-Draco's. Turned on, the stream differs from what upstream writes for the same
+`prediction_search`, `set_spatial_point_order`, `spatial_point_order`,
+`set_point_order_search`, and `point_order_search`. All are off by default, and
+left off the output is byte-identical to C++ Draco's. Turned on, the stream differs from what upstream writes for the same
 input but stays one every Draco decoder reads, C++ included:
 
 - `set_prediction_search` chooses each point-cloud attribute's prediction
@@ -518,10 +518,24 @@ input but stays one every Draco decoder reads, C++ included:
 - `set_spatial_point_order` writes the points of a sequential point cloud in
   a spatial order over the positions, so the difference predictor predicts from
   a spatial neighbour. Which order is not part of the contract: today it is a
-  Morton curve, and a later version may choose a better one. It reorders the
+  Hilbert curve, and a later version may choose a better one. It reorders the
   decoded points, and it can make a file bigger when an attribute varies along
   the input order, such as an index or a timestamp. The kd-tree coder chooses
   its own order and is unaffected.
+- `set_point_order_search` searches for the order that makes the stream
+  smallest, starting from the curve and repairing it where the other attributes
+  disagree with the positions, and keeps the input order where that is already
+  better. How hard it looks follows `encoding_speed`: 9 and 10 write the curve,
+  the default 5 counts the 16 dearest attribute columns, 0 counts them all. On a
+  Gaussian splat of 742 thousand points and 58 attributes it writes 6.8% (speed
+  8), 11.9% (5), 16.5% (3) and 19.8% (0) fewer bytes than the curve, for 0.1 to
+  0.9 s more on sixteen threads. It reorders the decoded points and makes no
+  promise that neighbours in the stream are neighbours in space.
+- `set_threads` caps the threads an encode uses (`0`, the default, is as many
+  as the machine has up to sixteen; ignored on WebAssembly). The attribute
+  encoders of a sequential point cloud run on separate threads, which took the
+  splat above from 0.88 s to 0.25 s. The stream does not depend on the number
+  of threads.
 
 The rustdoc of each carries the measurements.
 

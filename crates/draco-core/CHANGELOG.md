@@ -8,6 +8,30 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `EncoderOptions::set_point_order_search` searches for the order of a point
+  cloud's points that makes the stream smallest. It starts from a Hilbert
+  curve and repairs it where the other attributes disagree with the positions,
+  pricing each step as the estimated bits of the differences it leaves, and it
+  keeps the order it was handed where that is already better (a scan written
+  along its scan lines is). The effort follows `encoding_speed`. On Gaussian
+  splats of 0.7 to 3.2 million points at the web converter's budget it writes
+  7% to 20% fewer bytes than the curve alone. Off by default, so output stays
+  byte-identical to C++ Draco.
+- `EncoderOptions::set_threads`, default as many threads as the machine has up
+  to sixteen. Ignored on WebAssembly.
+
+### Changed
+
+- A sequential point-cloud encode runs each attribute's encoder on its own
+  thread when there are at least 131,072 values to encode. The stream is byte
+  for byte the one a single thread writes. A splat of 742 thousand points and
+  58 attributes encodes in 0.25 s instead of 0.88 s.
+- `set_spatial_point_order` writes a Hilbert curve where it wrote a Morton one,
+  0.7% to 1.1% smaller on four splat scenes at no measurable cost in time. The
+  curve was never part of the option's contract.
+
 ### Fixed
 
 - A constant attribute no longer makes the decoder refuse a large stream with
