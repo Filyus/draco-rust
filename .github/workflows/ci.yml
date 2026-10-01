@@ -73,6 +73,23 @@ jobs:
             --feature-powerset --no-dev-deps \
             --exclude-features debug_logs,force_sequential_seeds
 
+      # The step above passes --no-dev-deps, so it never builds the unit tests,
+      # and a test module reaching for the other half of the codec went
+      # unnoticed until both halves stopped building alone. This builds the
+      # lib's unit tests (`--lib --profile test`; `--tests` would pull in the
+      # integration tests too, which are not gated per feature) over every
+      # single feature and every pair: 25 configurations once cargo-hack drops
+      # the ones a feature's implications make redundant, about two minutes
+      # cold on a four-core runner. The full powerset is 46 and buys
+      # little over pairs, which is the shape these mistakes take. The three
+      # auxiliary flags are excluded as above: they shape no test module.
+      - name: Check draco-core lib tests across feature pairs
+        run: |
+          cargo hack clippy --manifest-path crates/Cargo.toml -p draco-core \
+            --lib --profile test --feature-powerset --depth 2 \
+            --exclude-features debug_logs,force_sequential_seeds,count_table_loads \
+            -- -D warnings
+
       - name: Check draco-core auxiliary feature flags
         env:
           RUSTFLAGS: -D warnings
