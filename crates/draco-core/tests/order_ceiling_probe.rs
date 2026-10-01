@@ -3846,3 +3846,88 @@ fn does_the_rule_leave_alone_what_it_should() {
         );
     }
 }
+
+/// The web converter's splat budget through the public options, with or
+/// without the order search: the number a caller would see.
+fn encode_through_the_api(cloud: &PointCloud, search: bool, speed: i32) -> usize {
+    let names = attribute_names(cloud);
+    let mut options = EncoderOptions::new();
+    options.set_encoding_method(SEQUENTIAL);
+    options.set_prediction_search(true);
+    options.set_global_int("encoding_speed", speed);
+    options.set_point_order_search(search);
+    for id in 0..cloud.num_attributes() {
+        if cloud.attribute(id).data_type() != draco_core::DataType::Float32 {
+            continue;
+        }
+        let bits = match cloud.attribute(id).attribute_type() {
+            GeometryAttributeType::Position => AXIS_BITS as i32,
+            _ => budget_bits(names[id as usize].as_deref()),
+        };
+        options.set_attribute_int(id, "quantization_bits", bits);
+    }
+    let mut encoder = PointCloudEncoder::new();
+    encoder.set_point_cloud(cloud.clone());
+    let mut buffer = EncoderBuffer::new();
+    encoder.encode(&options, &mut buffer).expect("encodes");
+    buffer.data().len()
+}
+
+#[test]
+#[ignore = "needs a scene in DRACO_SPLAT_PLY: run with --release --ignored --nocapture"]
+fn the_decision_over_every_kind_of_input_order() {
+    let Some((path, cloud)) = scene_cloud() else {
+        println!("DRACO_SPLAT_PLY is not set; nothing to measure");
+        return;
+    };
+    let speed: i32 = std::env::var("DRACO_ORDER_SPEED")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5);
+    let count = cloud.num_points();
+    println!(
+        "scene: {} ({count} points), encoding speed {speed}",
+        path.display()
+    );
+    let cells = quantized_positions(&cloud).expect("positions");
+    let luts = Luts::new();
+    let identity: Vec<u32> = (0..count as u32).collect();
+    let mut state = 0x9e37_79b9_7f4a_7c15u64;
+    let mut shuffled = identity.clone();
+    for i in (1..count).rev() {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        shuffled.swap(i, (state % (i as u64 + 1)) as usize);
+    }
+    let refined_5 = order_pipeline::<16>(&cloud, 16, 16, 2, 8192, &luts).0;
+    let refined_0 = order_pipeline::<64>(&cloud, 16, 56, 2, 8192, &luts).0;
+    let inputs: Vec<(&str, Vec<u32>)> = vec![
+        ("file order", identity),
+        ("no order at all", shuffled.clone()),
+        ("Morton", morton_order(&cells)),
+        ("Hilbert", hilbert_order(&cells)),
+        ("refined, 16 columns", refined_5),
+        ("refined, 56 columns", refined_0),
+    ];
+    // What touching an input is worth is the same for every input: the search
+    // starts from the curve whatever it was handed.
+    let touched = encode_through_the_api(&permute(&cloud, &shuffled), true, speed);
+    println!(
+        "{:<22} {:>12} {:>12} {:>9} {:>8} {:>9}",
+        "input order", "as it is", "searched", "change", "touched", "regret"
+    );
+    for (label, order) in &inputs {
+        let x = permute(&cloud, order);
+        let as_it_is = encode_through_the_api(&x, false, speed);
+        let searched = encode_through_the_api(&x, true, speed);
+        let best = as_it_is.min(touched);
+        println!(
+            "{label:<22} {as_it_is:>12} {searched:>12} {:>+8.2}% {:>8} {:>+8.2}%",
+            (searched as f64 / as_it_is as f64 - 1.0) * 100.0,
+            if searched != as_it_is { "yes" } else { "no" },
+            (searched as f64 / best as f64 - 1.0) * 100.0,
+        );
+    }
+    println!("touching is worth {touched} bytes whatever the input");
+}

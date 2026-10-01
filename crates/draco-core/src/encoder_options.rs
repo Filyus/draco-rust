@@ -294,12 +294,17 @@ impl EncoderOptions {
     /// **It can decline.** A scan written along its scan lines is already in
     /// an order no search of this kind improves on: its file order is 25% under
     /// Morton and the search, started from a curve, would write something 13%
-    /// larger than it. So the search compares what it would write with the
-    /// order it was handed, by an estimate of the bits of the differences, and
-    /// keeps the input unless the result is clearly better. An input already
-    /// sorted by another curve is improved on; an input already sorted well is
-    /// not touched. The estimate and the coder agree to a few percent, and
-    /// "clearly" is a margin sized to that.
+    /// larger than it. So the search refines a sample of the cloud first (one
+    /// block in sixteen) and compares what that comes to with the order it was
+    /// handed, by an estimate of the bits of the differences. It does the rest
+    /// only if the sample is clearly better, and keeps the input unless the
+    /// whole result is. What a given effort can make of a given cloud is not
+    /// something a threshold can say, so it is measured: an input an earlier
+    /// encode at a low effort sorted is improved on by a higher one, and an input
+    /// sorted as well as any effort can sort it is not touched. The estimate and
+    /// the coder agree to a few percent, and "clearly" is a margin sized to that;
+    /// the one thing it costs is a gain of under about 3% that the estimate
+    /// cannot see.
     ///
     /// **The effort follows `encoding_speed`**, the way it does elsewhere:
     /// speed 9 and 10 write the curve and nothing more, 7 and 8 count the 8

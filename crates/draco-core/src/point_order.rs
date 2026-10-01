@@ -54,18 +54,18 @@ const BLOCK: usize = 8192;
 /// the input cannot line up with the sample.
 const SAMPLE_STRIDE: usize = 17;
 
-/// The refinement starts from the Hilbert order, so it is not worth running
-/// when the order already in hand is clearly better than that: the estimate of
-/// the input over the estimate of Hilbert must stay above this. Refining
-/// Hilbert takes the estimate to about 0.8 of it on a splat and 0.85 on a scan
-/// of a surface, so 0.93 leaves room for a worse refinement than either.
-const WORTH_TRYING_ABOVE: f64 = 0.93;
-
 /// The order written must undercut the input by at least this, in estimate. The
 /// estimate and the coder disagree by a few percent of the estimate: refining
 /// the file order of a scan lowered the estimate 1.7% and raised the coder's
 /// size 0.9%.
 const WORTH_KEEPING_BELOW: f64 = 0.97;
+
+/// One block in this many is refined first, as a trial: if what it comes to is
+/// not under the input by [`WORTH_KEEPING_BELOW`], the rest is not worth doing.
+/// What a given effort makes of a given cloud is not something a threshold can
+/// say, so the trial measures it. A cloud of fewer than four blocks has its
+/// every block tried, and the trial is the whole refinement.
+const TRIAL_EVERY: usize = 16;
 
 /// Positions are priced on this many bits an axis at most.
 const POSITION_BITS: u32 = 16;
@@ -700,9 +700,6 @@ pub(crate) fn search(pc: &PointCloud, options: &EncoderOptions) -> Option<Vec<Po
     let all_input = position_input + columns.iter().map(|c| c.cost_input).sum::<u64>();
     let all_curve = position_curve + columns.iter().map(|c| c.cost_curve).sum::<u64>();
     let (estimate_input, estimate_curve) = (all_input as f64 / steps, all_curve as f64 / steps);
-    if estimate_input < WORTH_TRYING_ABOVE * estimate_curve {
-        return None;
-    }
 
     let Some(effort) = effort(options.get_encoding_speed()) else {
         return (estimate_curve <= WORTH_KEEPING_BELOW * estimate_input)
@@ -725,37 +722,69 @@ pub(crate) fn search(pc: &PointCloud, options: &EncoderOptions) -> Option<Vec<Po
             .expect("a column that was measured can be read");
         values.iter().map(|&v| column.quantizer.byte(v)).collect()
     });
+    // Compared with the input over the position and the columns that were
+    // counted, since those are the ones a result is shaped by.
+    let counted_input =
+        (position_input + chosen.iter().map(|c| c.cost_input).sum::<u64>()) as f64 / steps;
 
-    let mut order = curve_order;
-    parallel::for_each_chunk_mut(&mut order, BLOCK, threads, |_, ids| {
+    let refine = |ids: &mut [u32]| {
         if ids.len() < 4 {
             return;
         }
         let mut lanes = Lanes::gather(&quantized, &cells, ids);
         refine_block(&mut lanes, effort.window, effort.passes);
         ids.copy_from_slice(&lanes.ids);
+    };
+    let every = (count.div_ceil(BLOCK) / 4).clamp(1, TRIAL_EVERY);
+    let mut order = curve_order;
+    parallel::for_each_chunk_mut(&mut order, BLOCK, threads, |block, ids| {
+        if block % every == 0 {
+            refine(ids);
+        }
+    });
+    let (mut trial_cost, mut trial_steps) = (0u64, 0u64);
+    for (block, ids) in order.chunks(BLOCK).enumerate() {
+        if block % every == 0 {
+            let (cost, steps) = path_cost(&cells, &quantized, ids, 1);
+            trial_cost += cost;
+            trial_steps += steps;
+        }
+    }
+    if trial_steps > 0
+        && trial_cost as f64 / trial_steps as f64 > WORTH_KEEPING_BELOW * counted_input
+    {
+        return None;
+    }
+    parallel::for_each_chunk_mut(&mut order, BLOCK, threads, |block, ids| {
+        if block % every != 0 {
+            refine(ids);
+        }
     });
 
-    // The check after: over the position and the columns that were counted,
-    // since those are the ones the result was shaped by.
-    let counted_input = position_input + chosen.iter().map(|c| c.cost_input).sum::<u64>();
-    let counted_output = position_cost(&cells, Some(&order))
-        + quantized
-            .iter()
-            .map(|column| {
-                (0..count - 1)
-                    .step_by(SAMPLE_STRIDE)
-                    .map(|i| {
-                        let (a, b) = (order[i] as usize, order[i + 1] as usize);
-                        u64::from(quarter_bits(u32::from(column[a].abs_diff(column[b]))))
-                    })
-                    .sum::<u64>()
-            })
-            .sum::<u64>();
-    if counted_output as f64 > WORTH_KEEPING_BELOW * counted_input as f64 {
+    // The check after, over the whole result: the blocks that were not in the
+    // trial might not have behaved like the ones that were.
+    let (cost, sampled) = path_cost(&cells, &quantized, &order, SAMPLE_STRIDE);
+    if cost as f64 / sampled.max(1) as f64 > WORTH_KEEPING_BELOW * counted_input {
         return None;
     }
     Some(order.into_iter().map(PointIndex).collect())
+}
+
+/// Quarter-bits and steps over every `stride`-th step of `ids`, taking the
+/// position and the given columns (indexed by point).
+fn path_cost(cells: &[Vec<u16>; 3], columns: &[Vec<u8>], ids: &[u32], stride: usize) -> (u64, u64) {
+    let (mut cost, mut steps) = (0u64, 0u64);
+    for i in (0..ids.len().saturating_sub(1)).step_by(stride) {
+        let (a, b) = (ids[i] as usize, ids[i + 1] as usize);
+        for axis in cells {
+            cost += u64::from(quarter_bits(u32::from(axis[a].abs_diff(axis[b]))));
+        }
+        for column in columns {
+            cost += u64::from(quarter_bits(u32::from(column[a].abs_diff(column[b]))));
+        }
+        steps += 1;
+    }
+    (cost, steps)
 }
 
 #[cfg(test)]
