@@ -55,6 +55,11 @@ fn fill_slots<T: Copy + Default + TryFrom<usize>>(
     slots
 }
 
+/// How many buckets `run_buckets` summarizes a fine slot table in: 32 KB of
+/// entries, which stays in L1. Measured on a scan's position stream at 18 bits
+/// of precision, 4096 beat 8192 and 16384.
+const BUCKETS: usize = 1 << 12;
+
 /// RAnsSymbolDecoder with runtime precision to avoid monomorphization bloat.
 /// Instead of const generics, we store the precision bits at runtime.
 /// Performance is preserved by storing `rans_precision_bits` and using bit
@@ -68,6 +73,13 @@ pub struct RAnsSymbolDecoder<'a> {
     /// that owns the slot. Built by `decode_run` for a run long enough to pay
     /// for it, and only while both halves fit in 16 bits; empty otherwise.
     steps: Vec<u32>,
+    /// For a table too fine for `steps`, one entry per `BUCKETS`-th of the slot
+    /// range: the first symbol whose slots reach into it and, when that symbol
+    /// owns the whole bucket, its probability and cumulative probability too.
+    /// See `run_buckets`. Built by `decode_run` like `steps`; empty otherwise.
+    buckets: Vec<u64>,
+    /// Whether `build_buckets` has run for this table, kept or not.
+    buckets_tried: bool,
     num_symbols: usize,
     /// `probability_table.len() - 1`, the table having been padded to a power
     /// of two. Masking a symbol id with it makes the lookup provably in
@@ -90,6 +102,8 @@ impl<'a> RAnsSymbolDecoder<'a> {
             probability_table: Vec::new(),
             lut: Slots::Narrow(Vec::new()),
             steps: Vec::new(),
+            buckets: Vec::new(),
+            buckets_tried: false,
             num_symbols: 0,
             table_mask: 0,
             rans_precision_bits,
@@ -109,6 +123,8 @@ impl<'a> RAnsSymbolDecoder<'a> {
     fn decode_table(&mut self, buffer: &mut DecoderBuffer) -> bool {
         let _start_pos = buffer.position();
         self.steps.clear();
+        self.buckets.clear();
+        self.buckets_tried = false;
         let bitstream_version = buffer.bitstream_version();
         let num_symbols = if bitstream_version < 0x0200 {
             #[cfg(not(feature = "legacy_bitstream_decode"))]
@@ -312,6 +328,15 @@ impl<'a> RAnsSymbolDecoder<'a> {
         if self.steps.is_empty() && count >= precision / 2 {
             self.build_steps();
         }
+        // Buckets cost a write each, a few thousand of them, for a table whose
+        // slots are past what steps can hold.
+        if self.steps.is_empty() && !self.buckets_tried && count >= BUCKETS {
+            self.buckets_tried = true;
+            self.build_buckets();
+        }
+        if !self.buckets.is_empty() {
+            return self.run_buckets(out, count);
+        }
         // The slot table is moved out for the length of the run so the loops
         // can borrow it next to the coder state they update.
         let lut = std::mem::replace(&mut self.lut, Slots::Narrow(Vec::new()));
@@ -322,6 +347,110 @@ impl<'a> RAnsSymbolDecoder<'a> {
             (Slots::Wide(slots), true) => self.run_table(slots, out, count),
         };
         self.lut = lut;
+        backed
+    }
+
+    /// Builds `buckets` for a table finer than `BUCKETS` slots, or leaves it
+    /// empty where an entry cannot hold what it needs -- a symbol id past 21
+    /// bits; a probability or a cumulative one is at most 2^20, inside 21 --
+    /// or where too little of the mass lies in buckets one symbol owns.
+    ///
+    /// That share decides it. A bucket several symbols share costs a walk and,
+    /// often, a mispredicted branch, where the slot table costs one read that
+    /// misses the near caches. On a scan's position stream at 18 bits a
+    /// symbol cost 5.7 ns with 92% of the mass in owned buckets, 9.7 ns with
+    /// 51%, and 7.3-7.6 ns through the slot table: even near 74%, kept from
+    /// 80%.
+    fn build_buckets(&mut self) {
+        let precision = self.rans_precision as usize;
+        if precision <= BUCKETS || self.num_symbols >= 1 << 21 {
+            return;
+        }
+        let width = precision / BUCKETS;
+        let table = &self.probability_table;
+        let mut buckets = Vec::with_capacity(BUCKETS);
+        for bucket in 0..BUCKETS {
+            let (Some(first), Some(last)) = (
+                self.lut.get(bucket * width),
+                self.lut.get((bucket + 1) * width - 1),
+            ) else {
+                return;
+            };
+            let sym = table[(first & self.table_mask) as usize];
+            buckets.push(
+                u64::from(first == last) << 63
+                    | u64::from(first) << 42
+                    | u64::from(sym.prob) << 21
+                    | u64::from(sym.cum_prob),
+            );
+        }
+        let owned = buckets.iter().filter(|&&entry| entry >> 63 != 0).count();
+        if owned * 5 >= BUCKETS * 4 {
+            self.buckets = buckets;
+        }
+    }
+
+    /// The run against `buckets`: the low bits of the state pick a bucket, a
+    /// table that sits in L1 where the slot table it summarizes does not. A
+    /// bucket one symbol owns -- most of the probability mass, since a likely
+    /// symbol owns many buckets whole -- gives the step in that one read; a
+    /// bucket several symbols share gives the first of them, and the others
+    /// follow it in the probability table in slot order.
+    ///
+    /// A scan's position codes at 18-19 bits over tens of thousands of
+    /// symbols, so its slot table is half a megabyte or more, and the state
+    /// picks a slot in it uniformly: the read missed the near caches on most
+    /// symbols, where the bucket read does on few.
+    fn run_buckets(&mut self, out: &mut Vec<u32>, count: usize) -> bool {
+        const LOW: u64 = (1 << 21) - 1;
+        let buckets = &self.buckets[..BUCKETS];
+        let table = &self.probability_table[..];
+        let table_mask = self.table_mask;
+        let mask = self.rans_precision_mask;
+        let bits = self.rans_precision_bits;
+        let shift = bits - BUCKETS.trailing_zeros();
+        let l_base = self.ans.l_base;
+        let buf = self.ans.buf;
+        let mut offset = self.ans.buf_offset.min(buf.len());
+        let mut state = self.ans.state;
+
+        let mut backed = true;
+        out.extend((0..count).map(|_| {
+            while state < l_base && offset > 0 {
+                offset -= 1;
+                state = (state << 8) | buf[offset] as u32;
+            }
+            backed &= state >= l_base;
+            let quo = state >> bits;
+            let rem = state & mask;
+            // `rem >> shift` is below `BUCKETS`, the table's length.
+            let entry = buckets[(rem >> shift) as usize];
+            let mut symbol_id = ((entry >> 42) & LOW) as u32;
+            let (prob, cum_prob) = if entry >> 63 != 0 {
+                ((entry >> 21 & LOW) as u32, (entry & LOW) as u32)
+            } else {
+                // The bucket's first symbol starts at or before `rem`, and the
+                // symbols after it in id order take the slots after it, so the
+                // owner of `rem` is reached going forward; `decode_table`
+                // accepted a table whose slots are covered exactly. The bound
+                // only keeps a walk finite should that ever stop being so.
+                let mut sym = table[(symbol_id & table_mask) as usize];
+                let mut walked = 0;
+                while rem >= sym.cum_prob.wrapping_add(sym.prob) && walked < table_mask {
+                    symbol_id += 1;
+                    walked += 1;
+                    sym = table[(symbol_id & table_mask) as usize];
+                }
+                (sym.prob, sym.cum_prob)
+            };
+            state = quo
+                .wrapping_mul(prob)
+                .wrapping_add(rem.wrapping_sub(cum_prob));
+            symbol_id
+        }));
+
+        self.ans.buf_offset = offset;
+        self.ans.state = state;
         backed
     }
 
@@ -597,9 +726,10 @@ mod tests {
     /// follows upstream's `rans_read` line for line.
     ///
     /// The alphabets reach each form: 12 and 16 bits of precision with a slot
-    /// table narrow enough for steps, 20 bits with a narrow table and no steps,
-    /// and an alphabet too wide for `u16`. A run cut into pieces shorter than
-    /// half a table never builds steps, so it is the table form throughout.
+    /// table narrow enough for steps, 20 bits -- too fine for steps, so buckets
+    /// -- over a narrow table and over one too wide for `u16`. A run cut into
+    /// pieces shorter than the bucket count and half a table builds neither,
+    /// so it is the table form throughout.
     #[cfg(feature = "encoder")]
     #[test]
     fn every_run_form_reads_what_the_per_symbol_path_reads() {
@@ -609,11 +739,17 @@ mod tests {
         use crate::symbol_encoding::encode_raw_symbols;
 
         let mut seed = 0x9e37_79b9_7f4a_7c15u64;
-        for (alphabet, count, narrow, steps) in [
-            (40u32, 20_000usize, true, true),
-            (1_500, 100_000, true, true),
-            (60_000, 150_000, true, false),
-            (70_000, 150_000, false, false),
+        // (alphabet, count, skew, narrow slot table, steps, buckets): 12 and 16
+        // bits with steps; 18 bits with the mass on a hundred-odd symbols, a
+        // geometric draw (skew 0) like a scan's corrections, where the buckets
+        // are kept; 20 bits with a long tail, where they are declined, over a
+        // narrow table and over one too wide for `u16`.
+        for (alphabet, count, skew, narrow, steps, buckets) in [
+            (40u32, 20_000usize, 4, true, true, false),
+            (1_500, 100_000, 4, true, true, false),
+            (3_000, 300_000, 0, true, false, true),
+            (60_000, 150_000, 4, true, false, false),
+            (70_000, 150_000, 4, false, false, false),
         ] {
             // Every symbol once, then a draw that favours the small ones the way
             // prediction corrections do.
@@ -626,7 +762,11 @@ mod tests {
                     seed ^= seed >> 7;
                     seed ^= seed << 17;
                     let unit = (seed >> 11) as f64 / (1u64 << 53) as f64;
-                    (unit.powi(4) * f64::from(alphabet)) as u32
+                    if skew == 0 {
+                        ((-(unit.max(1e-12)).ln() * 30.0) as u32).min(alphabet - 1)
+                    } else {
+                        (unit.powi(skew) * f64::from(alphabet)) as u32
+                    }
                 })
                 .collect();
             let mut target = EncoderBuffer::new();
@@ -656,6 +796,7 @@ mod tests {
             assert!(whole.decode_run(&mut out, count));
             assert_eq!(matches!(whole.lut, Slots::Narrow(_)), narrow, "{alphabet}");
             assert_eq!(!whole.steps.is_empty(), steps, "{alphabet}");
+            assert_eq!(!whole.buckets.is_empty(), buckets, "{alphabet}");
 
             let mut pieces = decoder();
             let mut cut = Vec::new();
@@ -663,7 +804,7 @@ mod tests {
                 let piece = 997.min(count - cut.len());
                 assert!(pieces.decode_run(&mut cut, piece));
             }
-            assert!(pieces.steps.is_empty());
+            assert!(pieces.steps.is_empty() && pieces.buckets.is_empty());
 
             for (form, decoded, coder) in [("whole", &out, &whole), ("pieces", &cut, &pieces)] {
                 assert_eq!(decoded, &expected, "{alphabet} symbols, {form}");
