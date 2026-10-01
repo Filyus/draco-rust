@@ -1537,4 +1537,143 @@ mod parallel_tests {
             assert_eq!(parallel.expect("decodes"), serial, "{threads} threads");
         }
     }
+
+    /// Every synthetic shape, in its own order and shuffled, from no points to
+    /// past the thresholds that hand a cloud to threads: the same bytes encoded
+    /// on one thread and on several, the same values decoded in order, paired
+    /// and side by side, and those values the source's -- to the bit where
+    /// nothing was quantized, within half a step where it was.
+    #[test]
+    fn synthetic_clouds_come_back_the_same_by_every_path() {
+        use crate::synthetic_cloud::{self, Cloud};
+        let mut clouds: Vec<Cloud> = [0, 1, 2, 3, 97]
+            .into_iter()
+            .flat_map(|points| synthetic_cloud::all(points, 1))
+            .collect();
+        // Big enough that every stream but the constant cloud's passes
+        // `PARALLEL_MIN_STREAM_BYTES`, so the threads and the pairing run.
+        let big = synthetic_cloud::all(400_000, 2);
+        clouds.extend(big.iter().map(|cloud| cloud.shuffled(3)));
+        clouds.extend(big);
+        std::thread::scope(|scope| {
+            for cloud in &clouds {
+                scope.spawn(|| every_path_agrees(cloud));
+            }
+        });
+    }
+
+    fn every_path_agrees(cloud: &crate::synthetic_cloud::Cloud) {
+        let name = format!("{} of {} points", cloud.name, cloud.points);
+        let encode = |threads: i32| {
+            let mut options = EncoderOptions::new();
+            options.set_encoding_method(0);
+            options.set_threads(threads);
+            for (id, column) in cloud.columns.iter().enumerate() {
+                if column.quantization_bits > 0 {
+                    options.set_attribute_int(
+                        id as i32,
+                        "quantization_bits",
+                        column.quantization_bits,
+                    );
+                }
+            }
+            let mut encoder = PointCloudEncoder::new();
+            encoder.set_point_cloud(cloud.to_point_cloud());
+            let mut buffer = EncoderBuffer::new();
+            encoder
+                .encode(&options, &mut buffer)
+                .map(|()| buffer.data().to_vec())
+                .map_err(|e| e.to_string())
+        };
+        let single = encode(1);
+        for threads in [4, 16] {
+            assert!(
+                encode(threads) == single,
+                "{name}: the stream on {threads} threads differs"
+            );
+        }
+        // An empty attribute has no range to quantize over, and the encoder
+        // says so rather than read a value that is not there.
+        let bytes = match single {
+            Err(e) if cloud.points == 0 && e.contains("empty attribute") => return,
+            result => result.unwrap_or_else(|e| panic!("{name}: {e}")),
+        };
+        let decoded = decode_in_order(&bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let big = cloud.points >= 400_000 && !cloud.name.starts_with("constant");
+        assert!(
+            !big || bytes.len() >= PARALLEL_MIN_STREAM_BYTES,
+            "{name}: {} bytes are too few to send the decode to threads",
+            bytes.len()
+        );
+        for threads in [1, 4, 16] {
+            let paired = PAIRED.with(|paired| paired.get());
+            let (parallel, engaged) = engaged_by(|| decode(&bytes, threads));
+            let paired = PAIRED.with(|paired| paired.get()) - paired;
+            assert!(
+                parallel.as_ref() == Ok(&decoded),
+                "{name}: the decode on {threads} threads differs"
+            );
+            assert!(
+                !big || (engaged > 0 && (threads > 1 || engaged < 2 || paired > 0)),
+                "{name}: {threads} threads decoded {engaged} streams aside, {paired} paired"
+            );
+        }
+        for (column, got) in cloud.columns.iter().zip(&decoded) {
+            let source = column.values.bytes();
+            let got = &got[..source.len()];
+            if column.quantization_bits == 0 {
+                assert!(got == source, "{name}: {} changed", column.name);
+                continue;
+            }
+            let values = |bytes: &[u8]| -> Vec<f32> {
+                bytes
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|&b| f32::from_le_bytes(b))
+                    .collect()
+            };
+            let (source, got) = (values(&source), values(got));
+            if column.kind == GeometryAttributeType::Normal {
+                // Octahedral coordinates on a grid of `bits` a side: a unit
+                // vector comes back within a few cells. A zero one, which the
+                // octahedron has no point for, comes back as some direction.
+                let cell = 4.0 / (1u32 << column.quantization_bits) as f32;
+                let pairs = source.as_chunks::<3>().0.iter().zip(got.as_chunks::<3>().0);
+                for (i, (want, have)) in pairs.enumerate() {
+                    if want.iter().all(|&v| v == 0.0) {
+                        continue;
+                    }
+                    let error = want
+                        .iter()
+                        .zip(have)
+                        .map(|(w, h)| (w - h).abs())
+                        .fold(0.0, f32::max);
+                    assert!(
+                        error <= 2.0 * cell,
+                        "{name}: normal {i} came back {have:?} for {want:?}"
+                    );
+                }
+                continue;
+            }
+            // The quantizer's grid spans the widest component's range.
+            let range = (0..column.components)
+                .map(|c| {
+                    let component = source.iter().skip(c).step_by(column.components);
+                    let (lo, hi) =
+                        component.fold((f32::MAX, f32::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)));
+                    hi - lo
+                })
+                .fold(0.0f32, f32::max);
+            let step = range / ((1u32 << column.quantization_bits) - 1) as f32;
+            for (i, (&want, &have)) in source.iter().zip(&got).enumerate() {
+                let slack = (want.abs() + range) * f32::EPSILON * 4.0;
+                assert!(
+                    (want - have).abs() <= step * 0.5 + slack,
+                    "{name}: {} value {i} came back {have} for {want}, step {step}",
+                    column.name
+                );
+            }
+        }
+    }
 }
