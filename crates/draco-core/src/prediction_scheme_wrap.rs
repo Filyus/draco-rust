@@ -125,6 +125,39 @@ impl PredictionSchemeEncodingTransform<i32, i32> for PredictionSchemeWrapEncodin
         }
     }
 
+    /// The same clamp and wrap as `compute_correction`, which apply to every
+    /// component alike, over the whole run as one loop of selects: nothing in
+    /// it depends on an entry boundary, and it vectorizes where the per-entry
+    /// form carried a slice and a bound to check for every value.
+    fn compute_corrections(
+        &self,
+        original_vals: &[i32],
+        predicted_vals: &[i32],
+        out_corr_vals: &mut [i32],
+        _num_components: usize,
+    ) {
+        let (min_value, max_value) = (self.min_value, self.max_value);
+        let (min_correction, max_correction) = (self.min_correction, self.max_correction);
+        let max_dif = self.max_dif;
+        for ((corr, &original), &predicted) in out_corr_vals
+            .iter_mut()
+            .zip(original_vals)
+            .zip(predicted_vals)
+        {
+            // `min_value <= max_value` once `init` has run, so this is the
+            // two-sided clamp above.
+            let predicted = predicted.max(min_value).min(max_value);
+            let value = original.wrapping_sub(predicted);
+            *corr = if value < min_correction {
+                value.wrapping_add(max_dif)
+            } else if value > max_correction {
+                value.wrapping_sub(max_dif)
+            } else {
+                value
+            };
+        }
+    }
+
     fn encode_transform_data(&mut self, buffer: &mut Vec<u8>) -> Status {
         buffer.extend_from_slice(&self.min_value.to_le_bytes());
         buffer.extend_from_slice(&self.max_value.to_le_bytes());
@@ -371,6 +404,53 @@ mod tests {
                         "min={min_value} max={max_value} pred={pred} corr={corr}"
                     );
                 }
+            }
+        }
+    }
+}
+
+#[cfg(all(test, feature = "encoder"))]
+mod encoder_tests {
+    use super::*;
+    use crate::prediction_scheme::PredictionSchemeEncodingTransform;
+
+    /// The flat run is the per-entry correction, entry for entry: predictions
+    /// either side of the range the clamp pulls in, and differences either side
+    /// of the bounds the wrap folds back, over even and odd spans.
+    #[test]
+    fn a_run_of_corrections_is_each_entry_corrected_alone() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut draw = |range: i64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % range as u64) as i64
+        };
+        for (min, max) in [(-100i32, 155), (0, 1000), (-7, 8)] {
+            for num_components in [1usize, 3] {
+                let span = i64::from(max) - i64::from(min) + 1;
+                let mut values: Vec<i32> = (0..300)
+                    .map(|_| (i64::from(min) + draw(span)) as i32)
+                    .collect();
+                values[0] = min;
+                values[1] = max;
+                let mut transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
+                transform.init(&values, values.len(), num_components);
+                let predicted: Vec<i32> = (0..values.len())
+                    .map(|_| (i64::from(min) - span / 2 + draw(2 * span)) as i32)
+                    .collect();
+
+                let mut expected = vec![0; values.len()];
+                for ((original, predicted), corr) in values
+                    .chunks_exact(num_components)
+                    .zip(predicted.chunks_exact(num_components))
+                    .zip(expected.chunks_exact_mut(num_components))
+                {
+                    transform.compute_correction(original, predicted, corr);
+                }
+                let mut run = vec![0; values.len()];
+                transform.compute_corrections(&values, &predicted, &mut run, num_components);
+                assert_eq!(run, expected, "[{min}, {max}], {num_components} components");
             }
         }
     }
