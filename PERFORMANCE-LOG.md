@@ -114,6 +114,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [Point Clouds On One Thread: Zeros Nobody Read, And Reads In A Row](#point-clouds-on-one-thread-zeros-nobody-read-and-reads-in-a-row) | landed | `-21 to -34%` |
 | [Point Clouds, Continued: Two Chains At Once, Buckets, And Threads Inside An Attribute](#point-clouds-continued-two-chains-at-once-buckets-and-threads-inside-an-attribute) | landed | `-13 to -43%` |
 | [Point Clouds On Shapes No Capture Had](#point-clouds-on-shapes-no-capture-had) | landed | `lattice -0.97%` |
+| [What Each Point-Cloud Technique Is Still Worth](#what-each-point-cloud-technique-is-still-worth) | null | `4 kept, 0 removed` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -4436,6 +4437,26 @@ Two things the captures showed that are not speed:
   RGB is all zeros make one constant three-component attribute, 88M symbols
   with no payload, past `MAX_UNBACKED_BYTES`. Split off as its own task; it
   is on main, not this branch.
+
+### What Each Point-Cloud Technique Is Still Worth
+
+2026-10-02, asked whether the two rounds' techniques could be fewer. Each
+was switched off by one line in a copy of HEAD and timed against HEAD,
+rotated order, a pause before each run; positive is slower without it.
+
+| without | splat, 1 / 16 threads | scan, search order | airborne lidar | terrestrial scan |
+| --- | ---: | ---: | ---: | ---: |
+| rANS buckets | `+3%` / `-2%` | `+14%` / `+22%` | `+6%` / `+16%` | `0%` / `0%` |
+| paired runs | `+27%` / `+3%` | `-3%` / `+0.5%` | `+1%` / `+5%` | `+8%` / `-2%` |
+| fused steps | `+44%` / `+12%` | `-1%` / `+2%` | `+14%` / `+6%` | `+3%` / `0%` |
+| an attribute's own threads (encode, 16) | `+1%` | `+26%` | `+5%` | `+33%` |
+
+Every one is worth 10% or more on some capture and close to nothing on
+another, and the captures they serve are different kinds: steps and pairs a
+splat's many attributes at 16 bits or less, buckets a scan's finer tables
+where a sixteen-thread decode waits on one chain, inner threads a cloud of
+two or three large attributes. None is removed. The buckets' 80% rule stays
+too: at 51% owned a bucket costs a third more than the slot table.
 
 ## Unexplored
 
