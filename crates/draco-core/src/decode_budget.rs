@@ -18,14 +18,18 @@
 //! decode charges almost nothing here.
 //!
 //! Almost, and the exception is worth naming because it is the one shape with
-//! no honest bound at all: an entropy-coded run over an alphabet of *one*
-//! carries no payload, so nothing in the stream says how far it goes and the
-//! declared count is all there is. A constant attribute reaches it -- one
-//! tracked fixture charges 192 bytes that way -- and a 170-byte stream naming
-//! 6.8 billion values reached it for 27 GB.
+//! no honest bound in the stream: an entropy-coded run over an alphabet of
+//! *one* carries no payload, so nothing in the stream says how far it goes and
+//! the declared count is all there is. A constant attribute reaches it, at any
+//! count, and so does a 170-byte stream naming 6.8 billion values, which
+//! reached it for 27 GB. What tells the two apart is not the stream but the
+//! caller's [`DecodeLimits`]: the run is the attribute's own values, whose
+//! declared size the limits have already admitted or refused, so such a run
+//! is drawn from that admission and reaches the budget only past it -- see
+//! [`DecoderBuffer::charge_unbacked`]. The hostile stream is refused by the
+//! default limits at the header; the constant attribute decodes.
 //! `corpus::no_tracked_fixture_spends_the_budget` reads every fixture the
-//! repository carries and holds the charge to a rounding error against the
-//! ceiling.
+//! repository carries and holds the charge to zero.
 //!
 //! What the backstop catches is the residue: a reservation made against a
 //! count with no data behind it. It is bounded two ways, because either alone
@@ -48,6 +52,8 @@
 //! naming a billion faces is the case the `decode_drc` fuzz target found.
 //!
 //! [`DecoderBuffer`]: crate::decoder_buffer::DecoderBuffer
+//! [`DecoderBuffer::charge_unbacked`]: crate::decoder_buffer::DecoderBuffer::charge_unbacked
+//! [`DecodeLimits`]: crate::decode_limits::DecodeLimits
 
 use crate::status::{DracoError, Status};
 
@@ -99,12 +105,18 @@ pub(crate) const MAX_ALLOCATED_BYTES_PER_INPUT_BYTE: usize = 1 << 20;
 /// The ceiling therefore does not cap geometry, which `SECURITY.md` promises
 /// it never will; it caps reservations made against a claim and nothing else.
 ///
-/// One path can still reach it from a real file: raw corrections declaring
-/// zero bytes each, where "every correction is zero" is read from the header
-/// and no data is read at all. This crate never writes that -- its encoder
-/// always emits entropy-coded corrections -- and 256 MiB covers 64 million
-/// such values, well past any attribute whose corrections are uniformly zero.
-/// The 19.76 GiB the `decode_drc` campaign found is refused by 83x.
+/// It does not cap constant attributes either, and cannot be what admits
+/// them: no absolute ceiling covers every real file, because a constant
+/// attribute's count is independent of its stream and real scans carry
+/// hundreds of millions of values in one. Those runs are the attribute's own
+/// values, bounded by the caller's [`DecodeLimits`] rather than here, and they
+/// draw on that admission before this ceiling sees them -- see
+/// [`DecoderBuffer::charge_unbacked`]. What still reaches it is a count with
+/// no admission ahead of it. The 19.76 GiB the `decode_drc` campaign found is
+/// refused by 83x.
+///
+/// [`DecodeLimits`]: crate::decode_limits::DecodeLimits
+/// [`DecoderBuffer::charge_unbacked`]: crate::decoder_buffer::DecoderBuffer::charge_unbacked
 pub(crate) const MAX_UNBACKED_BYTES: usize = 256 << 20;
 
 /// Refuses an allocation the stream is too small to be describing, or one past
@@ -230,18 +242,15 @@ mod corpus {
                     continue;
                 }
                 decoded_ok += 1;
-                // Not zero, and the exception is exact: a run over an alphabet
-                // of one carries no payload, so the count is genuinely unbacked
-                // and gets charged. `cube_att.obj.edgebreaker.cl10.2.2.drc` has
-                // a constant attribute and charges 192 bytes for it. What the
-                // corpus still has to say is that such a charge stays a rounding
-                // error against the ceiling -- a fixture spending megabytes here
-                // would mean something other than a constant attribute had found
-                // its way onto this path.
-                const ROUNDING_ERROR: usize = super::MAX_UNBACKED_BYTES / 1024;
-                assert!(
-                    buffer.spent() < ROUNDING_ERROR,
-                    "{} charged {} bytes against the budget, past the {ROUNDING_ERROR} a                      constant attribute can explain",
+                // Zero, constant attributes included: a run over an alphabet
+                // of one is unbacked by the stream, but it is the attribute's
+                // own values and draws on what the limits admitted for it.
+                // `cube_att.obj.edgebreaker.cl10.2.2.drc` is the fixture with
+                // such a run.
+                assert_eq!(
+                    buffer.spent(),
+                    0,
+                    "{} charged {} bytes against the budget",
                     path.display(),
                     buffer.spent()
                 );
@@ -305,6 +314,63 @@ mod corpus {
             .decode(&mut buffer, &mut decoded)
             .expect("a stream this crate wrote must decode back");
         assert_eq!(decoded.num_points(), NUM_POINTS);
+        assert_eq!(buffer.spent(), 0, "a legitimate file spent the backstop");
+    }
+
+    /// Constant attributes past [`MAX_UNBACKED_BYTES`] worth of values decode.
+    ///
+    /// Each one entropy-codes to a run over an alphabet of one, which carries
+    /// no payload, so its whole count is unbacked by the stream. The budget is
+    /// cumulative over a decode, so what has to clear it is the *sum* over the
+    /// attributes -- 67,108,864 values at four bytes each -- and splitting
+    /// that sum four ways is what keeps this test's peak memory a quarter of
+    /// a single attribute's. The shape is a point cloud with an unfilled
+    /// colour channel, which is what large scans commonly carry.
+    #[test]
+    #[cfg(feature = "encoder")]
+    fn constant_attributes_past_the_unbacked_ceiling_decode() {
+        use crate::decoder_buffer::DecoderBuffer;
+        use crate::draco_types::DataType;
+        use crate::encoder_buffer::EncoderBuffer;
+        use crate::encoder_options::EncoderOptions;
+        use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
+        use crate::point_cloud_encoder::PointCloudEncoder;
+
+        const ATTRIBUTES: usize = 4;
+        const COMPONENTS: usize = 3;
+        const CEILING_IN_VALUES: usize = super::MAX_UNBACKED_BYTES / size_of::<u32>();
+        const NUM_POINTS: usize = CEILING_IN_VALUES / (ATTRIBUTES * COMPONENTS) + 1;
+
+        let mut point_cloud = crate::point_cloud::PointCloud::new();
+        point_cloud.set_num_points(NUM_POINTS);
+        for _ in 0..ATTRIBUTES {
+            let mut colour = PointAttribute::new();
+            colour.init(
+                GeometryAttributeType::Color,
+                COMPONENTS as u8,
+                DataType::Uint8,
+                false,
+                NUM_POINTS,
+            );
+            point_cloud.add_attribute(colour);
+        }
+
+        let mut options = EncoderOptions::new();
+        options.set_encoding_method(0);
+        let mut encoded = EncoderBuffer::new();
+        let mut encoder = PointCloudEncoder::new();
+        encoder.set_point_cloud(point_cloud);
+        encoder.encode(&options, &mut encoded).expect("encode");
+        let stream = encoded.data().to_vec();
+        drop(encoder);
+
+        let mut buffer = DecoderBuffer::new(&stream);
+        let mut decoded = crate::point_cloud::PointCloud::new();
+        crate::point_cloud_decoder::PointCloudDecoder::new()
+            .decode(&mut buffer, &mut decoded)
+            .expect("a stream this crate wrote must decode back");
+        assert_eq!(decoded.num_points(), NUM_POINTS);
+        assert_eq!(decoded.num_attributes(), ATTRIBUTES as i32);
         assert_eq!(buffer.spent(), 0, "a legitimate file spent the backstop");
     }
 }

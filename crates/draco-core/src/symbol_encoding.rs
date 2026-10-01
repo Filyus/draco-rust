@@ -647,15 +647,17 @@ pub fn decode_raw_symbols(
     // how a small stream asked for two billion values and got them, in nine
     // seconds. An alphabet of *one* is the extreme -- no payload at all, so
     // nothing in the stream says how far the run goes -- and a constant
-    // attribute reaches it legitimately, which is why the answer is the budget
-    // rather than a refusal.
+    // attribute reaches it legitimately, at any count. So the unbacked part is
+    // drawn first from the values the caller's limits admitted for the
+    // attributes, which a constant attribute's run is, and only what exceeds
+    // them reaches the budget; see `DecoderBuffer::charge_unbacked`.
     //
     // Sixty-four symbols per payload byte is the same measured dial the
     // reserve below uses: the densest coding a Draco encoder produces is 4.4
     // symbols per *bit* on the seeded ribbon at speed 0, which is 35 per byte.
     let backed_by_payload = payload_bytes.saturating_mul(64);
     if num_values > backed_by_payload {
-        in_buffer.charge_elements(num_values - backed_by_payload, size_of::<u32>())?;
+        in_buffer.charge_unbacked(num_values - backed_by_payload, size_of::<u32>())?;
     }
 
     // Growth is capped at `num_values` the same way the corner table caps at

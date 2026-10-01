@@ -365,10 +365,10 @@ impl PointCloudDecoder {
                         }
                     }
 
-                    buffer.charge_decoded_bytes(
-                        (spec.num_components as usize)
-                            .saturating_mul(spec.data_type.byte_length())
-                            .saturating_mul(num_points),
+                    buffer.admit_attribute(
+                        num_points,
+                        spec.num_components as usize,
+                        spec.data_type.byte_length(),
                     )?;
                     let mut att = PointAttribute::new();
                     // Nothing is charged against the *budget* for this

@@ -814,10 +814,10 @@ impl MeshDecoder {
                     buffer.decode_varint()? as u32
                 };
 
-                buffer.charge_decoded_bytes(
-                    (num_components as usize)
-                        .saturating_mul(data_type.byte_length())
-                        .saturating_mul(num_points),
+                buffer.admit_attribute(
+                    num_points,
+                    num_components as usize,
+                    data_type.byte_length(),
                 )?;
                 let mut att = PointAttribute::new();
                 att.init_deferred(att_type, num_components, data_type, normalized, num_points)?;

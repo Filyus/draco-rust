@@ -46,6 +46,9 @@ pub struct DecoderBuffer<'a> {
     /// and an attributes decoder under it; one buffer is what all three share.
     limits: crate::decode_limits::DecodeLimits,
     decoded_bytes: u64,
+    /// Attribute values the caller's limits admitted that no unbacked run has
+    /// drawn on yet -- see [`charge_unbacked`](Self::charge_unbacked).
+    admitted_values: usize,
 }
 
 impl<'a> DecoderBuffer<'a> {
@@ -65,6 +68,7 @@ impl<'a> DecoderBuffer<'a> {
             spent: 0,
             limits: crate::decode_limits::DecodeLimits::default(),
             decoded_bytes: 0,
+            admitted_values: 0,
         }
     }
 
@@ -102,10 +106,23 @@ impl<'a> DecoderBuffer<'a> {
     /// attribute count is the header's, so a per-attribute check bounds
     /// nothing. Called where the size becomes known and before anything is
     /// allocated for it.
-    pub(crate) fn charge_decoded_bytes(&mut self, bytes: usize) -> crate::status::Status {
-        let total = self.decoded_bytes.saturating_add(bytes as u64);
+    ///
+    /// An admitted attribute's values are also credited to the allowance
+    /// [`charge_unbacked`](Self::charge_unbacked) draws on, since the caller
+    /// has now said a decode this large is one it is willing to make.
+    pub(crate) fn admit_attribute(
+        &mut self,
+        num_points: usize,
+        num_components: usize,
+        component_bytes: usize,
+    ) -> crate::status::Status {
+        let num_values = num_components.saturating_mul(num_points);
+        let total = self
+            .decoded_bytes
+            .saturating_add(num_values.saturating_mul(component_bytes) as u64);
         self.limits.check_decoded_bytes(total)?;
         self.decoded_bytes = total;
+        self.admitted_values = self.admitted_values.saturating_add(num_values);
         Ok(())
     }
 
@@ -150,9 +167,58 @@ impl<'a> DecoderBuffer<'a> {
         self.charge(count.saturating_mul(element_size))
     }
 
+    /// Charges `count` values of `element_size` bytes that nothing in the
+    /// stream backs, drawing first on the attribute values the caller's limits
+    /// admitted and charging only the rest to [`charge`](Self::charge).
+    ///
+    /// The case this exists for is a run over an alphabet of one -- or raw
+    /// corrections declared zero bytes wide -- which is what a constant
+    /// attribute codes to. It carries no payload, so its count is unbacked by
+    /// construction, and the stream is as short for a billion values as for a
+    /// thousand. No bound derived from the stream separates such a file from a
+    /// hostile claim, so charging it to the budget only moved the refusal of
+    /// legitimate files to a larger point count: any ceiling the budget could
+    /// carry is one real scans walk past.
+    ///
+    /// What does separate them is the caller's ceiling. These values *are* the
+    /// attribute's own, whose declared size [`admit_attribute`] already put to
+    /// [`DecodeLimits`], so they are bounded there -- with the defaults, a
+    /// stream naming billions of values is refused at the header before
+    /// anything is decoded. Charging them again here counted one attribute
+    /// twice, against two ceilings, the second of which only exists to catch
+    /// what the first cannot see.
+    ///
+    /// The allowance is drawn down rather than consulted, so each admitted
+    /// value excuses one unbacked value once, and the sum the budget would
+    /// have refused is bounded by the sum the limits admitted. That bound is
+    /// in values, while the limits count bytes of the declared type: the
+    /// decoder's working buffer holds four bytes per value, so a one-byte
+    /// attribute is decoded through up to four times the bytes the caller
+    /// admitted. That is what decoding it costs whether or not it is constant;
+    /// a caller whose limits are [`DecodeLimits::permissive`] has said it
+    /// trusts its input, and is now taken at its word here too.
+    ///
+    /// A count with no admission ahead of it -- connectivity, which is decoded
+    /// before any attribute is declared, or a run longer than the attributes
+    /// declared -- still pays the budget in full.
+    ///
+    /// [`admit_attribute`]: Self::admit_attribute
+    /// [`DecodeLimits`]: crate::decode_limits::DecodeLimits
+    /// [`DecodeLimits::permissive`]: crate::decode_limits::DecodeLimits::permissive
+    pub(crate) fn charge_unbacked(
+        &mut self,
+        count: usize,
+        element_size: usize,
+    ) -> crate::status::Status {
+        let admitted = count.min(self.admitted_values);
+        self.charge_elements(count - admitted, element_size)?;
+        self.admitted_values -= admitted;
+        Ok(())
+    }
+
     /// What this decode has reserved so far, for the tests that hold the
     /// budget to being a backstop no legitimate file reaches.
-    #[cfg(all(test, feature = "point_cloud_decode"))]
+    #[cfg(test)]
     pub(crate) fn spent(&self) -> usize {
         self.spent
     }
@@ -621,5 +687,60 @@ mod tests {
 
         buffer.start_bit_decoding(false).unwrap();
         assert!(buffer.decode_least_significant_bits32(33).is_err());
+    }
+
+    /// The count a constant RGB colour over 29,351,662 points codes to: past
+    /// what the budget alone permits, from a stream of any length.
+    const CONSTANT_COLOUR_VALUES: usize = 29_351_662 * 3;
+
+    #[test]
+    fn an_unbacked_run_the_limits_admitted_charges_nothing() {
+        let data = [0u8; 113];
+        let mut buffer = DecoderBuffer::new(&data);
+        assert!(buffer
+            .charge_unbacked(CONSTANT_COLOUR_VALUES, size_of::<u32>())
+            .is_err());
+
+        let mut buffer = DecoderBuffer::new(&data);
+        buffer
+            .admit_attribute(CONSTANT_COLOUR_VALUES / 3, 3, 1)
+            .unwrap();
+        buffer
+            .charge_unbacked(CONSTANT_COLOUR_VALUES, size_of::<u32>())
+            .unwrap();
+        assert_eq!(buffer.spent(), 0);
+    }
+
+    /// Each admitted value excuses one unbacked value once: a second run over
+    /// the same admission pays the budget, so the sum the budget lets through
+    /// stays bounded by the sum the limits admitted.
+    #[test]
+    fn an_admission_is_drawn_down_rather_than_reused() {
+        let data = [0u8; 113];
+        let mut buffer = DecoderBuffer::new(&data);
+        buffer.admit_attribute(1_000, 1, 1).unwrap();
+        buffer.charge_unbacked(1_000, size_of::<u32>()).unwrap();
+        assert_eq!(buffer.spent(), 0);
+        buffer.charge_unbacked(10, size_of::<u32>()).unwrap();
+        assert_eq!(buffer.spent(), 40);
+        assert!(buffer
+            .charge_unbacked(CONSTANT_COLOUR_VALUES, size_of::<u32>())
+            .is_err());
+    }
+
+    /// The protection the budget exists for is kept, by the limits: the
+    /// header of a tiny stream naming billions of values is refused before
+    /// anything is admitted, so nothing is there to draw on.
+    #[test]
+    fn a_claim_past_the_default_limits_is_refused_at_admission() {
+        let data = [0u8; 170];
+        let mut buffer = DecoderBuffer::new(&data);
+        let error = buffer
+            .admit_attribute(2_270_000_000, 3, 1)
+            .expect_err("6.8 billion values admitted under the defaults");
+        assert_eq!(error.kind(), crate::status::ErrorKind::LimitExceeded);
+        assert!(buffer
+            .charge_unbacked(u32::MAX as usize, size_of::<u32>())
+            .is_err());
     }
 }

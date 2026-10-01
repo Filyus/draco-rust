@@ -175,6 +175,13 @@ Two things this deliberately does *not* rely on:
   charged. That is what lets the ceiling be absolute without capping geometry:
   it bounds reservations made against a claim, which a legitimate decode does
   not make.
+  The one claim a legitimate file does make is a constant attribute, whose
+  values code to a run with no payload: such a run is drawn from what
+  [`DecodeLimits`](https://docs.rs/draco-core/latest/draco_core/struct.DecodeLimits.html)
+  admitted for the attribute and reaches the backstop only past it, so its
+  bound is the caller's ceiling. The decoder works through four bytes per
+  value, so a one-byte attribute costs up to four times the bytes the limits
+  counted for it.
 - **A per-element floor holds only where it is measured.** One bit per symbol
   is a floor for a *count* — `ensure_symbols_are_backed` uses it for
   connectivity — and it is false for entropy-coded values, and false for ETC1S
