@@ -1236,18 +1236,17 @@ impl SequentialIntegerAttributeEncoder {
         {
             // The wrap transform keeps corrections signed, so both candidates
             // reach the coder through ZigZag; the winner is what step 5 below
-            // would have formed from `corrections`, formed here once.
-            let zigzag = |v: &[i32]| -> Vec<u32> {
-                v.iter().map(|&c| ((c << 1) ^ (c >> 31)) as u32).collect()
-            };
-            let predicted = zigzag(&corrections);
+            // would have formed from `corrections`, formed here once. Neither
+            // `corrections` nor `values` is read again, so each candidate takes
+            // the buffer its values came in.
+            let predicted = zigzag(std::mem::take(&mut corrections));
             let predicted_plan = plan_symbols(&predicted, num_components);
             // What `Difference` writes beyond its symbols: the transform byte
             // and the wrap transform's own data. `None` writes neither.
             let overhead_bits =
                 8 * (1 + pred_data_opt.as_ref().map_or(0, |data| data.len()) as u64);
             let predicted_bits = predicted_plan.estimated_bits() + overhead_bits;
-            let plain = zigzag(&values);
+            let plain = zigzag(std::mem::take(&mut values));
             let plain_plan = plan_symbols(&plain, num_components);
             if plain_plan.estimated_bits() < predicted_bits {
                 selected_method = PredictionSchemeMethod::None;
@@ -1355,16 +1354,9 @@ impl SequentialIntegerAttributeEncoder {
                 (symbols, Some(plan))
             } else if are_corrections_positive {
                 // Corrections are already unsigned - just cast
-                (corrections.iter().map(|&c| c as u32).collect(), None)
+                (corrections.into_iter().map(|c| c as u32).collect(), None)
             } else {
-                // Apply ZigZag encoding
-                (
-                    corrections
-                        .iter()
-                        .map(|&c| ((c << 1) ^ (c >> 31)) as u32)
-                        .collect(),
-                    None,
-                )
+                (zigzag(corrections), None)
             };
 
         // 6. Encode symbols
@@ -1420,6 +1412,18 @@ impl SequentialIntegerAttributeEncoder {
 
         Ok(())
     }
+}
+
+/// Signed corrections as the unsigned symbols the coder takes, in the buffer
+/// they came in: a `Vec` collected from its own `into_iter` over a type of the
+/// same size and alignment is built in place, so an attribute-sized list costs
+/// no second allocation, no second set of fresh pages to fault in, and no
+/// second release.
+fn zigzag(corrections: Vec<i32>) -> Vec<u32> {
+    corrections
+        .into_iter()
+        .map(|c| ((c << 1) ^ (c >> 31)) as u32)
+        .collect()
 }
 
 pub(crate) fn read_value_as_i32(buffer: &DataBuffer, offset: usize, data_type: DataType) -> i32 {
@@ -1484,4 +1488,21 @@ fn try_encode_prediction_data<'a, P: PredictionSchemeEncoder<'a, i32, i32>>(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::zigzag;
+
+    /// The symbols are formed in the corrections' own buffer, which is what
+    /// `zigzag` is for; a standard library that stopped collecting in place
+    /// would bring the second allocation back unnoticed.
+    #[test]
+    fn zigzag_maps_signed_to_unsigned_in_the_same_buffer() {
+        let corrections = vec![0, -1, 1, -2, 2, i32::MAX, i32::MIN];
+        let address = corrections.as_ptr() as usize;
+        let symbols = zigzag(corrections);
+        assert_eq!(symbols, [0, 1, 2, 3, 4, u32::MAX - 1, u32::MAX]);
+        assert_eq!(symbols.as_ptr() as usize, address);
+    }
 }
