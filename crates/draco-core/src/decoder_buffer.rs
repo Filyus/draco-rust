@@ -330,7 +330,7 @@ impl<'a> DecoderBuffer<'a> {
         let mut left = shared.load(Ordering::Relaxed);
         let admitted = loop {
             let admitted = count.min(left);
-            match shared.compare_exchange_weak(
+            match shared.compare_exchange(
                 left,
                 left - admitted,
                 Ordering::Relaxed,
