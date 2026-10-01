@@ -324,12 +324,22 @@ impl<'a> DecoderBuffer<'a> {
             return Ok(());
         };
         // Drawn before the charge so no other piece can draw the same values,
-        // and handed back if the charge refuses the rest.
-        let mut admitted = 0;
-        let _ = shared.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |left| {
-            admitted = count.min(left);
-            Some(left - admitted)
-        });
+        // and handed back if the charge refuses the rest. A compare-exchange
+        // loop rather than `fetch_update`, deprecated since 1.99, or the
+        // `try_update` it became, which is past this crate's 1.88.
+        let mut left = shared.load(Ordering::Relaxed);
+        let admitted = loop {
+            let admitted = count.min(left);
+            match shared.compare_exchange_weak(
+                left,
+                left - admitted,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break admitted,
+                Err(now) => left = now,
+            }
+        };
         let shared = shared.clone();
         self.charge_elements(count - admitted, element_size)
             .inspect_err(|_| {
