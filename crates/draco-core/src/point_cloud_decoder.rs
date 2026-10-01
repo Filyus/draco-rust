@@ -895,6 +895,7 @@ impl PointCloudDecoder {
                        pending_quant: &mut Vec<PendingQuant>,
                        pending_normals: &mut Vec<PendingNormal>|
          -> Result<bool, DracoError> {
+            buffer.rejoin(&template, false);
             buffer.set_position(start)?;
             pending_quant.clear();
             pending_normals.clear();
@@ -905,6 +906,7 @@ impl PointCloudDecoder {
             _ => return give_up(buffer, pending_quant, pending_normals),
         };
         if jobs == 0 {
+            buffer.rejoin(&template, true);
             return Ok(true);
         }
         let mut decoded_jobs = Vec::with_capacity(jobs);
@@ -917,6 +919,7 @@ impl PointCloudDecoder {
         if decoded_jobs.len() != jobs || buffer.charge(template.spent_since()).is_err() {
             return give_up(buffer, pending_quant, pending_normals);
         }
+        buffer.rejoin(&template, true);
         #[cfg(test)]
         ENGAGED.with(|engaged| engaged.set(engaged.get() + jobs));
         for decoded in decoded_jobs {
@@ -1533,6 +1536,55 @@ mod parallel_tests {
             assert_eq!(
                 engaged, 7,
                 "{threads} threads: the parallel path ran for {engaged} of 7 streams"
+            );
+            assert_eq!(parallel.expect("decodes"), serial, "{threads} threads");
+        }
+    }
+
+    /// Constant attributes past what the allocation backstop holds, beside one
+    /// that makes the stream long enough for the threads. A constant run is
+    /// drawn from the values the caller's limits admitted, and the pieces
+    /// decoded side by side draw on that one allowance as the decode in order
+    /// does: the threads and the pairing run on every stream, rather than
+    /// failing on the budget and leaving it all to one thread.
+    #[test]
+    fn constant_attributes_past_the_backstop_decode_side_by_side() {
+        const CONSTANT: usize = 4;
+        const COMPONENTS: usize = 3;
+        const CEILING_IN_VALUES: usize =
+            crate::decode_budget::MAX_UNBACKED_BYTES / std::mem::size_of::<u32>();
+        // A quarter past the ceiling, so no payload the runs carry brings them
+        // back under it.
+        const POINTS: usize = CEILING_IN_VALUES / (CONSTANT * COMPONENTS) * 5 / 4;
+        let mut cloud = PointCloud::new();
+        cloud.set_num_points(POINTS);
+        for _ in 0..CONSTANT {
+            let colour = vec![0u8; POINTS * COMPONENTS];
+            cloud.add_attribute(byte_attribute(
+                GeometryAttributeType::Color,
+                COMPONENTS as u8,
+                &colour,
+            ));
+        }
+        let mut rng = Xorshift(21);
+        let noise: Vec<u8> = (0..POINTS).map(|_| (rng.next() >> 56) as u8).collect();
+        cloud.add_attribute(byte_attribute(GeometryAttributeType::Generic, 1, &noise));
+        let mut options = EncoderOptions::new();
+        options.set_encoding_method(0);
+        options.set_threads(1);
+        let mut encoder = PointCloudEncoder::new();
+        encoder.set_point_cloud(cloud);
+        let mut buffer = EncoderBuffer::new();
+        encoder.encode(&options, &mut buffer).expect("encodes");
+        let bytes = buffer.data();
+        assert!(bytes.len() >= PARALLEL_MIN_STREAM_BYTES);
+        let serial = decode_in_order(bytes).expect("decodes");
+        for threads in [1, 16] {
+            let (parallel, engaged) = engaged_by(|| decode(bytes, threads));
+            assert_eq!(
+                engaged,
+                CONSTANT + 1,
+                "{threads} threads: {engaged} streams decoded aside"
             );
             assert_eq!(parallel.expect("decodes"), serial, "{threads} threads");
         }

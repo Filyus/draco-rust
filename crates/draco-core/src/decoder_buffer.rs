@@ -58,6 +58,11 @@ pub struct DecoderBuffer<'a> {
     /// Attribute values the caller's limits admitted that no unbacked run has
     /// drawn on yet -- see [`charge_unbacked`](Self::charge_unbacked).
     admitted_values: usize,
+    /// The allowance shared with the buffers over other pieces of the same
+    /// stream while they decode beside this one, where it is in place of
+    /// `admitted_values`: one allowance for the decode, so an admitted value
+    /// excuses one unbacked value once whichever piece draws it.
+    shared_admitted: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
 }
 
 /// The version, ceilings and budget of one decode, set aside to open buffers over
@@ -73,6 +78,10 @@ pub(crate) struct ChildTemplate {
     /// piece opened from this have spent since.
     spent: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     spent_at_start: usize,
+    /// The stream's admitted-value allowance while the pieces are out, and what
+    /// it held when this was taken.
+    admitted: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    admitted_at_start: usize,
 }
 
 #[cfg(feature = "point_cloud_decode")]
@@ -88,6 +97,7 @@ impl ChildTemplate {
         buffer.budget_len = self.budget_len;
         buffer.decoded_bytes = self.decoded_bytes;
         buffer.shared_spent = Some(self.spent.clone());
+        buffer.shared_admitted = Some(self.admitted.clone());
         buffer
     }
 
@@ -121,14 +131,22 @@ impl<'a> DecoderBuffer<'a> {
             limits: crate::decode_limits::DecodeLimits::default(),
             decoded_bytes: 0,
             admitted_values: 0,
+            shared_admitted: None,
         }
     }
 
     /// What a buffer over a stretch of this one's stream needs from it, taken
     /// now so that the stretch can be opened later, on another thread, while this
     /// buffer goes on being read.
+    ///
+    /// This buffer's admitted-value allowance moves into one the pieces share,
+    /// and this buffer draws on it too until [`rejoin`](Self::rejoin): the
+    /// pieces and whatever this buffer decodes in the meantime are one decode.
     #[cfg(feature = "point_cloud_decode")]
-    pub(crate) fn child_template(&self) -> ChildTemplate {
+    pub(crate) fn child_template(&mut self) -> ChildTemplate {
+        let admitted =
+            std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(self.admitted_values));
+        self.shared_admitted = Some(admitted.clone());
         ChildTemplate {
             version_major: self.version_major,
             version_minor: self.version_minor,
@@ -137,7 +155,22 @@ impl<'a> DecoderBuffer<'a> {
             decoded_bytes: self.decoded_bytes,
             spent: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(self.spent)),
             spent_at_start: self.spent,
+            admitted,
+            admitted_at_start: self.admitted_values,
         }
+    }
+
+    /// Takes the allowance back from the pieces opened from `template`: what
+    /// they left of it where their work is kept, and all of it where it is
+    /// thrown away to be decoded again in order.
+    #[cfg(feature = "point_cloud_decode")]
+    pub(crate) fn rejoin(&mut self, template: &ChildTemplate, kept: bool) {
+        self.admitted_values = if kept {
+            template.admitted.load(std::sync::atomic::Ordering::Relaxed)
+        } else {
+            template.admitted_at_start
+        };
+        self.shared_admitted = None;
     }
 
     /// Decodes under `limits` rather than under
@@ -283,10 +316,25 @@ impl<'a> DecoderBuffer<'a> {
         count: usize,
         element_size: usize,
     ) -> crate::status::Status {
-        let admitted = count.min(self.admitted_values);
-        self.charge_elements(count - admitted, element_size)?;
-        self.admitted_values -= admitted;
-        Ok(())
+        use std::sync::atomic::Ordering;
+        let Some(shared) = &self.shared_admitted else {
+            let admitted = count.min(self.admitted_values);
+            self.charge_elements(count - admitted, element_size)?;
+            self.admitted_values -= admitted;
+            return Ok(());
+        };
+        // Drawn before the charge so no other piece can draw the same values,
+        // and handed back if the charge refuses the rest.
+        let mut admitted = 0;
+        let _ = shared.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |left| {
+            admitted = count.min(left);
+            Some(left - admitted)
+        });
+        let shared = shared.clone();
+        self.charge_elements(count - admitted, element_size)
+            .inspect_err(|_| {
+                shared.fetch_add(admitted, Ordering::Relaxed);
+            })
     }
 
     /// What this decode has reserved so far, for the tests that hold the
@@ -815,5 +863,30 @@ mod tests {
         assert!(buffer
             .charge_unbacked(u32::MAX as usize, size_of::<u32>())
             .is_err());
+    }
+
+    /// Pieces of one stream decoded side by side draw on one allowance: what
+    /// two of them draw together is what one buffer could, the rest pays the
+    /// budget they share, and the stream takes back what is left -- or all of
+    /// it, where their work is thrown away to be decoded again in order.
+    #[cfg(feature = "point_cloud_decode")]
+    #[test]
+    fn pieces_decoded_side_by_side_share_one_allowance() {
+        let data = [0u8; 113];
+        let mut stream = DecoderBuffer::new(&data);
+        stream.admit_attribute(1_000, 1, 1).unwrap();
+        let template = stream.child_template();
+        let mut a = template.open(&data);
+        let mut b = template.open(&data);
+        a.charge_unbacked(600, size_of::<u32>()).unwrap();
+        b.charge_unbacked(600, size_of::<u32>()).unwrap();
+        stream.charge_unbacked(100, size_of::<u32>()).unwrap();
+        assert_eq!(template.spent_since(), 200 * size_of::<u32>());
+        assert_eq!(stream.spent(), 100 * size_of::<u32>());
+
+        stream.rejoin(&template, true);
+        assert_eq!(stream.admitted_values, 0);
+        stream.rejoin(&template, false);
+        assert_eq!(stream.admitted_values, 1_000);
     }
 }
