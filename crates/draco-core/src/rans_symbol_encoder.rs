@@ -12,7 +12,62 @@ use crate::rans_symbol_coding::RAnsSymbol;
 pub struct RAnsSymbolEncoder<const RANS_PRECISION_BITS: u32> {
     pub ans: AnsCoder,
     probability_table: Vec<RAnsSymbol>,
+    /// What writing each symbol does to the state, with the division by its
+    /// probability turned into a multiplication. Built from the table by
+    /// `create`.
+    steps: Vec<EncodeStep>,
     num_symbols: usize,
+}
+
+/// One symbol's write, `state -> (state / prob) * precision + state % prob +
+/// cum_prob`, as `state + bias + q * complement` with `q = state / prob` taken
+/// by a multiply and a shift.
+///
+/// The quotient is exact for every state below 2^31 (Alverson, as `ryg_rans`
+/// uses it): `reciprocal` is `ceil(2^(31 + s) / prob)` for `s = ceil(log2
+/// prob)`, and the product's high word shifted by `s - 1` is the floor. The
+/// state a symbol is written from is below `renorm_bound`, at most 2^30. A
+/// probability of one has no such reciprocal and takes `2^32 - 1` with no shift,
+/// which gives `state - 1` for the quotient, and the bias carries the missing
+/// `precision - 1`: `state + cum + precision - 1 + (state - 1)(precision - 1)`
+/// is `state * precision + cum`.
+#[derive(Clone, Copy, Default)]
+struct EncodeStep {
+    renorm_bound: u32,
+    reciprocal: u32,
+    shift: u32,
+    bias: u32,
+    complement: u32,
+}
+
+impl EncodeStep {
+    fn new(sym: RAnsSymbol, precision: u32, renorm_bound: u32) -> Self {
+        let complement = precision - sym.prob;
+        if sym.prob < 2 {
+            return Self {
+                renorm_bound,
+                reciprocal: u32::MAX,
+                shift: 0,
+                bias: sym.cum_prob + precision - 1,
+                complement,
+            };
+        }
+        let shift = 32 - (sym.prob - 1).leading_zeros();
+        Self {
+            renorm_bound,
+            reciprocal: ((1u64 << (shift + 31)).div_ceil(u64::from(sym.prob))) as u32,
+            shift: shift - 1,
+            bias: sym.cum_prob,
+            complement,
+        }
+    }
+
+    fn write(self, state: u32) -> u32 {
+        let quotient = ((u64::from(state) * u64::from(self.reciprocal)) >> 32) as u32 >> self.shift;
+        state
+            .wrapping_add(self.bias)
+            .wrapping_add(quotient.wrapping_mul(self.complement))
+    }
 }
 
 impl<const RANS_PRECISION_BITS: u32> Default for RAnsSymbolEncoder<RANS_PRECISION_BITS> {
@@ -29,6 +84,7 @@ impl<const RANS_PRECISION_BITS: u32> RAnsSymbolEncoder<RANS_PRECISION_BITS> {
         Self {
             ans: AnsCoder::new(),
             probability_table: Vec::new(),
+            steps: Vec::new(),
             num_symbols: 0,
         }
     }
@@ -204,6 +260,13 @@ impl<const RANS_PRECISION_BITS: u32> RAnsSymbolEncoder<RANS_PRECISION_BITS> {
             return false;
         }
 
+        let bound_per_prob = (Self::L_RANS_BASE / Self::RANS_PRECISION) * crate::ans::ANS_IO_BASE;
+        self.steps = self
+            .probability_table
+            .iter()
+            .map(|&sym| EncodeStep::new(sym, Self::RANS_PRECISION, bound_per_prob * sym.prob))
+            .collect();
+
         self.encode_table(buffer)
     }
 
@@ -283,8 +346,8 @@ impl<const RANS_PRECISION_BITS: u32> RAnsSymbolEncoder<RANS_PRECISION_BITS> {
     }
 
     pub fn encode_symbol(&mut self, symbol: u32) {
-        let sym = self.probability_table[symbol as usize];
-        self.rans_write(sym);
+        let step = self.steps[symbol as usize];
+        self.rans_write(step);
     }
 
     pub fn end_encoding(&mut self, buffer: &mut EncoderBuffer) {
@@ -305,29 +368,20 @@ impl<const RANS_PRECISION_BITS: u32> RAnsSymbolEncoder<RANS_PRECISION_BITS> {
         buffer.encode_data(data);
     }
 
-    fn rans_write(&mut self, sym: RAnsSymbol) {
+    fn rans_write(&mut self, step: EncodeStep) {
         // Hot path: the renormalization loop's divide and modulo are by
         // ANS_IO_BASE (256), a constant, so they are a shift and a mask.
-        let p = sym.prob;
-        let renorm_bound = (Self::L_RANS_BASE / Self::RANS_PRECISION) * crate::ans::ANS_IO_BASE * p;
-
         let mut state = self.ans.state;
-        while state >= renorm_bound {
+        while state >= step.renorm_bound {
             // ANS_IO_BASE is 256.
             self.ans.buf.push((state & 0xFF) as u8);
             state >>= 8;
         }
-
-        // `p` is a runtime probability, so this division is a real one -- but
-        // ask for the remainder directly rather than deriving it as
-        // `state - quot * p`. Both results come out of the same hardware
-        // `div`, and spelling the subtraction by hand adds a multiply and a
-        // subtract to every symbol: measured at 2.1% of encode, two builds per
-        // condition with disjoint clusters. See TRICKS.md.
-        let quot = state / p;
-        let rem = state % p;
-        state = quot * Self::RANS_PRECISION + rem + sym.cum_prob;
-        self.ans.state = state;
+        // The division by the symbol's probability, which upstream spells as
+        // `/` and `%`, is the reciprocal multiply `EncodeStep` holds: the
+        // hardware `div` sat on the state's dependency chain, and every symbol
+        // waits on that chain.
+        self.ans.state = step.write(state);
     }
 }
 
@@ -367,6 +421,44 @@ mod tests {
     fn carries_zero_run_token(bytes: &[u8]) -> bool {
         // Past the u32 symbol count that pre-2.0 writes.
         bytes[4..].iter().any(|byte| byte & 3 == 3)
+    }
+
+    /// The reciprocal write is the division it replaces, for every precision
+    /// the coder uses. A floor that is off by one shows first where the state
+    /// crosses a multiple of the probability and at the top of the state's
+    /// range, so those are checked for every probability in the small range and
+    /// a stride through the rest, beside a scatter of states in between.
+    #[test]
+    fn a_reciprocal_write_is_the_division_it_replaces() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        for bits in 12..=20u32 {
+            let precision = 1u32 << bits;
+            let probs = (1..=4096u32.min(precision))
+                .chain((4096..precision).step_by(37))
+                .chain([precision - 1, precision]);
+            for prob in probs {
+                let cum_prob = (precision - prob) / 2;
+                let sym = RAnsSymbol { prob, cum_prob };
+                let bound = 4 * 256 * prob;
+                let step = EncodeStep::new(sym, precision, bound);
+                let top = bound - 1;
+                let mut states = vec![bound / 256, top, top / prob * prob, top / prob * prob - 1];
+                for _ in 0..8 {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    states.push(bound / 256 + (seed % u64::from(bound - bound / 256)) as u32);
+                }
+                for state in states {
+                    let expected = (state / prob) * precision + state % prob + cum_prob;
+                    assert_eq!(
+                        step.write(state),
+                        expected,
+                        "precision 2^{bits}, probability {prob}, state {state}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
