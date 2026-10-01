@@ -4,7 +4,7 @@
 //! texture coordinates from ASCII and binary PLY files. Polygon faces are
 //! triangulated with a fan.
 
-use crate::raw_attribute::{make_f32x2_attribute, make_f32x3_attribute};
+use crate::raw_attribute::{make_f32x2_attribute, make_f32x3_attribute, write_components};
 use crate::traits::finalize_mesh;
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use std::fs;
@@ -36,16 +36,16 @@ struct ParsedPlyData {
 
 /// One vertex property carried through as a generic attribute.
 ///
-/// Values are held as `f64` whatever the file declared, which is exact for
-/// every scalar type PLY has — the widest are `int32`, `uint32` and `float64`,
-/// and `f64` represents all three without loss. The declared type is kept
-/// beside them so the attribute is built in the file's own width rather than
-/// widened to the one used for transport.
+/// Values are held as the little-endian bytes of the type the file declared,
+/// which is the attribute's own layout: a binary body is copied in as it is,
+/// byte-swapped when it is big-endian, and the attribute is built from the
+/// bytes in one copy. A text body parses each value as `f64`, exact for every
+/// scalar type PLY has, and narrows it to the declared type on the way in.
 #[derive(Debug)]
 struct ParsedGenericProperty {
     name: String,
     data_type: DataType,
-    values: Vec<f64>,
+    bytes: Vec<u8>,
 }
 
 #[derive(Debug)]
@@ -394,10 +394,11 @@ fn mesh_from_parsed(parsed: ParsedPlyData) -> io::Result<Mesh> {
         // than not carrying it: the values would look real. The body reader
         // already fails on a truncated vertex, so this guards the case where a
         // header declares a property the body never supplies.
-        if property.values.len() != mesh.num_points() {
+        if property.bytes.len() != mesh.num_points() * property.data_type.byte_length() {
             continue;
         }
-        let attribute_id = mesh.add_attribute(make_generic_attribute(property));
+        let attribute = make_generic_attribute(property, mesh.num_points());
+        let attribute_id = mesh.add_attribute(attribute);
         let unique_id = mesh.attribute(attribute_id).unique_id();
         let mut metadata = draco_core::metadata::Metadata::new();
         // `"name"` is upstream Draco's key for this: `obj_decoder.cc` writes it
@@ -462,44 +463,29 @@ pub fn read_ply_positions<P: AsRef<Path>>(path: P) -> io::Result<Vec<[f32; 3]>> 
     Ok(read_ply(path)?.positions.to_f32_positions())
 }
 
-/// Build a one-component `Generic` attribute in the type the file declared.
-///
-/// Values arrive as `f64`, which held every PLY scalar exactly on the way in,
-/// and are narrowed here to the declared type. The narrowing is the file's own
-/// width rather than a choice: a `uchar` property that came in as `uchar` goes
-/// back out as one byte per point.
-fn make_generic_attribute(property: &ParsedGenericProperty) -> PointAttribute {
+/// Build a one-component `Generic` attribute in the type the file declared,
+/// `num_points` values of it, from the bytes the reader collected in that
+/// layout. A `uchar` property that came in as `uchar` goes back out as one
+/// byte per point.
+fn make_generic_attribute(property: &ParsedGenericProperty, num_points: usize) -> PointAttribute {
     let mut attribute = PointAttribute::new();
     attribute.init(
         GeometryAttributeType::Generic,
         1,
         property.data_type,
         false,
-        property.values.len(),
+        num_points,
     );
 
-    let buffer = attribute.buffer_mut();
-    let width = property.data_type.byte_length();
-    for (index, value) in property.values.iter().enumerate() {
-        let value = *value;
-        let bytes: [u8; 8] = match property.data_type {
-            DataType::Int8 => pad(&(value as i8).to_le_bytes()),
-            DataType::Uint8 => pad(&(value as u8).to_le_bytes()),
-            DataType::Int16 => pad(&(value as i16).to_le_bytes()),
-            DataType::Uint16 => pad(&(value as u16).to_le_bytes()),
-            DataType::Int32 => pad(&(value as i32).to_le_bytes()),
-            DataType::Uint32 => pad(&(value as u32).to_le_bytes()),
-            DataType::Float64 => value.to_le_bytes(),
-            // Float32 and anything a header could not have declared.
-            _ => pad(&(value as f32).to_le_bytes()),
-        };
-        buffer.write(index * width, &bytes[..width]);
-    }
+    attribute
+        .buffer_mut()
+        .data_mut()
+        .copy_from_slice(&property.bytes);
     attribute
 }
 
 /// Widen a little-endian encoding to eight bytes so one array type serves every
-/// branch above; only the declared width is ever written.
+/// narrowing in `narrow_to_le`; only the declared width is ever read.
 fn pad(bytes: &[u8]) -> [u8; 8] {
     let mut padded = [0u8; 8];
     padded[..bytes.len()].copy_from_slice(bytes);
@@ -512,16 +498,7 @@ fn make_i32x3_attribute(
 ) -> PointAttribute {
     let mut attribute = PointAttribute::new();
     attribute.init(attribute_type, 3, DataType::Int32, false, values.len());
-
-    let buffer = attribute.buffer_mut();
-    for (i, value) in values.iter().enumerate() {
-        let bytes: Vec<u8> = value
-            .iter()
-            .flat_map(|component| component.to_le_bytes())
-            .collect();
-        buffer.write(i * 12, &bytes);
-    }
-
+    write_components(attribute.buffer_mut().data_mut(), values, i32::to_le_bytes);
     attribute
 }
 
@@ -540,10 +517,10 @@ fn make_u8_attribute(
         values.len(),
     );
 
-    let buffer = attribute.buffer_mut();
-    for (i, value) in values.iter().enumerate() {
-        let end = num_components as usize;
-        buffer.write(i * end, &value[..end]);
+    let width = num_components as usize;
+    let data = attribute.buffer_mut().data_mut();
+    for (slot, value) in data.chunks_exact_mut(width.max(1)).zip(values) {
+        slot.copy_from_slice(&value[..width]);
     }
 
     attribute
@@ -963,23 +940,28 @@ impl GenericPlan {
         self.properties.is_empty()
     }
 
+    /// The type a column was declared with.
+    fn data_type(&self, column: usize) -> DataType {
+        self.properties[column].1
+    }
+
     /// Fresh per-column accumulators sized for the vertices expected.
-    fn new_values(&self, capacity: usize) -> Vec<Vec<f64>> {
+    fn new_values(&self, capacity: usize) -> Vec<Vec<u8>> {
         self.properties
             .iter()
-            .map(|_| Vec::with_capacity(capacity))
+            .map(|(_, data_type)| Vec::with_capacity(capacity * data_type.byte_length()))
             .collect()
     }
 
     /// Pair the accumulated columns with their names and declared types.
-    fn finish(&self, values: Vec<Vec<f64>>) -> Vec<ParsedGenericProperty> {
+    fn finish(&self, values: Vec<Vec<u8>>) -> Vec<ParsedGenericProperty> {
         self.properties
             .iter()
             .zip(values)
-            .map(|((name, data_type), values)| ParsedGenericProperty {
+            .map(|((name, data_type), bytes)| ParsedGenericProperty {
                 name: name.clone(),
                 data_type: *data_type,
-                values,
+                bytes,
             })
             .collect()
     }
@@ -1307,7 +1289,9 @@ fn read_ply_ascii_body(
                 }
                 name => {
                     if let Some(column) = generic_plan.column_for(property_index) {
-                        generic_values[column].push(parse_ascii_f64(token, name)?);
+                        let data_type = generic_plan.data_type(column);
+                        let bytes = narrow_to_le(parse_ascii_f64(token, name)?, data_type);
+                        generic_values[column].extend_from_slice(&bytes[..data_type.byte_length()]);
                     }
                 }
             }
@@ -1379,52 +1363,60 @@ enum BinaryEndian {
     Big,
 }
 
-/// Read a carried property's value, whatever width the file declared it at.
+/// Append a carried property's value to `column` as the little-endian bytes of
+/// the type the file declared it at -- the bytes as they are in a
+/// little-endian body, reversed in a big-endian one.
 ///
-/// `f64` because it is the only type that holds every PLY scalar exactly:
-/// `int32` and `uint32` need more than `f32`'s 24 bits of mantissa, and a
-/// carried value that a widening step has already rounded cannot be narrowed
-/// back to what the file said.
-fn read_binary_scalar_as_f64(
+/// The value is never widened on the way: the attribute is built in the
+/// declared type, so the bytes the file holds are the bytes it needs.
+fn read_binary_scalar_le_bytes(
     cursor: &mut Cursor<&[u8]>,
     data_type: DataType,
     endian: BinaryEndian,
-) -> io::Result<f64> {
-    ensure_remaining(cursor, data_type.byte_length())?;
-    let value = match data_type {
-        DataType::Int8 => cursor.read_i8()? as f64,
-        DataType::Uint8 => cursor.read_u8()? as f64,
-        DataType::Int16 => match endian {
-            BinaryEndian::Little => cursor.read_i16::<LittleEndian>()? as f64,
-            BinaryEndian::Big => cursor.read_i16::<BigEndian>()? as f64,
-        },
-        DataType::Uint16 => match endian {
-            BinaryEndian::Little => cursor.read_u16::<LittleEndian>()? as f64,
-            BinaryEndian::Big => cursor.read_u16::<BigEndian>()? as f64,
-        },
-        DataType::Int32 => match endian {
-            BinaryEndian::Little => cursor.read_i32::<LittleEndian>()? as f64,
-            BinaryEndian::Big => cursor.read_i32::<BigEndian>()? as f64,
-        },
-        DataType::Uint32 => match endian {
-            BinaryEndian::Little => cursor.read_u32::<LittleEndian>()? as f64,
-            BinaryEndian::Big => cursor.read_u32::<BigEndian>()? as f64,
-        },
-        DataType::Float32 => match endian {
-            BinaryEndian::Little => cursor.read_f32::<LittleEndian>()? as f64,
-            BinaryEndian::Big => cursor.read_f32::<BigEndian>()? as f64,
-        },
-        DataType::Float64 => match endian {
-            BinaryEndian::Little => cursor.read_f64::<LittleEndian>()?,
-            BinaryEndian::Big => cursor.read_f64::<BigEndian>()?,
-        },
+    column: &mut Vec<u8>,
+) -> io::Result<()> {
+    match data_type {
+        DataType::Int8
+        | DataType::Uint8
+        | DataType::Int16
+        | DataType::Uint16
+        | DataType::Int32
+        | DataType::Uint32
+        | DataType::Float32
+        | DataType::Float64 => {}
         other => {
             return Err(invalid_ply(format!(
                 "Vertex property type {other:?} cannot be carried"
             )))
         }
-    };
-    Ok(value)
+    }
+    let width = data_type.byte_length();
+    ensure_remaining(cursor, width)?;
+    let start = cursor.position() as usize;
+    let bytes = &cursor.get_ref()[start..start + width];
+    let at = column.len();
+    column.extend_from_slice(bytes);
+    if matches!(endian, BinaryEndian::Big) {
+        column[at..].reverse();
+    }
+    cursor.set_position((start + width) as u64);
+    Ok(())
+}
+
+/// `value` narrowed to `data_type` the way a cast does, as little-endian bytes
+/// padded to eight; only the declared width is meant to be read.
+fn narrow_to_le(value: f64, data_type: DataType) -> [u8; 8] {
+    match data_type {
+        DataType::Int8 => pad(&(value as i8).to_le_bytes()),
+        DataType::Uint8 => pad(&(value as u8).to_le_bytes()),
+        DataType::Int16 => pad(&(value as i16).to_le_bytes()),
+        DataType::Uint16 => pad(&(value as u16).to_le_bytes()),
+        DataType::Int32 => pad(&(value as i32).to_le_bytes()),
+        DataType::Uint32 => pad(&(value as u32).to_le_bytes()),
+        DataType::Float64 => value.to_le_bytes(),
+        // Float32 and anything a header could not have declared.
+        _ => pad(&(value as f32).to_le_bytes()),
+    }
 }
 
 fn read_binary_scalar_as_f32(
@@ -1696,11 +1688,12 @@ fn read_ply_binary_body(
                         texcoord[1] = read_binary_scalar_as_f32(&mut cursor, data_type, endian)?
                     }
                     _ => match generic_plan.column_for(property_index) {
-                        Some(column) => generic_values[column].push(read_binary_scalar_as_f64(
+                        Some(column) => read_binary_scalar_le_bytes(
                             &mut cursor,
                             data_type,
                             endian,
-                        )?),
+                            &mut generic_values[column],
+                        )?,
                         None => skip_binary_scalar(&mut cursor, data_type)?,
                     },
                 },
@@ -2744,6 +2737,75 @@ end_header
             .expect("the uchar property stays a uchar");
         assert_eq!(confidence.attribute_type(), GeometryAttributeType::Generic);
         assert_eq!(confidence.num_components(), 1);
+    }
+
+    /// A carried property's bytes are the declared type's whatever the body's
+    /// encoding: the same vertices as text, as little-endian and as big-endian
+    /// binary give the same attributes, byte for byte, for every width a
+    /// property can have.
+    #[test]
+    fn test_generic_attributes_are_the_same_bytes_from_every_body_encoding() {
+        let names = ["c", "s", "i", "u", "f", "d"];
+        let types = ["char", "ushort", "int", "uint", "float", "double"];
+        let rows: [(i8, u16, i32, u32, f32, f64); 3] = [
+            (-7, 65535, -2_000_000_000, 4_000_000_000, 1.25, 1e300),
+            (0, 0, 0, 0, -0.5, -0.0),
+            (127, 300, 123_456, 7, 3.0e-38, 0.1),
+        ];
+        let header = |format: &str| {
+            let mut header = format!(
+                "ply\nformat {format} 1.0\nelement vertex {}\nproperty float x\nproperty float y\nproperty float z\n",
+                rows.len()
+            );
+            for (name, kind) in names.iter().zip(types) {
+                header.push_str(&format!("property {kind} {name}\n"));
+            }
+            header.push_str("end_header\n");
+            header.into_bytes()
+        };
+        let mut ascii = header("ascii");
+        let mut little = header("binary_little_endian");
+        let mut big = header("binary_big_endian");
+        for (k, &(c, s, i, u, f, d)) in rows.iter().enumerate() {
+            ascii.extend(format!("{k} 0 0 {c} {s} {i} {u} {f:e} {d:e}\n").into_bytes());
+            for (le, be) in [
+                ((k as f32).to_le_bytes(), (k as f32).to_be_bytes()),
+                ([0; 4], [0; 4]),
+                ([0; 4], [0; 4]),
+            ] {
+                little.extend(le);
+                big.extend(be);
+            }
+            little.extend(c.to_le_bytes());
+            big.extend(c.to_be_bytes());
+            little.extend(s.to_le_bytes());
+            big.extend(s.to_be_bytes());
+            little.extend(i.to_le_bytes());
+            big.extend(i.to_be_bytes());
+            little.extend(u.to_le_bytes());
+            big.extend(u.to_be_bytes());
+            little.extend(f.to_le_bytes());
+            big.extend(f.to_be_bytes());
+            little.extend(d.to_le_bytes());
+            big.extend(d.to_be_bytes());
+        }
+        let carried = |bytes: Vec<u8>| {
+            let mesh = PlyReader::from_bytes(bytes)
+                .with_generic_attributes(true)
+                .read_mesh()
+                .unwrap();
+            (1..mesh.num_attributes())
+                .map(|id| mesh.attribute(id).buffer().data().to_vec())
+                .collect::<Vec<_>>()
+        };
+        let expected = carried(little);
+        assert_eq!(expected.len(), names.len());
+        assert_eq!(
+            expected[3],
+            [4_000_000_000u32, 0, 7].map(u32::to_le_bytes).concat()
+        );
+        assert_eq!(carried(big), expected, "big-endian body");
+        assert_eq!(carried(ascii), expected, "text body");
     }
 
     /// A mesh is finalized, and finalizing merges each attribute's repeated
