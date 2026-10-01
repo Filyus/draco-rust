@@ -39,6 +39,18 @@ const SEQUENTIAL: i32 = 0;
 /// laid over: ordering finer than this sorts by differences the encode drops.
 const AXIS_BITS: u32 = 16;
 
+/// The bits the web converter's splat budget gives a property: harmonics at 6
+/// (`DRACO_ORDER_HARMONICS` overrides), everything else but the position at 8.
+fn budget_bits(name: Option<&str>) -> i32 {
+    match name {
+        Some(name) if name.starts_with("f_rest_") => std::env::var("DRACO_ORDER_HARMONICS")
+            .ok()
+            .and_then(|b| b.parse().ok())
+            .unwrap_or(6),
+        _ => 8,
+    }
+}
+
 fn attribute_names(cloud: &PointCloud) -> Vec<Option<String>> {
     (0..cloud.num_attributes())
         .map(|id| {
@@ -50,6 +62,33 @@ fn attribute_names(cloud: &PointCloud) -> Vec<Option<String>> {
                 .map(str::to_string)
         })
         .collect()
+}
+
+/// One component as a number, whatever the attribute stores it as.
+fn read_value(attribute: &PointAttribute, point: usize, component: usize) -> f32 {
+    use draco_core::DataType;
+    let stride = attribute.byte_stride() as usize;
+    let width = match attribute.data_type() {
+        DataType::Int8 | DataType::Uint8 | DataType::Bool => 1,
+        DataType::Int16 | DataType::Uint16 => 2,
+        DataType::Float64 | DataType::Int64 | DataType::Uint64 => 8,
+        _ => 4,
+    };
+    let mut bytes = [0u8; 8];
+    attribute
+        .buffer()
+        .read(point * stride + component * width, &mut bytes[..width]);
+    match attribute.data_type() {
+        DataType::Int8 => f32::from(bytes[0] as i8),
+        DataType::Uint8 | DataType::Bool => f32::from(bytes[0]),
+        DataType::Int16 => f32::from(i16::from_le_bytes([bytes[0], bytes[1]])),
+        DataType::Uint16 => f32::from(u16::from_le_bytes([bytes[0], bytes[1]])),
+        DataType::Int32 => i32::from_le_bytes(bytes[..4].try_into().unwrap()) as f32,
+        DataType::Uint32 => u32::from_le_bytes(bytes[..4].try_into().unwrap()) as f32,
+        DataType::Float32 => f32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        DataType::Float64 => f64::from_le_bytes(bytes) as f32,
+        _ => panic!("the probe does not read {:?}", attribute.data_type()),
+    }
 }
 
 fn read_f32(attribute: &PointAttribute, point: usize, component: usize) -> f32 {
@@ -77,14 +116,17 @@ fn permute(cloud: &PointCloud, order: &[u32]) -> PointCloud {
             source.normalized(),
             order.len(),
         );
+        let stride = source.byte_stride() as usize;
         let buffer = attribute.buffer_mut();
+        let mut raw = vec![0u8; stride];
         for (slot, &point) in order.iter().enumerate() {
             let value_index = source.mapped_index(PointIndex(point));
-            for component in 0..components {
-                let value = read_f32(source, value_index.0 as usize, component);
-                buffer.write((slot * components + component) * 4, &value.to_le_bytes());
-            }
+            source
+                .buffer()
+                .read(value_index.0 as usize * stride, &mut raw);
+            buffer.write(slot * stride, &raw);
         }
+        let _ = components;
         let new_id = out.add_attribute(attribute);
         if let Some(name) = names[id as usize].clone() {
             let unique_id = out.attribute(new_id).unique_id();
@@ -98,23 +140,30 @@ fn permute(cloud: &PointCloud, order: &[u32]) -> PointCloud {
 }
 
 fn encode(cloud: &PointCloud, search: bool) -> usize {
+    encode_bytes(cloud, search).len()
+}
+
+fn encode_bytes(cloud: &PointCloud, search: bool) -> Vec<u8> {
     let mut options = EncoderOptions::new();
     options.set_encoding_method(SEQUENTIAL);
     options.set_prediction_search(search);
     // Off: the order is the cloud's own, put there by the caller.
     options.set_spatial_point_order(false);
+    let names = attribute_names(cloud);
     for id in 0..cloud.num_attributes() {
         let bits = match cloud.attribute(id).attribute_type() {
             GeometryAttributeType::Position => AXIS_BITS as i32,
-            _ => 8,
+            _ => budget_bits(names[id as usize].as_deref()),
         };
-        options.set_attribute_int(id, "quantization_bits", bits);
+        if cloud.attribute(id).data_type() == draco_core::DataType::Float32 {
+            options.set_attribute_int(id, "quantization_bits", bits);
+        }
     }
     let mut encoder = PointCloudEncoder::new();
     encoder.set_point_cloud(cloud.clone());
     let mut buffer = EncoderBuffer::new();
     encoder.encode(&options, &mut buffer).expect("encodes");
-    buffer.data().len()
+    buffer.data().to_vec()
 }
 
 /// Positions on the same integer grid the encoder quantizes them to.
@@ -1020,6 +1069,7 @@ fn would_the_attributes_belong_in_the_order() {
 /// (`quantization_bits` 8 over each component's own range), one row a point.
 fn byte_rows(cloud: &PointCloud) -> Vec<[u8; 64]> {
     let num_points = cloud.num_points();
+    let names = attribute_names(cloud);
     let mut rows = vec![[0u8; 64]; num_points];
     let mut column = 0usize;
     for id in 0..cloud.num_attributes() {
@@ -1027,10 +1077,16 @@ fn byte_rows(cloud: &PointCloud) -> Vec<[u8; 64]> {
         if attribute.attribute_type() == GeometryAttributeType::Position {
             continue;
         }
+        let is_float = attribute.data_type() == draco_core::DataType::Float32;
+        let levels = if is_float {
+            ((1u32 << budget_bits(names[id as usize].as_deref())) - 1) as f32
+        } else {
+            255.0
+        };
         for component in 0..attribute.num_components() as usize {
             let values: Vec<f32> = (0..num_points)
                 .map(|p| {
-                    read_f32(
+                    read_value(
                         attribute,
                         attribute.mapped_index(PointIndex(p as u32)).0 as usize,
                         component,
@@ -1040,8 +1096,9 @@ fn byte_rows(cloud: &PointCloud) -> Vec<[u8; 64]> {
             let low = values.iter().copied().fold(f32::INFINITY, f32::min);
             let high = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
             let span = (high - low).max(1e-12);
+            let (low, span) = if is_float { (low, span) } else { (0.0, 255.0) };
             for (p, v) in values.iter().enumerate() {
-                rows[p][column] = (((v - low) / span) * 255.0 + 0.5) as u8;
+                rows[p][column] = (((v - low) / span) * levels + 0.5) as u8;
             }
             column += 1;
         }
@@ -2309,9 +2366,22 @@ fn how_fast_the_lane_form_is() {
     let rows = byte_rows(&cloud);
     let morton = morton_order(&cells);
     let hilbert = hilbert_order(&cells);
+    let start_order: Vec<u32> = if std::env::var("DRACO_ORDER_START").as_deref() == Ok("file") {
+        (0..num_points as u32).collect()
+    } else {
+        hilbert.clone()
+    };
+    println!(
+        "refinement starts from: {}",
+        if std::env::var("DRACO_ORDER_START").as_deref() == Ok("file") {
+            "file order"
+        } else {
+            "Hilbert order"
+        }
+    );
     let tables = Tables::new();
-    let by_cost = columns_by_cost(&rows, &hilbert, &tables.luts);
-    let start_points = pack(&cells, &rows, &by_cost, &hilbert);
+    let by_cost = columns_by_cost(&rows, &start_order, &tables.luts);
+    let start_points = pack(&cells, &rows, &by_cost, &start_order);
     let morton_bytes = encode(&permute(&cloud, &morton), false);
     let vs = |bytes: usize| {
         format!(
@@ -2319,6 +2389,17 @@ fn how_fast_the_lane_form_is() {
             (bytes as f64 / morton_bytes as f64 - 1.0) * 100.0
         )
     };
+    let file_bytes = encode(&cloud, false);
+    let hilbert_bytes = encode(&permute(&cloud, &hilbert), false);
+    println!(
+        "{} attribute columns besides the position; B/point: file order {:.3} ({}), Morton {:.3}, Hilbert {:.3} ({})",
+        by_cost.iter().take(ROW).filter(|&&c| rows.iter().take(1000).any(|r| r[c] != 0)).count(),
+        file_bytes as f64 / num_points as f64,
+        vs(file_bytes),
+        morton_bytes as f64 / num_points as f64,
+        hilbert_bytes as f64 / num_points as f64,
+        vs(hilbert_bytes)
+    );
     println!(
         "{:>7} {:>6} {:>6} {:>9} {:>14} {:>10}",
         "columns", "lanes", "passes", "time s", "exact bits/pt", "vs Morton"
@@ -2341,7 +2422,7 @@ fn how_fast_the_lane_form_is() {
             let mut best = f64::MAX;
             let mut ids = Vec::new();
             for _ in 0..3 {
-                let mut state = Lanes::new(&start_points, &hilbert, columns);
+                let mut state = Lanes::new(&start_points, &start_order, columns);
                 let t = std::time::Instant::now();
                 match lanes {
                     8 => state.refine::<8>(passes, threshold, stage),
@@ -2494,5 +2575,68 @@ fn what_the_whole_pipeline_costs() {
                 vs(bytes)
             );
         }
+    }
+}
+
+/// One hash a point, over every attribute's decoded bits, sorted: the cloud as
+/// a set, with the order taken out.
+fn decoded_point_set(bytes: &[u8]) -> Vec<u64> {
+    let mut decoded = PointCloud::new();
+    draco_core::PointCloudDecoder::new()
+        .decode(&mut draco_core::DecoderBuffer::new(bytes), &mut decoded)
+        .expect("what it wrote, it reads");
+    let mut hashes = vec![0xcbf2_9ce4_8422_2325u64; decoded.num_points()];
+    for id in 0..decoded.num_attributes() {
+        let attribute = decoded.attribute(id);
+        let components = attribute.num_components() as usize;
+        for (point, hash) in hashes.iter_mut().enumerate() {
+            let index = attribute.mapped_index(PointIndex(point as u32)).0 as usize;
+            for component in 0..components {
+                let bits = read_value(attribute, index, component).to_bits();
+                *hash = (*hash ^ u64::from(bits)).wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+    }
+    hashes.sort_unstable();
+    hashes
+}
+
+#[test]
+#[ignore = "needs a scene in DRACO_SPLAT_PLY: run with --release --ignored --nocapture"]
+fn does_the_refined_order_decode_to_the_same_points() {
+    let Some((path, cloud)) = scene_cloud() else {
+        println!("DRACO_SPLAT_PLY is not set; nothing to measure");
+        return;
+    };
+    let num_points = cloud.num_points();
+    println!("scene: {} ({num_points} points)", path.display());
+    let cells = quantized_positions(&cloud).expect("positions");
+    let rows = byte_rows(&cloud);
+    let morton = morton_order(&cells);
+    let hilbert = hilbert_order(&cells);
+    let tables = Tables::new();
+    let by_cost = columns_by_cost(&rows, &hilbert, &tables.luts);
+    let start_points = pack(&cells, &rows, &by_cost, &hilbert);
+
+    let morton_bytes = encode_bytes(&permute(&cloud, &morton), true);
+    let morton_set = decoded_point_set(&morton_bytes);
+    println!("Morton, search on: {} bytes", morton_bytes.len());
+    for (columns, label) in [(16usize, "16 columns"), (56, "56 columns")] {
+        let mut ids = hilbert.clone();
+        refine_lane_blocks::<16>(&start_points, &mut ids, 8192, 4, 2, columns);
+        let bytes = encode_bytes(&permute(&cloud, &ids), true);
+        let t = std::time::Instant::now();
+        let set = decoded_point_set(&bytes);
+        assert_eq!(
+            set, morton_set,
+            "{label}: the decoded points are not the same set"
+        );
+        println!(
+            "{label}: {} bytes ({:+.2}% vs Morton), decodes to the same {} points as Morton (decode and hash {:.2} s)",
+            bytes.len(),
+            (bytes.len() as f64 / morton_bytes.len() as f64 - 1.0) * 100.0,
+            set.len(),
+            t.elapsed().as_secs_f64()
+        );
     }
 }
