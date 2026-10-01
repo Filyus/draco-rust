@@ -325,7 +325,7 @@ fn select_prediction_method_for_newest(
     PredictionSchemeMethod::Difference
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "encoder"))]
 mod tests {
     use super::*;
     use crate::compression_config::EncodedGeometryType;

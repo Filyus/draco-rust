@@ -154,7 +154,7 @@ impl DecodeLimits {
     );
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "point_cloud_decode"))]
 mod tests {
     use super::*;
 
@@ -199,7 +199,7 @@ mod tests {
 ///
 /// The arithmetic tests above pin the comparison; these pin the wiring, which
 /// is the part that can silently stop existing.
-#[cfg(all(test, feature = "encoder", feature = "decoder"))]
+#[cfg(all(test, feature = "encoder", feature = "point_cloud_decode"))]
 mod wiring {
     use super::*;
     use crate::decoder_buffer::DecoderBuffer;

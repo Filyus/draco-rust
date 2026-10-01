@@ -6,10 +6,10 @@
 //! Draco's `prediction_scheme_geometric_normal_*`.
 
 use crate::corner_table::CornerTable;
-#[cfg(test)]
+#[cfg(all(test, feature = "decoder"))]
 use crate::draco_types::DataType;
 use crate::geometry_attribute::GeometryAttributeType;
-#[cfg(test)]
+#[cfg(all(test, feature = "decoder"))]
 use crate::geometry_attribute::PointAttribute;
 use crate::geometry_indices::{CornerIndex, PointIndex, INVALID_CORNER_INDEX};
 

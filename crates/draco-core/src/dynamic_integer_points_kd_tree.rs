@@ -879,7 +879,7 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "decoder"))]
 mod tests {
     use super::*;
 

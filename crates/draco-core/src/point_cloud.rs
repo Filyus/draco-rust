@@ -337,6 +337,7 @@ impl PointCloud {
 mod tests {
     use super::*;
     use crate::draco_types::DataType;
+    #[cfg(feature = "decoder")]
     use crate::geometry_indices::INVALID_ATTRIBUTE_VALUE_INDEX;
 
     fn attribute_with_values(num_values: usize, fill: u8) -> PointAttribute {
@@ -353,6 +354,7 @@ mod tests {
         attribute
     }
 
+    #[cfg(feature = "decoder")]
     /// A cloud that has been cleared hands the dropped attributes' storage to
     /// the next attributes added, and what they read from it is what a fresh
     /// attribute reads: zeros where nothing was written, the invalid index

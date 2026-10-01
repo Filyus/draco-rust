@@ -788,13 +788,19 @@ fn vec3_squared_norm(a: [f32; 3]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "decoder")]
     use crate::corner_table::CornerTable;
+    #[cfg(all(feature = "encoder", feature = "decoder"))]
     use crate::encoder_buffer::EncoderBuffer;
     use crate::geometry_attribute::PointAttribute;
+    #[cfg(feature = "decoder")]
     use crate::geometry_indices::VertexIndex;
     use crate::portable_attribute::PredictionParent;
+    #[cfg(feature = "decoder")]
     use crate::prediction_scheme::PredictionSchemeDecoder;
+    #[cfg(feature = "decoder")]
     use crate::prediction_scheme_wrap::PredictionSchemeWrapDecodingTransform;
+    #[cfg(all(feature = "encoder", feature = "decoder"))]
     use crate::rans_bit_encoder::RAnsBitEncoder;
 
     #[test]
@@ -815,6 +821,7 @@ mod tests {
         assert_eq!(parent.read_component_as_f32(0, 2), None);
     }
 
+    #[cfg(all(feature = "encoder", feature = "decoder"))]
     #[test]
     fn deprecated_tex_coords_decodes_orientation_prediction() {
         let mut corner_table = CornerTable::new(1);
@@ -878,6 +885,7 @@ mod tests {
         assert_eq!(out, [0, 0, 10, 0, 5, 5]);
     }
 
+    #[cfg(feature = "decoder")]
     #[test]
     fn deprecated_tex_coords_refuses_orientation_count_above_the_corner_count() {
         let mut corner_table = CornerTable::new(1);
