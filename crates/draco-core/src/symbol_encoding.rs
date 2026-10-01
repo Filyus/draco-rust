@@ -491,10 +491,14 @@ fn encode_tagged_symbols(
         );
     }
 
-    // Create a separate bit buffer for raw values (C++ value_buffer)
-    let mut value_buffer = EncoderBuffer::new();
-    let value_bits = 32 * (symbols.len()); // safe upper bound
-    value_buffer.start_bit_encoding(value_bits, false);
+    // The raw values go in a separate bit sequence (C++ value_buffer), whose
+    // size the counts already give.
+    let value_bits: u64 = frequencies
+        .iter()
+        .enumerate()
+        .map(|(len, &count)| len as u64 * count * num_components as u64)
+        .sum();
+    let mut values = BitPacker::with_capacity(value_bits.div_ceil(8) as usize + 8);
 
     let num_chunks = symbols.len().div_ceil(num_components);
     tag_encoder.start_encoding_with_capacity(
@@ -506,7 +510,7 @@ fn encode_tagged_symbols(
     for chunk in symbols.chunks(num_components) {
         let len = chunk_bit_length(chunk);
         for &val in chunk {
-            value_buffer.encode_least_significant_bits32(len, val);
+            values.put(len, val);
         }
     }
 
@@ -516,9 +520,56 @@ fn encode_tagged_symbols(
     }
 
     tag_encoder.end_encoding(target_buffer);
-    value_buffer.end_bit_encoding();
-    target_buffer.encode_data(value_buffer.data());
+    target_buffer.encode_data(&values.finish());
     Ok(())
+}
+
+/// Bits packed least significant first into bytes, the layout
+/// `EncoderBuffer::encode_least_significant_bits32` writes, built in a 64-bit
+/// accumulator and stored four bytes at a time.
+///
+/// The buffer's own writer ORs each value into bytes it zero-filled up front,
+/// one byte per step of a loop, and is sized for 32 bits a value whatever the
+/// values need: a quarter of a gigabyte zeroed for a scan's colours that
+/// packed into a tenth of it.
+#[cfg(feature = "encoder")]
+struct BitPacker {
+    bytes: Vec<u8>,
+    pending: u64,
+    pending_bits: u32,
+}
+
+#[cfg(feature = "encoder")]
+impl BitPacker {
+    fn with_capacity(bytes: usize) -> Self {
+        Self {
+            bytes: Vec::with_capacity(bytes),
+            pending: 0,
+            pending_bits: 0,
+        }
+    }
+
+    /// Appends the low `nbits` bits of `value`, `nbits` in `1..=32`.
+    fn put(&mut self, nbits: u32, value: u32) {
+        let value = u64::from(value) & ((1u64 << nbits) - 1);
+        // Below 32 bits pending before and at most 32 added: inside 64.
+        self.pending |= value << self.pending_bits;
+        self.pending_bits += nbits;
+        if self.pending_bits >= 32 {
+            self.bytes
+                .extend_from_slice(&(self.pending as u32).to_le_bytes());
+            self.pending >>= 32;
+            self.pending_bits -= 32;
+        }
+    }
+
+    /// The packed bytes, the last one padded with zeros.
+    fn finish(mut self) -> Vec<u8> {
+        let tail = self.pending_bits.div_ceil(8) as usize;
+        self.bytes
+            .extend_from_slice(&self.pending.to_le_bytes()[..tail]);
+        self.bytes
+    }
 }
 
 // ============================================================================
@@ -827,6 +878,31 @@ mod tests {
 #[cfg(all(test, feature = "encoder", feature = "decoder"))]
 mod roundtrip_tests {
     use super::*;
+
+    /// The packer writes the bytes the buffer's own bit writer does, for
+    /// every width, values carrying bits above their width included.
+    #[test]
+    fn the_bit_packer_writes_what_the_buffer_writer_does() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut writes = Vec::new();
+        for _ in 0..5000 {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            writes.push((1 + (seed % 32) as u32, (seed >> 32) as u32));
+        }
+        for count in [0, 1, 7, 5000] {
+            let mut buffer = EncoderBuffer::new();
+            buffer.start_bit_encoding(32 * count, false);
+            let mut packer = BitPacker::with_capacity(0);
+            for &(nbits, value) in &writes[..count] {
+                buffer.encode_least_significant_bits32(nbits, value);
+                packer.put(nbits, value);
+            }
+            buffer.end_bit_encoding();
+            assert_eq!(packer.finish(), buffer.data(), "{count} writes");
+        }
+    }
 
     /// The decode grows its sink; this is the case that needs it to.
     ///
