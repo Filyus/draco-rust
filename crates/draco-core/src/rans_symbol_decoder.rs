@@ -32,14 +32,6 @@ impl Slots {
         }
     }
 
-    /// Bytes one slot takes.
-    fn slot_bytes(&self) -> usize {
-        match self {
-            Slots::Narrow(_) => 2,
-            Slots::Wide(_) => 4,
-        }
-    }
-
     fn get(&self, slot: usize) -> Option<u32> {
         match self {
             Slots::Narrow(slots) => slots.get(slot).map(|&id| u32::from(id)),
@@ -371,12 +363,11 @@ impl<'a> RAnsSymbolDecoder<'a> {
     /// | 2^20 slots, 2 MB | 13.8 ns | about 35% |
     /// | 2^20 slots of `u32`, 4 MB | 17 ns | under 31% |
     ///
-    /// A table that fits the L2 cache wants three quarters of the mass owned;
-    /// one that does not wants buckets whatever the share, which at the worst
-    /// share measured, 31%, costs 2% of that stream.
+    /// Where the table sits is a property of the machine, not of the stream,
+    /// so the buckets are kept whatever the share: on a machine whose L2 holds
+    /// the table they cost at most a fifth of a stream with little of its mass
+    /// owned, and on one whose L2 does not they save up to half of it.
     fn build_buckets(&mut self) {
-        /// The slot table past which its reads leave the L2 cache.
-        const L2_BYTES: usize = 1 << 20;
         let precision = self.rans_precision as usize;
         if precision <= BUCKETS || self.num_symbols >= 1 << 21 {
             return;
@@ -401,10 +392,7 @@ impl<'a> RAnsSymbolDecoder<'a> {
                 0
             });
         }
-        let owned = buckets.iter().filter(|&&entry| entry >> 63 != 0).count();
-        if self.lut.len() * self.lut.slot_bytes() > L2_BYTES || owned * 4 >= BUCKETS * 3 {
-            self.buckets = buckets;
-        }
+        self.buckets = buckets;
     }
 
     /// The run against `buckets`: the low bits of the state pick a bucket, a
@@ -770,16 +758,14 @@ mod tests {
         let mut seed = 0x9e37_79b9_7f4a_7c15u64;
         // (alphabet, count, skew, narrow slot table, steps, buckets): 12 and 16
         // bits with steps; 18 bits with the mass on a hundred-odd symbols, a
-        // geometric draw (skew 0) like a scan's corrections, where the buckets
-        // are kept, and with it spread over the alphabet, where a table in L2
-        // is the faster way and they are declined; 20 bits with a long tail,
-        // past L2, where they are kept whatever the share, over a narrow table
-        // and over one too wide for `u16`.
+        // geometric draw (skew 0) like a scan's corrections, and with it spread
+        // over the alphabet, where most buckets are shared; 20 bits with a long
+        // tail, over a narrow table and over one too wide for `u16`.
         for (alphabet, count, skew, narrow, steps, buckets) in [
             (40u32, 20_000usize, 4, true, true, false),
             (1_500, 100_000, 4, true, true, false),
             (3_000, 300_000, 0, true, false, true),
-            (3_000, 300_000, 4, true, false, false),
+            (3_000, 300_000, 4, true, false, true),
             (60_000, 150_000, 4, true, false, true),
             (70_000, 150_000, 4, false, false, true),
         ] {
