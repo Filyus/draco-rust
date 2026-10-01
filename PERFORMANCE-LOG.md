@@ -36,7 +36,7 @@ figure at all.
 `rejected` -- tried, deliberately not kept. `retracted` -- an earlier claim
 here was withdrawn. `diagnostic` -- measured only, no change proposed.
 
-71 rounds: 41 landed, 10 diagnostic, 10 null, 8 retracted, 2 rejected.
+72 rounds: 42 landed, 10 diagnostic, 10 null, 8 retracted, 2 rejected.
 
 | Round | Verdict | Headline |
 | --- | --- | ---: |
@@ -111,6 +111,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [KTX2: Bit Reading, And Solid UASTC Blocks](#ktx2-bit-reading-and-solid-uastc-blocks) | landed | `1.27x -> 0.74x` |
 | [KTX2: The BC7 Block Writer](#ktx2-the-bc7-block-writer) | landed | `1.02x -> 0.93x` |
 | [KTX2: Zstd, And Which Decoder](#ktx2-zstd-and-which-decoder) | landed | `3.4 -> 2.5 ms` |
+| [Point Clouds On One Thread: Zeros Nobody Read, And Reads In A Row](#point-clouds-on-one-thread-zeros-nobody-read-and-reads-in-a-row) | landed | `-21 to -34%` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -4237,12 +4238,107 @@ The comparison of the candidates was run from a scratch project that is not
 in the repository. The part worth repeating -- this crate's `level_bytes`
 against C zstd -- is `tools/zstd-bench`.
 
+### Point Clouds On One Thread: Zeros Nobody Read, And Reads In A Row
+
+2026-10-01, `draco-core` and `draco-io`, Windows 11, Ryzen AI 7 350 (four
+full and four compact cores, 16 threads), the System allocator. Branch
+`experiment/hilbert-point-order`, after the parallel point-cloud decode. Every
+figure is best-of against the same tree before the round (`7802fd6c`, exported
+with `git archive` and built with the same harness, toolchain and profile),
+and every pair was checked equal before it was timed: the decoded attributes'
+bytes, the encoded stream's bytes, the read cloud's bytes, the written file's
+bytes. The harness is a scratch binary outside the repository that reads a
+PLY with generic attributes and runs one stage on it at the web converter's
+splat budget; profiles are `samply` with each sampled address symbolized by
+`llvm-symbolizer` through its inline chain.
+
+Clouds: `train_7000` (742K points, 58 attributes), `drjohnson_30000` (3.2M,
+58), and three scans converted from GLB -- `castle` (8.0M points, position
+and colour), `district` (1.1M, plus normal), `statue` (677K, plus normal).
+
+What the profiles found, in order of what it bought:
+
+| change | stage | before | after |
+| --- | --- | ---: | ---: |
+| PLY reader: an attribute's bytes written in place, not a `Vec` a point; carried properties kept in their declared type, not `f64` | read, castle / train | `0.334` / `0.300 s` | `0.168` / `0.193 s` |
+| PLY writer: no `Vec` a value; one write an entry | write, train | `1.980 s` | `0.236 s` |
+| rANS run: one dependent read a symbol (a fused per-slot step), slot table in `u16` | decode, train | `0.391 s` | `0.347 s` |
+| decoded symbols, portable attribute and dequantized target written where they land, not over a `resize` of zeros | decode, train (cumulative) | `0.406 s` | `0.321 s` |
+| rANS write by reciprocal multiply instead of `div` | encode, train | `0.846 s` | `0.814 s` |
+| symbol plan from 33 bit-length counts, not a list a chunk | encode, train (cumulative) | `0.876 s` | `0.717 s` |
+| zigzag in the corrections' own buffer | encode, train (cumulative) | `0.846 s` | `0.662 s` |
+| tagged values packed in an accumulator into a buffer of their size; delta corrections in one flat loop under wrap | encode, train / castle (cumulative) | `0.844` / `0.713 s` | `0.554` / `0.500 s` |
+| Hilbert sort dealt into 4096 buckets sorted side by side; search cost sums in pieces | encode with order search, castle, 16 threads (cumulative) | `1.158 s` | `0.812 s` |
+
+The common thread of the largest rows is memory the code wrote and nobody
+read. On Windows an attribute-sized buffer comes straight from the system:
+pages faulted in on first write -- already zeroed by the kernel -- a
+`memset` of zeros on top from `resize`, and a release when it drops. A sixth
+of a splat encode's samples and a seventh of its decode's sat in the kernel
+before this round. The PLY reader and writer had the cheaper version of the
+same habit, a small heap allocation per point or per value: 39% of reading a
+scan was `ntdll`, and writing a splat made forty million of them.
+
+The rANS run's step is the other kind of win. A symbol's decode read the slot's
+id, then the symbol's entry -- the second read waiting on the first, on the
+chain every symbol waits on. A step per slot, `prob | (slot - cum_prob) << 16`,
+makes it one read; the id is still read, off the chain. It needs both halves
+in 16 bits, so it is built for precisions up to 16 and only for a run of half
+a table or more. The scans' positions code at 18-19 bits over ~64K symbols,
+where the table is the cost: the state picks a slot uniformly, so the read
+lands anywhere in it, and `u16` instead of `u32` is what moved them.
+
+**Tried and not kept.**
+
+- A branchless refill, the byte count taken from the state's leading zeros:
+  flat on the splat. The refill branch predicts.
+- A `u64` step for precisions past 16 bits: **+26%** on castle, the table
+  doubling where it needed to halve.
+- The wrap transform's delta reconstruction with the clamp taken off the
+  chain and a one-component run carried in a register: `-20.9%` against
+  `-20.8%` on the splat, the others inside the spread. The loop was already
+  at about 3.6 cycles a value. Kept on `probe/delta-run-unclamped`.
+
+**Correctness, beside the timing.** Each change carries a test holding the new
+path to the old one, seen red once with the new path broken: every rANS run
+form against the per-symbol decode; the reciprocal write against the division
+at every precision 12-20; the bucketed curve against the plain sort; the bit
+packer against `EncoderBuffer`'s writer; the flat delta run and the built
+dequantization target against their per-entry forms; a PLY's carried
+properties byte-identical from text, little- and big-endian bodies; every
+fixed-width vertex property read back from all three encodings -- the
+big-endian write had been tested by its point count only, and passed with
+positions in the wrong byte order.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
 what is known to be behind them. Each says what was measured, what was not,
 and the smallest next step -- a fresh session should be able to start from any
 one line.
+
+### What the point-cloud round left behind
+
+- **Two rANS streams in one loop.** After the round a splat decode is 42%
+  in the rANS run, a single dependent chain of about 18 cycles a symbol. Two
+  attributes' runs interleaved in one loop are independent chains the core
+  can overlap -- the only way a single thread, and so WebAssembly, gets more
+  out of this stage. The prescan the parallel decode already does knows where
+  each stream starts; what is missing is splitting `decode_values` into the
+  part before the run, the run, and the part after.
+- **The scans' slot table.** A two-level table -- 4096 coarse buckets, 84-96%
+  of the probability mass in buckets one symbol owns -- would keep the common
+  read in L1. Measured only as bucket statistics, not built.
+- **One huge attribute on many threads.** A scan's position is one attribute
+  of 24M values, and the encode's attribute stage runs it on one thread for
+  410 ms of castle's 0.81 s. Quantization, the delta, zigzag and the plan are
+  per value; only the rANS write is a chain.
+- **The parallel dequantization** still sizes its target with zeros, since
+  its threads write disjoint chunks of it.
+- **The PLY reader still matches property names as strings** for every
+  property of every vertex. It no longer shows in the profile after the
+  allocations went, but a per-property action table built once would remove
+  it outright.
 
 ### What the KTX2 rounds left behind
 

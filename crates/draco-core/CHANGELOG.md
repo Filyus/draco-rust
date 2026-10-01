@@ -45,6 +45,19 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `set_spatial_point_order` writes a Hilbert curve where it wrote a Morton one,
   0.7% to 1.1% smaller on four splat scenes at no measurable cost in time. The
   curve was never part of the option's contract.
+- Encoding and decoding are faster on one thread, with the same bytes out.
+  A rANS write multiplies by a reciprocal instead of dividing; a long rANS
+  decode run takes one dependent table read a symbol instead of two, and its
+  slot table is half the size; attribute-sized buffers that were filled with
+  zeros only to be overwritten are written once; the symbol plan keeps 33
+  counts instead of a list the size of the attribute. On a splat of 742
+  thousand points and 58 attributes the encode takes 0.55 s instead of 0.84 s
+  and the decode 0.32 s instead of 0.40 s; on a scan of eight million points
+  the encode takes 0.50 s instead of 0.71 s.
+- The point order's Hilbert curve is sorted in buckets on all threads, and the
+  search's estimates are summed in pieces side by side, where both ran on the
+  calling thread. Encoding that scan with the order search on sixteen threads
+  takes 0.81 s instead of 1.16 s; the order is the same on any thread count.
 
 ### Fixed
 
