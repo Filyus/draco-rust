@@ -316,3 +316,60 @@ fn how_long_the_search_alone_takes() {
         }
     }
 }
+
+#[test]
+#[ignore = "needs a scene in DRACO_SPLAT_PLY: run with --release --ignored --nocapture"]
+fn how_a_decode_scales_with_threads() {
+    let Some(path) = std::env::var_os("DRACO_SPLAT_PLY").map(PathBuf::from) else {
+        println!("DRACO_SPLAT_PLY is not set; nothing to measure");
+        return;
+    };
+    let source = std::fs::read(&path).expect("the scene reads");
+    let cloud = draco_io::ply_reader::PlyReader::from_bytes(source)
+        .with_generic_attributes(true)
+        .read_mesh()
+        .expect("the scene parses")
+        .into_point_cloud();
+    let mut options = converter_options(&cloud);
+    options.set_threads(0);
+    let (bytes, _) = encode(&cloud, &options);
+    println!(
+        "scene: {} ({} points, {} attributes), stream {} bytes",
+        path.display(),
+        cloud.num_points(),
+        cloud.num_attributes(),
+        bytes.len()
+    );
+    let mut reference: Option<Vec<Vec<u8>>> = None;
+    println!("{:>8} {:>10} {:>9}", "threads", "decode s", "speedup");
+    let mut base = 0.0;
+    let counts: Vec<i32> = std::env::var("DRACO_THREADS")
+        .ok()
+        .map(|v| v.split(',').filter_map(|x| x.parse().ok()).collect())
+        .unwrap_or_else(|| vec![1, 2, 4, 8, 16]);
+    for threads in counts {
+        let mut best = f64::MAX;
+        let mut out = Vec::new();
+        for _ in 0..5 {
+            let mut decoder = PointCloudDecoder::new();
+            decoder.set_threads(threads);
+            let mut decoded = PointCloud::new();
+            let started = Instant::now();
+            decoder
+                .decode(&mut DecoderBuffer::new(&bytes), &mut decoded)
+                .expect("decodes");
+            best = best.min(started.elapsed().as_secs_f64());
+            out = (0..decoded.num_attributes())
+                .map(|id| decoded.attribute(id).buffer().data().to_vec())
+                .collect();
+        }
+        match &reference {
+            None => reference = Some(out),
+            Some(r) => assert_eq!(r, &out, "{threads} threads changed the decoded cloud"),
+        }
+        if threads == 1 {
+            base = best;
+        }
+        println!("{threads:>8} {best:>10.3} {:>8.2}x", base / best);
+    }
+}

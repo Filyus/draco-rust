@@ -31,7 +31,7 @@ use crate::prediction_scheme_tex_coords_deprecated::MeshPredictionSchemeTexCoord
 use crate::prediction_scheme_tex_coords_portable::MeshPredictionSchemeTexCoordsPortableDecoder;
 use crate::prediction_scheme_wrap::PredictionSchemeWrapDecodingTransform;
 use crate::status::{DracoError, Status};
-use crate::symbol_encoding::{decode_symbols, SymbolEncodingOptions};
+use crate::symbol_encoding::{decode_symbols, skip_symbols, SymbolEncodingOptions};
 
 /// How a portable attribute may be sized before a value has been read.
 ///
@@ -273,6 +273,101 @@ impl SequentialIntegerAttributeDecoder {
             return Ok(PredictionParent::legacy(att));
         }
         PredictionParent::portable(att)
+    }
+
+    /// Steps `in_buffer` over one attribute's integer stream of a 2.0 or later
+    /// bitstream without decoding its symbols, so that where the next stream
+    /// starts is known and something else can decode this one.
+    ///
+    /// `Ok(true)` when it did. `Ok(false)` when this stream is not one that can
+    /// be stepped over -- tagged symbols, a prediction that is not a plain
+    /// difference, anything the decoder would refuse -- and the caller decodes
+    /// it in place, which reads it the way it always has and says what is wrong
+    /// with it if anything is. The header it walks is the one `decode_values`
+    /// walks, in the same order: the prediction method, its transform, the
+    /// compression flag, the symbols, and the data the transform carries behind
+    /// them.
+    pub(crate) fn skip_values(
+        num_values: usize,
+        num_components: usize,
+        in_buffer: &mut DecoderBuffer,
+    ) -> Result<bool, DracoError> {
+        let Ok(method_byte) = in_buffer.decode_u8() else {
+            return Ok(false);
+        };
+        let method = if method_byte == 0xFF || method_byte == 0xFE {
+            PredictionSchemeMethod::None
+        } else {
+            match PredictionSchemeMethod::try_from(method_byte) {
+                Ok(method) => method,
+                Err(_) => return Ok(false),
+            }
+        };
+        let mut transform = None;
+        match method {
+            PredictionSchemeMethod::None => {}
+            PredictionSchemeMethod::Difference => {
+                let Ok(transform_byte) = in_buffer.decode_u8() else {
+                    return Ok(false);
+                };
+                if transform_byte != 0xFF {
+                    match PredictionSchemeTransformType::try_from(transform_byte) {
+                        Ok(kind) => transform = Some(kind),
+                        Err(_) => return Ok(false),
+                    }
+                }
+            }
+            _ => return Ok(false),
+        }
+
+        let Ok(compressed) = in_buffer.decode_u8() else {
+            return Ok(false);
+        };
+        if compressed > 0 {
+            if !skip_symbols(num_values, num_components, in_buffer)? {
+                return Ok(false);
+            }
+        } else {
+            let Ok(num_bytes) = in_buffer.decode_u8() else {
+                return Ok(false);
+            };
+            if num_bytes > 4 {
+                return Ok(false);
+            }
+            if num_bytes > 0 {
+                let Some(byte_len) = num_values.checked_mul(usize::from(num_bytes)) else {
+                    return Ok(false);
+                };
+                if in_buffer.try_advance(byte_len).is_err() {
+                    return Ok(false);
+                }
+            }
+        }
+
+        if method == PredictionSchemeMethod::Difference {
+            let read = match transform {
+                Some(PredictionSchemeTransformType::NormalOctahedronCanonicalized) => {
+                    let mut predictor = PredictionSchemeDeltaDecoder::new(
+                        PredictionSchemeNormalOctahedronCanonicalizedDecodingTransform::new(),
+                    );
+                    predictor.decode_prediction_data(in_buffer)
+                }
+                Some(PredictionSchemeTransformType::NormalOctahedron) => {
+                    let mut transform =
+                        PredictionSchemeNormalOctahedronCanonicalizedDecodingTransform::new();
+                    transform.set_canonicalized(false);
+                    PredictionSchemeDeltaDecoder::new(transform).decode_prediction_data(in_buffer)
+                }
+                _ => PredictionSchemeDeltaDecoder::new(
+                    PredictionSchemeWrapDecodingTransform::<i32>::new(),
+                )
+                .decode_prediction_data(in_buffer),
+            };
+            if read.is_err() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     // Complex mesh decoding requires all 8 parameters: mesh data, traversal maps,

@@ -37,6 +37,15 @@ pub struct DecoderBuffer<'a> {
     /// is what makes the bound cumulative rather than per-allocation -- see
     /// [`charge`](Self::charge).
     spent: usize,
+    /// The length of the stream the budget's ratio is taken against. The whole
+    /// stream's, not this buffer's: a buffer over one attribute's bytes is still
+    /// one decode of one stream, and judging its reservations against its own
+    /// few kilobytes would refuse a constant attribute the whole file backs.
+    budget_len: usize,
+    /// The running total shared with the buffers over other pieces of the same
+    /// stream, where this is one of them: they charge one counter, so the bound
+    /// stays cumulative over the whole decode whichever piece spends.
+    shared_spent: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
     /// The caller's ceilings on what this decode may produce, and what it has
     /// produced so far against the byte one.
     ///
@@ -49,6 +58,45 @@ pub struct DecoderBuffer<'a> {
     /// Attribute values the caller's limits admitted that no unbacked run has
     /// drawn on yet -- see [`charge_unbacked`](Self::charge_unbacked).
     admitted_values: usize,
+}
+
+/// The version, ceilings and budget of one decode, set aside to open buffers over
+/// pieces of its stream. See [`DecoderBuffer::child_template`].
+pub(crate) struct ChildTemplate {
+    version_major: u8,
+    version_minor: u8,
+    budget_len: usize,
+    limits: crate::decode_limits::DecodeLimits,
+    decoded_bytes: u64,
+    /// What the stream had spent when this was taken, and what it and every
+    /// piece opened from this have spent since.
+    spent: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    spent_at_start: usize,
+}
+
+impl ChildTemplate {
+    /// A buffer over `data`, a stretch of the stream this was taken from. It
+    /// charges the counter every other such buffer charges, so what the pieces
+    /// spend side by side is bounded the way what one buffer spends in order is.
+    pub(crate) fn open<'a>(&self, data: &'a [u8]) -> DecoderBuffer<'a> {
+        let mut buffer = DecoderBuffer::new(data).with_limits(self.limits);
+        buffer.version_major = self.version_major;
+        buffer.version_minor = self.version_minor;
+        buffer.spent = self.spent_at_start;
+        buffer.budget_len = self.budget_len;
+        buffer.decoded_bytes = self.decoded_bytes;
+        buffer.shared_spent = Some(self.spent.clone());
+        buffer
+    }
+
+    /// What the pieces opened from this have spent in all, beyond what the
+    /// stream had spent already, for the stream to [`charge`](DecoderBuffer::charge)
+    /// once they are done.
+    pub(crate) fn spent_since(&self) -> usize {
+        self.spent
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .saturating_sub(self.spent_at_start)
+    }
 }
 
 impl<'a> DecoderBuffer<'a> {
@@ -66,9 +114,26 @@ impl<'a> DecoderBuffer<'a> {
             version_major: DEFAULT_MESH_VERSION.0,
             version_minor: DEFAULT_MESH_VERSION.1,
             spent: 0,
+            budget_len: data.len(),
+            shared_spent: None,
             limits: crate::decode_limits::DecodeLimits::default(),
             decoded_bytes: 0,
             admitted_values: 0,
+        }
+    }
+
+    /// What a buffer over a stretch of this one's stream needs from it, taken
+    /// now so that the stretch can be opened later, on another thread, while this
+    /// buffer goes on being read.
+    pub(crate) fn child_template(&self) -> ChildTemplate {
+        ChildTemplate {
+            version_major: self.version_major,
+            version_minor: self.version_minor,
+            budget_len: self.budget_len,
+            limits: self.limits,
+            decoded_bytes: self.decoded_bytes,
+            spent: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(self.spent)),
+            spent_at_start: self.spent,
         }
     }
 
@@ -152,8 +217,13 @@ impl<'a> DecoderBuffer<'a> {
     ///
     /// [`MAX_ALLOCATED_BYTES_PER_INPUT_BYTE`]: crate::decode_budget::MAX_ALLOCATED_BYTES_PER_INPUT_BYTE
     pub(crate) fn charge(&mut self, bytes: usize) -> crate::status::Status {
-        let total = self.spent.saturating_add(bytes);
-        crate::decode_budget::ensure_allocation_is_backed(total, self.data.len())?;
+        let total = match &self.shared_spent {
+            Some(shared) => shared
+                .fetch_add(bytes, std::sync::atomic::Ordering::Relaxed)
+                .saturating_add(bytes),
+            None => self.spent.saturating_add(bytes),
+        };
+        crate::decode_budget::ensure_allocation_is_backed(total, self.budget_len)?;
         self.spent = total;
         Ok(())
     }

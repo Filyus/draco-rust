@@ -349,7 +349,7 @@ pub mod mesh_encoder;
 /// Point cloud encoder entry point.
 pub mod point_cloud_encoder;
 
-#[cfg(feature = "encoder")]
+#[cfg(any(feature = "encoder", feature = "decoder"))]
 mod parallel;
 
 #[cfg(feature = "encoder")]

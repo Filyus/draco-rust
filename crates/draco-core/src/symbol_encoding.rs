@@ -572,6 +572,46 @@ pub fn decode_symbols(
     }
 }
 
+/// Steps `in_buffer` over the symbols [`decode_symbols`] would have read,
+/// without reading them.
+///
+/// `Ok(true)` when it did. `Ok(false)` when this stream cannot be stepped over
+/// without decoding it -- the tagged scheme, whose coded bytes end where its
+/// last value's bits do and nowhere the stream says -- or when it is not one the
+/// decoder would accept; the buffer's position is then unspecified and the
+/// caller goes back and decodes. Only the raw scheme is stepped over: its
+/// frequency table is read and the rANS state initialised, which walks the
+/// position past the coded bytes, and no symbol is drawn from them.
+#[cfg(feature = "decoder")]
+pub(crate) fn skip_symbols(
+    num_values: usize,
+    num_components: usize,
+    in_buffer: &mut DecoderBuffer,
+) -> Result<bool, DracoError> {
+    if num_values == 0 {
+        return Ok(true);
+    }
+    if num_components == 0 || !num_values.is_multiple_of(num_components) {
+        return Ok(false);
+    }
+    // Draco uses: 0 = TAGGED, 1 = RAW.
+    match in_buffer.decode_u8() {
+        Ok(1) => {}
+        _ => return Ok(false),
+    }
+    let Ok(symbols_bit_length) = in_buffer.decode_u8() else {
+        return Ok(false);
+    };
+    let symbols_bit_length = u32::from(symbols_bit_length);
+    if !(1..=18).contains(&symbols_bit_length) {
+        return Ok(false);
+    }
+    let mut decoder = RAnsSymbolDecoder::new(
+        compute_rans_precision_from_unique_symbols_bit_length(symbols_bit_length),
+    );
+    Ok(decoder.create(in_buffer) && decoder.start_decoding(in_buffer))
+}
+
 /// Reserves for what the stream could plausibly produce, not for what it says.
 ///
 /// The declared count is a ceiling to decode up to, never a size to allocate:

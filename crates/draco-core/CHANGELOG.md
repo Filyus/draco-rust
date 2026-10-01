@@ -19,8 +19,8 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   splats of 0.7 to 3.2 million points at the web converter's budget it writes
   7% to 20% fewer bytes than the curve alone. Off by default, so output stays
   byte-identical to C++ Draco.
-- `EncoderOptions::set_threads`, default as many threads as the machine has up
-  to sixteen. Ignored on WebAssembly.
+- `EncoderOptions::set_threads` and `PointCloudDecoder::set_threads`, default as
+  many threads as the machine has up to sixteen. Ignored on WebAssembly.
 
 ### Changed
 
@@ -28,6 +28,20 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   thread when there are at least 131,072 values to encode. The stream is byte
   for byte the one a single thread writes. A splat of 742 thousand points and
   58 attributes encodes in 0.25 s instead of 0.88 s.
+- A sequential point cloud of a 2.0 or later stream decodes its attributes side
+  by side once it has 131,072 values and a megabyte of stream. The streams carry
+  no table of where each starts, so the main thread walks them once, stepping
+  over those whose symbols it can step over (the raw scheme, nearly all of
+  them) and decoding the rest in place, and each stretch it steps over goes to
+  a thread as a buffer of its own. The decoded cloud is the single thread's,
+  value for value; a stream the walk does not understand, or any failure at all,
+  falls back to decoding in order, which reports the error as it always did.
+  On a splat of 742 thousand points and 58 attributes the decode takes 0.083 s
+  instead of 0.31 s, on one of 3.2 million 0.50 s instead of 1.50 s; a cloud of
+  two or four attributes gains 1.25 to 1.7 times, because its position, whose
+  symbols cannot be stepped over, is decoded by one thread. The allocation
+  budget is one counter shared by the threads, so what they may reserve
+  together is what one thread may.
 - `set_spatial_point_order` writes a Hilbert curve where it wrote a Morton one,
   0.7% to 1.1% smaller on four splat scenes at no measurable cost in time. The
   curve was never part of the option's contract.

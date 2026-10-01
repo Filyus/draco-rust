@@ -8,6 +8,8 @@ use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
 #[cfg(feature = "point_cloud_decode")]
 use crate::kd_tree_attributes_decoder::KdTreeAttributesDecoder;
 #[cfg(feature = "point_cloud_decode")]
+use crate::parallel;
+#[cfg(feature = "point_cloud_decode")]
 use crate::point_cloud::PointCloud;
 #[cfg(feature = "point_cloud_decode")]
 use crate::prediction_scheme::EntryToPointIdMap;
@@ -74,6 +76,116 @@ pub struct PointCloudDecoder {
     /// mesh path exists without `point_cloud_decode`.
     version_major: u8,
     version_minor: u8,
+    #[cfg(feature = "point_cloud_decode")]
+    threads: i32,
+}
+
+/// Decoded values below which a point cloud stays on the calling thread: a few
+/// milliseconds, which the threads would spend starting.
+#[cfg(feature = "point_cloud_decode")]
+const PARALLEL_MIN_VALUES: usize = 1 << 17;
+
+/// The stream length below which a point cloud stays on the calling thread. A
+/// stream this small claiming this many values is what the allocation budget
+/// exists for, and it is read by one thread and one budget.
+#[cfg(feature = "point_cloud_decode")]
+const PARALLEL_MIN_STREAM_BYTES: usize = 1 << 20;
+
+// How many attribute streams this thread has decoded side by side, for the
+// tests that must see the parallel path run rather than fall back.
+#[cfg(all(test, feature = "point_cloud_decode"))]
+thread_local! {
+    static ENGAGED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// A quantized attribute whose values are decoded and whose inverse transform
+/// has not yet run.
+#[cfg(feature = "point_cloud_decode")]
+struct PendingQuant {
+    att_id: i32,
+    portable: PointAttribute,
+    transform: AttributeQuantizationTransform,
+}
+
+/// A normal attribute whose octahedral values are decoded and whose inverse
+/// transform has not yet run.
+#[cfg(feature = "point_cloud_decode")]
+struct PendingNormal {
+    att_id: i32,
+    portable: PointAttribute,
+    quantization_bits: u8,
+}
+
+/// Runs the inverse quantization of every pending attribute, one thread each at
+/// most. Each writes only its own attribute, so the attributes are taken out of
+/// the cloud for the duration and put back, and the first error in attribute
+/// order is the one reported, as a serial run would have reported it.
+#[cfg(feature = "point_cloud_decode")]
+fn dequantize_in_parallel(
+    pc: &mut PointCloud,
+    pending: Vec<PendingQuant>,
+    threads: usize,
+) -> Status {
+    let mut work: Vec<(PendingQuant, PointAttribute, Option<DracoError>)> =
+        Vec::with_capacity(pending.len());
+    for q in pending {
+        let dst = std::mem::take(pc.try_attribute_mut(q.att_id)?);
+        work.push((q, dst, None));
+    }
+    parallel::for_each_chunk_mut(&mut work, 1, threads, |_, chunk| {
+        let (q, dst, error) = &mut chunk[0];
+        if let Err(e) = q.transform.inverse_transform_attribute(&q.portable, dst) {
+            *error = Some(DracoError::general(format!(
+                "Failed to dequantize attribute: {e}"
+            )));
+        }
+    });
+    let mut first_error = None;
+    for (q, dst, error) in work {
+        *pc.try_attribute_mut(q.att_id)? = dst;
+        first_error = first_error.or(error);
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+/// [`dequantize_in_parallel`] for the octahedral normals.
+#[cfg(feature = "point_cloud_decode")]
+fn undo_octahedra_in_parallel(
+    pc: &mut PointCloud,
+    pending: Vec<PendingNormal>,
+    bitstream_version: u16,
+    threads: usize,
+) -> Status {
+    let mut work: Vec<(PendingNormal, PointAttribute, Option<DracoError>)> =
+        Vec::with_capacity(pending.len());
+    for n in pending {
+        let dst = std::mem::take(pc.try_attribute_mut(n.att_id)?);
+        work.push((n, dst, None));
+    }
+    parallel::for_each_chunk_mut(&mut work, 1, threads, |_, chunk| {
+        let (n, dst, error) = &mut chunk[0];
+        let mut oct = AttributeOctahedronTransform::new(-1);
+        let done = oct
+            .set_parameters(n.quantization_bits as i32)
+            .and_then(|()| {
+                oct.inverse_transform_attribute_with_legacy_octahedron(
+                    &n.portable,
+                    dst,
+                    bitstream_version < 0x0200,
+                )
+            });
+        if let Err(e) = done {
+            *error = Some(DracoError::general(format!(
+                "Failed to decode normals: {e}"
+            )));
+        }
+    });
+    let mut first_error = None;
+    for (n, dst, error) in work {
+        *pc.try_attribute_mut(n.att_id)? = dst;
+        first_error = first_error.or(error);
+    }
+    first_error.map_or(Ok(()), Err)
 }
 
 impl Default for PointCloudDecoder {
@@ -122,7 +234,21 @@ impl PointCloudDecoder {
             flags: 0,
             version_major: 0,
             version_minor: 0,
+            #[cfg(feature = "point_cloud_decode")]
+            threads: 0,
         }
+    }
+
+    /// Caps the threads a decode may use: `0`, the default, is as many as the
+    /// machine has up to sixteen, `1` keeps everything on the calling thread.
+    ///
+    /// A sequential point cloud with many attributes decodes them side by side
+    /// once the stream is large enough to repay it, and the decoded cloud is the
+    /// one a single thread produces, value for value. On WebAssembly there are no
+    /// threads and the value is ignored.
+    #[cfg(feature = "point_cloud_decode")]
+    pub fn set_threads(&mut self, threads: i32) {
+        self.threads = threads;
     }
 
     /// The packed bitstream version (`0xMMmm`), `0` before a header was read.
@@ -277,18 +403,6 @@ impl PointCloudDecoder {
             }
         } else {
             // Sequential encoding.
-            struct PendingQuant {
-                att_id: i32,
-                portable: PointAttribute,
-                transform: AttributeQuantizationTransform,
-            }
-
-            struct PendingNormal {
-                att_id: i32,
-                portable: PointAttribute,
-                quantization_bits: u8,
-            }
-
             struct AttributeSpec {
                 att_type: GeometryAttributeType,
                 data_type: DataType,
@@ -404,91 +518,43 @@ impl PointCloudDecoder {
                     None
                 };
 
-                for (local_i, &att_id) in att_ids.iter().enumerate() {
-                    let decoder_type = decoder_types[local_i];
-                    match decoder_type {
-                        1 => {
-                            let point_ids = point_ids.ok_or_else(|| {
-                                DracoError::general(
-                                    "Point ids missing for integer attribute decoder".to_string(),
-                                )
-                            })?;
-                            let mut att_decoder = SequentialIntegerAttributeDecoder::new();
-                            att_decoder.init(self, att_id);
-                            att_decoder.decode_values(
-                                pc, point_ids, buffer, None, None, None, None, None, None,
-                            )?;
-                        }
-                        2 => {
-                            let mut att_decoder = SequentialQuantizationAttributeDecoder::new();
-                            att_decoder.init(self, pc, att_id)?;
-                            let portable = att_decoder.decode_values(
-                                pc,
-                                point_ids.ok_or_else(|| {
-                                    DracoError::general(
-                                        "Point ids missing for quantized attribute decoder"
-                                            .to_string(),
-                                    )
-                                })?,
-                                buffer,
-                                bitstream_version,
-                                PortableExtent::Declared(num_points),
-                                None,
-                                None,
-                                None,
-                                None,
-                            )?;
-                            pending_quant.push(PendingQuant {
-                                att_id,
-                                portable,
-                                transform: att_decoder.into_transform(),
-                            });
-                        }
-                        3 => {
-                            let mut att_decoder = SequentialNormalAttributeDecoder::new();
-                            att_decoder.init(self, pc, att_id)?;
-                            let portable = att_decoder.decode_values(
-                                pc,
-                                point_ids.ok_or_else(|| {
-                                    DracoError::general(
-                                        "Point ids missing for normal attribute decoder"
-                                            .to_string(),
-                                    )
-                                })?,
-                                buffer,
-                                bitstream_version,
-                                PortableExtent::Declared(num_points),
-                                None,
-                                None,
-                                None,
-                                None,
-                            )?;
-                            pending_normals.push(PendingNormal {
-                                att_id,
-                                portable,
-                                quantization_bits: att_decoder.quantization_bits(),
-                            });
-                        }
-                        0 => {
-                            // The identity map costs nothing to build and is
-                            // all this decoder reads off it -- the values are
-                            // copied verbatim, in order -- so the arm does not
-                            // need the shared `point_ids`, which is `None` when
-                            // every attribute is generic.
-                            let mut att_decoder = SequentialGenericAttributeDecoder::new();
-                            att_decoder.init(self, att_id);
-                            att_decoder.decode_values(
-                                pc,
-                                EntryToPointIdMap::identity(num_points),
-                                buffer,
-                            )?;
-                        }
-                        _ => {
-                            return Err(DracoError::general(format!(
-                                "Unsupported sequential decoder type: {}",
-                                decoder_type
-                            )));
-                        }
+                // Attributes whose streams can be stepped over are decoded side
+                // by side; where that cannot be done, or goes wrong in any way,
+                // every attribute is decoded in order the way it always was.
+                let threads = parallel::resolve(self.threads);
+                let in_parallel = bitstream_version >= 0x0200
+                    && threads > 1
+                    && num_points.saturating_mul(num_attributes_in_decoder) >= PARALLEL_MIN_VALUES
+                    && buffer.remaining_size() >= PARALLEL_MIN_STREAM_BYTES
+                    && decoder_types
+                        .iter()
+                        .filter(|&&decoder_type| (1..=3).contains(&decoder_type))
+                        .count()
+                        >= 2;
+                let decoded_in_parallel = in_parallel
+                    && self.decode_attributes_in_parallel(
+                        pc,
+                        buffer,
+                        &att_ids,
+                        &decoder_types,
+                        point_ids,
+                        num_points,
+                        threads,
+                        &mut pending_quant,
+                        &mut pending_normals,
+                    )?;
+                if !decoded_in_parallel {
+                    for (local_i, &att_id) in att_ids.iter().enumerate() {
+                        self.decode_attribute_in_place(
+                            pc,
+                            buffer,
+                            att_id,
+                            decoder_types[local_i],
+                            point_ids,
+                            num_points,
+                            &mut pending_quant,
+                            &mut pending_normals,
+                        )?;
                     }
                 }
 
@@ -536,24 +602,31 @@ impl PointCloudDecoder {
                     }
                 }
 
-                for q in pending_quant {
-                    let dst = pc.try_attribute_mut(q.att_id)?;
-                    q.transform
-                        .inverse_transform_attribute(&q.portable, dst)
+                if in_parallel {
+                    dequantize_in_parallel(pc, pending_quant, threads)?;
+                    undo_octahedra_in_parallel(pc, pending_normals, bitstream_version, threads)?;
+                } else {
+                    for q in pending_quant {
+                        let dst = pc.try_attribute_mut(q.att_id)?;
+                        q.transform
+                            .inverse_transform_attribute(&q.portable, dst)
+                            .map_err(|e| {
+                                DracoError::general(format!("Failed to dequantize attribute: {e}"))
+                            })?;
+                    }
+                    for n in pending_normals {
+                        let mut oct = AttributeOctahedronTransform::new(-1);
+                        oct.set_parameters(n.quantization_bits as i32)?;
+                        let dst = pc.try_attribute_mut(n.att_id)?;
+                        oct.inverse_transform_attribute_with_legacy_octahedron(
+                            &n.portable,
+                            dst,
+                            bitstream_version < 0x0200,
+                        )
                         .map_err(|e| {
-                            DracoError::general(format!("Failed to dequantize attribute: {e}"))
+                            DracoError::general(format!("Failed to decode normals: {e}"))
                         })?;
-                }
-                for n in pending_normals {
-                    let mut oct = AttributeOctahedronTransform::new(-1);
-                    oct.set_parameters(n.quantization_bits as i32)?;
-                    let dst = pc.try_attribute_mut(n.att_id)?;
-                    oct.inverse_transform_attribute_with_legacy_octahedron(
-                        &n.portable,
-                        dst,
-                        bitstream_version < 0x0200,
-                    )
-                    .map_err(|e| DracoError::general(format!("Failed to decode normals: {e}")))?;
+                    }
                 }
             }
         }
@@ -564,5 +637,666 @@ impl PointCloudDecoder {
     /// Returns the encoded geometry type handled by this decoder.
     pub fn get_geometry_type(&self) -> EncodedGeometryType {
         self.geometry_type
+    }
+}
+
+#[cfg(feature = "point_cloud_decode")]
+impl PointCloudDecoder {
+    /// Decodes one attribute's values from `buffer`, in place, the way the
+    /// sequential decoder always has.
+    #[allow(clippy::too_many_arguments)]
+    fn decode_attribute_in_place(
+        &self,
+        pc: &mut PointCloud,
+        buffer: &mut DecoderBuffer,
+        att_id: i32,
+        decoder_type: u8,
+        point_ids: Option<EntryToPointIdMap<'_>>,
+        num_points: usize,
+        pending_quant: &mut Vec<PendingQuant>,
+        pending_normals: &mut Vec<PendingNormal>,
+    ) -> Status {
+        let bitstream_version = self.bitstream_version();
+        match decoder_type {
+            1 => {
+                let point_ids = point_ids.ok_or_else(|| {
+                    DracoError::general(
+                        "Point ids missing for integer attribute decoder".to_string(),
+                    )
+                })?;
+                let mut att_decoder = SequentialIntegerAttributeDecoder::new();
+                att_decoder.init(self, att_id);
+                att_decoder
+                    .decode_values(pc, point_ids, buffer, None, None, None, None, None, None)?;
+            }
+            2 => {
+                let mut att_decoder = SequentialQuantizationAttributeDecoder::new();
+                att_decoder.init(self, pc, att_id)?;
+                let portable = att_decoder.decode_values(
+                    pc,
+                    point_ids.ok_or_else(|| {
+                        DracoError::general(
+                            "Point ids missing for quantized attribute decoder".to_string(),
+                        )
+                    })?,
+                    buffer,
+                    bitstream_version,
+                    PortableExtent::Declared(num_points),
+                    None,
+                    None,
+                    None,
+                    None,
+                )?;
+                pending_quant.push(PendingQuant {
+                    att_id,
+                    portable,
+                    transform: att_decoder.into_transform(),
+                });
+            }
+            3 => {
+                let mut att_decoder = SequentialNormalAttributeDecoder::new();
+                att_decoder.init(self, pc, att_id)?;
+                let portable = att_decoder.decode_values(
+                    pc,
+                    point_ids.ok_or_else(|| {
+                        DracoError::general(
+                            "Point ids missing for normal attribute decoder".to_string(),
+                        )
+                    })?,
+                    buffer,
+                    bitstream_version,
+                    PortableExtent::Declared(num_points),
+                    None,
+                    None,
+                    None,
+                    None,
+                )?;
+                pending_normals.push(PendingNormal {
+                    att_id,
+                    portable,
+                    quantization_bits: att_decoder.quantization_bits(),
+                });
+            }
+            0 => {
+                // The identity map costs nothing to build and is all this
+                // decoder reads off it -- the values are copied verbatim, in
+                // order -- so the arm does not need the shared `point_ids`,
+                // which is `None` when every attribute is generic.
+                let mut att_decoder = SequentialGenericAttributeDecoder::new();
+                att_decoder.init(self, att_id);
+                att_decoder.decode_values(pc, EntryToPointIdMap::identity(num_points), buffer)?;
+            }
+            _ => {
+                return Err(DracoError::general(format!(
+                    "Unsupported sequential decoder type: {}",
+                    decoder_type
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Decodes the attributes of a 2.0 or later sequential stream side by side.
+    ///
+    /// The streams are laid end to end with no table of where each starts, so
+    /// the main thread walks them once, stepping over the ones whose symbols it
+    /// can step over (the raw scheme, which is nearly all of them) and decoding
+    /// the rest in place. Each stretch it steps over goes at once to a thread
+    /// that decodes it as a buffer of its own, so the walk, and the in-place
+    /// decoding that is most of it for a cloud of a few attributes, goes on
+    /// while the others work. A stream that does not come out exactly the length
+    /// it was stepped over as is a stream this did not understand.
+    ///
+    /// `Ok(true)` when every attribute is decoded and `buffer` stands after the
+    /// last of them. `Ok(false)` when anything at all went wrong -- the position
+    /// and the pending lists are put back and the caller decodes in order, which
+    /// is what reports the error if there is one. So the result is the serial
+    /// decode's, value for value, and only the time differs.
+    #[allow(clippy::too_many_arguments)]
+    fn decode_attributes_in_parallel(
+        &self,
+        pc: &mut PointCloud,
+        buffer: &mut DecoderBuffer,
+        att_ids: &[i32],
+        decoder_types: &[u8],
+        point_ids: Option<EntryToPointIdMap<'_>>,
+        num_points: usize,
+        threads: usize,
+        pending_quant: &mut Vec<PendingQuant>,
+        pending_normals: &mut Vec<PendingNormal>,
+    ) -> Result<bool, DracoError> {
+        let start = buffer.position();
+        let stream = buffer.remaining_data();
+        let template = buffer.child_template();
+        let queue = std::sync::Mutex::new(None::<std::sync::mpsc::Receiver<Job>>);
+        let (sender, receiver) = std::sync::mpsc::channel::<Job>();
+        *queue.lock().unwrap() = Some(receiver);
+
+        // The walk, on this thread, and the workers beside it. A failure in the
+        // walk is not returned from inside the scope: the workers have to be
+        // let go of first, and their results, if any, thrown away.
+        let (walked, results) = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..threads)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let mut done = Vec::new();
+                        loop {
+                            let job = {
+                                let guard = queue.lock().unwrap();
+                                guard.as_ref().expect("the queue is open").recv()
+                            };
+                            let Ok(job) = job else { break };
+                            let index = job.index;
+                            done.push((index, job.run(self, &template, stream, num_points)));
+                        }
+                        done
+                    })
+                })
+                .collect();
+
+            let walked = (|| -> Result<Option<usize>, DracoError> {
+                let mut count = 0usize;
+                for (local_i, &att_id) in att_ids.iter().enumerate() {
+                    let decoder_type = decoder_types[local_i];
+                    if (1..=3).contains(&decoder_type) {
+                        let before = buffer.position();
+                        let components = pc.try_attribute(att_id)?.num_components() as usize;
+                        let skipped = match num_points.checked_mul(components) {
+                            Some(values) => SequentialIntegerAttributeDecoder::skip_values(
+                                values, components, buffer,
+                            ),
+                            None => Ok(false),
+                        };
+                        if matches!(skipped, Ok(true)) {
+                            let job = Job {
+                                index: count,
+                                att_id,
+                                decoder_type,
+                                start: before - start,
+                                end: buffer.position() - start,
+                                seed: pc.try_attribute(att_id)?.clone(),
+                            };
+                            if sender.send(job).is_err() {
+                                return Ok(None);
+                            }
+                            count += 1;
+                            continue;
+                        }
+                        buffer.set_position(before)?;
+                    }
+                    if self
+                        .decode_attribute_in_place(
+                            pc,
+                            buffer,
+                            att_id,
+                            decoder_type,
+                            point_ids,
+                            num_points,
+                            pending_quant,
+                            pending_normals,
+                        )
+                        .is_err()
+                    {
+                        return Ok(None);
+                    }
+                }
+                Ok(Some(count))
+            })();
+            // Nothing more is coming: the workers run out of jobs and finish.
+            drop(sender);
+            let mut results: Vec<Option<Result<Decoded, DracoError>>> = Vec::new();
+            for worker in workers {
+                for (index, result) in worker.join().expect("a decode thread panicked") {
+                    if results.len() <= index {
+                        results.resize_with(index + 1, || None);
+                    }
+                    results[index] = Some(result);
+                }
+            }
+            (walked, results)
+        });
+
+        let give_up = |buffer: &mut DecoderBuffer,
+                       pending_quant: &mut Vec<PendingQuant>,
+                       pending_normals: &mut Vec<PendingNormal>|
+         -> Result<bool, DracoError> {
+            buffer.set_position(start)?;
+            pending_quant.clear();
+            pending_normals.clear();
+            Ok(false)
+        };
+        let jobs = match walked {
+            Ok(Some(count)) => count,
+            _ => return give_up(buffer, pending_quant, pending_normals),
+        };
+        if jobs == 0 {
+            return Ok(true);
+        }
+        let mut decoded_jobs = Vec::with_capacity(jobs);
+        for result in results {
+            match result {
+                Some(Ok(decoded)) => decoded_jobs.push(decoded),
+                _ => return give_up(buffer, pending_quant, pending_normals),
+            }
+        }
+        if decoded_jobs.len() != jobs || buffer.charge(template.spent_since()).is_err() {
+            return give_up(buffer, pending_quant, pending_normals);
+        }
+        #[cfg(test)]
+        ENGAGED.with(|engaged| engaged.set(engaged.get() + jobs));
+        for decoded in decoded_jobs {
+            match decoded {
+                Decoded::Values { att_id, attribute } => *pc.try_attribute_mut(att_id)? = attribute,
+                Decoded::Quantized {
+                    att_id,
+                    portable,
+                    transform,
+                } => pending_quant.push(PendingQuant {
+                    att_id,
+                    portable,
+                    transform,
+                }),
+                Decoded::Normal {
+                    att_id,
+                    portable,
+                    quantization_bits,
+                } => pending_normals.push(PendingNormal {
+                    att_id,
+                    portable,
+                    quantization_bits,
+                }),
+            }
+        }
+        Ok(true)
+    }
+}
+
+/// One attribute's stream, stepped over, waiting for a thread: where it lies in
+/// the stream, and the attribute to decode it into.
+#[cfg(feature = "point_cloud_decode")]
+struct Job {
+    index: usize,
+    att_id: i32,
+    decoder_type: u8,
+    start: usize,
+    end: usize,
+    seed: PointAttribute,
+}
+
+/// What a thread made of a [`Job`].
+#[cfg(feature = "point_cloud_decode")]
+enum Decoded {
+    Values {
+        att_id: i32,
+        attribute: PointAttribute,
+    },
+    Quantized {
+        att_id: i32,
+        portable: PointAttribute,
+        transform: AttributeQuantizationTransform,
+    },
+    Normal {
+        att_id: i32,
+        portable: PointAttribute,
+        quantization_bits: u8,
+    },
+}
+
+#[cfg(feature = "point_cloud_decode")]
+impl Job {
+    /// Decodes the stretch of `stream` this job names, as a buffer of its own
+    /// over an attribute of its own, and returns what it made and what it spent
+    /// of the allocation budget.
+    fn run(
+        self,
+        decoder: &PointCloudDecoder,
+        template: &crate::decoder_buffer::ChildTemplate,
+        stream: &[u8],
+        num_points: usize,
+    ) -> Result<Decoded, DracoError> {
+        let bitstream_version = decoder.bitstream_version();
+        let mut child = template.open(&stream[self.start..self.end]);
+        let mut mini = PointCloud::new();
+        mini.set_num_points(num_points);
+        mini.add_attribute_preserve_unique_id(self.seed);
+        let ids = EntryToPointIdMap::identity(num_points);
+        let att_id = self.att_id;
+        let decoded = match self.decoder_type {
+            1 => {
+                let mut att_decoder = SequentialIntegerAttributeDecoder::new();
+                att_decoder.init(decoder, 0);
+                att_decoder.decode_values(
+                    &mut mini, ids, &mut child, None, None, None, None, None, None,
+                )?;
+                Decoded::Values {
+                    att_id,
+                    attribute: std::mem::take(mini.try_attribute_mut(0)?),
+                }
+            }
+            2 => {
+                let mut att_decoder = SequentialQuantizationAttributeDecoder::new();
+                att_decoder.init(decoder, &mini, 0)?;
+                let portable = att_decoder.decode_values(
+                    &mut mini,
+                    ids,
+                    &mut child,
+                    bitstream_version,
+                    PortableExtent::Declared(num_points),
+                    None,
+                    None,
+                    None,
+                    None,
+                )?;
+                Decoded::Quantized {
+                    att_id,
+                    portable,
+                    transform: att_decoder.into_transform(),
+                }
+            }
+            _ => {
+                let mut att_decoder = SequentialNormalAttributeDecoder::new();
+                att_decoder.init(decoder, &mini, 0)?;
+                let portable = att_decoder.decode_values(
+                    &mut mini,
+                    ids,
+                    &mut child,
+                    bitstream_version,
+                    PortableExtent::Declared(num_points),
+                    None,
+                    None,
+                    None,
+                    None,
+                )?;
+                Decoded::Normal {
+                    att_id,
+                    portable,
+                    quantization_bits: att_decoder.quantization_bits(),
+                }
+            }
+        };
+        if child.remaining_size() != 0 {
+            return Err(DracoError::general(
+                "An attribute's stream is not the length it was stepped over as".to_string(),
+            ));
+        }
+        Ok(decoded)
+    }
+}
+
+#[cfg(all(test, feature = "point_cloud_decode", feature = "encoder"))]
+mod parallel_tests {
+    use super::*;
+    use crate::encoder_buffer::EncoderBuffer;
+    use crate::encoder_options::EncoderOptions;
+    use crate::point_cloud_encoder::PointCloudEncoder;
+
+    struct Xorshift(u64);
+
+    impl Xorshift {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+
+        fn unit(&mut self) -> f32 {
+            (self.next() >> 40) as f32 / (1u64 << 24) as f32
+        }
+    }
+
+    fn float_attribute(
+        kind: GeometryAttributeType,
+        components: u8,
+        values: &[f32],
+    ) -> PointAttribute {
+        let points = values.len() / components as usize;
+        let mut attribute = PointAttribute::new();
+        attribute.init(kind, components, DataType::Float32, false, points);
+        for (i, value) in values.iter().enumerate() {
+            attribute.buffer_mut().write(i * 4, &value.to_le_bytes());
+        }
+        attribute
+    }
+
+    fn byte_attribute(
+        kind: GeometryAttributeType,
+        components: u8,
+        values: &[u8],
+    ) -> PointAttribute {
+        let points = values.len() / components as usize;
+        let mut attribute = PointAttribute::new();
+        attribute.init(kind, components, DataType::Uint8, false, points);
+        for (i, value) in values.iter().enumerate() {
+            attribute.buffer_mut().write(i, &[*value]);
+        }
+        attribute
+    }
+
+    /// Every kind of attribute stream a sequential cloud carries -- a position
+    /// the coder writes tagged, normals, quantized floats, bytes, raw floats --
+    /// with noise in all of them, so the stream is as large as the values.
+    fn stream(points: usize, seed: u64) -> Vec<u8> {
+        stream_with_threads(points, seed, 1)
+    }
+
+    fn stream_with_threads(points: usize, seed: u64, threads: i32) -> Vec<u8> {
+        let mut rng = Xorshift(seed);
+        let mut cloud = PointCloud::new();
+        cloud.set_num_points(points);
+        let mut options = EncoderOptions::new();
+        options.set_encoding_method(0);
+        options.set_threads(threads);
+        let mut next_id = 0;
+        let mut add = |cloud: &mut PointCloud, attribute: PointAttribute, bits: i32| {
+            cloud.add_attribute(attribute);
+            if bits > 0 {
+                options.set_attribute_int(next_id, "quantization_bits", bits);
+            }
+            next_id += 1;
+        };
+        let positions: Vec<f32> = (0..points * 3).map(|_| rng.unit() * 100.0).collect();
+        add(
+            &mut cloud,
+            float_attribute(GeometryAttributeType::Position, 3, &positions),
+            16,
+        );
+        let normals: Vec<f32> = (0..points * 3).map(|_| rng.unit() * 2.0 - 1.0).collect();
+        add(
+            &mut cloud,
+            float_attribute(GeometryAttributeType::Normal, 3, &normals),
+            8,
+        );
+        for _ in 0..40 {
+            let values: Vec<f32> = (0..points).map(|_| rng.unit()).collect();
+            add(
+                &mut cloud,
+                float_attribute(GeometryAttributeType::Generic, 1, &values),
+                8,
+            );
+        }
+        let colours: Vec<u8> = (0..points * 3).map(|_| (rng.next() >> 56) as u8).collect();
+        add(
+            &mut cloud,
+            byte_attribute(GeometryAttributeType::Color, 3, &colours),
+            0,
+        );
+        let tags: Vec<u8> = (0..points).map(|_| (rng.next() >> 56) as u8).collect();
+        add(
+            &mut cloud,
+            byte_attribute(GeometryAttributeType::Generic, 1, &tags),
+            0,
+        );
+        // No quantization on a float: the coder copies it as raw bytes.
+        let raw: Vec<f32> = (0..points).map(|_| rng.unit()).collect();
+        add(
+            &mut cloud,
+            float_attribute(GeometryAttributeType::Generic, 1, &raw),
+            0,
+        );
+        // Attributes that never vary, as a 3DGS file's normals do not: their
+        // alphabet is one symbol and no payload backs the count, so each is
+        // charged against the allocation budget in full -- which is what a
+        // budget split between the threads once refused, past eleven of them.
+        for _ in 0..3 {
+            let zeros = vec![0.0f32; points];
+            add(
+                &mut cloud,
+                float_attribute(GeometryAttributeType::Generic, 1, &zeros),
+                8,
+            );
+        }
+        let same = vec![7u8; points];
+        add(
+            &mut cloud,
+            byte_attribute(GeometryAttributeType::Generic, 1, &same),
+            0,
+        );
+        let mut encoder = PointCloudEncoder::new();
+        encoder.set_point_cloud(cloud);
+        let mut buffer = EncoderBuffer::new();
+        encoder.encode(&options, &mut buffer).expect("encodes");
+        buffer.data().to_vec()
+    }
+
+    /// What a decode makes of `bytes`: every attribute's bytes, or the error.
+    fn decode(bytes: &[u8], threads: i32) -> Result<Vec<Vec<u8>>, String> {
+        let mut decoder = PointCloudDecoder::new();
+        decoder.set_threads(threads);
+        let mut cloud = PointCloud::new();
+        decoder
+            .decode(&mut DecoderBuffer::new(bytes), &mut cloud)
+            .map_err(|e| e.to_string())?;
+        Ok((0..cloud.num_attributes())
+            .map(|id| cloud.attribute(id).buffer().data().to_vec())
+            .collect())
+    }
+
+    fn engaged_by<T>(f: impl FnOnce() -> T) -> (T, usize) {
+        let before = ENGAGED.with(|e| e.get());
+        let out = f();
+        (out, ENGAGED.with(|e| e.get()) - before)
+    }
+
+    #[test]
+    fn side_by_side_decodes_the_same_cloud_value_for_value() {
+        let bytes = stream(40_000, 1);
+        assert!(
+            bytes.len() >= PARALLEL_MIN_STREAM_BYTES,
+            "{} bytes",
+            bytes.len()
+        );
+        let serial = decode(&bytes, 1).expect("decodes");
+        for threads in [2, 5, 16] {
+            let (parallel, engaged) = engaged_by(|| decode(&bytes, threads));
+            assert!(
+                engaged >= 44,
+                "the parallel path ran for {engaged} streams at {threads} threads"
+            );
+            assert_eq!(parallel.expect("decodes"), serial, "{threads} threads");
+        }
+    }
+
+    /// The encoder runs each attribute's encoder on its own thread and appends
+    /// their buffers in attribute order. That is the stream one buffer written in
+    /// that order holds, so the bytes may not depend on the number of threads.
+    #[test]
+    fn the_encoded_stream_is_the_same_bytes_at_any_number_of_threads() {
+        let single = stream_with_threads(40_000, 5, 1);
+        for threads in [2, 7, 16, 0] {
+            assert_eq!(
+                stream_with_threads(40_000, 5, threads),
+                single,
+                "{threads} threads"
+            );
+        }
+    }
+
+    #[test]
+    fn a_stream_too_small_to_repay_the_threads_is_decoded_in_place() {
+        let bytes = stream(500, 2);
+        let (parallel, engaged) = engaged_by(|| decode(&bytes, 16));
+        assert_eq!(engaged, 0);
+        assert_eq!(parallel, decode(&bytes, 1));
+    }
+
+    #[test]
+    fn a_damaged_stream_is_read_by_the_threads_as_by_one() {
+        let bytes = stream(40_000, 3);
+        let mut rng = Xorshift(77);
+        for trial in 0..40 {
+            let mut damaged = bytes.clone();
+            // Bytes anywhere, and bytes in the header and the attribute
+            // descriptions, where the lengths come from.
+            let at = if trial % 2 == 0 {
+                rng.next() as usize % damaged.len()
+            } else {
+                rng.next() as usize % 400
+            };
+            damaged[at] ^= 1 << (rng.next() % 8);
+            let serial = decode(&damaged, 1);
+            let parallel = decode(&damaged, 16);
+            assert_eq!(parallel, serial, "trial {trial}: byte {at} damaged");
+        }
+        // And cut short.
+        for cut in [bytes.len() / 2, bytes.len() - 1, bytes.len() - 40, 5000] {
+            assert_eq!(
+                decode(&bytes[..cut], 16),
+                decode(&bytes[..cut], 1),
+                "cut at {cut}"
+            );
+        }
+    }
+
+    /// Attributes that never vary are charged to the allocation budget in full,
+    /// one symbol's worth of stream backing millions of values, and a big cloud
+    /// has several. The budget is one counter for the whole decode, so what the
+    /// threads charge together is what one thread would have; a counter split
+    /// among them refused a legitimate 3.2 million point file past eleven threads
+    /// and the decode fell back to a single one, after the time spent trying.
+    #[test]
+    fn constant_attributes_in_a_big_cloud_do_not_exhaust_what_threads_share() {
+        let points = 7_000_000;
+        let mut rng = Xorshift(9);
+        let mut cloud = PointCloud::new();
+        cloud.set_num_points(points);
+        let mut options = EncoderOptions::new();
+        options.set_encoding_method(0);
+        options.set_threads(1);
+        let mut next_id = 0;
+        let mut add = |cloud: &mut PointCloud, attribute: PointAttribute| {
+            cloud.add_attribute(attribute);
+            options.set_attribute_int(next_id, "quantization_bits", 8);
+            next_id += 1;
+        };
+        for _ in 0..3 {
+            let noise: Vec<f32> = (0..points).map(|_| rng.unit()).collect();
+            add(
+                &mut cloud,
+                float_attribute(GeometryAttributeType::Generic, 1, &noise),
+            );
+        }
+        for _ in 0..4 {
+            let zeros = vec![0.0f32; points];
+            add(
+                &mut cloud,
+                float_attribute(GeometryAttributeType::Generic, 1, &zeros),
+            );
+        }
+        let mut encoder = PointCloudEncoder::new();
+        encoder.set_point_cloud(cloud);
+        let mut buffer = EncoderBuffer::new();
+        encoder.encode(&options, &mut buffer).expect("encodes");
+        let bytes = buffer.data();
+        assert!(bytes.len() >= PARALLEL_MIN_STREAM_BYTES);
+        let serial = decode(bytes, 1).expect("decodes");
+        for threads in [4, 12, 16] {
+            let (parallel, engaged) = engaged_by(|| decode(bytes, threads));
+            assert_eq!(
+                engaged, 7,
+                "{threads} threads: the parallel path ran for {engaged} of 7 streams"
+            );
+            assert_eq!(parallel.expect("decodes"), serial, "{threads} threads");
+        }
     }
 }

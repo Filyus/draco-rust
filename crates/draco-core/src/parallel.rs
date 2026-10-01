@@ -15,8 +15,12 @@ use std::sync::Mutex;
 const MAX_THREADS: usize = 16;
 
 /// How many threads to run for a request of `requested`: `0` is "as many as the
-/// machine has", anything else is taken as given.
+/// machine has", anything else is taken as given, and WebAssembly, which has no
+/// thread to spawn whatever is asked, is always one.
 pub(crate) fn resolve(requested: i32) -> usize {
+    if cfg!(target_arch = "wasm32") {
+        return 1;
+    }
     if requested > 0 {
         return requested as usize;
     }
@@ -135,7 +139,9 @@ mod tests {
     #[test]
     fn a_request_of_zero_means_the_machine_and_anything_else_is_taken_as_given() {
         assert!(resolve(0) >= 1);
-        assert_eq!(resolve(3), 3);
         assert_eq!(resolve(1), 1);
+        if !cfg!(target_arch = "wasm32") {
+            assert_eq!(resolve(3), 3);
+        }
     }
 }

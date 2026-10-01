@@ -288,7 +288,9 @@ only to data outside the file that refers to points by index.
 A sequential point-cloud encode runs each attribute's encoder on its own thread
 when there is enough to do (`set_threads`, default as many as the machine has up
 to sixteen, ignored on WebAssembly). The stream is the one a single thread
-writes, byte for byte, so this is not an exception to the parity above.
+writes, byte for byte, so this is not an exception to the parity above. The
+decode of such a cloud likewise reads its attributes side by side
+(`PointCloudDecoder::set_threads`) and returns the cloud a single thread does.
 
 #### Tests
 

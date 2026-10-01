@@ -535,7 +535,9 @@ input but stays one every Draco decoder reads, C++ included:
   as the machine has up to sixteen; ignored on WebAssembly). The attribute
   encoders of a sequential point cloud run on separate threads, which took the
   splat above from 0.88 s to 0.25 s. The stream does not depend on the number
-  of threads.
+  of threads. `PointCloudDecoder::set_threads` does the same for the decode of
+  a sequential point cloud, which takes that splat from 0.31 s to 0.083 s and
+  returns the same cloud whatever the number of threads.
 
 The rustdoc of each carries the measurements.
 
