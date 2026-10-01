@@ -32,6 +32,14 @@ impl Slots {
         }
     }
 
+    /// Bytes one slot takes.
+    fn slot_bytes(&self) -> usize {
+        match self {
+            Slots::Narrow(_) => 2,
+            Slots::Wide(_) => 4,
+        }
+    }
+
     fn get(&self, slot: usize) -> Option<u32> {
         match self {
             Slots::Narrow(slots) => slots.get(slot).map(|&id| u32::from(id)),
@@ -327,17 +335,17 @@ impl<'a> RAnsSymbolDecoder<'a> {
             self.buckets_tried = true;
             self.build_buckets();
         }
-        if !self.buckets.is_empty() {
-            return self.run_buckets(out, count);
-        }
         // The slot table is moved out for the length of the run so the loops
         // can borrow it next to the coder state they update.
         let lut = std::mem::replace(&mut self.lut, Slots::Narrow(Vec::new()));
-        let backed = match (&lut, self.steps.is_empty()) {
-            (Slots::Narrow(slots), false) => self.run_steps(slots, out, count),
-            (Slots::Wide(slots), false) => self.run_steps(slots, out, count),
-            (Slots::Narrow(slots), true) => self.run_table(slots, out, count),
-            (Slots::Wide(slots), true) => self.run_table(slots, out, count),
+        let form = (self.steps.is_empty(), self.buckets.is_empty());
+        let backed = match (&lut, form) {
+            (Slots::Narrow(slots), (false, _)) => self.run_steps(slots, out, count),
+            (Slots::Wide(slots), (false, _)) => self.run_steps(slots, out, count),
+            (Slots::Narrow(slots), (true, false)) => self.run_buckets(slots, out, count),
+            (Slots::Wide(slots), (true, false)) => self.run_buckets(slots, out, count),
+            (Slots::Narrow(slots), (true, true)) => self.run_table(slots, out, count),
+            (Slots::Wide(slots), (true, true)) => self.run_table(slots, out, count),
         };
         self.lut = lut;
         backed
@@ -346,15 +354,29 @@ impl<'a> RAnsSymbolDecoder<'a> {
     /// Builds `buckets` for a table finer than `BUCKETS` slots, or leaves it
     /// empty where an entry cannot hold what it needs -- a symbol id past 21
     /// bits; a probability or a cumulative one is at most 2^20, inside 21 --
-    /// or where too little of the mass lies in buckets one symbol owns.
+    /// or where the slot table alone is the faster way.
     ///
-    /// That share decides it. A bucket several symbols share costs a walk and,
-    /// often, a mispredicted branch, where the slot table costs one read that
-    /// misses the near caches. On a scan's position stream at 18 bits a
-    /// symbol cost 5.7 ns with 92% of the mass in owned buckets, 9.7 ns with
-    /// 51%, and 7.3-7.6 ns through the slot table: even near 74%, kept from
-    /// 80%.
+    /// A bucket one symbol owns is the step in one read from L1, about 5.5 ns
+    /// a symbol. A bucket several symbols share sends the run to the slot
+    /// table after all, and the branch between the two, taken by data, costs
+    /// about 6 ns more each time it is mispredicted. So buckets pay where the
+    /// owned share `o` satisfies `o * (table + 6 - 5.5) > 6`, which turns on
+    /// what a slot-table read costs, and that is a matter of where the table
+    /// sits. Measured over the owned share at each precision:
+    ///
+    /// | slot table | its read | buckets pay from |
+    /// | --- | ---: | ---: |
+    /// | 2^18 slots, 512 KB | 7.5 ns | about 75% |
+    /// | 2^19 slots, 1 MB | 9.5 ns | about 65% |
+    /// | 2^20 slots, 2 MB | 13.8 ns | about 35% |
+    /// | 2^20 slots of `u32`, 4 MB | 17 ns | under 31% |
+    ///
+    /// A table that fits the L2 cache wants three quarters of the mass owned;
+    /// one that does not wants buckets whatever the share, which at the worst
+    /// share measured, 31%, costs 2% of that stream.
     fn build_buckets(&mut self) {
+        /// The slot table past which its reads leave the L2 cache.
+        const L2_BYTES: usize = 1 << 20;
         let precision = self.rans_precision as usize;
         if precision <= BUCKETS || self.num_symbols >= 1 << 21 {
             return;
@@ -370,15 +392,17 @@ impl<'a> RAnsSymbolDecoder<'a> {
                 return;
             };
             let sym = table[(first & self.table_mask) as usize];
-            buckets.push(
-                u64::from(first == last) << 63
+            buckets.push(if first == last {
+                1 << 63
                     | u64::from(first) << 42
                     | u64::from(sym.prob) << 21
-                    | u64::from(sym.cum_prob),
-            );
+                    | u64::from(sym.cum_prob)
+            } else {
+                0
+            });
         }
         let owned = buckets.iter().filter(|&&entry| entry >> 63 != 0).count();
-        if owned * 5 >= BUCKETS * 4 {
+        if self.lut.len() * self.lut.slot_bytes() > L2_BYTES || owned * 4 >= BUCKETS * 3 {
             self.buckets = buckets;
         }
     }
@@ -387,15 +411,22 @@ impl<'a> RAnsSymbolDecoder<'a> {
     /// table that sits in L1 where the slot table it summarizes does not. A
     /// bucket one symbol owns -- most of the probability mass, since a likely
     /// symbol owns many buckets whole -- gives the step in that one read; a
-    /// bucket several symbols share gives the first of them, and the others
-    /// follow it in the probability table in slot order.
+    /// bucket several symbols share is read through `slots` as `run_table`
+    /// reads every symbol.
     ///
-    /// A scan's position codes at 18-19 bits over tens of thousands of
+    /// A scan's position codes at 18-20 bits over tens of thousands of
     /// symbols, so its slot table is half a megabyte or more, and the state
     /// picks a slot in it uniformly: the read missed the near caches on most
     /// symbols, where the bucket read does on few.
-    fn run_buckets(&mut self, out: &mut Vec<u32>, count: usize) -> bool {
+    fn run_buckets<T: Copy + Into<u32>>(
+        &mut self,
+        slots: &[T],
+        out: &mut Vec<u32>,
+        count: usize,
+    ) -> bool {
         const LOW: u64 = (1 << 21) - 1;
+        let precision = self.rans_precision as usize;
+        let slots = &slots[..precision];
         let buckets = &self.buckets[..BUCKETS];
         let table = &self.probability_table[..];
         let table_mask = self.table_mask;
@@ -416,25 +447,19 @@ impl<'a> RAnsSymbolDecoder<'a> {
             backed &= state >= l_base;
             let quo = state >> bits;
             let rem = state & mask;
-            // `rem >> shift` is below `BUCKETS`, the table's length.
+            // `rem >> shift` is below `BUCKETS`, the table's length, and `rem`
+            // below `slots.len() == mask + 1`.
             let entry = buckets[(rem >> shift) as usize];
-            let mut symbol_id = ((entry >> 42) & LOW) as u32;
-            let (prob, cum_prob) = if entry >> 63 != 0 {
-                ((entry >> 21 & LOW) as u32, (entry & LOW) as u32)
+            let (symbol_id, prob, cum_prob) = if entry >> 63 != 0 {
+                (
+                    ((entry >> 42) & LOW) as u32,
+                    (entry >> 21 & LOW) as u32,
+                    (entry & LOW) as u32,
+                )
             } else {
-                // The bucket's first symbol starts at or before `rem`, and the
-                // symbols after it in id order take the slots after it, so the
-                // owner of `rem` is reached going forward; `decode_table`
-                // accepted a table whose slots are covered exactly. The bound
-                // only keeps a walk finite should that ever stop being so.
-                let mut sym = table[(symbol_id & table_mask) as usize];
-                let mut walked = 0;
-                while rem >= sym.cum_prob.wrapping_add(sym.prob) && walked < table_mask {
-                    symbol_id += 1;
-                    walked += 1;
-                    sym = table[(symbol_id & table_mask) as usize];
-                }
-                (sym.prob, sym.cum_prob)
+                let symbol_id: u32 = slots[rem as usize].into();
+                let sym = table[(symbol_id & table_mask) as usize];
+                (symbol_id, sym.prob, sym.cum_prob)
             };
             state = quo
                 .wrapping_mul(prob)
@@ -746,14 +771,17 @@ mod tests {
         // (alphabet, count, skew, narrow slot table, steps, buckets): 12 and 16
         // bits with steps; 18 bits with the mass on a hundred-odd symbols, a
         // geometric draw (skew 0) like a scan's corrections, where the buckets
-        // are kept; 20 bits with a long tail, where they are declined, over a
-        // narrow table and over one too wide for `u16`.
+        // are kept, and with it spread over the alphabet, where a table in L2
+        // is the faster way and they are declined; 20 bits with a long tail,
+        // past L2, where they are kept whatever the share, over a narrow table
+        // and over one too wide for `u16`.
         for (alphabet, count, skew, narrow, steps, buckets) in [
             (40u32, 20_000usize, 4, true, true, false),
             (1_500, 100_000, 4, true, true, false),
             (3_000, 300_000, 0, true, false, true),
-            (60_000, 150_000, 4, true, false, false),
-            (70_000, 150_000, 4, false, false, false),
+            (3_000, 300_000, 4, true, false, false),
+            (60_000, 150_000, 4, true, false, true),
+            (70_000, 150_000, 4, false, false, true),
         ] {
             // Every symbol once, then a draw that favours the small ones the way
             // prediction corrections do.
