@@ -317,16 +317,9 @@ impl<'a> RAnsSymbolDecoder<'a> {
             out.resize(out.len() + count, 0);
             return true;
         }
-        let precision = self.rans_precision as usize;
-        if self.lut.len() < precision || self.probability_table.is_empty() {
+        if !self.prepare_run(count) {
             out.resize(out.len() + count, 0);
             return false;
-        }
-        // A table costs one write per slot, and a step saves the run a dependent
-        // read per symbol; half a table's worth of symbols is past where the
-        // two meet.
-        if self.steps.is_empty() && count >= precision / 2 {
-            self.build_steps();
         }
         // Buckets cost a write each, a few thousand of them, for a table whose
         // slots are past what steps can hold.
@@ -458,15 +451,26 @@ impl<'a> RAnsSymbolDecoder<'a> {
     /// steps built (or buildable, and worth it) over a narrow slot table.
     #[cfg(feature = "point_cloud_decode")]
     fn ready_for_pair(&mut self, count: usize) -> bool {
+        self.num_symbols > 1
+            && self.prepare_run(count)
+            && !self.steps.is_empty()
+            && matches!(self.lut, Slots::Narrow(_))
+    }
+
+    /// Readies a run of `count` symbols: `false` where the table is not one a
+    /// run can read from, and otherwise `steps` built if a run this long
+    /// repays them. A table costs one write per slot, and a step saves the run
+    /// a dependent read per symbol; half a table's worth of symbols is past
+    /// where the two meet.
+    fn prepare_run(&mut self, count: usize) -> bool {
         let precision = self.rans_precision as usize;
-        if self.num_symbols <= 1 || self.lut.len() < precision || self.probability_table.is_empty()
-        {
+        if self.lut.len() < precision || self.probability_table.is_empty() {
             return false;
         }
         if self.steps.is_empty() && count >= precision / 2 {
             self.build_steps();
         }
-        !self.steps.is_empty() && matches!(self.lut, Slots::Narrow(_))
+        true
     }
 
     /// Builds `steps`, or leaves it empty where a step does not fit in 32 bits:
