@@ -19,6 +19,8 @@ use crate::sequential_integer_attribute_decoder::{
 };
 #[cfg(feature = "point_cloud_decode")]
 use crate::status::{DracoError, Status};
+#[cfg(feature = "point_cloud_decode")]
+use crate::symbol_encoding::decode_raw_symbol_pair;
 
 #[cfg(feature = "point_cloud_decode")]
 use crate::attribute_octahedron_transform::AttributeOctahedronTransform;
@@ -96,6 +98,11 @@ const PARALLEL_MIN_STREAM_BYTES: usize = 1 << 20;
 #[cfg(all(test, feature = "point_cloud_decode"))]
 thread_local! {
     static ENGAGED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    // How many jobs this thread ran on symbols decoded beside another's.
+    static PAIRED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    // Set by the tests that need the decode in order, attribute by attribute,
+    // as the reference the side-by-side decode is held to.
+    static IN_ORDER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// A quantized attribute whose values are decoded and whose inverse transform
@@ -519,11 +526,17 @@ impl PointCloudDecoder {
                 };
 
                 // Attributes whose streams can be stepped over are decoded side
-                // by side; where that cannot be done, or goes wrong in any way,
-                // every attribute is decoded in order the way it always was.
+                // by side -- on threads, and two at a time on each, which pays
+                // on one thread too; where that cannot be done, or goes wrong in
+                // any way, every attribute is decoded in order the way it always
+                // was.
                 let threads = parallel::resolve(self.threads);
+                #[cfg(test)]
+                let in_order = IN_ORDER.with(|in_order| in_order.get());
+                #[cfg(not(test))]
+                let in_order = false;
                 let in_parallel = bitstream_version >= 0x0200
-                    && threads > 1
+                    && !in_order
                     && num_points.saturating_mul(num_attributes_in_decoder) >= PARALLEL_MIN_VALUES
                     && buffer.remaining_size() >= PARALLEL_MIN_STREAM_BYTES
                     && decoder_types
@@ -741,11 +754,17 @@ impl PointCloudDecoder {
     /// The streams are laid end to end with no table of where each starts, so
     /// the main thread walks them once, stepping over the ones whose symbols it
     /// can step over (the raw scheme, which is nearly all of them) and decoding
-    /// the rest in place. Each stretch it steps over goes at once to a thread
-    /// that decodes it as a buffer of its own, so the walk, and the in-place
-    /// decoding that is most of it for a cloud of a few attributes, goes on
-    /// while the others work. A stream that does not come out exactly the length
-    /// it was stepped over as is a stream this did not understand.
+    /// the rest in place. Each stretch it steps over becomes a job that decodes
+    /// it as a buffer of its own. A stream that does not come out exactly the
+    /// length it was stepped over as is a stream this did not understand.
+    ///
+    /// Jobs are run two at a time, their symbols decoded in one loop
+    /// (`Job::run_pair`), which is faster on any number of threads: the rANS
+    /// run is a chain each symbol waits on, and two of them overlap. On more
+    /// than one thread each job goes to a worker as soon as the walk reaches
+    /// it, so the walk, and the in-place decoding that is most of it for a
+    /// cloud of a few attributes, goes on while the workers run; on one, and on
+    /// WebAssembly, the walk comes first and the jobs follow it on this thread.
     ///
     /// `Ok(true)` when every attribute is decoded and `buffer` stands after the
     /// last of them. `Ok(false)` when anything at all went wrong -- the position
@@ -768,93 +787,113 @@ impl PointCloudDecoder {
         let start = buffer.position();
         let stream = buffer.remaining_data();
         let template = buffer.child_template();
-        let queue = std::sync::Mutex::new(None::<std::sync::mpsc::Receiver<Job>>);
-        let (sender, receiver) = std::sync::mpsc::channel::<Job>();
-        *queue.lock().unwrap() = Some(receiver);
 
-        // The walk, on this thread, and the workers beside it. A failure in the
-        // walk is not returned from inside the scope: the workers have to be
-        // let go of first, and their results, if any, thrown away.
-        let (walked, results) = std::thread::scope(|scope| {
-            let workers: Vec<_> = (0..threads)
-                .map(|_| {
-                    scope.spawn(|| {
-                        let mut done = Vec::new();
-                        loop {
-                            let job = {
-                                let guard = queue.lock().unwrap();
-                                guard.as_ref().expect("the queue is open").recv()
-                            };
-                            let Ok(job) = job else { break };
-                            let index = job.index;
-                            done.push((index, job.run(self, &template, stream, num_points)));
+        let (walked, results) = if threads <= 1 {
+            let mut jobs = Vec::new();
+            let walked = self.walk_streams(
+                pc,
+                buffer,
+                att_ids,
+                decoder_types,
+                point_ids,
+                num_points,
+                pending_quant,
+                pending_normals,
+                start,
+                |job| {
+                    jobs.push(job);
+                    true
+                },
+            );
+            let mut results = Vec::with_capacity(jobs.len());
+            if matches!(walked, Ok(Some(_))) {
+                let mut jobs = jobs.into_iter();
+                while let Some(first) = jobs.next() {
+                    match jobs.next() {
+                        Some(second) => results.extend(
+                            Job::run_pair(first, second, self, &template, stream, num_points)
+                                .map(Some),
+                        ),
+                        None => {
+                            results.push(Some(first.run(self, &template, stream, num_points, None)))
                         }
-                        done
-                    })
-                })
-                .collect();
-
-            let walked = (|| -> Result<Option<usize>, DracoError> {
-                let mut count = 0usize;
-                for (local_i, &att_id) in att_ids.iter().enumerate() {
-                    let decoder_type = decoder_types[local_i];
-                    if (1..=3).contains(&decoder_type) {
-                        let before = buffer.position();
-                        let components = pc.try_attribute(att_id)?.num_components() as usize;
-                        let skipped = match num_points.checked_mul(components) {
-                            Some(values) => SequentialIntegerAttributeDecoder::skip_values(
-                                values, components, buffer,
-                            ),
-                            None => Ok(false),
-                        };
-                        if matches!(skipped, Ok(true)) {
-                            let job = Job {
-                                index: count,
-                                att_id,
-                                decoder_type,
-                                start: before - start,
-                                end: buffer.position() - start,
-                                seed: pc.try_attribute(att_id)?.clone(),
-                            };
-                            if sender.send(job).is_err() {
-                                return Ok(None);
-                            }
-                            count += 1;
-                            continue;
-                        }
-                        buffer.set_position(before)?;
                     }
-                    if self
-                        .decode_attribute_in_place(
-                            pc,
-                            buffer,
-                            att_id,
-                            decoder_type,
-                            point_ids,
-                            num_points,
-                            pending_quant,
-                            pending_normals,
-                        )
-                        .is_err()
-                    {
-                        return Ok(None);
-                    }
-                }
-                Ok(Some(count))
-            })();
-            // Nothing more is coming: the workers run out of jobs and finish.
-            drop(sender);
-            let mut results: Vec<Option<Result<Decoded, DracoError>>> = Vec::new();
-            for worker in workers {
-                for (index, result) in worker.join().expect("a decode thread panicked") {
-                    if results.len() <= index {
-                        results.resize_with(index + 1, || None);
-                    }
-                    results[index] = Some(result);
                 }
             }
             (walked, results)
-        });
+        } else {
+            let queue = std::sync::Mutex::new(None::<std::sync::mpsc::Receiver<Job>>);
+            let (sender, receiver) = std::sync::mpsc::channel::<Job>();
+            *queue.lock().unwrap() = Some(receiver);
+
+            // The walk, on this thread, and the workers beside it. A failure in
+            // the walk is not returned from inside the scope: the workers have
+            // to be let go of first, and their results, if any, thrown away.
+            std::thread::scope(|scope| {
+                let workers: Vec<_> = (0..threads)
+                    .map(|_| {
+                        scope.spawn(|| {
+                            let mut done = Vec::new();
+                            loop {
+                                // Two at a time where two are waiting, taken
+                                // together so that no other worker splits
+                                // them. A worker never waits for the second:
+                                // the walk may be decoding a long stream in
+                                // place, and the first job is better started
+                                // alone than held until the walk moves on.
+                                let (first, second) = {
+                                    let guard = queue.lock().unwrap();
+                                    let receiver = guard.as_ref().expect("the queue is open");
+                                    let Ok(first) = receiver.recv() else { break };
+                                    (first, receiver.try_recv().ok())
+                                };
+                                let index = first.index;
+                                match second {
+                                    Some(second) => {
+                                        let second_index = second.index;
+                                        let [a, b] = Job::run_pair(
+                                            first, second, self, &template, stream, num_points,
+                                        );
+                                        done.push((index, a));
+                                        done.push((second_index, b));
+                                    }
+                                    None => done.push((
+                                        index,
+                                        first.run(self, &template, stream, num_points, None),
+                                    )),
+                                }
+                            }
+                            done
+                        })
+                    })
+                    .collect();
+
+                let walked = self.walk_streams(
+                    pc,
+                    buffer,
+                    att_ids,
+                    decoder_types,
+                    point_ids,
+                    num_points,
+                    pending_quant,
+                    pending_normals,
+                    start,
+                    |job| sender.send(job).is_ok(),
+                );
+                // Nothing more is coming: the workers run out of jobs and finish.
+                drop(sender);
+                let mut results: Vec<Option<Result<Decoded, DracoError>>> = Vec::new();
+                for worker in workers {
+                    for (index, result) in worker.join().expect("a decode thread panicked") {
+                        if results.len() <= index {
+                            results.resize_with(index + 1, || None);
+                        }
+                        results[index] = Some(result);
+                    }
+                }
+                (walked, results)
+            })
+        };
 
         let give_up = |buffer: &mut DecoderBuffer,
                        pending_quant: &mut Vec<PendingQuant>,
@@ -909,6 +948,73 @@ impl PointCloudDecoder {
         }
         Ok(true)
     }
+
+    /// The walk `decode_attributes_in_parallel` makes: each attribute stream
+    /// stepped over becomes a job handed to `send`, in order, and each one that
+    /// cannot be is decoded in place. `Ok(Some(jobs))` when the walk reached
+    /// the end; `Ok(None)` when a stream decoded in place failed or `send`
+    /// refused a job, which the caller answers by decoding everything in order.
+    #[allow(clippy::too_many_arguments)]
+    fn walk_streams(
+        &self,
+        pc: &mut PointCloud,
+        buffer: &mut DecoderBuffer,
+        att_ids: &[i32],
+        decoder_types: &[u8],
+        point_ids: Option<EntryToPointIdMap<'_>>,
+        num_points: usize,
+        pending_quant: &mut Vec<PendingQuant>,
+        pending_normals: &mut Vec<PendingNormal>,
+        start: usize,
+        mut send: impl FnMut(Job) -> bool,
+    ) -> Result<Option<usize>, DracoError> {
+        let mut count = 0usize;
+        for (local_i, &att_id) in att_ids.iter().enumerate() {
+            let decoder_type = decoder_types[local_i];
+            if (1..=3).contains(&decoder_type) {
+                let before = buffer.position();
+                let components = pc.try_attribute(att_id)?.num_components() as usize;
+                let skipped = match num_points.checked_mul(components) {
+                    Some(values) => {
+                        SequentialIntegerAttributeDecoder::skip_values(values, components, buffer)
+                    }
+                    None => Ok(false),
+                };
+                if matches!(skipped, Ok(true)) {
+                    let job = Job {
+                        index: count,
+                        att_id,
+                        decoder_type,
+                        start: before - start,
+                        end: buffer.position() - start,
+                        seed: pc.try_attribute(att_id)?.clone(),
+                    };
+                    if !send(job) {
+                        return Ok(None);
+                    }
+                    count += 1;
+                    continue;
+                }
+                buffer.set_position(before)?;
+            }
+            if self
+                .decode_attribute_in_place(
+                    pc,
+                    buffer,
+                    att_id,
+                    decoder_type,
+                    point_ids,
+                    num_points,
+                    pending_quant,
+                    pending_normals,
+                )
+                .is_err()
+            {
+                return Ok(None);
+            }
+        }
+        Ok(Some(count))
+    }
 }
 
 /// One attribute's stream, stepped over, waiting for a thread: where it lies in
@@ -953,6 +1059,7 @@ impl Job {
         template: &crate::decoder_buffer::ChildTemplate,
         stream: &[u8],
         num_points: usize,
+        symbols: Option<Vec<u32>>,
     ) -> Result<Decoded, DracoError> {
         let bitstream_version = decoder.bitstream_version();
         let mut child = template.open(&stream[self.start..self.end]);
@@ -965,6 +1072,9 @@ impl Job {
             1 => {
                 let mut att_decoder = SequentialIntegerAttributeDecoder::new();
                 att_decoder.init(decoder, 0);
+                if let Some(symbols) = symbols {
+                    att_decoder.set_predecoded_symbols(symbols);
+                }
                 att_decoder.decode_values(
                     &mut mini, ids, &mut child, None, None, None, None, None, None,
                 )?;
@@ -976,6 +1086,9 @@ impl Job {
             2 => {
                 let mut att_decoder = SequentialQuantizationAttributeDecoder::new();
                 att_decoder.init(decoder, &mini, 0)?;
+                if let Some(symbols) = symbols {
+                    att_decoder.set_predecoded_symbols(symbols);
+                }
                 let portable = att_decoder.decode_values(
                     &mut mini,
                     ids,
@@ -996,6 +1109,9 @@ impl Job {
             _ => {
                 let mut att_decoder = SequentialNormalAttributeDecoder::new();
                 att_decoder.init(decoder, &mini, 0)?;
+                if let Some(symbols) = symbols {
+                    att_decoder.set_predecoded_symbols(symbols);
+                }
                 let portable = att_decoder.decode_values(
                     &mut mini,
                     ids,
@@ -1020,6 +1136,53 @@ impl Job {
             ));
         }
         Ok(decoded)
+    }
+
+    /// Runs two jobs, their symbols decoded side by side first
+    /// (`decode_raw_symbol_pair`) and each job then decoded with its own. Where
+    /// the pair cannot be decoded together the jobs run as they would alone,
+    /// so what comes of each is what `run` makes of it.
+    fn run_pair(
+        a: Job,
+        b: Job,
+        decoder: &PointCloudDecoder,
+        template: &crate::decoder_buffer::ChildTemplate,
+        stream: &[u8],
+        num_points: usize,
+    ) -> [Result<Decoded, DracoError>; 2] {
+        let mut child_a = template.open(&stream[a.start..a.end]);
+        let mut child_b = template.open(&stream[b.start..b.end]);
+        // The components the stream codes, which for a normal is the two of its
+        // octahedral coordinates and not the attribute's three.
+        let values = |job: &Job| {
+            let components = match job.decoder_type {
+                3 => 2,
+                _ => job.seed.num_components() as usize,
+            };
+            (num_points.checked_mul(components), components)
+        };
+        let ((values_a, components_a), (values_b, components_b)) = (values(&a), values(&b));
+        let symbols = match (values_a, values_b) {
+            (Some(values_a), Some(values_b))
+                if SequentialIntegerAttributeDecoder::seek_symbols(&mut child_a)
+                    && SequentialIntegerAttributeDecoder::seek_symbols(&mut child_b) =>
+            {
+                decode_raw_symbol_pair(
+                    (&mut child_a, values_a, components_a),
+                    (&mut child_b, values_b, components_b),
+                )
+            }
+            _ => None,
+        };
+        #[cfg(test)]
+        if symbols.is_some() {
+            PAIRED.with(|paired| paired.set(paired.get() + 2));
+        }
+        let (symbols_a, symbols_b) = symbols.map_or((None, None), |(a, b)| (Some(a), Some(b)));
+        [
+            a.run(decoder, template, stream, num_points, symbols_a),
+            b.run(decoder, template, stream, num_points, symbols_b),
+        ]
     }
 }
 
@@ -1172,6 +1335,15 @@ mod parallel_tests {
             .collect())
     }
 
+    /// The decode in order, attribute by attribute, that the side-by-side one
+    /// is held to.
+    fn decode_in_order(bytes: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+        IN_ORDER.with(|in_order| in_order.set(true));
+        let decoded = decode(bytes, 1);
+        IN_ORDER.with(|in_order| in_order.set(false));
+        decoded
+    }
+
     fn engaged_by<T>(f: impl FnOnce() -> T) -> (T, usize) {
         let before = ENGAGED.with(|e| e.get());
         let out = f();
@@ -1186,13 +1358,27 @@ mod parallel_tests {
             "{} bytes",
             bytes.len()
         );
-        let serial = decode(&bytes, 1).expect("decodes");
-        for threads in [2, 5, 16] {
+        let (serial, engaged) = engaged_by(|| decode_in_order(&bytes));
+        assert_eq!(engaged, 0, "the reference took the side-by-side path");
+        let serial = serial.expect("decodes");
+        for threads in [1, 2, 5, 16] {
+            let paired_before = PAIRED.with(|paired| paired.get());
             let (parallel, engaged) = engaged_by(|| decode(&bytes, threads));
             assert!(
                 engaged >= 44,
                 "the parallel path ran for {engaged} streams at {threads} threads"
             );
+            // On one thread every pair runs here, where the count is kept: all
+            // but an odd one out must have been decoded together, the normals'
+            // two octahedral components included.
+            if threads == 1 {
+                let paired = PAIRED.with(|paired| paired.get()) - paired_before;
+                assert_eq!(
+                    paired,
+                    engaged - engaged % 2,
+                    "{engaged} jobs, {paired} paired"
+                );
+            }
             assert_eq!(parallel.expect("decodes"), serial, "{threads} threads");
         }
     }
@@ -1217,7 +1403,7 @@ mod parallel_tests {
         let bytes = stream(500, 2);
         let (parallel, engaged) = engaged_by(|| decode(&bytes, 16));
         assert_eq!(engaged, 0);
-        assert_eq!(parallel, decode(&bytes, 1));
+        assert_eq!(parallel, decode_in_order(&bytes));
     }
 
     #[test]
@@ -1234,17 +1420,24 @@ mod parallel_tests {
                 rng.next() as usize % 400
             };
             damaged[at] ^= 1 << (rng.next() % 8);
-            let serial = decode(&damaged, 1);
-            let parallel = decode(&damaged, 16);
-            assert_eq!(parallel, serial, "trial {trial}: byte {at} damaged");
+            let serial = decode_in_order(&damaged);
+            for threads in [1, 16] {
+                let parallel = decode(&damaged, threads);
+                assert_eq!(
+                    parallel, serial,
+                    "trial {trial}: byte {at} damaged, {threads} threads"
+                );
+            }
         }
         // And cut short.
         for cut in [bytes.len() / 2, bytes.len() - 1, bytes.len() - 40, 5000] {
-            assert_eq!(
-                decode(&bytes[..cut], 16),
-                decode(&bytes[..cut], 1),
-                "cut at {cut}"
-            );
+            for threads in [1, 16] {
+                assert_eq!(
+                    decode(&bytes[..cut], threads),
+                    decode_in_order(&bytes[..cut]),
+                    "cut at {cut}, {threads} threads"
+                );
+            }
         }
     }
 
@@ -1289,8 +1482,8 @@ mod parallel_tests {
         encoder.encode(&options, &mut buffer).expect("encodes");
         let bytes = buffer.data();
         assert!(bytes.len() >= PARALLEL_MIN_STREAM_BYTES);
-        let serial = decode(bytes, 1).expect("decodes");
-        for threads in [4, 12, 16] {
+        let serial = decode_in_order(bytes).expect("decodes");
+        for threads in [1, 4, 12, 16] {
             let (parallel, engaged) = engaged_by(|| decode(bytes, threads));
             assert_eq!(
                 engaged, 7,

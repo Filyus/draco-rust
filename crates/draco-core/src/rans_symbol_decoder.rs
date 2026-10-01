@@ -325,6 +325,21 @@ impl<'a> RAnsSymbolDecoder<'a> {
         backed
     }
 
+    /// Whether a run of `count` can go through [`decode_run_pair`]'s loop:
+    /// steps built (or buildable, and worth it) over a narrow slot table.
+    #[cfg(feature = "point_cloud_decode")]
+    fn ready_for_pair(&mut self, count: usize) -> bool {
+        let precision = self.rans_precision as usize;
+        if self.num_symbols <= 1 || self.lut.len() < precision || self.probability_table.is_empty()
+        {
+            return false;
+        }
+        if self.steps.is_empty() && count >= precision / 2 {
+            self.build_steps();
+        }
+        !self.steps.is_empty() && matches!(self.lut, Slots::Narrow(_))
+    }
+
     /// Builds `steps`, or leaves it empty where a step does not fit in 32 bits:
     /// precision past 16 bits, or one symbol holding all of it.
     fn build_steps(&mut self) {
@@ -452,6 +467,126 @@ impl<'a> RAnsSymbolDecoder<'a> {
     }
 }
 
+/// Decodes `count` symbols from each of two independent streams onto the ends
+/// of `out_a` and `out_b`, in one loop, and returns whether each run was
+/// backed by its coded bytes, as [`RAnsSymbolDecoder::decode_run`] does.
+///
+/// One stream's symbols form a single chain -- each state is computed from the
+/// one before -- and a decode waits on it at every symbol. Two streams are two
+/// chains, and in one loop the core works on both at once: the rANS stage of a
+/// splat decode takes about half the time it does stream by stream. The
+/// refill is branchless here (below), which is what lets the two chains
+/// overlap: with a branch, a misprediction on either stalls both.
+///
+/// Streams that do not suit the loop -- no steps, a wide slot table, a single
+/// symbol -- are decoded one after the other instead; the symbols are the
+/// same either way.
+#[cfg(feature = "point_cloud_decode")]
+pub(crate) fn decode_run_pair(
+    a: &mut RAnsSymbolDecoder<'_>,
+    out_a: &mut Vec<u32>,
+    b: &mut RAnsSymbolDecoder<'_>,
+    out_b: &mut Vec<u32>,
+    count: usize,
+) -> (bool, bool) {
+    if !(a.ready_for_pair(count) && b.ready_for_pair(count)) {
+        return (a.decode_run(out_a, count), b.decode_run(out_b, count));
+    }
+    let (state_a, state_b) = {
+        let mut lane_a = Lane::new(a);
+        let mut lane_b = Lane::new(b);
+        out_b.reserve(count);
+        out_a.extend((0..count).map(|_| {
+            out_b.push(lane_b.next());
+            lane_a.next()
+        }));
+        (lane_a.end(), lane_b.end())
+    };
+    (a.ans.state, a.ans.buf_offset) = (state_a.0, state_a.1);
+    (b.ans.state, b.ans.buf_offset) = (state_b.0, state_b.1);
+    (state_a.2, state_b.2)
+}
+
+/// One stream of [`decode_run_pair`], its tables and coder state as locals.
+#[cfg(feature = "point_cloud_decode")]
+struct Lane<'t> {
+    slots: &'t [u16],
+    steps: &'t [u32],
+    buf: &'t [u8],
+    mask: u32,
+    bits: u32,
+    l_base: u32,
+    offset: usize,
+    state: u32,
+    backed: bool,
+}
+
+#[cfg(feature = "point_cloud_decode")]
+impl<'t> Lane<'t> {
+    /// For a decoder `ready_for_pair` accepted.
+    fn new(decoder: &'t RAnsSymbolDecoder<'_>) -> Self {
+        let precision = decoder.rans_precision as usize;
+        let Slots::Narrow(slots) = &decoder.lut else {
+            unreachable!("ready_for_pair accepts narrow tables only")
+        };
+        Self {
+            slots: &slots[..precision],
+            steps: &decoder.steps[..precision],
+            buf: decoder.ans.buf,
+            mask: decoder.rans_precision_mask,
+            bits: decoder.rans_precision_bits,
+            l_base: decoder.ans.l_base,
+            offset: decoder.ans.buf_offset.min(decoder.ans.buf.len()),
+            state: decoder.ans.state,
+            backed: true,
+        }
+    }
+
+    /// The next symbol, the run loop of `run_steps` with its refill made
+    /// branchless while four bytes remain.
+    ///
+    /// The bytes a refill takes are the fewest that bring the state to
+    /// `l_base = 2^(bits + 2)` or above. A state about to be refilled lies in
+    /// `[4, 2^(bits + 10))`: it was in `[l_base, 256 * l_base)` before the last
+    /// symbol, which `read_init` checks for the first, and a symbol's decode
+    /// takes it to at least four times its probability, which is at least one
+    /// for any slot `decode_table` gave a symbol. So the count is
+    /// `ceil((bits + 3 - bit_length) / 8)`, which is `(leading_zeros + bits -
+    /// 22) >> 3` -- at most 3, so four bytes always cover it -- and those
+    /// bytes, taken most significant first, are the low end of a little-endian
+    /// read ending at `offset`. Past the last four bytes the loop below takes
+    /// over, and with it the bookkeeping for a run that outlives its input.
+    #[inline(always)]
+    fn next(&mut self) -> u32 {
+        let mut state = self.state;
+        let mut offset = self.offset;
+        if offset >= 4 {
+            let shift = (state.leading_zeros() + self.bits).wrapping_sub(22) & 0x18;
+            let word: [u8; 4] = self.buf[offset - 4..offset]
+                .try_into()
+                .expect("a four-byte range");
+            let word = u64::from(u32::from_le_bytes(word));
+            state = (state << shift) | (word >> (32 - shift)) as u32;
+            offset -= (shift >> 3) as usize;
+        }
+        while state < self.l_base && offset > 0 {
+            offset -= 1;
+            state = (state << 8) | self.buf[offset] as u32;
+        }
+        self.backed &= state >= self.l_base;
+        let quo = state >> self.bits;
+        let rem = (state & self.mask) as usize;
+        let step = self.steps[rem];
+        self.state = quo.wrapping_mul(step & 0xFFFF).wrapping_add(step >> 16);
+        self.offset = offset;
+        u32::from(self.slots[rem])
+    }
+
+    fn end(self) -> (u32, usize, bool) {
+        (self.state, self.offset, self.backed)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{RAnsSymbolDecoder, Slots};
@@ -538,6 +673,85 @@ mod tests {
                     "{alphabet} symbols, {form}: the coder ended elsewhere"
                 );
             }
+        }
+    }
+
+    /// Two streams decoded in one loop come out as each does alone: the
+    /// symbols, whether the run was backed by its bytes, and where the coder
+    /// stopped. Alphabets that suit the loop and ones that send it back to one
+    /// stream at a time, and runs that ask for more symbols than were coded,
+    /// so that the tail past the last four bytes and an exhausted input are
+    /// both reached.
+    #[cfg(all(feature = "encoder", feature = "point_cloud_decode"))]
+    #[test]
+    fn a_pair_of_runs_reads_what_each_run_reads_alone() {
+        use super::decode_run_pair;
+        use crate::decoder_buffer::DecoderBuffer;
+        use crate::encoder_buffer::EncoderBuffer;
+        use crate::rans_symbol_coding::compute_rans_precision_from_unique_symbols_bit_length;
+        use crate::symbol_encoding::encode_raw_symbols;
+
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut stream = |alphabet: u32, count: usize| {
+            let symbols: Vec<u32> = (0..count)
+                .map(|i| {
+                    if i < alphabet as usize {
+                        return i as u32;
+                    }
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    let unit = (seed >> 11) as f64 / (1u64 << 53) as f64;
+                    (unit.powi(3) * f64::from(alphabet)) as u32
+                })
+                .collect();
+            let mut target = EncoderBuffer::new();
+            encode_raw_symbols(&symbols, alphabet - 1, &mut target, 7).unwrap();
+            target.data().to_vec()
+        };
+        fn open(data: &[u8]) -> RAnsSymbolDecoder<'_> {
+            let mut buffer = DecoderBuffer::new(data);
+            let bits = buffer.decode_u8().unwrap() as u32;
+            let mut decoder =
+                RAnsSymbolDecoder::new(compute_rans_precision_from_unique_symbols_bit_length(bits));
+            assert!(decoder.create(&mut buffer) && decoder.start_decoding(&mut buffer));
+            decoder
+        }
+        for (alphabet_a, alphabet_b, coded, asked) in [
+            (40u32, 64u32, 30_000usize, 30_000usize),
+            (40, 1_500, 30_000, 30_000),
+            (2, 40, 30_000, 30_000),
+            (40, 60_000, 70_000, 70_000),
+            (40, 100, 30_000, 31_000),
+        ] {
+            let (data_a, data_b) = (stream(alphabet_a, coded), stream(alphabet_b, coded));
+            let alone = |data: &[u8]| {
+                let mut decoder = open(data);
+                let mut out = Vec::new();
+                let backed = decoder.decode_run(&mut out, asked);
+                (out, backed, decoder.ans.state, decoder.ans.buf_offset)
+            };
+            let (expected_a, expected_b) = (alone(&data_a), alone(&data_b));
+            let (mut a, mut b) = (open(&data_a), open(&data_b));
+            let (mut out_a, mut out_b) = (vec![7], vec![9]);
+            let (backed_a, backed_b) =
+                decode_run_pair(&mut a, &mut out_a, &mut b, &mut out_b, asked);
+            let label = format!("{alphabet_a} and {alphabet_b} symbols, {asked} of {coded}");
+            assert_eq!(
+                (out_a[0], out_b[0]),
+                (7, 9),
+                "{label}: what was there is kept"
+            );
+            assert_eq!(
+                (&out_a[1..], backed_a, a.ans.state, a.ans.buf_offset),
+                (&expected_a.0[..], expected_a.1, expected_a.2, expected_a.3),
+                "{label}: the first stream"
+            );
+            assert_eq!(
+                (&out_b[1..], backed_b, b.ans.state, b.ans.buf_offset),
+                (&expected_b.0[..], expected_b.1, expected_b.2, expected_b.3),
+                "{label}: the second stream"
+            );
         }
     }
 
