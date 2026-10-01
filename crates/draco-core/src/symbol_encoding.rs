@@ -47,56 +47,26 @@ pub fn encode_symbols(
     options: &SymbolEncodingOptions,
     target_buffer: &mut EncoderBuffer,
 ) -> Status {
-    if symbols.is_empty() {
-        return Ok(());
-    }
-
-    let (bit_lengths, max_value) = compute_bit_lengths(symbols, num_components);
-
-    // Estimate bits for tagged scheme.
-    let tagged_bits = compute_tagged_scheme_bits(symbols, num_components, &bit_lengths, max_value);
-
-    // If max value can't be represented efficiently by RAW, always use TAGGED.
-    // (This matches Draco's decision rule, but avoids doing unnecessary RAW
-    // estimation work.)
-    if bit_length(max_value) > K_MAX_RAW_ENCODING_BIT_LENGTH {
-        // Draco bitstream scheme ids (see C++ SymbolCodingMethod):
-        //   0 = TAGGED
-        //   1 = RAW
-        target_buffer.encode_u8(0); // TAGGED
-        encode_tagged_symbols(symbols, num_components, &bit_lengths, target_buffer)
-    } else {
-        // Estimate bits for raw scheme and compute symbol frequencies once.
-        let (raw_bits, raw_frequencies, raw_num_unique) =
-            compute_raw_scheme_bits_and_frequencies(symbols, max_value);
-
-        if tagged_bits < raw_bits {
-            target_buffer.encode_u8(0); // TAGGED
-            encode_tagged_symbols(symbols, num_components, &bit_lengths, target_buffer)
-        } else {
-            target_buffer.encode_u8(1); // RAW
-            encode_raw_symbols_with_frequencies(
-                symbols,
-                max_value,
-                &raw_frequencies,
-                raw_num_unique,
-                target_buffer,
-                options.compression_level,
-            )
-        }
-    }
+    let plan = plan_symbols(symbols, num_components);
+    encode_symbols_with_plan(symbols, num_components, options, &plan, target_buffer)
 }
 
 /// What the symbol coder works out about a set of symbols before it can
-/// choose the scheme to write them with: the per-chunk bit lengths, and what
-/// each scheme would cost.
+/// choose the scheme to write them with: how many chunks need each bit length,
+/// and what each scheme would cost.
 ///
 /// Ranking two prediction candidates and choosing the coder's own scheme ask
 /// the same question of the same symbols, so the answer is worked out once:
 /// the loser's plan is dropped and the winner's is handed to the coder.
+///
+/// The bit lengths themselves are not kept. Pricing the tagged scheme needs
+/// only how many chunks have each length, and writing it -- which only the
+/// tagged scheme does -- takes each one from its chunk again; a list of them
+/// was a value per chunk, built twice per attribute by the prediction search
+/// and dropped unread whenever the raw scheme won.
 #[cfg(feature = "encoder")]
 pub struct SymbolPlan {
-    bit_lengths: Vec<u32>,
+    tag_frequencies: [u64; 33],
     max_value: u32,
     tagged_bits: u64,
     raw_bits: u64,
@@ -120,7 +90,7 @@ impl SymbolPlan {
 pub fn plan_symbols(symbols: &[u32], num_components: usize) -> SymbolPlan {
     if symbols.is_empty() {
         return SymbolPlan {
-            bit_lengths: Vec::new(),
+            tag_frequencies: [0; 33],
             max_value: 0,
             tagged_bits: 0,
             raw_bits: 0,
@@ -129,8 +99,8 @@ pub fn plan_symbols(symbols: &[u32], num_components: usize) -> SymbolPlan {
         };
     }
 
-    let (bit_lengths, max_value) = compute_bit_lengths(symbols, num_components);
-    let tagged_bits = compute_tagged_scheme_bits(symbols, num_components, &bit_lengths, max_value);
+    let (tag_frequencies, max_value) = count_bit_lengths(symbols, num_components);
+    let tagged_bits = compute_tagged_scheme_bits(num_components, &tag_frequencies);
     // RAW is not a candidate past its bit-length limit, so it gets no estimate
     // there: its histogram has one entry per value up to `max_value`, which a
     // single 32-bit symbol would make 32 GiB. Pricing it out keeps
@@ -143,7 +113,7 @@ pub fn plan_symbols(symbols: &[u32], num_components: usize) -> SymbolPlan {
         };
 
     SymbolPlan {
-        bit_lengths,
+        tag_frequencies,
         max_value,
         tagged_bits,
         raw_bits,
@@ -169,8 +139,16 @@ pub fn encode_symbols_with_plan(
     if bit_length(plan.max_value) > K_MAX_RAW_ENCODING_BIT_LENGTH
         || plan.tagged_bits < plan.raw_bits
     {
+        // Draco bitstream scheme ids (see C++ SymbolCodingMethod):
+        //   0 = TAGGED
+        //   1 = RAW
         target_buffer.encode_u8(0); // TAGGED
-        encode_tagged_symbols(symbols, num_components, &plan.bit_lengths, target_buffer)
+        encode_tagged_symbols(
+            symbols,
+            num_components,
+            &plan.tag_frequencies,
+            target_buffer,
+        )
     } else {
         target_buffer.encode_u8(1); // RAW
         encode_raw_symbols_with_frequencies(
@@ -190,35 +168,60 @@ fn bit_length(value: u32) -> u32 {
     32 - value.leading_zeros()
 }
 
-/// The number of bits each chunk of components needs, and the largest symbol.
+/// The number of bits a chunk of components needs: that of its largest value.
+///
+/// C++ takes `MostSignificantBit(max) + 1`, so a chunk of zeros needs one bit.
 #[cfg(feature = "encoder")]
-fn compute_bit_lengths(symbols: &[u32], num_components: usize) -> (Vec<u32>, u32) {
-    let mut bit_lengths = Vec::with_capacity(symbols.len().div_ceil(num_components));
+fn chunk_bit_length(chunk: &[u32]) -> u32 {
+    bit_length(chunk.iter().copied().max().unwrap_or(0)).max(1)
+}
+
+/// How many chunks of components need each bit length, and the largest symbol.
+///
+/// Counted into four tables, as `histogram` does and for its reason: the
+/// lengths cluster, and one table would make each increment wait for the one
+/// before it.
+#[cfg(feature = "encoder")]
+fn count_bit_lengths(symbols: &[u32], num_components: usize) -> ([u64; 33], u32) {
+    let mut tables = [[0u64; 33]; 4];
     let mut max_value = 0;
-
-    for chunk in symbols.chunks(num_components) {
-        let mut max_component_value = chunk[0];
-        for &val in &chunk[1..] {
-            if val > max_component_value {
-                max_component_value = val;
+    if num_components == 1 {
+        let (quads, remainder) = symbols.as_chunks::<4>();
+        for quad in quads {
+            for (table, &value) in tables.iter_mut().zip(quad) {
+                table[bit_length(value).max(1) as usize] += 1;
             }
+            max_value = max_value.max(quad[0].max(quad[1]).max(quad[2].max(quad[3])));
         }
-
-        // C++ uses: value_msb_pos = MostSignificantBit(max_component_value);
-        //           bit_lengths.push(value_msb_pos + 1);
-        // For max_component_value == 0, bit_length = 1.
-        let bit_length = if max_component_value > 0 {
-            32 - max_component_value.leading_zeros()
-        } else {
-            1 // Minimum 1 bit, matching C++ behavior
-        };
-        if max_component_value > max_value {
-            max_value = max_component_value;
+        for &value in remainder {
+            tables[0][bit_length(value).max(1) as usize] += 1;
+            max_value = max_value.max(value);
         }
-        bit_lengths.push(bit_length);
+    } else if num_components == 3 {
+        let (triples, remainder) = symbols.as_chunks::<3>();
+        for (index, triple) in triples.iter().enumerate() {
+            let largest = triple[0].max(triple[1]).max(triple[2]);
+            tables[index & 3][bit_length(largest).max(1) as usize] += 1;
+            max_value = max_value.max(largest);
+        }
+        if !remainder.is_empty() {
+            tables[0][chunk_bit_length(remainder) as usize] += 1;
+            max_value = max_value.max(remainder.iter().copied().max().unwrap_or(0));
+        }
+    } else {
+        for (index, chunk) in symbols.chunks(num_components).enumerate() {
+            let largest = chunk.iter().copied().max().unwrap_or(0);
+            tables[index & 3][bit_length(largest).max(1) as usize] += 1;
+            max_value = max_value.max(largest);
+        }
     }
-
-    (bit_lengths, max_value)
+    let mut frequencies = tables[0];
+    for table in &tables[1..] {
+        for (total, count) in frequencies.iter_mut().zip(table) {
+            *total += count;
+        }
+    }
+    (frequencies, max_value)
 }
 
 #[cfg(feature = "encoder")]
@@ -254,21 +257,17 @@ fn compute_raw_scheme_bits_and_frequencies(
 }
 
 #[cfg(feature = "encoder")]
-fn compute_tagged_scheme_bits(
-    _symbols: &[u32],
-    num_components: usize,
-    bit_lengths: &[u32],
-    _max_value: u32,
-) -> u64 {
+fn compute_tagged_scheme_bits(num_components: usize, tag_frequencies: &[u64; 33]) -> u64 {
     // 1. Bits for values (raw bits)
     let mut value_bits = 0;
-    for &len in bit_lengths.iter() {
-        value_bits += len as u64 * num_components as u64;
+    for (len, &count) in tag_frequencies.iter().enumerate() {
+        value_bits += len as u64 * num_components as u64 * count;
     }
 
     // 2. Bits for tags (RAns) using C++ ComputeShannonEntropy on bit lengths.
-    // C++ calls ComputeShannonEntropy(bit_lengths, num_chunks, max_value=32).
-    let (tag_bits, num_unique_symbols) = compute_shannon_entropy_bits_trunc(bit_lengths, 32);
+    // C++ calls ComputeShannonEntropy(bit_lengths, num_chunks, max_value=32),
+    // which is the entropy of exactly these counts.
+    let (tag_bits, num_unique_symbols) = shannon_entropy_bits_trunc(tag_frequencies);
 
     // C++ uses num_unique_symbols for BOTH params in the tagged scheme.
     let table_bits = approximate_rans_frequency_table_bits(num_unique_symbols, num_unique_symbols);
@@ -334,20 +333,18 @@ where
 }
 
 #[cfg(feature = "encoder")]
-fn compute_shannon_entropy_bits_trunc(symbols: &[u32], max_value: u32) -> (i64, u32) {
+fn shannon_entropy_bits_trunc(frequencies: &[u64]) -> (i64, u32) {
     // Draco C++ ComputeShannonEntropy():
     //   total_bits += freq * log2(freq / num_symbols)
     //   return static_cast<int64_t>(-total_bits);
     // The cast truncates toward zero.
 
-    let frequencies: Vec<u32> = histogram(symbols, max_value);
-
-    let num_symbols_d = symbols.len() as f64;
+    let num_symbols_d = frequencies.iter().sum::<u64>() as f64;
     let log2_num_symbols = num_symbols_d.log2();
     let mut total_bits = 0.0f64;
     let mut num_unique_symbols: u32 = 0;
 
-    for &freq in &frequencies {
+    for &freq in frequencies {
         if freq > 0 {
             num_unique_symbols += 1;
             // freq * log2(freq / N) == freq * (log2(freq) - log2(N))
@@ -468,22 +465,16 @@ pub fn encode_raw_symbols_no_scheme(symbols: &[u32], max_value: u32, target_buff
 fn encode_tagged_symbols(
     symbols: &[u32],
     num_components: usize,
-    bit_lengths: &[u32],
+    frequencies: &[u64; 33],
     target_buffer: &mut EncoderBuffer,
 ) -> Status {
     // Scheme: Tagged is already written by caller
 
-    // Encode bit lengths using RAns
-    // Count frequencies of bit lengths (0..32)
-    let mut frequencies = vec![0u64; 33];
-    for &len in bit_lengths {
-        frequencies[len as usize] += 1;
-    }
-
+    // Encode bit lengths using RAns, from how often each (0..32) occurs.
     // Draco uses unique_symbols_bit_length=5 for tagged bit-length tags,
     // which corresponds to rANS precision bits = 12.
     let mut tag_encoder = RAnsSymbolEncoder::<12>::new();
-    if !tag_encoder.create(&frequencies, 33, target_buffer) {
+    if !tag_encoder.create(frequencies, 33, target_buffer) {
         return Err(DracoError::general(
             "Failed to build the rANS frequency table for the tagged bit lengths",
         ));
@@ -505,23 +496,23 @@ fn encode_tagged_symbols(
     let value_bits = 32 * (symbols.len()); // safe upper bound
     value_buffer.start_bit_encoding(value_bits, false);
 
+    let num_chunks = symbols.len().div_ceil(num_components);
     tag_encoder.start_encoding_with_capacity(
         target_buffer,
-        bit_lengths.len().saturating_mul(2).saturating_add(4),
+        num_chunks.saturating_mul(2).saturating_add(4),
     );
 
     // 1. Encode bits in FORWARD order (because our BitEncoder is FIFO).
-    for (i, &len) in bit_lengths.iter().enumerate() {
-        let val_idx = i * num_components;
-        for j in 0..num_components {
-            let val = symbols[val_idx + j];
+    for chunk in symbols.chunks(num_components) {
+        let len = chunk_bit_length(chunk);
+        for &val in chunk {
             value_buffer.encode_least_significant_bits32(len, val);
         }
     }
 
     // 2. Encode tags in REVERSE order (because ANS is LIFO).
-    for &len in bit_lengths.iter().rev() {
-        tag_encoder.encode_symbol(len);
+    for chunk in symbols.chunks(num_components).rev() {
+        tag_encoder.encode_symbol(chunk_bit_length(chunk));
     }
 
     tag_encoder.end_encoding(target_buffer);
