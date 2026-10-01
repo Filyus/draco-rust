@@ -252,14 +252,16 @@ impl Grid {
     }
 
     /// The cell an axis falls in, on the 16-bit grid the estimate prices.
-    fn price_cells(&self) -> [Vec<u16>; 3] {
+    fn price_cells(&self, threads: usize) -> [Vec<u16>; 3] {
         let shift = self.axis_bits.saturating_sub(POSITION_BITS);
-        std::array::from_fn(|axis| {
+        let mut axes = parallel::map(3, threads, |axis| -> Vec<u16> {
             self.cells[axis]
                 .iter()
                 .map(|&c| (c >> shift) as u16)
                 .collect()
         })
+        .into_iter();
+        std::array::from_fn(|_| axes.next().expect("one per axis"))
     }
 
     /// Point indices along the Hilbert curve; points sharing a cell keep the
@@ -540,20 +542,44 @@ fn measure_columns(
 }
 
 /// Quarter-bits over the sampled steps of `order`, for the position alone.
-fn position_cost(cells: &[Vec<u16>; 3], order: Option<&[u32]>) -> u64 {
+fn position_cost(cells: &[Vec<u16>; 3], order: Option<&[u32]>, threads: usize) -> u64 {
     let count = cells[0].len();
     let at = |i: usize| order.map_or(i, |o| o[i] as usize);
-    (0..count.saturating_sub(1))
-        .step_by(SAMPLE_STRIDE)
-        .map(|i| {
-            let (a, b) = (at(i), at(i + 1));
-            cells
-                .iter()
-                .map(|axis| u64::from(quarter_bits(u32::from(axis[a].abs_diff(axis[b])))))
-                .sum::<u64>()
-        })
-        .sum()
+    in_pieces(count.saturating_sub(1), SAMPLE_STRIDE, threads, |steps| {
+        steps
+            .step_by(SAMPLE_STRIDE)
+            .map(|i| {
+                let (a, b) = (at(i), at(i + 1));
+                cells
+                    .iter()
+                    .map(|axis| u64::from(quarter_bits(u32::from(axis[a].abs_diff(axis[b])))))
+                    .sum::<u64>()
+            })
+            .sum()
+    })
 }
+
+/// `sum` over the steps `0..steps`, cut into ranges taken on `threads` and
+/// added up in order. Each range starts on a multiple of `stride`, so a sum
+/// that samples every `stride`-th step samples the ones it would over the
+/// whole; the sums are of integers, so the total does not depend on the cut.
+fn in_pieces(
+    steps: usize,
+    stride: usize,
+    threads: usize,
+    sum: impl Fn(std::ops::Range<usize>) -> u64 + Sync,
+) -> u64 {
+    let piece = PIECE_STEPS * stride;
+    parallel::map(steps.div_ceil(piece), threads, |k| {
+        sum(k * piece..((k + 1) * piece).min(steps))
+    })
+    .into_iter()
+    .sum()
+}
+
+/// Sampled steps a piece of a cost sum covers: enough that a piece is worth
+/// handing to a thread.
+const PIECE_STEPS: usize = 1 << 14;
 
 fn sampled_steps(count: usize) -> usize {
     count.saturating_sub(1).div_ceil(SAMPLE_STRIDE).max(1)
@@ -745,13 +771,13 @@ pub(crate) fn search(pc: &PointCloud, options: &EncoderOptions) -> Option<Vec<Po
     }
     let threads = parallel::resolve(options.get_threads());
     let (_, grid) = grid(pc, options, threads)?;
-    let cells = grid.price_cells();
+    let cells = grid.price_cells(threads);
     let curve_order = grid.hilbert_order(threads);
     let columns = measure_columns(pc, options, &curve_order, threads);
 
     let steps = sampled_steps(count) as f64;
-    let position_input = position_cost(&cells, None);
-    let position_curve = position_cost(&cells, Some(&curve_order));
+    let position_input = position_cost(&cells, None, threads);
+    let position_curve = position_cost(&cells, Some(&curve_order), threads);
     let all_input = position_input + columns.iter().map(|c| c.cost_input).sum::<u64>();
     let all_curve = position_curve + columns.iter().map(|c| c.cost_curve).sum::<u64>();
     let (estimate_input, estimate_curve) = (all_input as f64 / steps, all_curve as f64 / steps);
@@ -797,14 +823,19 @@ pub(crate) fn search(pc: &PointCloud, options: &EncoderOptions) -> Option<Vec<Po
             refine(ids);
         }
     });
-    let (mut trial_cost, mut trial_steps) = (0u64, 0u64);
-    for (block, ids) in order.chunks(BLOCK).enumerate() {
-        if block % every == 0 {
-            let (cost, steps) = path_cost(&cells, &quantized, ids, 1);
-            trial_cost += cost;
-            trial_steps += steps;
-        }
-    }
+    let trial = parallel::map(count.div_ceil(BLOCK).div_ceil(every), threads, |k| {
+        let start = k * every * BLOCK;
+        path_cost(
+            &cells,
+            &quantized,
+            &order[start..(start + BLOCK).min(count)],
+            1,
+            1,
+        )
+    });
+    let (trial_cost, trial_steps) = trial
+        .into_iter()
+        .fold((0u64, 0u64), |(cost, steps), (c, s)| (cost + c, steps + s));
     if trial_steps > 0
         && trial_cost as f64 / trial_steps as f64 > WORTH_KEEPING_BELOW * counted_input
     {
@@ -818,7 +849,7 @@ pub(crate) fn search(pc: &PointCloud, options: &EncoderOptions) -> Option<Vec<Po
 
     // The check after, over the whole result: the blocks that were not in the
     // trial might not have behaved like the ones that were.
-    let (cost, sampled) = path_cost(&cells, &quantized, &order, SAMPLE_STRIDE);
+    let (cost, sampled) = path_cost(&cells, &quantized, &order, SAMPLE_STRIDE, threads);
     if cost as f64 / sampled.max(1) as f64 > WORTH_KEEPING_BELOW * counted_input {
         return None;
     }
@@ -827,19 +858,28 @@ pub(crate) fn search(pc: &PointCloud, options: &EncoderOptions) -> Option<Vec<Po
 
 /// Quarter-bits and steps over every `stride`-th step of `ids`, taking the
 /// position and the given columns (indexed by point).
-fn path_cost(cells: &[Vec<u16>; 3], columns: &[Vec<u8>], ids: &[u32], stride: usize) -> (u64, u64) {
-    let (mut cost, mut steps) = (0u64, 0u64);
-    for i in (0..ids.len().saturating_sub(1)).step_by(stride) {
-        let (a, b) = (ids[i] as usize, ids[i + 1] as usize);
-        for axis in cells {
-            cost += u64::from(quarter_bits(u32::from(axis[a].abs_diff(axis[b]))));
+fn path_cost(
+    cells: &[Vec<u16>; 3],
+    columns: &[Vec<u8>],
+    ids: &[u32],
+    stride: usize,
+    threads: usize,
+) -> (u64, u64) {
+    let steps = ids.len().saturating_sub(1);
+    let cost = in_pieces(steps, stride, threads, |range| {
+        let mut cost = 0u64;
+        for i in range.step_by(stride) {
+            let (a, b) = (ids[i] as usize, ids[i + 1] as usize);
+            for axis in cells {
+                cost += u64::from(quarter_bits(u32::from(axis[a].abs_diff(axis[b]))));
+            }
+            for column in columns {
+                cost += u64::from(quarter_bits(u32::from(column[a].abs_diff(column[b]))));
+            }
         }
-        for column in columns {
-            cost += u64::from(quarter_bits(u32::from(column[a].abs_diff(column[b]))));
-        }
-        steps += 1;
-    }
-    (cost, steps)
+        cost
+    });
+    (cost, steps.div_ceil(stride) as u64)
 }
 
 #[cfg(test)]
