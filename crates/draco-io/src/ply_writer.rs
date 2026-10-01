@@ -569,10 +569,11 @@ impl PlyWriter {
             }
 
             for column in &self.generics {
+                let (value, width) = generic_value(column, i);
                 write!(
                     writer,
                     " {}",
-                    ascii_scalar(column.data_type, &generic_value(column, i))
+                    ascii_scalar(column.data_type, &value[..width])
                 )?;
             }
 
@@ -596,63 +597,39 @@ impl PlyWriter {
         has_texcoords: bool,
         big_endian: bool,
     ) -> io::Result<()> {
+        let widths: Vec<usize> = self
+            .generics
+            .iter()
+            .map(|column| column.data_type.byte_length().min(8))
+            .collect();
+        // Each fixed-width property goes out as one write of its whole entry:
+        // a write a component made the per-call overhead of the writer most
+        // of what writing a large file cost.
+        macro_rules! entry {
+            ($values:expr) => {
+                writer.write_all(
+                    $values
+                        .map(|component| {
+                            if big_endian {
+                                component.to_be_bytes()
+                            } else {
+                                component.to_le_bytes()
+                            }
+                        })
+                        .as_flattened(),
+                )?
+            };
+        }
         for i in 0..self.positions.len() {
             match &self.positions {
-                PlyPositionData::Float32(values) => {
-                    for component in values[i] {
-                        writer.write_all(&if big_endian {
-                            component.to_be_bytes()
-                        } else {
-                            component.to_le_bytes()
-                        })?;
-                    }
-                }
-                PlyPositionData::Float64(values) => {
-                    for component in values[i] {
-                        writer.write_all(&if big_endian {
-                            component.to_be_bytes()
-                        } else {
-                            component.to_le_bytes()
-                        })?;
-                    }
-                }
-                PlyPositionData::Int32(values) => {
-                    for component in values[i] {
-                        writer.write_all(&if big_endian {
-                            component.to_be_bytes()
-                        } else {
-                            component.to_le_bytes()
-                        })?;
-                    }
-                }
-                PlyPositionData::Uint32(values) => {
-                    for component in values[i] {
-                        writer.write_all(&if big_endian {
-                            component.to_be_bytes()
-                        } else {
-                            component.to_le_bytes()
-                        })?;
-                    }
-                }
+                PlyPositionData::Float32(values) => entry!(values[i]),
+                PlyPositionData::Float64(values) => entry!(values[i]),
+                PlyPositionData::Int32(values) => entry!(values[i]),
+                PlyPositionData::Uint32(values) => entry!(values[i]),
             }
 
             if has_normals {
-                let [nx, ny, nz] = self.normals[i];
-                writer.write_all(&if big_endian {
-                    nx.to_be_bytes()
-                } else {
-                    nx.to_le_bytes()
-                })?;
-                writer.write_all(&if big_endian {
-                    ny.to_be_bytes()
-                } else {
-                    ny.to_le_bytes()
-                })?;
-                writer.write_all(&if big_endian {
-                    nz.to_be_bytes()
-                } else {
-                    nz.to_le_bytes()
-                })?;
+                entry!(self.normals[i]);
             }
 
             if has_colors {
@@ -660,25 +637,11 @@ impl PlyWriter {
             }
 
             if has_texcoords {
-                let [u, v] = self.texcoords[i];
-                writer.write_all(&if big_endian {
-                    u.to_be_bytes()
-                } else {
-                    u.to_le_bytes()
-                })?;
-                writer.write_all(&if big_endian {
-                    v.to_be_bytes()
-                } else {
-                    v.to_le_bytes()
-                })?;
+                entry!(self.texcoords[i]);
             }
 
-            for column in &self.generics {
-                let mut value = generic_value(column, i);
-                if big_endian {
-                    value.reverse();
-                }
-                writer.write_all(&value)?;
+            if !widths.is_empty() {
+                self.write_generic_values(writer, i, &widths, big_endian)?;
             }
         }
 
@@ -701,6 +664,32 @@ impl PlyWriter {
 
         Ok(())
     }
+
+    /// One vertex's carried values, each column `widths` bytes wide. Kept out
+    /// of `write_binary_body`'s loop, which a file without carried properties
+    /// runs as tight as it did before there were any.
+    #[inline(never)]
+    fn write_generic_values<W: Write>(
+        &self,
+        writer: &mut W,
+        vertex: usize,
+        widths: &[usize],
+        big_endian: bool,
+    ) -> io::Result<()> {
+        for (column, &width) in self.generics.iter().zip(widths) {
+            match column.bytes.get(vertex * width..(vertex + 1) * width) {
+                Some(value) if !big_endian => writer.write_all(value)?,
+                _ => {
+                    let (mut value, width) = generic_value(column, vertex);
+                    if big_endian {
+                        value[..width].reverse();
+                    }
+                    writer.write_all(&value[..width])?;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A generic column's value for one vertex, little-endian.
@@ -708,12 +697,17 @@ impl PlyWriter {
 /// Zero for a vertex added after the column's last mesh -- `add_points` does
 /// not pad the columns -- which is what an absent value is everywhere else in
 /// this writer.
-fn generic_value(column: &GenericColumn, vertex: usize) -> Vec<u8> {
-    let width = column.data_type.byte_length();
-    column
-        .bytes
-        .get(vertex * width..(vertex + 1) * width)
-        .map_or_else(|| vec![0; width], <[u8]>::to_vec)
+///
+/// Returned in a fixed array, the value in its first `width` bytes: no PLY
+/// scalar is wider than eight, and a `Vec` here was an allocation for every
+/// value of every vertex.
+fn generic_value(column: &GenericColumn, vertex: usize) -> ([u8; 8], usize) {
+    let width = column.data_type.byte_length().min(8);
+    let mut value = [0u8; 8];
+    if let Some(bytes) = column.bytes.get(vertex * width..(vertex + 1) * width) {
+        value[..width].copy_from_slice(bytes);
+    }
+    (value, width)
 }
 
 /// Read a float3 from an attribute at a given point index.
@@ -869,13 +863,35 @@ impl Writer for PlyWriter {
             // Up to where this mesh starts: a property first seen now reads as
             // zero for every vertex an earlier mesh added.
             column.bytes.resize(vertex_offset as usize * width, 0);
+            column.bytes.reserve(mesh.num_points() * width);
+            // Every point its own value, all of them there: each one is a
+            // slice of its entry, taken straight off the buffer.
+            let stride = attribute.byte_stride() as usize;
+            let start = component * width;
+            if attribute.is_mapping_identity()
+                && start + width <= stride
+                && attribute.buffer().data().len() >= mesh.num_points() * stride
+            {
+                for entry in attribute
+                    .buffer()
+                    .data()
+                    .chunks_exact(stride)
+                    .take(mesh.num_points())
+                {
+                    column.bytes.extend_from_slice(&entry[start..start + width]);
+                }
+                continue;
+            }
+            // No PLY scalar is wider than eight bytes; one buffer serves every
+            // point rather than one allocated for each.
+            let mut value = [0u8; 8];
+            let value = &mut value[..width.min(8)];
             for point in 0..mesh.num_points() {
-                let mut value = vec![0u8; width];
                 let offset = crate::traits::value_offset(attribute, point) + component * width;
-                if !attribute.buffer().try_read(offset, &mut value) {
+                if !attribute.buffer().try_read(offset, value) {
                     value.fill(0);
                 }
-                column.bytes.extend_from_slice(&value);
+                column.bytes.extend_from_slice(value);
             }
         }
 
@@ -1516,6 +1532,88 @@ mod tests {
         let mesh = PlyReader::read_from_bytes(&bytes).unwrap();
         assert_eq!(mesh.num_points(), 3);
         assert_eq!(mesh.num_faces(), 1);
+    }
+
+    /// Every fixed-width vertex property reads back as written in each of
+    /// the three encodings -- position, normal, colour and texture coordinate,
+    /// with values whose bytes are not palindromes, so a byte order written
+    /// wrong cannot read back right.
+    #[cfg(feature = "ply-reader")]
+    #[test]
+    fn test_every_vertex_property_reads_back_from_every_encoding() {
+        fn attribute(
+            kind: GeometryAttributeType,
+            data_type: DataType,
+            components: u8,
+            bytes: &[u8],
+        ) -> PointAttribute {
+            let mut attribute = PointAttribute::new();
+            attribute.init(
+                kind,
+                components,
+                data_type,
+                kind == GeometryAttributeType::Color,
+                2,
+            );
+            attribute.buffer_mut().write(0, bytes);
+            attribute
+        }
+        let floats = |values: &[f32]| -> Vec<u8> {
+            values
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect()
+        };
+        let mut mesh = Mesh::new();
+        mesh.set_num_points(2);
+        let written = [
+            (
+                GeometryAttributeType::Position,
+                DataType::Float32,
+                3,
+                floats(&[1.5, -2.25, 3.0e7, -0.125, 6.5, 1.0e-3]),
+            ),
+            (
+                GeometryAttributeType::Normal,
+                DataType::Float32,
+                3,
+                floats(&[0.6, 0.0, -0.8, 0.0, 1.0, 0.0]),
+            ),
+            (
+                GeometryAttributeType::Color,
+                DataType::Uint8,
+                3,
+                vec![1, 2, 3, 250, 128, 7],
+            ),
+            (
+                GeometryAttributeType::TexCoord,
+                DataType::Float32,
+                2,
+                floats(&[0.25, 0.75, 1.5, -3.5]),
+            ),
+        ];
+        for (kind, data_type, components, bytes) in &written {
+            mesh.add_attribute(attribute(*kind, *data_type, *components, bytes));
+        }
+
+        for format in [
+            PlyFormat::Ascii,
+            PlyFormat::BinaryLittleEndian,
+            PlyFormat::BinaryBigEndian,
+        ] {
+            let mut writer = PlyWriter::new().with_format(format);
+            Writer::add_mesh(&mut writer, &mesh, None).unwrap();
+            let read = PlyReader::read_from_bytes(&writer.write_to_vec().unwrap()).unwrap();
+            for (kind, _, _, bytes) in &written {
+                let id = read.named_attribute_id(*kind);
+                assert!(id >= 0, "{format:?}: {kind:?} did not come back");
+                assert_eq!(
+                    read.attribute(id).buffer().data(),
+                    &bytes[..],
+                    "{format:?}: {kind:?}"
+                );
+            }
+        }
     }
 
     #[test]

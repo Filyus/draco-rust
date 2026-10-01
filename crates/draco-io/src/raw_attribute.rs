@@ -18,17 +18,25 @@ pub(crate) fn make_f32x3_attribute(
 ) -> PointAttribute {
     let mut attribute = PointAttribute::new();
     attribute.init(attribute_type, 3, DataType::Float32, false, values.len());
-
-    let buffer = attribute.buffer_mut();
-    for (i, value) in values.iter().enumerate() {
-        let bytes: Vec<u8> = value
-            .iter()
-            .flat_map(|component| component.to_le_bytes())
-            .collect();
-        buffer.write(i * 12, &bytes);
-    }
-
+    write_components(attribute.buffer_mut().data_mut(), values, f32::to_le_bytes);
     attribute
+}
+
+/// Writes `values` into `data`, one entry after another, each component as the
+/// four little-endian bytes `to_le_bytes` gives. `data` is the buffer of an
+/// attribute initialised for `values.len()` entries of `N` such components.
+///
+/// Straight into the buffer: building each entry's bytes as a `Vec` first was
+/// an allocation per point, most of the time a large PLY took to read.
+pub(crate) fn write_components<T: Copy, const N: usize>(
+    data: &mut [u8],
+    values: &[[T; N]],
+    to_le_bytes: impl Fn(T) -> [u8; 4],
+) {
+    let (words, _) = data.as_chunks_mut::<4>();
+    for (word, &component) in words.iter_mut().zip(values.iter().flatten()) {
+        *word = to_le_bytes(component);
+    }
 }
 
 /// Packs a `[f32; 2]`-per-point array into a new texture-coordinate-shaped
@@ -42,15 +50,6 @@ pub(crate) fn make_f32x2_attribute(
 ) -> PointAttribute {
     let mut attribute = PointAttribute::new();
     attribute.init(attribute_type, 2, DataType::Float32, false, values.len());
-
-    let buffer = attribute.buffer_mut();
-    for (i, value) in values.iter().enumerate() {
-        let bytes: Vec<u8> = value
-            .iter()
-            .flat_map(|component| component.to_le_bytes())
-            .collect();
-        buffer.write(i * 8, &bytes);
-    }
-
+    write_components(attribute.buffer_mut().data_mut(), values, f32::to_le_bytes);
     attribute
 }
