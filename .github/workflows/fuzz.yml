@@ -199,9 +199,11 @@ jobs:
             # moved by single digits. Four two-hour soaks on 2026-09-24 and -25
             # moved it by +4, +4 and +10, so it has plateaued with the rest.
             # It keeps one hour rather than the parser budget because it is
-            # the slowest per second -- 30 to 50 executions against the FBX
-            # reader's 3,000 -- so thirty minutes buys it far fewer attempts
-            # than the number suggests.
+            # the slowest per second -- 8 executions against the FBX reader's
+            # 3,000 in the soak of 2026-10-01. Each input is compressed twice
+            # and every result read back, and libFuzzer replays the whole
+            # corpus before it mutates anything: 1,547 s of that hour. Half an
+            # hour would be almost all replay.
             dict: gltf
             soak_seconds: 3600
           - group: gltf_import
