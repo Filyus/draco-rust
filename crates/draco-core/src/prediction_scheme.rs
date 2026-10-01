@@ -173,6 +173,27 @@ pub trait PredictionSchemeEncodingTransform<DataType, CorrType> {
         predicted_vals: &[DataType],
         out_corr_vals: &mut [CorrType],
     );
+
+    /// The corrections for a run of whole entries, `num_components` values an
+    /// entry in each slice, every entry computed as `compute_correction`
+    /// computes one. A transform that treats every value alike, whatever its
+    /// component, can do the run as one flat loop instead.
+    fn compute_corrections(
+        &self,
+        original_vals: &[DataType],
+        predicted_vals: &[DataType],
+        out_corr_vals: &mut [CorrType],
+        num_components: usize,
+    ) {
+        for ((original, predicted), corr) in original_vals
+            .chunks_exact(num_components)
+            .zip(predicted_vals.chunks_exact(num_components))
+            .zip(out_corr_vals.chunks_exact_mut(num_components))
+        {
+            self.compute_correction(original, predicted, corr);
+        }
+    }
+
     fn encode_transform_data(&mut self, buffer: &mut Vec<u8>) -> Status;
     fn get_type(&self) -> PredictionSchemeTransformType;
 

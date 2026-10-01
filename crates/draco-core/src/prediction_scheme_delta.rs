@@ -220,19 +220,15 @@ where
             return Ok(());
         }
 
-        // Encode data from the back using D(i) = D(i) - D(i - 1).
-        let mut i = size - num_components;
-        while i > 0 {
-            let original = &in_data[i..i + num_components];
-            let predicted = &in_data[i - num_components..i];
-            let corr = &mut out_corr[i..i + num_components];
-            self.transform.compute_correction(original, predicted, corr);
-
-            if i < num_components {
-                break;
-            }
-            i -= num_components;
-        }
+        // D(i) = D(i) - D(i - 1) for every entry after the first. Each reads
+        // only the input, so the entries are independent and are handed to the
+        // transform as one run.
+        self.transform.compute_corrections(
+            &in_data[num_components..size],
+            &in_data[..size - num_components],
+            &mut out_corr[num_components..size],
+            num_components,
+        );
 
         // Encode correction for the first element.
         // Pre-allocate zero values outside the loop
