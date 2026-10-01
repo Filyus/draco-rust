@@ -54,14 +54,17 @@ const BLOCK: usize = 8192;
 /// the input cannot line up with the sample.
 const SAMPLE_STRIDE: usize = 17;
 
-/// The order written must undercut the input by at least this, in estimate. The
-/// estimate and the coder disagree by a few percent of the estimate: refining
-/// the file order of a scan lowered the estimate 1.7% and raised the coder's
-/// size 0.9%.
+/// An order is written only if it undercuts, in estimate, by at least this
+/// every order it would replace: the input, and for a refinement also the curve
+/// it was refined from. The estimate and the coder disagree by a few percent of
+/// the estimate: refining the file order of a scan lowered the estimate 1.7%
+/// and raised the coder's size 0.9%, and refining the curve through a lattice
+/// of repeated points lowered it 0.3% and raised the size 1%.
 const WORTH_KEEPING_BELOW: f64 = 0.97;
 
 /// One block in this many is refined first, as a trial: if what it comes to is
-/// not under the input by [`WORTH_KEEPING_BELOW`], the rest is not worth doing.
+/// not under both the input and the curve by [`WORTH_KEEPING_BELOW`], the rest
+/// is not worth doing.
 /// What a given effort makes of a given cloud is not something a threshold can
 /// say, so the trial measures it. A cloud of fewer than four blocks has its
 /// every block tried, and the trial is the whole refinement.
@@ -806,6 +809,14 @@ pub(crate) fn search(pc: &PointCloud, options: &EncoderOptions) -> Option<Vec<Po
     // counted, since those are the ones a result is shaped by.
     let counted_input =
         (position_input + chosen.iter().map(|c| c.cost_input).sum::<u64>()) as f64 / steps;
+    let counted_curve =
+        (position_curve + chosen.iter().map(|c| c.cost_curve).sum::<u64>()) as f64 / steps;
+    // What a refinement has to undercut, and what is written when it does not.
+    let to_beat = WORTH_KEEPING_BELOW * counted_input.min(counted_curve);
+    let unrefined = |curve_order: Vec<u32>| {
+        (counted_curve <= WORTH_KEEPING_BELOW * counted_input)
+            .then(|| curve_order.into_iter().map(PointIndex).collect())
+    };
 
     let refine = |ids: &mut [u32]| {
         if ids.len() < 4 {
@@ -816,7 +827,7 @@ pub(crate) fn search(pc: &PointCloud, options: &EncoderOptions) -> Option<Vec<Po
         ids.copy_from_slice(&lanes.ids);
     };
     let every = (count.div_ceil(BLOCK) / 4).clamp(1, TRIAL_EVERY);
-    let mut order = curve_order;
+    let mut order = curve_order.clone();
     parallel::for_each_chunk_mut(&mut order, BLOCK, threads, |block, ids| {
         if block % every == 0 {
             refine(ids);
@@ -835,10 +846,8 @@ pub(crate) fn search(pc: &PointCloud, options: &EncoderOptions) -> Option<Vec<Po
     let (trial_cost, trial_steps) = trial
         .into_iter()
         .fold((0u64, 0u64), |(cost, steps), (c, s)| (cost + c, steps + s));
-    if trial_steps > 0
-        && trial_cost as f64 / trial_steps as f64 > WORTH_KEEPING_BELOW * counted_input
-    {
-        return None;
+    if trial_steps > 0 && trial_cost as f64 / trial_steps as f64 > to_beat {
+        return unrefined(curve_order);
     }
     parallel::for_each_chunk_mut(&mut order, BLOCK, threads, |block, ids| {
         if block % every != 0 {
@@ -849,8 +858,8 @@ pub(crate) fn search(pc: &PointCloud, options: &EncoderOptions) -> Option<Vec<Po
     // The check after, over the whole result: the blocks that were not in the
     // trial might not have behaved like the ones that were.
     let (cost, sampled) = path_cost(&cells, &quantized, &order, SAMPLE_STRIDE, threads);
-    if cost as f64 / sampled.max(1) as f64 > WORTH_KEEPING_BELOW * counted_input {
-        return None;
+    if cost as f64 / sampled.max(1) as f64 > to_beat {
+        return unrefined(curve_order);
     }
     Some(order.into_iter().map(PointIndex).collect())
 }
@@ -1224,6 +1233,30 @@ mod tests {
             );
             previous = estimate;
         }
+    }
+
+    /// Every point of a lattice four times over: the curve already puts each
+    /// point next to its copies, and what refining it finds after that is a
+    /// fraction of a percent in estimate, which the coder turns into a larger
+    /// stream. The refinement has to beat the curve as well as the input, so
+    /// the curve is what is written.
+    #[test]
+    fn a_refinement_that_barely_beats_the_curve_leaves_the_curve() {
+        let side = 30;
+        let positions: Vec<[f32; 3]> = (0..side * side * side * 4)
+            .map(|i| {
+                let cell = i / 4;
+                [
+                    (cell % side) as f32,
+                    (cell / side % side) as f32,
+                    (cell / side / side) as f32,
+                ]
+            })
+            .collect();
+        let (positions, extras) = shuffled(&positions, &[], 7);
+        let (pc, mut options) = cloud(&positions, &extras);
+        options.set_point_order_search(true);
+        assert_eq!(search(&pc, &options), curve(&pc, &options));
     }
 
     #[test]
