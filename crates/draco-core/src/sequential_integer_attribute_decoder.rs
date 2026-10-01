@@ -776,19 +776,17 @@ impl SequentialIntegerAttributeDecoder {
             //
             // `num_bytes == 0` reads nothing: "every correction is zero" is a
             // claim in the header, and the buffer it sizes is the attribute's
-            // own output. Nothing backs the count, so this is the one place in
-            // the decoder where the allocation budget is load-bearing rather
-            // than a backstop -- and, since the budget is charged nowhere else,
-            // its entire practical surface. What it permits, exactly: below a
-            // 256-byte stream the ratio binds at `262,144` values per input
-            // byte, above it the absolute ceiling binds at `67,108,864` values,
-            // which is 22.4 million vec3 points. This crate never writes such a
-            // stream -- its encoder always emits entropy-coded corrections --
-            // so reaching either bound means a file from elsewhere whose
-            // corrections are uniformly zero and whose point count is past
-            // that.
+            // own output. Nothing in the stream backs the count, so it is
+            // charged as unbacked -- drawn from the values the caller's limits
+            // admitted for the attribute, and charged to the budget only past
+            // them, the same accounting as an entropy-coded run over an
+            // alphabet of one, which is the same constant attribute coded the
+            // other way. This crate never writes it -- its encoder always
+            // emits entropy-coded corrections -- but a file from elsewhere
+            // whose corrections are uniformly zero is legitimate at any point
+            // count the caller admits.
             if num_bytes == 0 {
-                in_buffer.charge_elements(num_values, std::mem::size_of::<i32>())?;
+                in_buffer.charge_unbacked(num_values, std::mem::size_of::<i32>())?;
             } else {
                 let Some(byte_len) = num_values.checked_mul(num_bytes) else {
                     return Err(DracoError::general(format!(

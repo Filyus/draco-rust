@@ -135,10 +135,10 @@ impl KdTreeAttributesDecoder {
             // The caller's ceiling, unlike the budget above, counts what a
             // legitimate file decodes as well as what a hostile one claims, so
             // it is charged here where the size is first known.
-            in_buffer.charge_decoded_bytes(
-                (num_components as usize)
-                    .saturating_mul(data_type.byte_length())
-                    .saturating_mul(point_cloud.num_points()),
+            in_buffer.admit_attribute(
+                point_cloud.num_points(),
+                num_components as usize,
+                data_type.byte_length(),
             )?;
             let mut att = PointAttribute::new();
             att.init_deferred(

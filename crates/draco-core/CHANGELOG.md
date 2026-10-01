@@ -8,6 +8,20 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- A constant attribute no longer makes the decoder refuse a large stream with
+  `AllocationExceedsInput`. Values that are all equal entropy-code to a run
+  carrying no payload, so a point cloud whose constant attributes summed past
+  67,108,864 values -- an unfilled RGB channel on 22.4 million points, which
+  real scans carry -- was refused, including streams this crate's own encoder
+  wrote and C++ Draco decodes. Such a run is now accounted against the
+  attribute's declared size, which `DecodeLimits` has already admitted, rather
+  than against the internal allocation backstop. A stream claiming more values
+  than the limits allow is still refused at its header, before anything is
+  decoded. With `DecodeLimits::permissive()` nothing bounds that count, as the
+  name says.
+
 ## [2.2.1](https://github.com/Filyus/draco-rust/compare/draco-core-v2.2.0...draco-core-v2.2.1) - 2026-09-29
 
 ### Fixed
