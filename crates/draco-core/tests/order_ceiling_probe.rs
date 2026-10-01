@@ -1176,3 +1176,1323 @@ fn what_the_estimated_bits_objective_reaches() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Making the estimated-bits refinement cheap, in safe Rust.
+// ---------------------------------------------------------------------------
+
+const ROW: usize = 56;
+
+/// One point as the refinement reads it: the attribute bytes and the 16-bit
+/// position cell, in exactly one cache line.
+#[derive(Clone, Copy)]
+#[repr(C, align(64))]
+struct Packed {
+    row: [u8; ROW],
+    pos: [u16; 3],
+}
+
+struct Luts {
+    l8: Box<[f32; 256]>,
+    l16: Box<[f32; 65536]>,
+}
+
+impl Luts {
+    fn new() -> Self {
+        let l8: Vec<f32> = (0..256).map(|d| (1.0 + d as f32).log2()).collect();
+        let l16: Vec<f32> = (0..65536).map(|d| (1.0 + d as f32).log2()).collect();
+        Luts {
+            l8: l8.try_into().expect("256 entries"),
+            l16: l16.try_into().expect("65536 entries"),
+        }
+    }
+}
+
+/// The estimated bits of the residuals between two points, or something at
+/// least `limit` as soon as the running sum reaches it: every term is
+/// non-negative, so a sum already over the limit cannot come back under.
+/// `columns` is a multiple of eight.
+#[inline(always)]
+fn edge_cost(a: &Packed, b: &Packed, columns: usize, luts: &Luts, limit: f32) -> f32 {
+    let mut sum = luts.l16[a.pos[0].abs_diff(b.pos[0]) as usize]
+        + luts.l16[a.pos[1].abs_diff(b.pos[1]) as usize]
+        + luts.l16[a.pos[2].abs_diff(b.pos[2]) as usize];
+    for (xa, xb) in a.row[..columns]
+        .chunks_exact(8)
+        .zip(b.row[..columns].chunks_exact(8))
+    {
+        for k in 0..8 {
+            sum += luts.l8[xa[k].abs_diff(xb[k]) as usize];
+        }
+        if sum >= limit {
+            return sum;
+        }
+    }
+    sum
+}
+
+#[derive(Clone, Copy)]
+struct Tricks {
+    /// Give up on a candidate as soon as it cannot beat what it replaces.
+    prune: bool,
+    /// Revisit only the starts a reversal could have changed.
+    dirty: bool,
+}
+
+/// 2-opt over one block of the path with its two end points held fixed, so
+/// blocks are independent of one another and the edges between them never
+/// change. Step costs are cached: reversing a stretch leaves the costs inside
+/// it as they were, in reverse order.
+fn refine_block(
+    points: &mut [Packed],
+    ids: &mut [u32],
+    window: usize,
+    passes: usize,
+    columns: usize,
+    luts: &Luts,
+    tricks: Tricks,
+) {
+    let n = points.len();
+    if n < 4 {
+        return;
+    }
+    let mut edges: Vec<f32> = (0..n - 1)
+        .map(|i| edge_cost(&points[i], &points[i + 1], columns, luts, f32::INFINITY))
+        .collect();
+    let mut dirty = vec![true; n];
+    let mut next = vec![false; n];
+    for _ in 0..passes {
+        let mut moved = false;
+        for i in 1..n - 1 {
+            if tricks.dirty && !dirty[i] {
+                continue;
+            }
+            for j in i + 1..(i + window).min(n - 1) {
+                let old = edges[i - 1] + edges[j];
+                let (limit_a, limit_b) = if tricks.prune {
+                    (old, f32::INFINITY)
+                } else {
+                    (f32::INFINITY, f32::INFINITY)
+                };
+                let ac = edge_cost(&points[i - 1], &points[j], columns, luts, limit_a);
+                if tricks.prune && ac >= old {
+                    continue;
+                }
+                let limit_b = if tricks.prune { old - ac } else { limit_b };
+                let bd = edge_cost(&points[i], &points[j + 1], columns, luts, limit_b);
+                if ac + bd + 1e-4 < old {
+                    points[i..=j].reverse();
+                    ids[i..=j].reverse();
+                    edges[i..j].reverse();
+                    edges[i - 1] = ac;
+                    edges[j] = bd;
+                    moved = true;
+                    let low = i.saturating_sub(window + 2);
+                    let high = (j + 2).min(n - 1);
+                    next[low..=high].fill(true);
+                }
+            }
+        }
+        std::mem::swap(&mut dirty, &mut next);
+        next.fill(false);
+        if !moved {
+            break;
+        }
+    }
+}
+
+/// The columns ordered by how many bits their residuals cost along `order`,
+/// dearest first: the ones worth counting come first, and the early exit in
+/// `edge_cost` meets its limit sooner.
+fn columns_by_cost(rows: &[[u8; 64]], order: &[u32], luts: &Luts) -> Vec<usize> {
+    let mut totals = [0f64; ROW];
+    for pair in order.windows(2) {
+        let a = &rows[pair[0] as usize];
+        let b = &rows[pair[1] as usize];
+        for k in 0..ROW {
+            totals[k] += f64::from(luts.l8[a[k].abs_diff(b[k]) as usize]);
+        }
+    }
+    let mut columns: Vec<usize> = (0..ROW).collect();
+    columns.sort_by(|&x, &y| totals[y].partial_cmp(&totals[x]).unwrap());
+    columns
+}
+
+fn pack(
+    cells: &[[u32; 3]],
+    rows: &[[u8; 64]],
+    column_order: &[usize],
+    order: &[u32],
+) -> Vec<Packed> {
+    order
+        .iter()
+        .map(|&p| {
+            let mut row = [0u8; ROW];
+            for (slot, &column) in row.iter_mut().zip(column_order) {
+                *slot = rows[p as usize][column];
+            }
+            let c = cells[p as usize];
+            Packed {
+                row,
+                pos: [c[0] as u16, c[1] as u16, c[2] as u16],
+            }
+        })
+        .collect()
+}
+
+/// The objective the refinement minimizes, over the whole path, counting only
+/// the first `columns` of `row`.
+fn path_bits(points: &[Packed], columns: usize, luts: &Luts) -> f64 {
+    points
+        .windows(2)
+        .map(|w| f64::from(edge_cost(&w[0], &w[1], columns, luts, f32::INFINITY)))
+        .sum()
+}
+
+fn refine_blocks(
+    points: &mut [Packed],
+    ids: &mut [u32],
+    block: usize,
+    threads: usize,
+    window: usize,
+    passes: usize,
+    columns: usize,
+    luts: &Luts,
+    tricks: Tricks,
+) {
+    if threads <= 1 {
+        for (p, i) in points.chunks_mut(block).zip(ids.chunks_mut(block)) {
+            refine_block(p, i, window, passes, columns, luts, tricks);
+        }
+        return;
+    }
+    let work = std::sync::Mutex::new(points.chunks_mut(block).zip(ids.chunks_mut(block)));
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| loop {
+                let Some((p, i)) = work.lock().unwrap().next() else {
+                    break;
+                };
+                refine_block(p, i, window, passes, columns, luts, tricks);
+            });
+        }
+    });
+}
+
+#[test]
+#[ignore = "needs a scene in DRACO_SPLAT_PLY: run with --release --ignored --nocapture"]
+fn how_cheap_the_refinement_gets() {
+    let Some((path, cloud)) = scene_cloud() else {
+        println!("DRACO_SPLAT_PLY is not set; nothing to measure");
+        return;
+    };
+    let num_points = cloud.num_points();
+    println!("scene: {} ({num_points} points)", path.display());
+    let cells = quantized_positions(&cloud).expect("positions");
+    let rows = byte_rows(&cloud);
+    let hilbert = hilbert_order(&cells);
+    let luts = Luts::new();
+    let by_cost = columns_by_cost(&rows, &hilbert, &luts);
+    let first: Vec<usize> = (0..ROW).collect();
+    let window = 16;
+    let passes = 2;
+    let both = Tricks {
+        prune: true,
+        dirty: true,
+    };
+
+    println!(
+        "{:<44} {:>8} {:>12} {:>9}",
+        "variant", "time s", "bits/point", "vs start"
+    );
+    let report = |label: &str, seconds: f64, points: &[Packed], columns: usize, start: f64| {
+        let bits = path_bits(points, columns, &luts);
+        println!(
+            "{label:<44} {seconds:>8.3} {:>12.3} {:>8.2}%",
+            bits / num_points as f64,
+            (bits / start - 1.0) * 100.0
+        );
+    };
+
+    for (columns, column_order, label) in [
+        (56usize, &by_cost, "56 cols"),
+        (24, &by_cost, "top 24 by cost"),
+        (16, &by_cost, "top 16 by cost"),
+        (12, &by_cost, "top 12 by cost"),
+        (12, &first, "first 12 (the earlier probe)"),
+    ] {
+        let start_points = pack(&cells, &rows, column_order, &hilbert);
+        let start = path_bits(&start_points, columns, &luts);
+        println!(
+            "-- {label}: Hilbert path is {:.3} bits/point",
+            start / num_points as f64
+        );
+
+        // The earlier implementation, for the baseline in the same units.
+        let mut order = hilbert.clone();
+        let mut sub_rows = rows.clone();
+        for (r, source) in sub_rows.iter_mut().zip(&rows) {
+            for (slot, &column) in r.iter_mut().zip(column_order.iter()) {
+                *slot = source[column];
+            }
+        }
+        let t = std::time::Instant::now();
+        two_opt_by_estimated_bits(&cells, &sub_rows, columns, &mut order, window, passes);
+        let seconds = t.elapsed().as_secs_f64();
+        report(
+            "  naive (previous implementation)",
+            seconds,
+            &pack(&cells, &rows, column_order, &order),
+            columns,
+            start,
+        );
+
+        let mut reference_ids: Option<Vec<u32>> = None;
+        for (name, tricks, block, threads) in [
+            (
+                "  cached edges, whole path",
+                Tricks {
+                    prune: false,
+                    dirty: false,
+                },
+                n_all(num_points),
+                1usize,
+            ),
+            (
+                "  + early exit",
+                Tricks {
+                    prune: true,
+                    dirty: false,
+                },
+                n_all(num_points),
+                1,
+            ),
+            ("  + dirty starts", both, n_all(num_points), 1),
+            ("  + blocks of 8192", both, 8192, 1),
+            ("  + 4 threads", both, 8192, 4),
+            ("  + 16 threads", both, 8192, 16),
+        ] {
+            let mut points = start_points.clone();
+            let mut ids = hilbert.clone();
+            let t = std::time::Instant::now();
+            refine_blocks(
+                &mut points,
+                &mut ids,
+                block,
+                threads,
+                window,
+                passes,
+                columns,
+                &luts,
+                tricks,
+            );
+            let seconds = t.elapsed().as_secs_f64();
+            report(name, seconds, &points, columns, start);
+            if block == 8192 {
+                match &reference_ids {
+                    None => reference_ids = Some(ids),
+                    Some(r) => assert_eq!(r, &ids, "threads changed the result"),
+                }
+            }
+        }
+    }
+}
+
+fn n_all(n: usize) -> usize {
+    n
+}
+
+// -- Cost models for the speed stand ---------------------------------------
+
+/// Which way a step is priced. All five estimate the same thing, the bits of a
+/// residual, and the quality column of the stand says what the cheaper ones
+/// give up.
+#[derive(Clone, Copy, Debug)]
+enum Model {
+    /// `log2(1 + d)` from a float table, one lookup a column.
+    Lut,
+    /// The same table, but the byte differences are taken in a separate loop
+    /// the compiler can vectorize before the lookups.
+    DiffLut,
+    /// A table of `round(16 * log2(1 + d))` as `u16`: integer sums.
+    Fixed,
+    /// The length of `d` in bits, from eight comparisons a column, no table.
+    BitLength,
+    /// Two steps to the bit, from fifteen comparisons a column, no table.
+    HalfBit,
+    /// `Lut` in chunks of eight columns, the inner loop fixed so it unrolls.
+    Chunk8Lut,
+    /// Chunks of eight, the differences taken first, then looked up.
+    Chunk8Diff,
+    /// Chunks of eight, integer table, four partial sums.
+    Chunk8Fixed,
+}
+
+impl Model {
+    const ALL: [Model; 9] = [
+        Model::Lut,
+        Model::DiffLut,
+        Model::Fixed,
+        Model::BitLength,
+        Model::HalfBit,
+        Model::Chunk8Lut,
+        Model::Chunk8Diff,
+        Model::Chunk8Fixed,
+        Model::Lut,
+    ];
+    const fn from_u8(m: u8) -> Model {
+        Model::ALL[m as usize]
+    }
+}
+
+const HALF_BIT_STEPS: [u8; 15] = [1, 2, 3, 4, 6, 8, 11, 16, 23, 32, 45, 64, 91, 128, 181];
+
+struct Tables {
+    luts: Luts,
+    fixed: Box<[u16; 256]>,
+}
+
+impl Tables {
+    fn new() -> Self {
+        let fixed: Vec<u16> = (0..256)
+            .map(|d| (16.0 * (1.0 + d as f32).log2()).round() as u16)
+            .collect();
+        Tables {
+            luts: Luts::new(),
+            fixed: fixed.try_into().expect("256 entries"),
+        }
+    }
+}
+
+#[inline(always)]
+fn priced<const M: u8>(a: &Packed, b: &Packed, columns: usize, t: &Tables) -> f32 {
+    let model = Model::from_u8(M);
+    let position = t.luts.l16[a.pos[0].abs_diff(b.pos[0]) as usize]
+        + t.luts.l16[a.pos[1].abs_diff(b.pos[1]) as usize]
+        + t.luts.l16[a.pos[2].abs_diff(b.pos[2]) as usize];
+    let ra = &a.row[..columns];
+    let rb = &b.row[..columns];
+    match model {
+        Model::Lut => {
+            let mut sum = 0f32;
+            for (x, y) in ra.iter().zip(rb) {
+                sum += t.luts.l8[x.abs_diff(*y) as usize];
+            }
+            position + sum
+        }
+        Model::DiffLut => {
+            let mut diff = [0u8; ROW];
+            for k in 0..ROW {
+                diff[k] = a.row[k].abs_diff(b.row[k]);
+            }
+            let mut sum = 0f32;
+            for &d in &diff[..columns] {
+                sum += t.luts.l8[d as usize];
+            }
+            position + sum
+        }
+        Model::Fixed => {
+            let mut diff = [0u8; ROW];
+            for k in 0..ROW {
+                diff[k] = a.row[k].abs_diff(b.row[k]);
+            }
+            let mut sum = 0u32;
+            for &d in &diff[..columns] {
+                sum += u32::from(t.fixed[d as usize]);
+            }
+            position + sum as f32 * (1.0 / 16.0)
+        }
+        Model::BitLength => {
+            let mut bits = [0u8; ROW];
+            for k in 0..ROW {
+                let d = a.row[k].abs_diff(b.row[k]);
+                bits[k] = u8::from(d >= 1)
+                    + u8::from(d >= 2)
+                    + u8::from(d >= 4)
+                    + u8::from(d >= 8)
+                    + u8::from(d >= 16)
+                    + u8::from(d >= 32)
+                    + u8::from(d >= 64)
+                    + u8::from(d >= 128);
+            }
+            let sum: u32 = bits[..columns].iter().map(|&x| u32::from(x)).sum();
+            position + sum as f32
+        }
+        Model::Chunk8Lut => {
+            let mut sum = 0f32;
+            for (xa, xb) in ra.chunks_exact(8).zip(rb.chunks_exact(8)) {
+                for k in 0..8 {
+                    sum += t.luts.l8[xa[k].abs_diff(xb[k]) as usize];
+                }
+            }
+            position + sum
+        }
+        Model::Chunk8Diff => {
+            let mut sum = 0f32;
+            for (xa, xb) in ra.chunks_exact(8).zip(rb.chunks_exact(8)) {
+                let mut d = [0u8; 8];
+                for k in 0..8 {
+                    d[k] = xa[k].abs_diff(xb[k]);
+                }
+                sum += t.luts.l8[d[0] as usize]
+                    + t.luts.l8[d[1] as usize]
+                    + t.luts.l8[d[2] as usize]
+                    + t.luts.l8[d[3] as usize]
+                    + t.luts.l8[d[4] as usize]
+                    + t.luts.l8[d[5] as usize]
+                    + t.luts.l8[d[6] as usize]
+                    + t.luts.l8[d[7] as usize];
+            }
+            position + sum
+        }
+        Model::Chunk8Fixed => {
+            let mut sum = 0u32;
+            for (xa, xb) in ra.chunks_exact(8).zip(rb.chunks_exact(8)) {
+                let mut d = [0u8; 8];
+                for k in 0..8 {
+                    d[k] = xa[k].abs_diff(xb[k]);
+                }
+                let f = |i: usize| u32::from(t.fixed[d[i] as usize]);
+                sum += (f(0) + f(1)) + (f(2) + f(3)) + ((f(4) + f(5)) + (f(6) + f(7)));
+            }
+            position + sum as f32 * (1.0 / 16.0)
+        }
+        Model::HalfBit => {
+            let mut halves = [0u8; ROW];
+            for k in 0..ROW {
+                let d = a.row[k].abs_diff(b.row[k]);
+                let mut h = 0u8;
+                for step in HALF_BIT_STEPS {
+                    h += u8::from(d >= step);
+                }
+                halves[k] = h;
+            }
+            let sum: u32 = halves[..columns].iter().map(|&x| u32::from(x)).sum();
+            position + sum as f32 * 0.5
+        }
+    }
+}
+
+fn refine_modelled<const M: u8>(
+    points: &mut [Packed],
+    ids: &mut [u32],
+    window: usize,
+    passes: usize,
+    columns: usize,
+    t: &Tables,
+) {
+    let n = points.len();
+    let mut edges: Vec<f32> = (0..n - 1)
+        .map(|i| priced::<M>(&points[i], &points[i + 1], columns, t))
+        .collect();
+    for _ in 0..passes {
+        let mut moved = false;
+        for i in 1..n - 1 {
+            for j in i + 1..(i + window).min(n - 1) {
+                let old = edges[i - 1] + edges[j];
+                let ac = priced::<M>(&points[i - 1], &points[j], columns, t);
+                let bd = priced::<M>(&points[i], &points[j + 1], columns, t);
+                if ac + bd + 1e-4 < old {
+                    points[i..=j].reverse();
+                    ids[i..=j].reverse();
+                    edges[i..j].reverse();
+                    edges[i - 1] = ac;
+                    edges[j] = bd;
+                    moved = true;
+                }
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
+}
+
+#[test]
+#[ignore = "needs a scene in DRACO_SPLAT_PLY: run with --release --ignored --nocapture"]
+fn which_cost_model_is_cheap_and_good() {
+    let Some((path, cloud)) = scene_cloud() else {
+        println!("DRACO_SPLAT_PLY is not set; nothing to measure");
+        return;
+    };
+    let num_points = cloud.num_points();
+    println!("scene: {} ({num_points} points)", path.display());
+    let cells = quantized_positions(&cloud).expect("positions");
+    let rows = byte_rows(&cloud);
+    let hilbert = hilbert_order(&cells);
+    let tables = Tables::new();
+    let by_cost = columns_by_cost(&rows, &hilbert, &tables.luts);
+    let start_points = pack(&cells, &rows, &by_cost, &hilbert);
+
+    let columns_list: Vec<usize> = std::env::var("DRACO_ORDER_COLUMNS")
+        .ok()
+        .map(|c| c.split(',').filter_map(|x| x.parse().ok()).collect())
+        .unwrap_or_else(|| vec![56, 24, 16]);
+    println!(
+        "{:<26} {:>8} {:>16} {:>12}",
+        "model", "time s", "exact bits/point", "vs Hilbert"
+    );
+    for columns in columns_list {
+        let start = path_bits(&start_points, columns, &tables.luts);
+        println!(
+            "-- {columns} columns: Hilbert is {:.3} bits/point",
+            start / num_points as f64
+        );
+        let run = |m: u8| -> (f64, f64) {
+            let mut best = f64::MAX;
+            let mut bits = 0.0;
+            for _ in 0..3 {
+                let mut points = start_points.clone();
+                let mut ids = hilbert.clone();
+                let t = std::time::Instant::now();
+                match m {
+                    0 => refine_modelled::<0>(&mut points, &mut ids, 16, 2, columns, &tables),
+                    1 => refine_modelled::<1>(&mut points, &mut ids, 16, 2, columns, &tables),
+                    2 => refine_modelled::<2>(&mut points, &mut ids, 16, 2, columns, &tables),
+                    5 => refine_modelled::<5>(&mut points, &mut ids, 16, 2, columns, &tables),
+                    6 => refine_modelled::<6>(&mut points, &mut ids, 16, 2, columns, &tables),
+                    7 => refine_modelled::<7>(&mut points, &mut ids, 16, 2, columns, &tables),
+                    _ => unreachable!(),
+                }
+                best = best.min(t.elapsed().as_secs_f64());
+                bits = path_bits(&points, columns, &tables.luts);
+            }
+            (best, bits)
+        };
+        for m in [0u8, 1, 2, 5, 6, 7] {
+            let (seconds, bits) = run(m);
+            println!(
+                "{:<26} {seconds:>8.3} {:>16.3} {:>11.2}%",
+                format!("{:?}", Model::from_u8(m)),
+                bits / num_points as f64,
+                (bits / start - 1.0) * 100.0
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "needs a scene in DRACO_SPLAT_PLY: run with --release --ignored --nocapture"]
+fn what_the_columns_and_the_window_buy() {
+    let Some((path, cloud)) = scene_cloud() else {
+        println!("DRACO_SPLAT_PLY is not set; nothing to measure");
+        return;
+    };
+    let num_points = cloud.num_points();
+    println!("scene: {} ({num_points} points)", path.display());
+    let cells = quantized_positions(&cloud).expect("positions");
+    let rows = byte_rows(&cloud);
+    let morton = morton_order(&cells);
+    let hilbert = hilbert_order(&cells);
+    let tables = Tables::new();
+    let by_cost = columns_by_cost(&rows, &hilbert, &tables.luts);
+    let start_points = pack(&cells, &rows, &by_cost, &hilbert);
+    let morton_bytes = encode(&permute(&cloud, &morton), false);
+    let hilbert_bytes = encode(&permute(&cloud, &hilbert), false);
+    let vs = |bytes: usize| {
+        format!(
+            "{:+.2}%",
+            (bytes as f64 / morton_bytes as f64 - 1.0) * 100.0
+        )
+    };
+    println!(
+        "Morton {:.3} B/point, Hilbert {:.3} ({})",
+        morton_bytes as f64 / num_points as f64,
+        hilbert_bytes as f64 / num_points as f64,
+        vs(hilbert_bytes)
+    );
+    println!(
+        "{:>8} {:>8} {:>9} {:>11} {:>10}",
+        "columns", "window", "passes", "time s (1)", "vs Morton"
+    );
+    for columns in [8usize, 16, 24, 56] {
+        for (window, passes) in [(8usize, 1usize), (16, 1), (16, 2), (32, 2)] {
+            let mut points = start_points.clone();
+            let mut ids = hilbert.clone();
+            let t = std::time::Instant::now();
+            refine_modelled::<2>(&mut points, &mut ids, window, passes, columns, &tables);
+            let seconds = t.elapsed().as_secs_f64();
+            let bytes = encode(&permute(&cloud, &ids), false);
+            println!(
+                "{columns:>8} {window:>8} {passes:>9} {seconds:>11.3} {:>10}",
+                vs(bytes)
+            );
+        }
+    }
+}
+
+/// Moves a stretch of one to `max_len` points to wherever inside `window`
+/// points of it that shortens the path most, order inside the stretch kept.
+/// 2-opt reverses stretches and cannot do this.
+fn or_opt_pass<const M: u8>(
+    points: &mut [Packed],
+    ids: &mut [u32],
+    edges: &mut [f32],
+    window: usize,
+    max_len: usize,
+    columns: usize,
+    t: &Tables,
+) -> bool {
+    let n = points.len();
+    let mut moved = false;
+    let mut i = 1;
+    while i + 1 < n {
+        let mut best_gain = 1e-4f32;
+        let mut best: Option<(usize, usize, usize)> = None; // (len, gap k, ...)
+        for len in 1..=max_len {
+            if i + len >= n {
+                break;
+            }
+            let last = i + len - 1;
+            let bridge = priced::<M>(&points[i - 1], &points[i + len], columns, t);
+            let removed = edges[i - 1] + edges[last] - bridge;
+            // Gaps after the stretch: between k and k + 1, k from i + len.
+            for k in i + len..(i + len + window).min(n - 1) {
+                let add = priced::<M>(&points[k], &points[i], columns, t)
+                    + priced::<M>(&points[last], &points[k + 1], columns, t)
+                    - edges[k];
+                let gain = removed - add;
+                if gain > best_gain {
+                    best_gain = gain;
+                    best = Some((len, k, 0));
+                }
+            }
+            // Gaps before it: between k and k + 1, k + 1 <= i - 1.
+            for k in i.saturating_sub(window).max(1)..i - 1 {
+                let add = priced::<M>(&points[k], &points[i], columns, t)
+                    + priced::<M>(&points[last], &points[k + 1], columns, t)
+                    - edges[k];
+                let gain = removed - add;
+                if gain > best_gain {
+                    best_gain = gain;
+                    best = Some((len, k, 1));
+                }
+            }
+        }
+        if let Some((len, k, backward)) = best {
+            let (lo, hi) = if backward == 0 {
+                points[i..=k].rotate_left(len);
+                ids[i..=k].rotate_left(len);
+                (i - 1, k)
+            } else {
+                points[k + 1..i + len].rotate_right(len);
+                ids[k + 1..i + len].rotate_right(len);
+                (k, i + len)
+            };
+            for e in lo..=hi.min(n - 2) {
+                edges[e] = priced::<M>(&points[e], &points[e + 1], columns, t);
+            }
+            moved = true;
+        }
+        i += 1;
+    }
+    moved
+}
+
+fn edges_of<const M: u8>(points: &[Packed], columns: usize, t: &Tables) -> Vec<f32> {
+    (0..points.len() - 1)
+        .map(|i| priced::<M>(&points[i], &points[i + 1], columns, t))
+        .collect()
+}
+
+#[test]
+#[ignore = "needs a scene in DRACO_SPLAT_PLY: run with --release --ignored --nocapture"]
+fn does_moving_stretches_beat_a_wider_window() {
+    let Some((path, cloud)) = scene_cloud() else {
+        println!("DRACO_SPLAT_PLY is not set; nothing to measure");
+        return;
+    };
+    let num_points = cloud.num_points();
+    println!("scene: {} ({num_points} points)", path.display());
+    let cells = quantized_positions(&cloud).expect("positions");
+    let rows = byte_rows(&cloud);
+    let morton = morton_order(&cells);
+    let hilbert = hilbert_order(&cells);
+    let tables = Tables::new();
+    let by_cost = columns_by_cost(&rows, &hilbert, &tables.luts);
+    let start_points = pack(&cells, &rows, &by_cost, &hilbert);
+    let morton_bytes = encode(&permute(&cloud, &morton), false);
+    let vs = |bytes: usize| {
+        format!(
+            "{:+.2}%",
+            (bytes as f64 / morton_bytes as f64 - 1.0) * 100.0
+        )
+    };
+    let columns = 16usize;
+    println!("{columns} columns");
+    println!("{:<34} {:>9} {:>10}", "arm", "time s", "vs Morton");
+
+    type Arm = (&'static str, usize, usize, usize, usize, usize); // two-opt window, passes, or window, or len, or passes
+    let arms: [Arm; 8] = [
+        ("2-opt w8x1", 8, 1, 0, 0, 0),
+        ("2-opt w16x1", 16, 1, 0, 0, 0),
+        ("or-opt w8 len1", 0, 0, 8, 1, 1),
+        ("or-opt w8 len3", 0, 0, 8, 3, 1),
+        ("or-opt w16 len3", 0, 0, 16, 3, 1),
+        ("2-opt w8x1 + or-opt w8 len3", 8, 1, 8, 3, 1),
+        ("2-opt w16x1 + or-opt w8 len3", 16, 1, 8, 3, 1),
+        ("2-opt w16x2 + or-opt w16 len3 x2", 16, 2, 16, 3, 2),
+    ];
+    for (label, tw, tp, ow, ol, op) in arms {
+        let mut points = start_points.clone();
+        let mut ids = hilbert.clone();
+        let t = std::time::Instant::now();
+        if tw > 0 {
+            refine_modelled::<2>(&mut points, &mut ids, tw, tp, columns, &tables);
+        }
+        if ow > 0 {
+            let mut edges = edges_of::<2>(&points, columns, &tables);
+            for _ in 0..op {
+                if !or_opt_pass::<2>(&mut points, &mut ids, &mut edges, ow, ol, columns, &tables) {
+                    break;
+                }
+            }
+        }
+        let seconds = t.elapsed().as_secs_f64();
+        let mut check = ids.clone();
+        check.sort_unstable();
+        assert!(
+            check.iter().enumerate().all(|(i, &p)| p == i as u32),
+            "a point was lost"
+        );
+        let bytes = encode(&permute(&cloud, &ids), false);
+        println!("{label:<34} {seconds:>9.3} {:>10}", vs(bytes));
+    }
+}
+
+/// Candidate costs for one start, all sixteen at once: one lane a candidate,
+/// one pass a column. `columns[k]` is that column across the whole path, so the
+/// sixteen candidates of a column are sixteen bytes in a row and the loads are
+/// plain loads.
+#[inline(never)]
+fn lane_bits(columns: &[Vec<u8>], count: usize, anchor: usize, first: usize) -> [u16; 16] {
+    let mut total = [0u16; 16];
+    for column in &columns[..count] {
+        let a = column[anchor];
+        let window: &[u8; 16] = column[first..first + 16].try_into().unwrap();
+        let mut bits = [0u8; 16];
+        for lane in 0..16 {
+            let d = a.abs_diff(window[lane]);
+            bits[lane] = u8::from(d >= 1)
+                + u8::from(d >= 2)
+                + u8::from(d >= 4)
+                + u8::from(d >= 8)
+                + u8::from(d >= 16)
+                + u8::from(d >= 32)
+                + u8::from(d >= 64)
+                + u8::from(d >= 128);
+        }
+        for lane in 0..16 {
+            total[lane] += u16::from(bits[lane]);
+        }
+    }
+    total
+}
+
+/// The same sum by a different formulation of the bit length: a float's
+/// exponent field is `floor(log2(x))` for free.
+#[inline(never)]
+fn lane_bits_float(columns: &[Vec<u8>], count: usize, anchor: usize, first: usize) -> [u16; 16] {
+    let mut total = [0u16; 16];
+    for column in &columns[..count] {
+        let a = column[anchor];
+        let window: &[u8; 16] = column[first..first + 16].try_into().unwrap();
+        for lane in 0..16 {
+            let d = u32::from(a.abs_diff(window[lane]));
+            // 1 + d in 1..=256: the exponent of its float is floor(log2(1 + d)).
+            total[lane] += ((((1 + d) as f32).to_bits() >> 23) - 127) as u16;
+        }
+    }
+    total
+}
+
+#[inline(never)]
+fn lane_bits_leading(columns: &[Vec<u8>], count: usize, anchor: usize, first: usize) -> [u16; 16] {
+    let mut total = [0u16; 16];
+    for column in &columns[..count] {
+        let a = column[anchor];
+        let window: &[u8; 16] = column[first..first + 16].try_into().unwrap();
+        for lane in 0..16 {
+            let d = a.abs_diff(window[lane]);
+            total[lane] += (8 - d.leading_zeros()) as u16;
+        }
+    }
+    total
+}
+
+#[test]
+#[ignore = "a timing, run with --release --ignored --nocapture"]
+fn does_the_lane_form_vectorize() {
+    let n = 1_000_000usize;
+    let mut state = 0x2545_f491_4f6c_dd1du64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let columns: Vec<Vec<u8>> = (0..56)
+        .map(|_| (0..n).map(|_| (next() >> 40) as u8).collect())
+        .collect();
+    for count in [56usize, 16] {
+        for (name, f) in [
+            (
+                "compare chain",
+                lane_bits as fn(&[Vec<u8>], usize, usize, usize) -> [u16; 16],
+            ),
+            ("float exponent", lane_bits_float),
+            ("leading_zeros", lane_bits_leading),
+        ] {
+            let mut best = f64::MAX;
+            let mut check = 0u64;
+            for _ in 0..5 {
+                let t = std::time::Instant::now();
+                for i in 1..n - 20 {
+                    let total = f(&columns, count, i - 1, i + 1);
+                    check += u64::from(total[(i & 15) as usize]);
+                }
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            println!(
+                "{count} columns, {name:<15} {:.1} ns per start of 16 candidates = {:.2} ns a candidate (check {check})",
+                best / n as f64 * 1e9,
+                best / n as f64 * 1e9 / 16.0
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The refinement in lane form: columns kept apart, sixteen candidates a step.
+// ---------------------------------------------------------------------------
+
+/// `log2(1 + d)` in quarters of a bit, rounded down: the exponent and the two
+/// top mantissa bits of the float `1 + d`, which is the whole computation.
+#[inline(always)]
+fn quarter_bits(d: u32) -> u16 {
+    (((1 + d) as f32).to_bits() >> 21) as u16 - 508
+}
+
+/// The path with each column stored on its own, so the candidates of one
+/// column are consecutive bytes.
+struct Lanes {
+    n: usize,
+    cols: Vec<Vec<u8>>,
+    pos: [Vec<u16>; 3],
+    ids: Vec<u32>,
+    /// `edges[i]` is the cost of the step from point `i` to point `i + 1`.
+    edges: Vec<u16>,
+    evals: u64,
+    moves: u64,
+    reversed: u64,
+    skipped: u64,
+}
+
+/// How far past the path the columns are padded, so a window of any lane count
+/// can be loaded as one slice wherever it starts.
+const LANE_PAD: usize = 40;
+
+/// The cost from `anchor` to each of the `L` points starting at `first`.
+#[inline(always)]
+fn lane_costs<const L: usize>(
+    cols: &[Vec<u8>],
+    pos: &[Vec<u16>; 3],
+    anchor: usize,
+    first: usize,
+) -> [u16; L] {
+    let mut total = [0u16; L];
+    for axis in pos {
+        let a = axis[anchor];
+        let w: &[u16; L] = axis[first..first + L].try_into().unwrap();
+        for l in 0..L {
+            total[l] += quarter_bits(u32::from(a.abs_diff(w[l])));
+        }
+    }
+    for column in cols {
+        let a = column[anchor];
+        let w: &[u8; L] = column[first..first + L].try_into().unwrap();
+        for l in 0..L {
+            total[l] += quarter_bits(u32::from(a.abs_diff(w[l])));
+        }
+    }
+    total
+}
+
+/// Reverses `buf[i..i + m]` for `m` in `2..=16` as one 128-bit byte swap, a
+/// shift and a blend. The column is padded, so sixteen bytes from `i` exist.
+#[inline(always)]
+fn reverse_short(buf: &mut [u8], i: usize, m: usize) {
+    let chunk: &mut [u8; 16] = (&mut buf[i..i + 16]).try_into().unwrap();
+    let x = u128::from_le_bytes(*chunk);
+    let reversed = x.swap_bytes() >> (8 * (16 - m));
+    let mask = if m == 16 {
+        u128::MAX
+    } else {
+        (1u128 << (8 * m)) - 1
+    };
+    *chunk = ((x & !mask) | (reversed & mask)).to_le_bytes();
+}
+
+/// Adds the cost of `cols` from `anchor` to each of the `L` points at `first`.
+#[inline(always)]
+fn lane_add_columns<const L: usize>(
+    cols: &[Vec<u8>],
+    anchor: usize,
+    first: usize,
+    total: &mut [u16; L],
+) {
+    for column in cols {
+        let a = column[anchor];
+        let w: &[u8; L] = column[first..first + L].try_into().unwrap();
+        for l in 0..L {
+            total[l] += quarter_bits(u32::from(a.abs_diff(w[l])));
+        }
+    }
+}
+
+/// The cost from `anchor` to each of the `L` points at `first` over the
+/// position alone.
+#[inline(always)]
+fn lane_positions<const L: usize>(pos: &[Vec<u16>; 3], anchor: usize, first: usize) -> [u16; L] {
+    let mut total = [0u16; L];
+    for axis in pos {
+        let a = axis[anchor];
+        let w: &[u16; L] = axis[first..first + L].try_into().unwrap();
+        for l in 0..L {
+            total[l] += quarter_bits(u32::from(a.abs_diff(w[l])));
+        }
+    }
+    total
+}
+
+impl Lanes {
+    fn new(points: &[Packed], ids: &[u32], columns: usize) -> Self {
+        let n = points.len();
+        let cols = (0..columns)
+            .map(|k| {
+                let mut v: Vec<u8> = points.iter().map(|p| p.row[k]).collect();
+                v.resize(n + LANE_PAD, 0);
+                v
+            })
+            .collect();
+        let pos = std::array::from_fn(|axis| {
+            let mut v: Vec<u16> = points.iter().map(|p| p.pos[axis]).collect();
+            v.resize(n + LANE_PAD, 0);
+            v
+        });
+        let mut lanes = Lanes {
+            n,
+            cols,
+            pos,
+            ids: ids.to_vec(),
+            edges: vec![0; n + LANE_PAD],
+            evals: 0,
+            moves: 0,
+            reversed: 0,
+            skipped: 0,
+        };
+        for i in 0..n - 1 {
+            lanes.edges[i] = lanes.edge(i, i + 1);
+        }
+        lanes
+    }
+
+    fn edge(&self, a: usize, b: usize) -> u16 {
+        let mut sum = 0u16;
+        for axis in &self.pos {
+            sum += quarter_bits(u32::from(axis[a].abs_diff(axis[b])));
+        }
+        for column in &self.cols {
+            sum += quarter_bits(u32::from(column[a].abs_diff(column[b])));
+        }
+        sum
+    }
+
+    /// 2-opt with `L` candidate ends a start, taking the best of them and
+    /// looking again until none improves. Both end points stay fixed.
+    fn refine<const L: usize>(&mut self, passes: usize, threshold: i32, stage: usize) {
+        let n = self.n;
+        let stage = stage.min(self.cols.len());
+        if n < 4 {
+            return;
+        }
+        for _ in 0..passes {
+            let mut moved = false;
+            for i in 1..n - 1 {
+                loop {
+                    let last = (i + L).min(n - 2);
+                    if i + 1 > last {
+                        break;
+                    }
+                    self.evals += 1;
+                    let mut ac = lane_positions::<L>(&self.pos, i - 1, i + 1);
+                    let mut bd = lane_positions::<L>(&self.pos, i, i + 2);
+                    let old: &[u16; L] = self.edges[i + 1..i + 1 + L].try_into().unwrap();
+                    let before = self.edges[i - 1];
+                    if stage < self.cols.len() {
+                        lane_add_columns::<L>(&self.cols[..stage], i - 1, i + 1, &mut ac);
+                        lane_add_columns::<L>(&self.cols[..stage], i, i + 2, &mut bd);
+                        // What is counted so far is at most what the full cost
+                        // is, so this is an upper bound on each lane's gain.
+                        let mut any = false;
+                        for l in 0..L {
+                            let bound = i32::from(before) + i32::from(old[l])
+                                - i32::from(ac[l])
+                                - i32::from(bd[l]);
+                            any |= bound > threshold && i + 1 + l <= last;
+                        }
+                        if !any {
+                            self.skipped += 1;
+                            break;
+                        }
+                        lane_add_columns::<L>(&self.cols[stage..], i - 1, i + 1, &mut ac);
+                        lane_add_columns::<L>(&self.cols[stage..], i, i + 2, &mut bd);
+                    } else {
+                        lane_add_columns::<L>(&self.cols, i - 1, i + 1, &mut ac);
+                        lane_add_columns::<L>(&self.cols, i, i + 2, &mut bd);
+                    }
+                    let mut best_gain = threshold;
+                    let mut best_lane = usize::MAX;
+                    for l in 0..L {
+                        let j = i + 1 + l;
+                        let gain = i32::from(before) + i32::from(old[l])
+                            - i32::from(ac[l])
+                            - i32::from(bd[l]);
+                        if j <= last && gain > best_gain {
+                            best_gain = gain;
+                            best_lane = l;
+                        }
+                    }
+                    if best_lane == usize::MAX {
+                        break;
+                    }
+                    let j = i + 1 + best_lane;
+                    self.moves += 1;
+                    self.reversed += (j - i + 1) as u64;
+                    let m = j - i + 1;
+                    if m <= 16 {
+                        for column in &mut self.cols {
+                            reverse_short(column, i, m);
+                        }
+                    } else {
+                        for column in &mut self.cols {
+                            column[i..=j].reverse();
+                        }
+                    }
+                    for axis in &mut self.pos {
+                        axis[i..=j].reverse();
+                    }
+                    self.ids[i..=j].reverse();
+                    self.edges[i..j].reverse();
+                    self.edges[i - 1] = ac[best_lane];
+                    self.edges[j] = bd[best_lane];
+                    moved = true;
+                }
+            }
+            if !moved {
+                break;
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "needs a scene in DRACO_SPLAT_PLY: run with --release --ignored --nocapture"]
+fn how_fast_the_lane_form_is() {
+    let Some((path, cloud)) = scene_cloud() else {
+        println!("DRACO_SPLAT_PLY is not set; nothing to measure");
+        return;
+    };
+    let num_points = cloud.num_points();
+    println!("scene: {} ({num_points} points)", path.display());
+    let cells = quantized_positions(&cloud).expect("positions");
+    let rows = byte_rows(&cloud);
+    let morton = morton_order(&cells);
+    let hilbert = hilbert_order(&cells);
+    let tables = Tables::new();
+    let by_cost = columns_by_cost(&rows, &hilbert, &tables.luts);
+    let start_points = pack(&cells, &rows, &by_cost, &hilbert);
+    let morton_bytes = encode(&permute(&cloud, &morton), false);
+    let vs = |bytes: usize| {
+        format!(
+            "{:+.2}%",
+            (bytes as f64 / morton_bytes as f64 - 1.0) * 100.0
+        )
+    };
+    println!(
+        "{:>7} {:>6} {:>6} {:>9} {:>14} {:>10}",
+        "columns", "lanes", "passes", "time s", "exact bits/pt", "vs Morton"
+    );
+    let threshold: i32 = std::env::var("DRACO_ORDER_THRESHOLD")
+        .ok()
+        .and_then(|t| t.parse().ok())
+        .unwrap_or(0);
+    let stage: usize = std::env::var("DRACO_ORDER_STAGE")
+        .ok()
+        .and_then(|t| t.parse().ok())
+        .unwrap_or(usize::MAX);
+    println!("gain threshold: {threshold} quarter-bits, first stage: {stage} columns");
+    let columns_list: Vec<usize> = std::env::var("DRACO_ORDER_COLUMNS")
+        .ok()
+        .map(|c| c.split(',').filter_map(|x| x.parse().ok()).collect())
+        .unwrap_or_else(|| vec![16, 24, 56]);
+    for columns in columns_list {
+        for (lanes, passes) in [(16usize, 2usize), (32, 2)] {
+            let mut best = f64::MAX;
+            let mut ids = Vec::new();
+            for _ in 0..3 {
+                let mut state = Lanes::new(&start_points, &hilbert, columns);
+                let t = std::time::Instant::now();
+                match lanes {
+                    8 => state.refine::<8>(passes, threshold, stage),
+                    16 => state.refine::<16>(passes, threshold, stage),
+                    _ => state.refine::<32>(passes, threshold, stage),
+                }
+                best = best.min(t.elapsed().as_secs_f64());
+                if columns == 56 && lanes == 16 && passes == 2 {
+                    println!("   counters: {} starts evaluated, {} stopped after the first stage, {} moves, mean reversal {:.1} points", state.evals, state.skipped, state.moves, state.reversed as f64 / state.moves.max(1) as f64);
+                }
+                ids = state.ids;
+            }
+            let mut check = ids.clone();
+            check.sort_unstable();
+            assert!(
+                check.iter().enumerate().all(|(i, &p)| p == i as u32),
+                "a point was lost"
+            );
+            let refined = pack(&cells, &rows, &by_cost, &ids);
+            let bits = path_bits(&refined, columns, &tables.luts) / num_points as f64;
+            let bytes = encode(&permute(&cloud, &ids), false);
+            println!(
+                "{columns:>7} {lanes:>6} {passes:>6} {best:>9.3} {bits:>14.3} {:>10}",
+                vs(bytes)
+            );
+        }
+    }
+}
+
+/// The lane-form refinement over blocks of the path that are independent of
+/// one another, across `threads` threads. The result does not depend on the
+/// number of threads: a block's outcome is a function of the block alone.
+fn refine_lane_blocks<const L: usize>(
+    points: &[Packed],
+    ids: &mut [u32],
+    block: usize,
+    threads: usize,
+    passes: usize,
+    columns: usize,
+) {
+    let run = |p: &[Packed], i: &mut [u32]| {
+        if p.len() < 4 {
+            return;
+        }
+        let mut lanes = Lanes::new(p, i, columns);
+        lanes.refine::<L>(passes, 0, usize::MAX);
+        i.copy_from_slice(&lanes.ids);
+    };
+    if threads <= 1 {
+        for (p, i) in points.chunks(block).zip(ids.chunks_mut(block)) {
+            run(p, i);
+        }
+        return;
+    }
+    let work = std::sync::Mutex::new(points.chunks(block).zip(ids.chunks_mut(block)));
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| loop {
+                let Some((p, i)) = work.lock().unwrap().next() else {
+                    break;
+                };
+                run(p, i);
+            });
+        }
+    });
+}
+
+#[test]
+#[ignore = "needs a scene in DRACO_SPLAT_PLY: run with --release --ignored --nocapture"]
+fn what_the_whole_pipeline_costs() {
+    let Some((path, cloud)) = scene_cloud() else {
+        println!("DRACO_SPLAT_PLY is not set; nothing to measure");
+        return;
+    };
+    let num_points = cloud.num_points();
+    println!("scene: {} ({num_points} points)", path.display());
+    let cells = quantized_positions(&cloud).expect("positions");
+    let t = std::time::Instant::now();
+    let rows = byte_rows(&cloud);
+    println!(
+        "quantize the attributes to bytes (the probe's slow reader): {:.3} s",
+        t.elapsed().as_secs_f64()
+    );
+    let morton = morton_order(&cells);
+    let t = std::time::Instant::now();
+    let hilbert = hilbert_order(&cells);
+    println!(
+        "Hilbert order of the cells: {:.3} s",
+        t.elapsed().as_secs_f64()
+    );
+    let tables = Tables::new();
+    let t = std::time::Instant::now();
+    let by_cost = columns_by_cost(&rows, &hilbert, &tables.luts);
+    println!(
+        "rank the columns by cost along the path: {:.3} s",
+        t.elapsed().as_secs_f64()
+    );
+    let t = std::time::Instant::now();
+    let start_points = pack(&cells, &rows, &by_cost, &hilbert);
+    println!(
+        "gather the points in path order: {:.3} s",
+        t.elapsed().as_secs_f64()
+    );
+    let morton_bytes = encode(&permute(&cloud, &morton), false);
+    let vs = |bytes: usize| {
+        format!(
+            "{:+.2}%",
+            (bytes as f64 / morton_bytes as f64 - 1.0) * 100.0
+        )
+    };
+
+    println!(
+        "{:>7} {:>8} {:>8} {:>9} {:>10}",
+        "columns", "block", "threads", "time s", "vs Morton"
+    );
+    let mut reference: std::collections::HashMap<(usize, usize), Vec<u32>> = Default::default();
+    for columns in [16usize, 56] {
+        for (block, threads) in [
+            (usize::MAX, 1usize),
+            (8192, 1),
+            (8192, 4),
+            (8192, 16),
+            (2048, 16),
+        ] {
+            let block_len = block.min(num_points);
+            let mut best = f64::MAX;
+            let mut ids = hilbert.clone();
+            for _ in 0..3 {
+                ids = hilbert.clone();
+                let t = std::time::Instant::now();
+                refine_lane_blocks::<16>(&start_points, &mut ids, block_len, threads, 2, columns);
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            let bytes = encode(&permute(&cloud, &ids), false);
+            if block != usize::MAX {
+                match reference.get(&(columns, block)) {
+                    None => {
+                        reference.insert((columns, block), ids);
+                    }
+                    Some(r) => assert_eq!(r, &ids, "the thread count changed the result"),
+                }
+            }
+            let label = if block == usize::MAX {
+                "whole".to_string()
+            } else {
+                block.to_string()
+            };
+            println!(
+                "{columns:>7} {label:>8} {threads:>8} {best:>9.3} {:>10}",
+                vs(bytes)
+            );
+        }
+    }
+}
