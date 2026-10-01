@@ -1068,15 +1068,24 @@ fn would_the_attributes_belong_in_the_order() {
 /// Every attribute but the position, quantized to the byte the encode uses
 /// (`quantization_bits` 8 over each component's own range), one row a point.
 fn byte_rows(cloud: &PointCloud) -> Vec<[u8; 64]> {
+    byte_rows_mapped(cloud).0
+}
+
+/// The rows, and for each attribute of the cloud the column its first
+/// component landed in. An attribute that never varies costs nothing to step
+/// across and gets no column: 3DGS writes `nx ny nz` as zeros.
+fn byte_rows_mapped(cloud: &PointCloud) -> (Vec<[u8; 64]>, Vec<Option<usize>>) {
     let num_points = cloud.num_points();
     let names = attribute_names(cloud);
     let mut rows = vec![[0u8; 64]; num_points];
     let mut column = 0usize;
+    let mut map = vec![None; cloud.num_attributes() as usize];
     for id in 0..cloud.num_attributes() {
         let attribute = cloud.attribute(id);
         if attribute.attribute_type() == GeometryAttributeType::Position {
             continue;
         }
+        let first_column = column;
         let is_float = attribute.data_type() == draco_core::DataType::Float32;
         let levels = if is_float {
             ((1u32 << budget_bits(names[id as usize].as_deref())) - 1) as f32
@@ -1095,16 +1104,20 @@ fn byte_rows(cloud: &PointCloud) -> Vec<[u8; 64]> {
                 .collect();
             let low = values.iter().copied().fold(f32::INFINITY, f32::min);
             let high = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-            let span = (high - low).max(1e-12);
+            if high - low < 1e-12 {
+                continue;
+            }
+            let span = high - low;
             let (low, span) = if is_float { (low, span) } else { (0.0, 255.0) };
             for (p, v) in values.iter().enumerate() {
                 rows[p][column] = (((v - low) / span) * levels + 0.5) as u8;
             }
             column += 1;
         }
+        map[id as usize] = (column > first_column).then_some(first_column);
     }
     assert!(column <= 64, "{column} attribute columns do not fit a row");
-    rows
+    (rows, map)
 }
 
 /// 2-opt in a window where a step costs the estimated bits of the residuals it
@@ -2143,11 +2156,13 @@ struct Lanes {
     moves: u64,
     reversed: u64,
     skipped: u64,
+    weights: Vec<u16>,
+    pos_weight: u16,
 }
 
 /// How far past the path the columns are padded, so a window of any lane count
 /// can be loaded as one slice wherever it starts.
-const LANE_PAD: usize = 40;
+const LANE_PAD: usize = 140;
 
 /// The cost from `anchor` to each of the `L` points starting at `first`.
 #[inline(always)]
@@ -2194,15 +2209,16 @@ fn reverse_short(buf: &mut [u8], i: usize, m: usize) {
 #[inline(always)]
 fn lane_add_columns<const L: usize>(
     cols: &[Vec<u8>],
+    weights: &[u16],
     anchor: usize,
     first: usize,
     total: &mut [u16; L],
 ) {
-    for column in cols {
+    for (column, &weight) in cols.iter().zip(weights) {
         let a = column[anchor];
         let w: &[u8; L] = column[first..first + L].try_into().unwrap();
         for l in 0..L {
-            total[l] += quarter_bits(u32::from(a.abs_diff(w[l])));
+            total[l] += weight * quarter_bits(u32::from(a.abs_diff(w[l])));
         }
     }
 }
@@ -2210,13 +2226,18 @@ fn lane_add_columns<const L: usize>(
 /// The cost from `anchor` to each of the `L` points at `first` over the
 /// position alone.
 #[inline(always)]
-fn lane_positions<const L: usize>(pos: &[Vec<u16>; 3], anchor: usize, first: usize) -> [u16; L] {
+fn lane_positions<const L: usize>(
+    pos: &[Vec<u16>; 3],
+    weight: u16,
+    anchor: usize,
+    first: usize,
+) -> [u16; L] {
     let mut total = [0u16; L];
     for axis in pos {
         let a = axis[anchor];
         let w: &[u16; L] = axis[first..first + L].try_into().unwrap();
         for l in 0..L {
-            total[l] += quarter_bits(u32::from(a.abs_diff(w[l])));
+            total[l] += weight * quarter_bits(u32::from(a.abs_diff(w[l])));
         }
     }
     total
@@ -2224,6 +2245,16 @@ fn lane_positions<const L: usize>(pos: &[Vec<u16>; 3], anchor: usize, first: usi
 
 impl Lanes {
     fn new(points: &[Packed], ids: &[u32], columns: usize) -> Self {
+        Self::weighted(points, ids, columns, &vec![1; columns], 1)
+    }
+
+    fn weighted(
+        points: &[Packed],
+        ids: &[u32],
+        columns: usize,
+        weights: &[u16],
+        pos_weight: u16,
+    ) -> Self {
         let n = points.len();
         let cols = (0..columns)
             .map(|k| {
@@ -2247,6 +2278,8 @@ impl Lanes {
             moves: 0,
             reversed: 0,
             skipped: 0,
+            weights: weights[..columns].to_vec(),
+            pos_weight,
         };
         for i in 0..n - 1 {
             lanes.edges[i] = lanes.edge(i, i + 1);
@@ -2257,10 +2290,10 @@ impl Lanes {
     fn edge(&self, a: usize, b: usize) -> u16 {
         let mut sum = 0u16;
         for axis in &self.pos {
-            sum += quarter_bits(u32::from(axis[a].abs_diff(axis[b])));
+            sum += self.pos_weight * quarter_bits(u32::from(axis[a].abs_diff(axis[b])));
         }
-        for column in &self.cols {
-            sum += quarter_bits(u32::from(column[a].abs_diff(column[b])));
+        for (column, &weight) in self.cols.iter().zip(&self.weights) {
+            sum += weight * quarter_bits(u32::from(column[a].abs_diff(column[b])));
         }
         sum
     }
@@ -2282,13 +2315,25 @@ impl Lanes {
                         break;
                     }
                     self.evals += 1;
-                    let mut ac = lane_positions::<L>(&self.pos, i - 1, i + 1);
-                    let mut bd = lane_positions::<L>(&self.pos, i, i + 2);
+                    let mut ac = lane_positions::<L>(&self.pos, self.pos_weight, i - 1, i + 1);
+                    let mut bd = lane_positions::<L>(&self.pos, self.pos_weight, i, i + 2);
                     let old: &[u16; L] = self.edges[i + 1..i + 1 + L].try_into().unwrap();
                     let before = self.edges[i - 1];
                     if stage < self.cols.len() {
-                        lane_add_columns::<L>(&self.cols[..stage], i - 1, i + 1, &mut ac);
-                        lane_add_columns::<L>(&self.cols[..stage], i, i + 2, &mut bd);
+                        lane_add_columns::<L>(
+                            &self.cols[..stage],
+                            &self.weights[..stage],
+                            i - 1,
+                            i + 1,
+                            &mut ac,
+                        );
+                        lane_add_columns::<L>(
+                            &self.cols[..stage],
+                            &self.weights[..stage],
+                            i,
+                            i + 2,
+                            &mut bd,
+                        );
                         // What is counted so far is at most what the full cost
                         // is, so this is an upper bound on each lane's gain.
                         let mut any = false;
@@ -2302,11 +2347,23 @@ impl Lanes {
                             self.skipped += 1;
                             break;
                         }
-                        lane_add_columns::<L>(&self.cols[stage..], i - 1, i + 1, &mut ac);
-                        lane_add_columns::<L>(&self.cols[stage..], i, i + 2, &mut bd);
+                        lane_add_columns::<L>(
+                            &self.cols[stage..],
+                            &self.weights[stage..],
+                            i - 1,
+                            i + 1,
+                            &mut ac,
+                        );
+                        lane_add_columns::<L>(
+                            &self.cols[stage..],
+                            &self.weights[stage..],
+                            i,
+                            i + 2,
+                            &mut bd,
+                        );
                     } else {
-                        lane_add_columns::<L>(&self.cols, i - 1, i + 1, &mut ac);
-                        lane_add_columns::<L>(&self.cols, i, i + 2, &mut bd);
+                        lane_add_columns::<L>(&self.cols, &self.weights, i - 1, i + 1, &mut ac);
+                        lane_add_columns::<L>(&self.cols, &self.weights, i, i + 2, &mut bd);
                     }
                     let mut best_gain = threshold;
                     let mut best_lane = usize::MAX;
@@ -2404,6 +2461,17 @@ fn how_fast_the_lane_form_is() {
         "{:>7} {:>6} {:>6} {:>9} {:>14} {:>10}",
         "columns", "lanes", "passes", "time s", "exact bits/pt", "vs Morton"
     );
+    let lane_configs: Vec<(usize, usize)> = std::env::var("DRACO_ORDER_LANES")
+        .ok()
+        .map(|c| {
+            c.split(';')
+                .filter_map(|t| {
+                    let v: Vec<usize> = t.split(',').filter_map(|x| x.parse().ok()).collect();
+                    (v.len() == 2).then(|| (v[0], v[1]))
+                })
+                .collect()
+        })
+        .unwrap_or_else(|| vec![(16, 2), (32, 2)]);
     let threshold: i32 = std::env::var("DRACO_ORDER_THRESHOLD")
         .ok()
         .and_then(|t| t.parse().ok())
@@ -2418,7 +2486,7 @@ fn how_fast_the_lane_form_is() {
         .map(|c| c.split(',').filter_map(|x| x.parse().ok()).collect())
         .unwrap_or_else(|| vec![16, 24, 56]);
     for columns in columns_list {
-        for (lanes, passes) in [(16usize, 2usize), (32, 2)] {
+        for (lanes, passes) in lane_configs.iter().copied() {
             let mut best = f64::MAX;
             let mut ids = Vec::new();
             for _ in 0..3 {
@@ -2427,7 +2495,9 @@ fn how_fast_the_lane_form_is() {
                 match lanes {
                     8 => state.refine::<8>(passes, threshold, stage),
                     16 => state.refine::<16>(passes, threshold, stage),
-                    _ => state.refine::<32>(passes, threshold, stage),
+                    32 => state.refine::<32>(passes, threshold, stage),
+                    64 => state.refine::<64>(passes, threshold, stage),
+                    _ => state.refine::<128>(passes, threshold, stage),
                 }
                 best = best.min(t.elapsed().as_secs_f64());
                 if columns == 56 && lanes == 16 && passes == 2 {
@@ -2638,5 +2708,465 @@ fn does_the_refined_order_decode_to_the_same_points() {
             set.len(),
             t.elapsed().as_secs_f64()
         );
+    }
+}
+
+/// A start order that is coarse in position and then in the dearest columns:
+/// the Hilbert index of the cell `coarse_bits` an axis, then the bit planes of
+/// the first `columns` columns of `rows`, most significant plane first and the
+/// columns interleaved within a plane, so points in one cell end up beside the
+/// ones that look like them.
+fn cell_then_attributes_order(
+    cells: &[[u32; 3]],
+    rows: &[[u8; 64]],
+    column_order: &[usize],
+    coarse_bits: u32,
+    columns: usize,
+) -> Vec<u32> {
+    let key_bits = 64 - 3 * coarse_bits as usize;
+    let planes = (key_bits / columns.max(1)).min(8);
+    let shift = AXIS_BITS - coarse_bits;
+    let mut keyed: Vec<(u64, u32)> = cells
+        .iter()
+        .zip(rows)
+        .enumerate()
+        .map(|(point, (cell, row))| {
+            let coarse = hilbert_key(
+                cell[0] >> shift,
+                cell[1] >> shift,
+                cell[2] >> shift,
+                coarse_bits,
+            );
+            let mut attributes = 0u64;
+            for plane in 0..planes {
+                for &column in &column_order[..columns] {
+                    attributes = (attributes << 1) | u64::from((row[column] >> (7 - plane)) & 1);
+                }
+            }
+            let used = planes * columns;
+            let key =
+                (coarse << (64 - 3 * coarse_bits as usize)) | (attributes << (key_bits - used));
+            (key, point as u32)
+        })
+        .collect();
+    keyed.sort_unstable();
+    keyed.into_iter().map(|(_, p)| p).collect()
+}
+
+#[test]
+#[ignore = "needs a scene in DRACO_SPLAT_PLY: run with --release --ignored --nocapture"]
+fn which_start_order_refines_best() {
+    let Some((path, cloud)) = scene_cloud() else {
+        println!("DRACO_SPLAT_PLY is not set; nothing to measure");
+        return;
+    };
+    let num_points = cloud.num_points();
+    println!("scene: {} ({num_points} points)", path.display());
+    let cells = quantized_positions(&cloud).expect("positions");
+    let rows = byte_rows(&cloud);
+    let morton = morton_order(&cells);
+    let hilbert = hilbert_order(&cells);
+    let tables = Tables::new();
+    let by_cost = columns_by_cost(&rows, &hilbert, &tables.luts);
+    let morton_bytes = encode(&permute(&cloud, &morton), false);
+    let vs = |bytes: usize| {
+        format!(
+            "{:+.2}%",
+            (bytes as f64 / morton_bytes as f64 - 1.0) * 100.0
+        )
+    };
+    let columns = 16usize;
+
+    let mut starts: Vec<(String, Vec<u32>)> = vec![("Hilbert, 16 bits".into(), hilbert.clone())];
+    for coarse in [4u32, 6, 8] {
+        for attrs in [2usize, 3, 4] {
+            starts.push((
+                format!("cell {coarse} bits, then {attrs} columns"),
+                cell_then_attributes_order(&cells, &rows, &by_cost, coarse, attrs),
+            ));
+        }
+    }
+    println!(
+        "{:<34} {:>12} {:>10} {:>12} {:>10}",
+        "start order", "start alone", "vs Morton", "refined 16x2", "vs Morton"
+    );
+    for (label, order) in starts {
+        let alone = encode(&permute(&cloud, &order), false);
+        let start_points = pack(&cells, &rows, &by_cost, &order);
+        let mut lanes = Lanes::new(&start_points, &order, columns);
+        lanes.refine::<16>(2, 0, usize::MAX);
+        let refined = encode(&permute(&cloud, &lanes.ids), false);
+        println!(
+            "{label:<34} {:>12.3} {:>10} {:>12.3} {:>10}",
+            alone as f64 / num_points as f64,
+            vs(alone),
+            refined as f64 / num_points as f64,
+            vs(refined)
+        );
+    }
+}
+
+/// The cloud in `order`, keeping only the attributes in `keep`.
+fn permute_subset(cloud: &PointCloud, order: &[u32], keep: &[i32]) -> PointCloud {
+    let names = attribute_names(cloud);
+    let mut out = PointCloud::new();
+    out.set_num_points(order.len());
+    for &id in keep {
+        let source = cloud.attribute(id);
+        let mut attribute = PointAttribute::new();
+        attribute.init(
+            source.attribute_type(),
+            source.num_components(),
+            source.data_type(),
+            source.normalized(),
+            order.len(),
+        );
+        let stride = source.byte_stride() as usize;
+        let buffer = attribute.buffer_mut();
+        let mut raw = vec![0u8; stride];
+        for (slot, &point) in order.iter().enumerate() {
+            let value_index = source.mapped_index(PointIndex(point));
+            source
+                .buffer()
+                .read(value_index.0 as usize * stride, &mut raw);
+            buffer.write(slot * stride, &raw);
+        }
+        let new_id = out.add_attribute(attribute);
+        if let Some(name) = names[id as usize].clone() {
+            let unique_id = out.attribute(new_id).unique_id();
+            let mut metadata = Metadata::new();
+            metadata.set_string("name", name).expect("string entry");
+            out.metadata_or_insert()
+                .set_attribute_metadata(unique_id, metadata);
+        }
+    }
+    out
+}
+
+#[test]
+#[ignore = "needs a scene in DRACO_SPLAT_PLY: run with --release --ignored --nocapture"]
+fn does_weighting_the_columns_by_what_they_really_cost_help() {
+    let Some((path, cloud)) = scene_cloud() else {
+        println!("DRACO_SPLAT_PLY is not set; nothing to measure");
+        return;
+    };
+    let num_points = cloud.num_points();
+    println!("scene: {} ({num_points} points)", path.display());
+    let cells = quantized_positions(&cloud).expect("positions");
+    let rows = byte_rows(&cloud);
+    let names = attribute_names(&cloud);
+    let morton = morton_order(&cells);
+    let hilbert = hilbert_order(&cells);
+    let tables = Tables::new();
+    let by_cost = columns_by_cost(&rows, &hilbert, &tables.luts);
+
+    let (_, map) = byte_rows_mapped(&cloud);
+    let position_id = (0..cloud.num_attributes())
+        .find(|id| cloud.attribute(*id).attribute_type() == GeometryAttributeType::Position)
+        .unwrap();
+    let n = num_points as f64;
+    let position_only = encode(&permute_subset(&cloud, &hilbert, &[position_id]), false);
+    let columns_total = map.iter().flatten().count();
+    let mut real = vec![0f64; columns_total];
+    let mut estimated = vec![0f64; columns_total];
+    let mut column_name = vec![String::new(); columns_total];
+    for id in 0..cloud.num_attributes() {
+        let Some(column) = map[id as usize] else {
+            continue;
+        };
+        assert_eq!(
+            cloud.attribute(id).num_components(),
+            1,
+            "one column an attribute here"
+        );
+        let bytes = encode(&permute_subset(&cloud, &hilbert, &[position_id, id]), false);
+        real[column] = (bytes as f64 - position_only as f64) * 8.0 / n;
+        column_name[column] = names[id as usize].clone().unwrap_or_default();
+        for pair in hilbert.windows(2) {
+            let d = rows[pair[0] as usize][column].abs_diff(rows[pair[1] as usize][column]);
+            estimated[column] += f64::from(tables.luts.l8[d as usize]);
+        }
+        estimated[column] /= n;
+    }
+    let mut position_estimate = 0.0;
+    for pair in hilbert.windows(2) {
+        for axis in 0..3 {
+            let d = cells[pair[0] as usize][axis].abs_diff(cells[pair[1] as usize][axis]);
+            position_estimate += f64::from(tables.luts.l16[d.min(65535) as usize]);
+        }
+    }
+    position_estimate /= n;
+    let position_real = position_only as f64 * 8.0 / n;
+    let ratios: Vec<f64> = (0..columns_total)
+        .map(|k| real[k] / estimated[k].max(1e-9))
+        .collect();
+    let mut sorted = ratios.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let median = sorted[sorted.len() / 2];
+    println!(
+        "bits a point along the Hilbert path, estimate against the coder's own; position {:.2} vs {:.2} (ratio {:.2})",
+        position_estimate, position_real, position_real / position_estimate
+    );
+    println!(
+        "ratio over {columns_total} columns: min {:.2}, median {:.2}, max {:.2}",
+        sorted[0],
+        median,
+        sorted[sorted.len() - 1]
+    );
+    for k in 0..columns_total {
+        if k % 6 == 0 || ratios[k] <= sorted[1] || ratios[k] >= sorted[sorted.len() - 2] {
+            println!(
+                "  {:<10} est {:>6.2}  real {:>6.2}  ratio {:>5.2}",
+                column_name[k], estimated[k], real[k], ratios[k]
+            );
+        }
+    }
+
+    let morton_bytes = encode(&permute(&cloud, &morton), false);
+    let vs = |bytes: usize| {
+        format!(
+            "{:+.2}%",
+            (bytes as f64 / morton_bytes as f64 - 1.0) * 100.0
+        )
+    };
+    let by_real: Vec<usize> = {
+        let mut order: Vec<usize> = (0..columns_total).collect();
+        order.sort_by(|&a, &b| real[b].partial_cmp(&real[a]).unwrap());
+        order
+    };
+    let weight_of =
+        |k: usize| -> u16 { ((8.0 * ratios[k] / median).round() as i64).clamp(1, 24) as u16 };
+    let pos_weight =
+        ((8.0 * (position_real / position_estimate) / median).round() as i64).clamp(1, 24) as u16;
+    println!("position weight {pos_weight} / 8");
+    println!("{:<52} {:>10}", "arm (window 16 x 2)", "vs Morton");
+    for (label, rank, weighted, columns) in [
+        (
+            "16 columns ranked by estimate, unweighted",
+            &by_cost,
+            false,
+            16usize,
+        ),
+        (
+            "16 columns ranked by estimate, weighted",
+            &by_cost,
+            true,
+            16,
+        ),
+        (
+            "16 columns ranked by real cost, weighted",
+            &by_real,
+            true,
+            16,
+        ),
+        ("all columns, unweighted", &by_cost, false, columns_total),
+        ("all columns, weighted", &by_cost, true, columns_total),
+    ] {
+        let start_points = pack(&cells, &rows, rank, &hilbert);
+        let weights: Vec<u16> = rank
+            .iter()
+            .map(|&k| if weighted { weight_of(k) } else { 8 })
+            .collect();
+        let mut lanes = Lanes::weighted(
+            &start_points,
+            &hilbert,
+            columns,
+            &weights,
+            if weighted { pos_weight } else { 8 },
+        );
+        lanes.refine::<16>(2, 0, usize::MAX);
+        let bytes = encode(&permute(&cloud, &lanes.ids), false);
+        println!("{label:<52} {:>10}", vs(bytes));
+    }
+}
+
+/// Greedy with a bounded view: from the point just placed, take the cheapest of
+/// the next `view` points not yet placed in the start order. The pool refills
+/// from the start order, so the path stays near where the start order is.
+fn windowed_greedy(
+    points: &[Packed],
+    ids: &[u32],
+    view: usize,
+    columns: usize,
+    t: &Tables,
+) -> (Vec<Packed>, Vec<u32>) {
+    let n = points.len();
+    let mut pool: Vec<usize> = (0..view.min(n)).collect();
+    let mut next = pool.len();
+    let mut out_points = Vec::with_capacity(n);
+    let mut out_ids = Vec::with_capacity(n);
+    let mut current = points[0];
+    out_points.push(current);
+    out_ids.push(ids[0]);
+    // The first point of the start order is placed; the pool starts after it.
+    pool.remove(0);
+    if next < n {
+        pool.push(next);
+        next += 1;
+    }
+    while !pool.is_empty() {
+        let mut best = 0;
+        let mut best_cost = f32::MAX;
+        for (slot, &p) in pool.iter().enumerate() {
+            let c = priced::<2>(&current, &points[p], columns, t);
+            if c < best_cost {
+                best_cost = c;
+                best = slot;
+            }
+        }
+        let chosen = pool[best];
+        current = points[chosen];
+        out_points.push(current);
+        out_ids.push(ids[chosen]);
+        if next < n {
+            pool[best] = next;
+            next += 1;
+        } else {
+            pool.swap_remove(best);
+        }
+    }
+    (out_points, out_ids)
+}
+
+#[test]
+#[ignore = "needs a scene in DRACO_SPLAT_PLY: run with --release --ignored --nocapture"]
+fn does_a_greedy_start_beat_the_plain_curve() {
+    let Some((path, cloud)) = scene_cloud() else {
+        println!("DRACO_SPLAT_PLY is not set; nothing to measure");
+        return;
+    };
+    let num_points = cloud.num_points();
+    println!("scene: {} ({num_points} points)", path.display());
+    let cells = quantized_positions(&cloud).expect("positions");
+    let rows = byte_rows(&cloud);
+    let morton = morton_order(&cells);
+    let hilbert = hilbert_order(&cells);
+    let tables = Tables::new();
+    let by_cost = columns_by_cost(&rows, &hilbert, &tables.luts);
+    let start_points = pack(&cells, &rows, &by_cost, &hilbert);
+    let morton_bytes = encode(&permute(&cloud, &morton), false);
+    let vs = |bytes: usize| {
+        format!(
+            "{:+.2}%",
+            (bytes as f64 / morton_bytes as f64 - 1.0) * 100.0
+        )
+    };
+    let columns = 16usize;
+    println!(
+        "{:<44} {:>9} {:>10}",
+        "arm (16 columns)", "time s", "vs Morton"
+    );
+
+    let mut lanes = Lanes::new(&start_points, &hilbert, columns);
+    let t = std::time::Instant::now();
+    lanes.refine::<16>(2, 0, usize::MAX);
+    let seconds = t.elapsed().as_secs_f64();
+    let bytes = encode(&permute(&cloud, &lanes.ids), false);
+    println!(
+        "{:<44} {seconds:>9.3} {:>10}",
+        "Hilbert + 2-opt w16x2 (the reference)",
+        vs(bytes)
+    );
+
+    for view in [8usize, 16, 32, 64] {
+        let t = std::time::Instant::now();
+        let (points, ids) = windowed_greedy(&start_points, &hilbert, view, columns, &tables);
+        let build = t.elapsed().as_secs_f64();
+        let mut check = ids.clone();
+        check.sort_unstable();
+        assert!(
+            check.iter().enumerate().all(|(i, &p)| p == i as u32),
+            "a point was lost"
+        );
+        let alone = encode(&permute(&cloud, &ids), false);
+        println!(
+            "{:<44} {build:>9.3} {:>10}",
+            format!("greedy, view {view}"),
+            vs(alone)
+        );
+        let mut lanes = Lanes::new(&points, &ids, columns);
+        let t = std::time::Instant::now();
+        lanes.refine::<16>(2, 0, usize::MAX);
+        let seconds = t.elapsed().as_secs_f64() + build;
+        let bytes = encode(&permute(&cloud, &lanes.ids), false);
+        println!(
+            "{:<44} {seconds:>9.3} {:>10}",
+            format!("greedy, view {view}, then 2-opt w16x2"),
+            vs(bytes)
+        );
+    }
+}
+
+#[test]
+#[ignore = "needs a scene in DRACO_SPLAT_PLY: run with --release --ignored --nocapture"]
+fn greedy_against_the_window_at_equal_time() {
+    let Some((path, cloud)) = scene_cloud() else {
+        println!("DRACO_SPLAT_PLY is not set; nothing to measure");
+        return;
+    };
+    let num_points = cloud.num_points();
+    println!("scene: {} ({num_points} points)", path.display());
+    let cells = quantized_positions(&cloud).expect("positions");
+    let rows = byte_rows(&cloud);
+    let morton = morton_order(&cells);
+    let hilbert = hilbert_order(&cells);
+    let tables = Tables::new();
+    let by_cost = columns_by_cost(&rows, &hilbert, &tables.luts);
+    let start_points = pack(&cells, &rows, &by_cost, &hilbert);
+    let morton_bytes = encode(&permute(&cloud, &morton), false);
+    let vs = |bytes: usize| {
+        format!(
+            "{:+.2}%",
+            (bytes as f64 / morton_bytes as f64 - 1.0) * 100.0
+        )
+    };
+    let columns_list: Vec<usize> = std::env::var("DRACO_ORDER_COLUMNS")
+        .ok()
+        .map(|c| c.split(',').filter_map(|x| x.parse().ok()).collect())
+        .unwrap_or_else(|| vec![16, 56]);
+    for columns in columns_list {
+        println!("-- {columns} columns, one thread");
+        println!("{:<40} {:>9} {:>10}", "arm", "time s", "vs Morton");
+        let refine =
+            |points: &[Packed], ids: &[u32], lanes: usize, passes: usize| -> (f64, Vec<u32>) {
+                let mut state = Lanes::new(points, ids, columns);
+                let t = std::time::Instant::now();
+                match lanes {
+                    16 => state.refine::<16>(passes, 0, usize::MAX),
+                    32 => state.refine::<32>(passes, 0, usize::MAX),
+                    _ => state.refine::<64>(passes, 0, usize::MAX),
+                }
+                (t.elapsed().as_secs_f64(), state.ids)
+            };
+        for lanes in [16usize, 32, 64] {
+            let (seconds, ids) = refine(&start_points, &hilbert, lanes, 2);
+            let bytes = encode(&permute(&cloud, &ids), false);
+            println!(
+                "{:<40} {seconds:>9.3} {:>10}",
+                format!("Hilbert + 2-opt w{lanes}x2"),
+                vs(bytes)
+            );
+        }
+        for view in [32usize, 64, 128] {
+            let t = std::time::Instant::now();
+            let (points, ids) = windowed_greedy(&start_points, &hilbert, view, columns, &tables);
+            let build = t.elapsed().as_secs_f64();
+            let alone = encode(&permute(&cloud, &ids), false);
+            println!(
+                "{:<40} {build:>9.3} {:>10}",
+                format!("greedy view {view}"),
+                vs(alone)
+            );
+            for lanes in [16usize, 32] {
+                let (seconds, refined) = refine(&points, &ids, lanes, 2);
+                let bytes = encode(&permute(&cloud, &refined), false);
+                println!(
+                    "{:<40} {:>9.3} {:>10}",
+                    format!("greedy view {view} + 2-opt w{lanes}x2"),
+                    build + seconds,
+                    vs(bytes)
+                );
+            }
+        }
     }
 }
