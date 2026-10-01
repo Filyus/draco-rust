@@ -136,6 +136,7 @@ where
 #[cfg(feature = "encoder")]
 pub struct PredictionSchemeDeltaEncoder<DataType, CorrType, Transform> {
     transform: Transform,
+    threads: usize,
     _marker: PhantomData<(DataType, CorrType)>,
 }
 
@@ -149,8 +150,15 @@ where
     pub fn new(transform: Transform) -> Self {
         Self {
             transform,
+            threads: 1,
             _marker: PhantomData,
         }
+    }
+
+    /// Threads the transform's passes over the values may use. See
+    /// `PredictionSchemeEncodingTransform::init_with_threads`.
+    pub(crate) fn set_threads(&mut self, threads: usize) {
+        self.threads = threads.max(1);
     }
 }
 
@@ -207,7 +215,8 @@ where
         num_components: usize,
         _entry_to_point_id_map: Option<crate::prediction_scheme::EntryToPointIdMap<'_>>,
     ) -> Status {
-        self.transform.init(in_data, size, num_components);
+        self.transform
+            .init_with_threads(in_data, size, num_components, self.threads);
 
         // No values means no entry 0, which the tail encodes unconditionally,
         // and `size - num_components` below would wrap.
@@ -223,11 +232,12 @@ where
         // D(i) = D(i) - D(i - 1) for every entry after the first. Each reads
         // only the input, so the entries are independent and are handed to the
         // transform as one run.
-        self.transform.compute_corrections(
+        self.transform.compute_corrections_with_threads(
             &in_data[num_components..size],
             &in_data[..size - num_components],
             &mut out_corr[num_components..size],
             num_components,
+            self.threads,
         );
 
         // Encode correction for the first element.

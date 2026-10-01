@@ -106,6 +106,36 @@ pub(crate) fn for_each_piece_mut<T: Send>(
     });
 }
 
+/// Values a piece covers in the folds below.
+#[cfg(feature = "encoder")]
+const FOLD_PIECE: usize = 1 << 16;
+
+/// The smallest and largest of `values`, `None` for none, folded in pieces on
+/// `threads` once there are enough of them to repay it. For integers that is
+/// exactly what one pass finds.
+#[cfg(feature = "encoder")]
+pub(crate) fn min_max(values: &[i32], threads: usize) -> Option<(i32, i32)> {
+    // Both bounds in one pass over the values, not one pass each.
+    let fold = |values: &[i32]| {
+        values
+            .iter()
+            .fold((i32::MAX, i32::MIN), |(min, max), &value| {
+                (min.min(value), max.max(value))
+            })
+    };
+    if values.is_empty() {
+        return None;
+    }
+    if threads <= 1 || values.len() < 16 * FOLD_PIECE {
+        return Some(fold(values));
+    }
+    map(values.len().div_ceil(FOLD_PIECE), threads, |piece| {
+        fold(&values[piece * FOLD_PIECE..((piece + 1) * FOLD_PIECE).min(values.len())])
+    })
+    .into_iter()
+    .reduce(|(min_a, max_a), (min_b, max_b)| (min_a.min(min_b), max_a.max(max_b)))
+}
+
 /// Runs `work(chunk_index, chunk)` over consecutive chunks of `data`, `chunk`
 /// elements each and the last one shorter.
 pub(crate) fn for_each_chunk_mut<T: Send>(

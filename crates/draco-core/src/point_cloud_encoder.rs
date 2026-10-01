@@ -614,6 +614,10 @@ impl PointCloudEncoder {
             } else {
                 1
             };
+            // Threads beyond one an attribute go to the attributes themselves:
+            // a scan's two or three attributes would otherwise keep two or
+            // three threads busy, each on tens of millions of values.
+            let inner_threads = (threads / num_attributes.max(1) as usize).max(1);
             let (major, minor) = (out_buffer.version_major(), out_buffer.version_minor());
             let this: &PointCloudEncoder = self;
             let encoded = parallel::map(
@@ -637,6 +641,7 @@ impl PointCloudEncoder {
                                     "Failed to init normal attribute encoder {i}: {e}"
                                 ))
                             })?;
+                            att_encoder.set_threads(inner_threads);
 
                             att_encoder.encode_values(
                                 pc,
@@ -654,6 +659,7 @@ impl PointCloudEncoder {
                             // already in memory; nothing about the call changes.
                             let mut att_encoder = SequentialIntegerAttributeEncoder::new();
                             att_encoder.init(i);
+                            att_encoder.set_threads(inner_threads);
 
                             att_encoder.encode_values(
                                 pc,

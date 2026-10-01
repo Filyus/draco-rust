@@ -1398,6 +1398,55 @@ mod parallel_tests {
         }
     }
 
+    /// A cloud of few attributes, each past a million values, gives each
+    /// attribute threads of its own for its quantization, gather, prediction
+    /// and symbol plan. The stream may not depend on how many, with or without
+    /// the prediction search, which plans twice.
+    #[test]
+    fn an_attribute_split_across_threads_writes_the_same_bytes() {
+        let points = 400_000;
+        let mut rng = Xorshift(11);
+        let mut cloud = PointCloud::new();
+        cloud.set_num_points(points);
+        // Coarse positions, so equal values and both zeros turn up in the
+        // bounds a quantization folds.
+        let positions: Vec<f32> = (0..points * 3)
+            .map(|i| match i % 97 {
+                0 => -0.0,
+                1 => 0.0,
+                _ => (rng.unit() * 64.0).floor() - 32.0,
+            })
+            .collect();
+        cloud.add_attribute(float_attribute(
+            GeometryAttributeType::Position,
+            3,
+            &positions,
+        ));
+        let colours: Vec<u8> = (0..points * 3).map(|_| (rng.next() >> 58) as u8).collect();
+        cloud.add_attribute(byte_attribute(GeometryAttributeType::Color, 3, &colours));
+        let encode = |threads: i32, search: bool| {
+            let mut options = EncoderOptions::new();
+            options.set_encoding_method(0);
+            options.set_attribute_int(0, "quantization_bits", 14);
+            options.set_threads(threads);
+            options.set_prediction_search(search);
+            let mut encoder = PointCloudEncoder::new();
+            encoder.set_point_cloud(cloud.clone());
+            let mut buffer = EncoderBuffer::new();
+            encoder.encode(&options, &mut buffer).expect("encodes");
+            buffer.data().to_vec()
+        };
+        for search in [false, true] {
+            let single = encode(1, search);
+            for threads in [4, 16] {
+                assert!(
+                    encode(threads, search) == single,
+                    "{threads} threads, search {search}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn a_stream_too_small_to_repay_the_threads_is_decoded_in_place() {
         let bytes = stream(500, 2);

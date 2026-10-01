@@ -15,6 +15,7 @@ use crate::encoder_options::EncoderOptions;
 use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use crate::geometry_indices::PointIndex;
 use crate::mesh_prediction_scheme_data::MeshPredictionSchemeData;
+use crate::parallel;
 use crate::point_cloud::PointCloud;
 use crate::point_cloud_encoder::GeometryEncoder;
 use crate::portable_attribute::PredictionParent;
@@ -41,7 +42,7 @@ use crate::prediction_scheme_wrap::PredictionSchemeWrapEncodingTransform;
 use crate::sequential_attribute_encoder::SequentialAttributeEncoder;
 use crate::status::{DracoError, Status};
 use crate::symbol_encoding::{
-    encode_symbols, encode_symbols_with_plan, plan_symbols, SymbolEncodingOptions, SymbolPlan,
+    encode_symbols_with_plan, plan_symbols_with_threads, SymbolEncodingOptions, SymbolPlan,
 };
 
 /// Which transform family this encoder builds its prediction schemes with.
@@ -181,7 +182,16 @@ pub struct SequentialIntegerAttributeEncoder {
     /// and several arms fall back to `Difference` -- so this is the only place
     /// that knows the answer.
     selected_prediction: Option<(PredictionSchemeMethod, PredictionSchemeTransformType)>,
+    /// Threads this attribute's own passes may use: one unless the encoder has
+    /// more threads than attributes to give them. See `set_threads`.
+    threads: usize,
 }
+
+/// Values in an attribute below which its own passes stay on one thread.
+const INNER_PARALLEL_MIN_VALUES: usize = 1 << 20;
+
+/// Values a piece of an attribute's pass covers on a thread.
+const INNER_PIECE: usize = 1 << 16;
 
 impl Default for SequentialIntegerAttributeEncoder {
     fn default() -> Self {
@@ -196,7 +206,18 @@ impl SequentialIntegerAttributeEncoder {
             quantization_transform: None,
             transform_family: IntPredictionTransformFamily::Wrap,
             selected_prediction: None,
+            threads: 1,
         }
+    }
+
+    /// Lets this attribute's passes over its values -- quantization, the
+    /// gather, the prediction, the symbol plan -- run on `threads`. Only the
+    /// rANS write is one chain, and stays on one. Every pass computes what it
+    /// computes alone, piece by piece, and its integer results are combined in
+    /// order, so the stream is the same on any count. A cloud of a few large
+    /// attributes, a scan's position and colour, spends its encode in them.
+    pub(crate) fn set_threads(&mut self, threads: usize) {
+        self.threads = threads.max(1);
     }
 
     /// The prediction scheme and transform the last `encode_values` chose, or
@@ -289,6 +310,7 @@ impl SequentialIntegerAttributeEncoder {
                 // Apply quantization transform (but don't write params yet - that happens
                 // in encode_data_needed_by_portable_transform)
                 let mut q_transform = AttributeQuantizationTransform::new();
+                q_transform.set_threads(self.threads);
                 q_transform.compute_parameters(attribute, quantization_bits)?;
                 q_transform.transform_attribute(
                     attribute,
@@ -319,11 +341,10 @@ impl SequentialIntegerAttributeEncoder {
             debug_log!("DEBUG: is_portable_attribute={}", is_portable_attribute);
         }
 
-        let mut values = Vec::with_capacity(num_values);
         let byte_stride = current_attribute.byte_stride() as usize;
         let data_type = current_attribute.data_type();
         let component_size = data_type.byte_length();
-        for i in 0..num_points {
+        let read_entry = |i: usize, entry: &mut [i32]| {
             let entry_index = if is_portable_attribute {
                 crate::geometry_indices::AttributeValueIndex(i as u32)
             } else {
@@ -331,14 +352,33 @@ impl SequentialIntegerAttributeEncoder {
                 attribute.mapped_index(pid)
             };
             let entry_offset = entry_index.0 as usize * byte_stride;
-
-            for c in 0..num_components {
+            for (c, value) in entry.iter_mut().enumerate() {
                 let component_offset = entry_offset + c * component_size;
-                let val =
-                    read_value_as_i32(current_attribute.buffer(), component_offset, data_type);
-                values.push(val);
+                *value = read_value_as_i32(current_attribute.buffer(), component_offset, data_type);
             }
-        }
+        };
+        let in_pieces = self.threads > 1 && num_values >= INNER_PARALLEL_MIN_VALUES;
+        let mut values = if in_pieces && num_components > 0 {
+            // Each piece reads its own points into its own stretch.
+            let mut values = vec![0i32; num_values];
+            parallel::for_each_chunk_mut(
+                &mut values,
+                INNER_PIECE * num_components,
+                self.threads,
+                |piece, chunk| {
+                    for (offset, entry) in chunk.chunks_exact_mut(num_components).enumerate() {
+                        read_entry(piece * INNER_PIECE + offset, entry);
+                    }
+                },
+            );
+            values
+        } else {
+            let mut values = vec![0i32; num_values];
+            for (i, entry) in values.chunks_exact_mut(num_components.max(1)).enumerate() {
+                read_entry(i, entry);
+            }
+            values
+        };
 
         // Debug: print encoded values
         #[cfg(feature = "debug_logs")]
@@ -428,7 +468,7 @@ impl SequentialIntegerAttributeEncoder {
         // transform at all) rather than build a predictor whose output the
         // decoder cannot read back.
         if self.transform_family == IntPredictionTransformFamily::Wrap {
-            if let (Some(&min_v), Some(&max_v)) = (values.iter().min(), values.iter().max()) {
+            if let Some((min_v, max_v)) = parallel::min_max(&values, self.threads) {
                 let dif = (max_v as i64) - (min_v as i64);
                 if dif >= i32::MAX as i64 {
                     selected_method = PredictionSchemeMethod::None;
@@ -482,6 +522,7 @@ impl SequentialIntegerAttributeEncoder {
                 IntPredictionTransformFamily::Wrap => {
                     let transform = PredictionSchemeWrapEncodingTransform::<i32>::new();
                     let mut predictor = PredictionSchemeDeltaEncoder::new(transform);
+                    predictor.set_threads(self.threads);
                     selected_transform_type = predictor.get_transform_type();
                     predictor.compute_correction_values(
                         &values,
@@ -1239,15 +1280,16 @@ impl SequentialIntegerAttributeEncoder {
             // would have formed from `corrections`, formed here once. Neither
             // `corrections` nor `values` is read again, so each candidate takes
             // the buffer its values came in.
-            let predicted = zigzag(std::mem::take(&mut corrections));
-            let predicted_plan = plan_symbols(&predicted, num_components);
+            let predicted = zigzag(std::mem::take(&mut corrections), self.threads);
+            let predicted_plan =
+                plan_symbols_with_threads(&predicted, num_components, self.threads);
             // What `Difference` writes beyond its symbols: the transform byte
             // and the wrap transform's own data. `None` writes neither.
             let overhead_bits =
                 8 * (1 + pred_data_opt.as_ref().map_or(0, |data| data.len()) as u64);
             let predicted_bits = predicted_plan.estimated_bits() + overhead_bits;
-            let plain = zigzag(std::mem::take(&mut values));
-            let plain_plan = plan_symbols(&plain, num_components);
+            let plain = zigzag(std::mem::take(&mut values), self.threads);
+            let plain_plan = plan_symbols_with_threads(&plain, num_components, self.threads);
             if plain_plan.estimated_bits() < predicted_bits {
                 selected_method = PredictionSchemeMethod::None;
                 pred_data_opt = None;
@@ -1356,7 +1398,7 @@ impl SequentialIntegerAttributeEncoder {
                 // Corrections are already unsigned - just cast
                 (corrections.into_iter().map(|c| c as u32).collect(), None)
             } else {
-                (zigzag(corrections), None)
+                (zigzag(corrections, self.threads), None)
             };
 
         // 6. Encode symbols
@@ -1395,7 +1437,13 @@ impl SequentialIntegerAttributeEncoder {
                 &plan,
                 out_buffer,
             ),
-            None => encode_symbols(&symbols, num_components, &symbol_options, out_buffer),
+            None => encode_symbols_with_plan(
+                &symbols,
+                num_components,
+                &symbol_options,
+                &plan_symbols_with_threads(&symbols, num_components, self.threads),
+                out_buffer,
+            ),
         };
         encoded.map_err(|err| {
             DracoError::general(format!(
@@ -1419,11 +1467,20 @@ impl SequentialIntegerAttributeEncoder {
 /// same size and alignment is built in place, so an attribute-sized list costs
 /// no second allocation, no second set of fresh pages to fault in, and no
 /// second release.
-fn zigzag(corrections: Vec<i32>) -> Vec<u32> {
-    corrections
-        .into_iter()
-        .map(|c| ((c << 1) ^ (c >> 31)) as u32)
-        .collect()
+///
+/// On `threads`, a large list is mapped in place in pieces first, and the
+/// collect is then only the change of type.
+fn zigzag(mut corrections: Vec<i32>, threads: usize) -> Vec<u32> {
+    let zigzag = |c: i32| (c << 1) ^ (c >> 31);
+    if threads > 1 && corrections.len() >= INNER_PARALLEL_MIN_VALUES {
+        parallel::for_each_chunk_mut(&mut corrections, INNER_PIECE, threads, |_, piece| {
+            for c in piece {
+                *c = zigzag(*c);
+            }
+        });
+        return corrections.into_iter().map(|c| c as u32).collect();
+    }
+    corrections.into_iter().map(|c| zigzag(c) as u32).collect()
 }
 
 pub(crate) fn read_value_as_i32(buffer: &DataBuffer, offset: usize, data_type: DataType) -> i32 {
@@ -1501,7 +1558,7 @@ mod tests {
     fn zigzag_maps_signed_to_unsigned_in_the_same_buffer() {
         let corrections = vec![0, -1, 1, -2, 2, i32::MAX, i32::MIN];
         let address = corrections.as_ptr() as usize;
-        let symbols = zigzag(corrections);
+        let symbols = zigzag(corrections, 1);
         assert_eq!(symbols, [0, 1, 2, 3, 4, u32::MAX - 1, u32::MAX]);
         assert_eq!(symbols.as_ptr() as usize, address);
     }

@@ -194,6 +194,30 @@ pub trait PredictionSchemeEncodingTransform<DataType, CorrType> {
         }
     }
 
+    /// `init`, allowed `threads`. A transform that can split its pass says so
+    /// by overriding this; the rest run `init`.
+    fn init_with_threads(
+        &mut self,
+        orig_data: &[DataType],
+        size: usize,
+        num_components: usize,
+        _threads: usize,
+    ) {
+        self.init(orig_data, size, num_components);
+    }
+
+    /// `compute_corrections`, allowed `threads`, with the same contract.
+    fn compute_corrections_with_threads(
+        &self,
+        original_vals: &[DataType],
+        predicted_vals: &[DataType],
+        out_corr_vals: &mut [CorrType],
+        num_components: usize,
+        _threads: usize,
+    ) {
+        self.compute_corrections(original_vals, predicted_vals, out_corr_vals, num_components);
+    }
+
     fn encode_transform_data(&mut self, buffer: &mut Vec<u8>) -> Status;
     fn get_type(&self) -> PredictionSchemeTransformType;
 
