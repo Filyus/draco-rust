@@ -31,7 +31,9 @@ use crate::prediction_scheme_tex_coords_deprecated::MeshPredictionSchemeTexCoord
 use crate::prediction_scheme_tex_coords_portable::MeshPredictionSchemeTexCoordsPortableDecoder;
 use crate::prediction_scheme_wrap::PredictionSchemeWrapDecodingTransform;
 use crate::status::{DracoError, Status};
-use crate::symbol_encoding::{decode_symbols, skip_symbols, SymbolEncodingOptions};
+#[cfg(feature = "point_cloud_decode")]
+use crate::symbol_encoding::skip_symbols;
+use crate::symbol_encoding::{decode_symbols, SymbolEncodingOptions};
 
 /// How a portable attribute may be sized before a value has been read.
 ///
@@ -287,6 +289,7 @@ impl SequentialIntegerAttributeDecoder {
     /// walks, in the same order: the prediction method, its transform, the
     /// compression flag, the symbols, and the data the transform carries behind
     /// them.
+    #[cfg(feature = "point_cloud_decode")]
     pub(crate) fn skip_values(
         num_values: usize,
         num_components: usize,

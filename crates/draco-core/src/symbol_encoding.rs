@@ -582,7 +582,7 @@ pub fn decode_symbols(
 /// caller goes back and decodes. Only the raw scheme is stepped over: its
 /// frequency table is read and the rANS state initialised, which walks the
 /// position past the coded bytes, and no symbol is drawn from them.
-#[cfg(feature = "decoder")]
+#[cfg(feature = "point_cloud_decode")]
 pub(crate) fn skip_symbols(
     num_values: usize,
     num_components: usize,

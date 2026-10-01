@@ -62,6 +62,7 @@ pub struct DecoderBuffer<'a> {
 
 /// The version, ceilings and budget of one decode, set aside to open buffers over
 /// pieces of its stream. See [`DecoderBuffer::child_template`].
+#[cfg(feature = "point_cloud_decode")]
 pub(crate) struct ChildTemplate {
     version_major: u8,
     version_minor: u8,
@@ -74,6 +75,7 @@ pub(crate) struct ChildTemplate {
     spent_at_start: usize,
 }
 
+#[cfg(feature = "point_cloud_decode")]
 impl ChildTemplate {
     /// A buffer over `data`, a stretch of the stream this was taken from. It
     /// charges the counter every other such buffer charges, so what the pieces
@@ -125,6 +127,7 @@ impl<'a> DecoderBuffer<'a> {
     /// What a buffer over a stretch of this one's stream needs from it, taken
     /// now so that the stretch can be opened later, on another thread, while this
     /// buffer goes on being read.
+    #[cfg(feature = "point_cloud_decode")]
     pub(crate) fn child_template(&self) -> ChildTemplate {
         ChildTemplate {
             version_major: self.version_major,

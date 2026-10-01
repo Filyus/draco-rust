@@ -40,6 +40,7 @@ fn available() -> usize {
 
 /// Runs `work(i)` for every `i` in `0..count` and returns the results in index
 /// order.
+#[cfg(feature = "encoder")]
 pub(crate) fn map<T: Send>(
     count: usize,
     threads: usize,
@@ -109,6 +110,7 @@ pub(crate) fn for_each_chunk_mut<T: Send>(
 mod tests {
     use super::*;
 
+    #[cfg(feature = "encoder")]
     #[test]
     fn results_come_back_in_index_order_whatever_the_thread_count() {
         for threads in [1, 2, 7, 16] {
