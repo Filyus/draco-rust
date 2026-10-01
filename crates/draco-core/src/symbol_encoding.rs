@@ -91,10 +91,6 @@ pub fn plan_symbols(symbols: &[u32], num_components: usize) -> SymbolPlan {
     plan_symbols_with_threads(symbols, num_components, 1)
 }
 
-/// Symbols below which a plan is worked out on one thread.
-#[cfg(feature = "encoder")]
-const PLAN_PARALLEL_MIN: usize = 1 << 20;
-
 /// `plan_symbols` on `threads`: the bit-length counts and the histogram are
 /// counted in pieces and added up, which for counts is exactly the single
 /// pass's result, so the plan -- and the scheme it chooses -- is the same.
@@ -115,7 +111,8 @@ pub(crate) fn plan_symbols_with_threads(
         };
     }
 
-    let in_pieces = threads > 1 && symbols.len() >= PLAN_PARALLEL_MIN && num_components > 0;
+    let in_pieces =
+        threads > 1 && symbols.len() >= crate::parallel::PASS_MIN_VALUES && num_components > 0;
     let (tag_frequencies, max_value) = if in_pieces {
         let piece = (1 << 16) * num_components;
         crate::parallel::map(symbols.len().div_ceil(piece), threads, |k| {

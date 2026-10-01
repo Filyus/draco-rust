@@ -274,12 +274,11 @@ impl Grid {
     /// before anything else can start, and one sort of millions of pairs is
     /// the part of it no other thread could help with.
     fn hilbert_order(&self, threads: usize) -> Vec<u32> {
-        const CHUNK: usize = 1 << 16;
         let bits = self.axis_bits;
         let mut keys = vec![0u64; self.len()];
-        parallel::for_each_chunk_mut(&mut keys, CHUNK, threads, |chunk, keys| {
+        parallel::for_each_chunk_mut(&mut keys, parallel::PIECE, threads, |chunk, keys| {
             for (offset, key) in keys.iter_mut().enumerate() {
-                let p = chunk * CHUNK + offset;
+                let p = chunk * parallel::PIECE + offset;
                 *key = hilbert_key(self.cells[0][p], self.cells[1][p], self.cells[2][p], bits);
             }
         });

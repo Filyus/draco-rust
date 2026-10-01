@@ -82,11 +82,6 @@ pub struct PointCloudDecoder {
     threads: i32,
 }
 
-/// Decoded values below which a point cloud stays on the calling thread: a few
-/// milliseconds, which the threads would spend starting.
-#[cfg(feature = "point_cloud_decode")]
-const PARALLEL_MIN_VALUES: usize = 1 << 17;
-
 /// The stream length below which a point cloud stays on the calling thread. A
 /// stream this small claiming this many values is what the allocation budget
 /// exists for, and it is read by one thread and one budget.
@@ -537,7 +532,8 @@ impl PointCloudDecoder {
                 let in_order = false;
                 let in_parallel = bitstream_version >= 0x0200
                     && !in_order
-                    && num_points.saturating_mul(num_attributes_in_decoder) >= PARALLEL_MIN_VALUES
+                    && num_points.saturating_mul(num_attributes_in_decoder)
+                        >= crate::parallel::ATTRIBUTES_MIN_VALUES
                     && buffer.remaining_size() >= PARALLEL_MIN_STREAM_BYTES
                     && decoder_types
                         .iter()

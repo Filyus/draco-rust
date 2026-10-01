@@ -345,10 +345,6 @@ pub struct EncodedPointCloudInfo {
     pub attributes: Vec<EncodedAttributeInfo>,
 }
 
-/// Attribute values below which an encode stays on the calling thread: a few
-/// milliseconds of work, which the threads would spend starting.
-const PARALLEL_MIN_VALUES: usize = 1 << 17;
-
 /// What one attribute's encoder leaves behind: its bytes, and the encoder
 /// itself where the transform data written after all the values is its to give.
 struct EncodedValues {
@@ -609,7 +605,7 @@ impl PointCloudEncoder {
             // would hold, whatever number of threads did the writing. Below a
             // few hundred thousand values the work does not repay the threads.
             let values_to_encode = num_points.saturating_mul(num_attributes as usize);
-            let threads = if values_to_encode >= PARALLEL_MIN_VALUES {
+            let threads = if values_to_encode >= crate::parallel::ATTRIBUTES_MIN_VALUES {
                 parallel::resolve(self.options.get_threads())
             } else {
                 1

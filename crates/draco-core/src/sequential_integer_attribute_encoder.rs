@@ -187,12 +187,6 @@ pub struct SequentialIntegerAttributeEncoder {
     threads: usize,
 }
 
-/// Values in an attribute below which its own passes stay on one thread.
-const INNER_PARALLEL_MIN_VALUES: usize = 1 << 20;
-
-/// Values a piece of an attribute's pass covers on a thread.
-const INNER_PIECE: usize = 1 << 16;
-
 impl Default for SequentialIntegerAttributeEncoder {
     fn default() -> Self {
         Self::new()
@@ -357,17 +351,17 @@ impl SequentialIntegerAttributeEncoder {
                 *value = read_value_as_i32(current_attribute.buffer(), component_offset, data_type);
             }
         };
-        let in_pieces = self.threads > 1 && num_values >= INNER_PARALLEL_MIN_VALUES;
+        let in_pieces = self.threads > 1 && num_values >= parallel::PASS_MIN_VALUES;
         let mut values = if in_pieces && num_components > 0 {
             // Each piece reads its own points into its own stretch.
             let mut values = vec![0i32; num_values];
             parallel::for_each_chunk_mut(
                 &mut values,
-                INNER_PIECE * num_components,
+                parallel::PIECE * num_components,
                 self.threads,
                 |piece, chunk| {
                     for (offset, entry) in chunk.chunks_exact_mut(num_components).enumerate() {
-                        read_entry(piece * INNER_PIECE + offset, entry);
+                        read_entry(piece * parallel::PIECE + offset, entry);
                     }
                 },
             );
@@ -1472,8 +1466,8 @@ impl SequentialIntegerAttributeEncoder {
 /// collect is then only the change of type.
 fn zigzag(mut corrections: Vec<i32>, threads: usize) -> Vec<u32> {
     let zigzag = |c: i32| (c << 1) ^ (c >> 31);
-    if threads > 1 && corrections.len() >= INNER_PARALLEL_MIN_VALUES {
-        parallel::for_each_chunk_mut(&mut corrections, INNER_PIECE, threads, |_, piece| {
+    if threads > 1 && corrections.len() >= parallel::PASS_MIN_VALUES {
+        parallel::for_each_chunk_mut(&mut corrections, parallel::PIECE, threads, |_, piece| {
             for c in piece {
                 *c = zigzag(*c);
             }

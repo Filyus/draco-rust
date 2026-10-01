@@ -14,6 +14,23 @@ use std::sync::Mutex;
 /// pieces this crate cuts its work into are too few to keep them fed.
 const MAX_THREADS: usize = 16;
 
+/// Values below which attributes are encoded or decoded one after another on the
+/// calling thread rather than side by side: a few milliseconds of work, which
+/// the threads would spend starting.
+#[cfg(any(feature = "encoder", feature = "point_cloud_decode"))]
+pub(crate) const ATTRIBUTES_MIN_VALUES: usize = 1 << 17;
+
+/// Values a piece of a pass over one attribute covers on a thread: a few hundred
+/// kilobytes, enough to repay handing it over and small enough that a pass
+/// still cuts into more pieces than there are threads.
+#[cfg(feature = "encoder")]
+pub(crate) const PIECE: usize = 1 << 16;
+
+/// Values below which a pass over one attribute stays on one thread rather than
+/// running in pieces: as many pieces as the most threads asked for.
+#[cfg(feature = "encoder")]
+pub(crate) const PASS_MIN_VALUES: usize = MAX_THREADS * PIECE;
+
 /// How many threads to run for a request of `requested`: `0` is "as many as the
 /// machine has", anything else is taken as given, and WebAssembly, which has no
 /// thread to spawn whatever is asked, is always one.
@@ -106,12 +123,8 @@ pub(crate) fn for_each_piece_mut<T: Send>(
     });
 }
 
-/// Values a piece covers in the folds below.
-#[cfg(feature = "encoder")]
-const FOLD_PIECE: usize = 1 << 16;
-
 /// The smallest and largest of `values`, `None` for none, folded in pieces on
-/// `threads` once there are enough of them to repay it. For integers that is
+/// `threads` once there are `PASS_MIN_VALUES` of them. For integers that is
 /// exactly what one pass finds.
 #[cfg(feature = "encoder")]
 pub(crate) fn min_max(values: &[i32], threads: usize) -> Option<(i32, i32)> {
@@ -126,11 +139,11 @@ pub(crate) fn min_max(values: &[i32], threads: usize) -> Option<(i32, i32)> {
     if values.is_empty() {
         return None;
     }
-    if threads <= 1 || values.len() < 16 * FOLD_PIECE {
+    if threads <= 1 || values.len() < PASS_MIN_VALUES {
         return Some(fold(values));
     }
-    map(values.len().div_ceil(FOLD_PIECE), threads, |piece| {
-        fold(&values[piece * FOLD_PIECE..((piece + 1) * FOLD_PIECE).min(values.len())])
+    map(values.len().div_ceil(PIECE), threads, |piece| {
+        fold(&values[piece * PIECE..((piece + 1) * PIECE).min(values.len())])
     })
     .into_iter()
     .reduce(|(min_a, max_a), (min_b, max_b)| (min_a.min(min_b), max_a.max(max_b)))

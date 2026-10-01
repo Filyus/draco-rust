@@ -15,6 +15,8 @@ use crate::draco_types::DataType;
 use crate::encoder_buffer::EncoderBuffer;
 use crate::geometry_attribute::PointAttribute;
 use crate::geometry_indices::PointIndex;
+#[cfg(feature = "encoder")]
+use crate::parallel::{PASS_MIN_VALUES, PIECE};
 use crate::prediction_scheme::EntryToPointIdMap;
 use crate::quantization_utils::{Dequantizer, Quantizer};
 use crate::status::{DracoError, Status};
@@ -58,14 +60,6 @@ impl Default for AttributeQuantizationTransform {
         }
     }
 }
-
-/// Entries of an attribute below which its quantization stays on one thread.
-#[cfg(feature = "encoder")]
-const PARALLEL_MIN_ENTRIES: usize = 1 << 18;
-
-/// Entries a piece of a quantization pass covers on a thread.
-#[cfg(feature = "encoder")]
-const PIECE: usize = 1 << 15;
 
 impl AttributeQuantizationTransform {
     pub fn new() -> Self {
@@ -200,7 +194,7 @@ impl AttributeQuantizationTransform {
         // single pass below to say what is wrong as it always has.
         #[cfg(feature = "encoder")]
         let folded = self.threads > 1
-            && num_entries >= PARALLEL_MIN_ENTRIES
+            && num_entries.saturating_mul(self.min_values.len()) >= PASS_MIN_VALUES
             && self.fold_bounds_in_pieces(data, byte_stride, num_entries, &mut max_values);
         #[cfg(not(feature = "encoder"))]
         let folded = false;
@@ -434,7 +428,7 @@ impl AttributeQuantizationTransform {
         // below, which say what is wrong as they always have.
         #[cfg(all(feature = "encoder", not(feature = "debug_logs")))]
         if self.threads > 1
-            && num_points >= PARALLEL_MIN_ENTRIES
+            && num_points.saturating_mul(num_components) >= PASS_MIN_VALUES
             && dst_stride == num_components * 4
             && self.quantize_in_pieces(attribute, point_ids, dst_data, num_points, num_components)
         {

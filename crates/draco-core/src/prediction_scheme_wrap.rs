@@ -165,8 +165,8 @@ impl PredictionSchemeEncodingTransform<i32, i32> for PredictionSchemeWrapEncodin
         num_components: usize,
         threads: usize,
     ) {
-        const PIECE: usize = 1 << 16;
-        if threads <= 1 || out_corr_vals.len() < 16 * PIECE {
+        use crate::parallel::{PASS_MIN_VALUES, PIECE};
+        if threads <= 1 || out_corr_vals.len() < PASS_MIN_VALUES {
             return self.compute_corrections(
                 original_vals,
                 predicted_vals,
