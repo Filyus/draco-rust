@@ -43,6 +43,7 @@ THREADS = os.cpu_count() or 1
 REFS = {
     "head": "HEAD",
     "q34": "origin/probe/bucket-rule-three-quarters",
+    "always": "origin/probe/bucket-rule-always",
     "pick": "origin/probe/order-choice-by-trial-encode",
 }
 
@@ -51,6 +52,7 @@ PATCHES = {
     "head": ("head", []),
     "head2": ("head", []),
     "q34": ("q34", []),
+    "always": ("always", []),
     "pick": ("pick", []),
     "nob": ("head", [("rans_symbol_decoder.rs",
                       "    fn build_buckets(&mut self) {\n",
@@ -197,7 +199,8 @@ def pct(a, b):
 
 def main():
     os.makedirs(WORK, exist_ok=True)
-    run(["git", "fetch", "origin", "probe/bucket-rule-three-quarters", "probe/order-choice-by-trial-encode"], cwd=ROOT)
+    run(["git", "fetch", "origin", "probe/bucket-rule-three-quarters", "probe/bucket-rule-always",
+         "probe/order-choice-by-trial-encode"], cwd=ROOT)
     hw = hardware()
     results["hardware"] = hw
     out(f"## Point-cloud bench on {hw['platform']}, {THREADS} logical CPUs\n")
@@ -209,11 +212,18 @@ def main():
     out(f"{POINTS} points a cloud, best of {ITERS} iterations over {ROUNDS} rounds, order rotated, "
         f"{PAUSE}s pause. `head2` is HEAD built again: its gap to `head` is the floor.\n")
 
-    variants = ["head", "head2", "nob", "nop", "nos", "noi", "q34", "pick", "allb"]
+    variants = ["head", "head2", "nob", "nop", "nos", "noi", "q34", "always", "pick", "allb"]
+    if ONLY:
+        wanted = {"head", "head2"}
+        for experiment, names in (("buckets", ("allb", "nob")), ("ablation", ("nob", "nop", "nos")),
+                                  ("inner", ("noi",)), ("order", ("pick",)), ("rule", ("q34", "always"))):
+            if experiment in ONLY:
+                wanted.update(names)
+        variants = [name for name in variants if name in wanted]
     for name in variants:
         make_variant(name)
     exe = {name: build(name) for name in variants if name != "allb"}
-    rb = {name: build(name, "rbench") for name in ("allb", "nob")}
+    rb = {name: build(name, "rbench") for name in ("allb", "nob") if name in variants}
 
     data = os.path.join(WORK, "data")
     if not os.path.isdir(data):
@@ -300,15 +310,17 @@ def main():
         for name in ("aerial", "spinning", "terrestrial", "splat"):
             for order in ("plain", "search"):
                 for threads in (1, THREADS):
-                    best = compare({k: exe[k] for k in ("head", "head2", "q34")},
+                    best = compare({k: exe[k] for k in ("head", "head2", "q34", "always")},
                                    ["dec", cloud(name), str(ITERS), str(threads), order, "5"])
                     h = best["head"][0]
                     record.append({"cloud": name, "order": order, "threads": threads,
                                    **{k: v[0] for k, v in best.items()}})
-                    rows.append([name, order, threads, f"{h:.4f}", pct(best["head2"][0], h), pct(best["q34"][0], h)])
+                    rows.append([name, order, threads, f"{h:.4f}", pct(best["head2"][0], h),
+                                 pct(best["q34"][0], h), pct(best["always"][0], h)])
         results["rule"] = record
-        table("Bucket rule: L2 clause (head) against three quarters alone (q34), decode",
-              ["cloud", "order", "threads", "head s", "head2 (floor)", "q34"], rows)
+        table("Bucket rule: L2 clause (head) against three quarters alone (q34) and buckets always "
+              "(always), decode",
+              ["cloud", "order", "threads", "head s", "head2 (floor)", "q34", "always"], rows)
 
     text = "\n".join(summary)
     target = os.environ.get("GITHUB_STEP_SUMMARY")
