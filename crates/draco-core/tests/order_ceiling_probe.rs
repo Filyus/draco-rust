@@ -1288,11 +1288,13 @@ fn edge_cost(a: &Packed, b: &Packed, columns: usize, luts: &Luts, limit: f32) ->
         + luts.l16[a.pos[1].abs_diff(b.pos[1]) as usize]
         + luts.l16[a.pos[2].abs_diff(b.pos[2]) as usize];
     for (xa, xb) in a.row[..columns]
-        .chunks_exact(8)
-        .zip(b.row[..columns].chunks_exact(8))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .zip(b.row[..columns].as_chunks::<8>().0)
     {
-        for k in 0..8 {
-            sum += luts.l8[xa[k].abs_diff(xb[k]) as usize];
+        for (&x, &y) in xa.iter().zip(xb) {
+            sum += luts.l8[x.abs_diff(y) as usize];
         }
         if sum >= limit {
             return sum;
@@ -1419,6 +1421,7 @@ fn path_bits(points: &[Packed], columns: usize, luts: &Luts) -> f64 {
         .sum()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn refine_blocks(
     points: &mut [Packed],
     ids: &mut [u32],
@@ -1634,6 +1637,8 @@ impl Tables {
     }
 }
 
+// The models are loop shapes timed against one another, indexed loops among them.
+#[allow(clippy::needless_range_loop)]
 #[inline(always)]
 fn priced<const M: u8>(a: &Packed, b: &Packed, columns: usize, t: &Tables) -> f32 {
     let model = Model::from_u8(M);
@@ -1690,7 +1695,7 @@ fn priced<const M: u8>(a: &Packed, b: &Packed, columns: usize, t: &Tables) -> f3
         }
         Model::Chunk8Lut => {
             let mut sum = 0f32;
-            for (xa, xb) in ra.chunks_exact(8).zip(rb.chunks_exact(8)) {
+            for (xa, xb) in ra.as_chunks::<8>().0.iter().zip(rb.as_chunks::<8>().0) {
                 for k in 0..8 {
                     sum += t.luts.l8[xa[k].abs_diff(xb[k]) as usize];
                 }
@@ -1699,7 +1704,7 @@ fn priced<const M: u8>(a: &Packed, b: &Packed, columns: usize, t: &Tables) -> f3
         }
         Model::Chunk8Diff => {
             let mut sum = 0f32;
-            for (xa, xb) in ra.chunks_exact(8).zip(rb.chunks_exact(8)) {
+            for (xa, xb) in ra.as_chunks::<8>().0.iter().zip(rb.as_chunks::<8>().0) {
                 let mut d = [0u8; 8];
                 for k in 0..8 {
                     d[k] = xa[k].abs_diff(xb[k]);
@@ -1717,7 +1722,7 @@ fn priced<const M: u8>(a: &Packed, b: &Packed, columns: usize, t: &Tables) -> f3
         }
         Model::Chunk8Fixed => {
             let mut sum = 0u32;
-            for (xa, xb) in ra.chunks_exact(8).zip(rb.chunks_exact(8)) {
+            for (xa, xb) in ra.as_chunks::<8>().0.iter().zip(rb.as_chunks::<8>().0) {
                 let mut d = [0u8; 8];
                 for k in 0..8 {
                     d[k] = xa[k].abs_diff(xb[k]);
@@ -2119,7 +2124,7 @@ fn does_the_lane_form_vectorize() {
                 let t = std::time::Instant::now();
                 for i in 1..n - 20 {
                     let total = f(&columns, count, i - 1, i + 1);
-                    check += u64::from(total[(i & 15) as usize]);
+                    check += u64::from(total[i & 15]);
                 }
                 best = best.min(t.elapsed().as_secs_f64());
             }
@@ -2164,7 +2169,10 @@ struct Lanes {
 /// can be loaded as one slice wherever it starts.
 const LANE_PAD: usize = 140;
 
-/// The cost from `anchor` to each of the `L` points starting at `first`.
+/// The cost from `anchor` to each of the `L` points starting at `first`: the
+/// whole row in one call, where the refinement calls `lane_positions` and
+/// `lane_add_columns` separately.
+#[allow(dead_code)]
 #[inline(always)]
 fn lane_costs<const L: usize>(
     cols: &[Vec<u8>],
@@ -2890,8 +2898,8 @@ fn does_weighting_the_columns_by_what_they_really_cost_help() {
     }
     let mut position_estimate = 0.0;
     for pair in hilbert.windows(2) {
-        for axis in 0..3 {
-            let d = cells[pair[0] as usize][axis].abs_diff(cells[pair[1] as usize][axis]);
+        for (a, b) in cells[pair[0] as usize].iter().zip(&cells[pair[1] as usize]) {
+            let d = a.abs_diff(*b);
             position_estimate += f64::from(tables.luts.l16[d.min(65535) as usize]);
         }
     }
@@ -3493,7 +3501,7 @@ fn what_the_prepared_pipeline_costs() {
             for _ in 0..3 {
                 let (ids, times) = order_pipeline::<16>(&cloud, threads, top, 2, 8192, &luts);
                 let total = times.quantize + times.hilbert + times.rank + times.refine;
-                if best.as_ref().map_or(true, |b| total < b.0) {
+                if best.as_ref().is_none_or(|b| total < b.0) {
                     best = Some((total, times, ids));
                 }
             }
@@ -3529,12 +3537,11 @@ fn estimated_bits_per_point(
     let mut total = 0f64;
     for pair in order.windows(2) {
         let (a, b) = (pair[0] as usize, pair[1] as usize);
-        for axis in 0..3 {
-            total +=
-                f64::from(luts.l16[cells[a][axis].abs_diff(cells[b][axis]).min(65535) as usize]);
+        for (x, y) in cells[a].iter().zip(&cells[b]) {
+            total += f64::from(luts.l16[x.abs_diff(*y).min(65535) as usize]);
         }
-        for k in 0..columns {
-            total += f64::from(luts.l8[rows[a][k].abs_diff(rows[b][k]) as usize]);
+        for (x, y) in rows[a][..columns].iter().zip(&rows[b][..columns]) {
+            total += f64::from(luts.l8[x.abs_diff(*y) as usize]);
         }
     }
     total / order.len() as f64
@@ -3827,8 +3834,8 @@ fn does_the_rule_leave_alone_what_it_should() {
         ("Hilbert, refined", permute(&cloud, &refined_hilbert)),
     ];
     println!(
-        "{:<18} {:>9} {:>9} {:>9} {:>8} {:>10} {:>10}  {}",
-        "input", "est in", "est Hilb", "est out", "time s", "as read", "written", "decision"
+        "{:<18} {:>9} {:>9} {:>9} {:>8} {:>10} {:>10}  decision",
+        "input", "est in", "est Hilb", "est out", "time s", "as read", "written"
     );
     for (label, input) in &inputs {
         let d = decide_order::<16>(input, 16, &luts);
