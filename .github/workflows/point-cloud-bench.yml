@@ -1,0 +1,43 @@
+name: Point-cloud bench
+
+# Times the point-cloud techniques and constants on several kinds of
+# processor: the thresholds were measured on one laptop, and the ones that
+# turn on cache sizes and core counts are what other machines can confirm or
+# move. Runs on a push to a bench/** branch, or by hand; nothing on main.
+on:
+  push:
+    branches:
+      - "bench/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Bench
+        shell: bash
+        env:
+          BENCH_WORK: ${{ runner.temp }}/bench
+        run: python bench/point-cloud/run.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: point-cloud-bench-${{ matrix.os }}
+          path: ${{ runner.temp }}/bench/results.json
+          if-no-files-found: ignore
