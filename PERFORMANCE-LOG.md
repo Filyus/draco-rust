@@ -113,6 +113,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [KTX2: Zstd, And Which Decoder](#ktx2-zstd-and-which-decoder) | landed | `3.4 -> 2.5 ms` |
 | [Point Clouds On One Thread: Zeros Nobody Read, And Reads In A Row](#point-clouds-on-one-thread-zeros-nobody-read-and-reads-in-a-row) | landed | `-21 to -34%` |
 | [Point Clouds, Continued: Two Chains At Once, Buckets, And Threads Inside An Attribute](#point-clouds-continued-two-chains-at-once-buckets-and-threads-inside-an-attribute) | landed | `-13 to -43%` |
+| [Point Clouds On Shapes No Capture Had](#point-clouds-on-shapes-no-capture-had) | landed | `lattice -0.97%` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -4360,6 +4361,52 @@ had one; folded into one pass it is 6% faster than before.
 | encode, sixteen threads, castle, scan order | `0.453 s` | `0.258 s` (`-43%`) |
 | encode, sixteen threads, castle by order search | `1.158 s` | `0.693 s` (`-40%`) |
 
+### Point Clouds On Shapes No Capture Had
+
+2026-10-01, same machine and reference tree (`7802fd6c`). Every threshold the
+two rounds above set was tuned on three splats and three scans. This round
+asked whether the gains, and the order search's rules, hold on clouds those
+six do not resemble. `synthetic_cloud` makes nine shapes in code -- noise in a
+cube, an airborne lidar strip, a rotating lidar frame with its no-return
+zeros, a terrestrial room scan, a lattice of repeated points, a metre of
+points a million metres out, a constant cloud, integer attributes at a symbol
+coder's edges, a 58-attribute splat -- and `examples/synthetic_clouds.rs`
+writes them as PLY. A million points each; arms alternated every round with a
+pause before each run, since this laptop's boost clock otherwise hands the
+first arm a 1.7x head start.
+
+**The gains carry over, and nothing regressed.** Streams byte-identical in
+every cell.
+
+| | decode, 1 thread | decode, 16 | encode, 1 thread | encode, 16 |
+| --- | ---: | ---: | ---: | ---: |
+| splat | `-32%` | `-36%` | `-38%` | `-26%` |
+| aerial / spinning lidar | `-21%` / `-21%` | `-25%` / `-25%` | `-39%` / `-38%` | `-34%` / `-41%` |
+| terrestrial | `-16%` | `-5%` | `-22%` | `-18%` |
+| lattice / far away | `-22%` / `-19%` | `-22%` / `-14%` | `-33%` / `-38%` | `-51%` / `-48%` |
+| uniform noise | `-14%` | `-0.5%` | `-41%` | `-45%` |
+| skewed integers | `-7%` | `+0.6%` | `-39%` | `-40%` |
+
+The two flat cells are two-attribute clouds whose sixteen-thread decode is
+bound by one attribute's chain, which nothing here shortened.
+
+**The order search undoes a shuffle completely** -- aerial `16.8 -> 11.6 MB`,
+the size it reaches from scan order -- and beats the scan order it was given
+(spinning `4.19 -> 2.25 MB`, `-46%`). It lost to the plain curve on three
+shapes: lattice `+1.0%`, uniform `+0.8%`, splat `+0.5%`. The lattice was a
+rule left half-applied: a refinement had to undercut the input by 3% and never
+the curve, and it undercut the curve by 0.3% in estimate. It now has to
+undercut both, and the lattice writes the curve (`-0.97%`); every capture is
+byte-identical, refining at 0.82-0.88 of the curve. The other two are not a
+margin -- see Unexplored.
+
+**The rANS buckets are reached by none of the ordinary shapes**: the most
+owned reached 78% against the 80% kept. The test's `bimodal` attribute, two
+residuals past 2^17 holding 95% of a wide alphabet, does, and a symbol field
+cut to 17 bits now fails a test where no test failed before. Cut to 19 bits
+nothing can fail: the raw coder takes 18-bit symbols at most, so the field's
+upper bits only defend against streams no encoder writes.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
@@ -4386,6 +4433,14 @@ by the round after it, below. What is left:
 - **Four streams in one loop** measured slower than two (3.0 against 2.3 ns
   a symbol), out of registers; two of them in a register-lean loop are not
   ruled out.
+- **The order search's estimate misjudges attributes that do not depend on
+  their neighbours.** On uniform noise and on a synthetic splat of
+  independent Gaussian attributes the refinement claims 7-8% over the curve
+  and loses 0.8% and 0.5% in bytes; every capture measured refines at
+  0.82-0.88 and wins. No threshold separates them honestly (aerial wins at
+  0.901, uniform loses at 0.917). The smallest next step is to encode a
+  trial block both ways with the real attribute coder and compare bytes, and
+  price that against the search's time.
 - **The PLY reader still matches property names as strings** for every
   property of every vertex. It no longer shows in the profile after the
   allocations went, but a per-property action table built once would remove
