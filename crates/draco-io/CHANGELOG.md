@@ -9,6 +9,18 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Reading a PLY no longer allocates for every point, and keeps carried
+  properties in their declared type rather than in `f64`: a scan of eight
+  million points reads in 0.17 s instead of 0.33 s, a 58-property splat of 742
+  thousand in 0.19 s instead of 0.30 s. OBJ and STL share the position and
+  normal builders and gain the same way. A `float` property no longer passes
+  through `f64` on its way in, which could quiet a signalling NaN.
+- Writing a PLY no longer allocates for every value or writes one component at
+  a time: the splat above writes in 0.24 s instead of 1.98 s. The files are
+  byte for byte the same.
+
 ## [0.5.1](https://github.com/Filyus/draco-rust/compare/draco-io-v0.5.0...draco-io-v0.5.1) - 2026-09-25
 
 ### Added
