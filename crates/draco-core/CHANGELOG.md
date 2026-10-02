@@ -25,6 +25,14 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   longer take a second attribute-sized buffer: about a third less on scans and
   lidar captures (695 MB to 440 MB on that scan, 3.0 GB to 2.1 GB on one of
   29 million points). Decoding peaks where it did.
+- Decoding a stream coded at 18-20 bits of rANS precision -- the positions of
+  most lidar captures -- is faster: a symbol whose slot range covers a whole
+  1/4096 of the table is found in a 32 KB summary that stays in the L1 cache
+  instead of a slot table of half a megabyte or more. A rotating-lidar capture
+  of 13 million points decodes in 0.37 s instead of 0.58 s, an airborne one of
+  10.7 million in 0.72 s instead of 0.85 s. The summary is used where it pays
+  on the processors measured and the slot table elsewhere; the symbols are the
+  same either way.
 
 ### Fixed
 

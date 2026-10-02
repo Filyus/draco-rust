@@ -36,7 +36,7 @@ figure at all.
 `rejected` -- tried, deliberately not kept. `retracted` -- an earlier claim
 here was withdrawn. `diagnostic` -- measured only, no change proposed.
 
-72 rounds: 42 landed, 10 diagnostic, 10 null, 8 retracted, 2 rejected.
+73 rounds: 43 landed, 10 diagnostic, 10 null, 8 retracted, 2 rejected.
 
 | Round | Verdict | Headline |
 | --- | --- | ---: |
@@ -112,6 +112,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [KTX2: The BC7 Block Writer](#ktx2-the-bc7-block-writer) | landed | `1.02x -> 0.93x` |
 | [KTX2: Zstd, And Which Decoder](#ktx2-zstd-and-which-decoder) | landed | `3.4 -> 2.5 ms` |
 | [Point Clouds On One Thread: Zeros Nobody Read, And Reads In A Row](#point-clouds-on-one-thread-zeros-nobody-read-and-reads-in-a-row) | landed | `-21 to -34%` |
+| [rANS Buckets For The Fine Slot Tables](#rans-buckets-for-the-fine-slot-tables) | landed | `-9 to -37% lidar decode` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -4323,6 +4324,35 @@ fixed-width vertex property read back from all three encodings -- the
 big-endian write had been tested by its point count only, and passed with
 positions in the wrong byte order.
 
+### rANS Buckets For The Fine Slot Tables
+
+2026-10-02, same machine and harness as the round above, one thread, on
+`main` against `main` before, runs alternated with a pause before each. A
+stream at 18-20 bits of precision -- most lidar captures' positions -- is past
+what the fused steps can hold, so each symbol reads a slot table of 512 KiB to
+4 MiB at a slot the state picks uniformly. 4096 buckets summarize it in 32 KB:
+a bucket one symbol owns gives that symbol's whole step in one read from L1,
+a shared one reads the slot table as before.
+
+Whether that pays turns on where the slot table sits and on the stream's
+shape, and the decoder can ask neither. The rule -- buckets past 512 KiB of
+slots, or from two thirds of them owned -- was the one with the smallest
+worst case over sweeps of owned share and shape on Zen 3, 4 and 5, Ice Lake,
+Neoverse N2 and Apple M1, taken on `experiment/hilbert-point-order` (its log,
+"The Bucket Rule On Seven Processors"): at most 17% slower than the faster
+form anywhere, where a rule at 1 MiB and three quarters lost up to 72% on N2.
+
+| capture | slot table, owned | before | after |
+| --- | --- | ---: | ---: |
+| rotating lidar, 13.2M points | 2 MiB, 90% | `0.585 s` | `0.367 s` (`-37%`) |
+| airborne, 10.7M | 2 MiB, 77% | `0.853 s` | `0.719 s` (`-16%`) |
+| airborne, 29.4M | 1 MiB, 84% | `1.868 s` | `1.702 s` (`-9%`) |
+
+The splat, a terrestrial scan with no stream past 16 bits, and scan-8m in scan
+order -- 512 KiB owned by half, which the rule leaves on the slot table --
+decode within 1% of before. Every decode read back the same symbols; the C++
+parity tests pass.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
@@ -4332,12 +4362,12 @@ one line.
 
 ### What the point-cloud round left behind
 
-- **Two rANS streams in one loop, and the scans' slot table summarized in
-  buckets that stay in L1.** Both are built on `experiment/hilbert-point-order`
-  and help on one thread -- two streams in one loop up to 27% on a splat's
-  decode, the buckets 6-17% on a scan's -- but there they sit on its parallel
-  decode, and come to `main` by hand. See that branch's log for the rounds
-  that built them.
+- **Two rANS streams in one loop.** Built on `experiment/hilbert-point-order`
+  and worth up to 27% of a splat's decode on one thread, but there it sits on
+  that branch's parallel decode, whose prescan knows where each stream
+  starts; on `main` the attribute decode has to be split into the part before
+  the run, the run and the part after first. The buckets came over:
+  [rANS Buckets For The Fine Slot Tables](#rans-buckets-for-the-fine-slot-tables).
 - **The PLY reader still matches property names as strings** for every
   property of every vertex. It no longer shows in the profile after the
   allocations went, but a per-property action table built once would remove
