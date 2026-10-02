@@ -180,17 +180,19 @@ pub(crate) fn min_max(values: &[i32], threads: usize) -> Option<(i32, i32)> {
 }
 
 /// Runs `work(chunk_index, chunk)` over consecutive chunks of `data`, `chunk`
-/// elements each and the last one shorter.
+/// elements each and the last one shorter. A `chunk` of zero is taken as one,
+/// on any number of threads.
 pub(crate) fn for_each_chunk_mut<T: Send>(
     data: &mut [T],
     chunk: usize,
     threads: usize,
     work: impl Fn(usize, &mut [T]) + Sync,
 ) {
-    let chunks = data.len().div_ceil(chunk.max(1));
+    let chunk = chunk.max(1);
+    let chunks = data.len().div_ceil(chunk);
     let threads = threads.min(chunks);
     if threads <= 1 || cfg!(target_arch = "wasm32") {
-        for (index, piece) in data.chunks_mut(chunk.max(1)).enumerate() {
+        for (index, piece) in data.chunks_mut(chunk).enumerate() {
             work(index, piece);
         }
         return;
@@ -214,6 +216,20 @@ mod tests {
         for threads in [1, 2, 7, 16] {
             let squares = map(100, threads, |i| i * i);
             assert_eq!(squares, (0..100).map(|i| i * i).collect::<Vec<_>>());
+        }
+    }
+
+    /// A chunk of zero is a chunk of one whatever the thread count: the count
+    /// of chunks was taken that way, so the pieces have to be cut that way.
+    #[test]
+    fn a_chunk_of_zero_is_a_chunk_of_one_on_any_number_of_threads() {
+        for threads in [1, 3] {
+            let mut data = vec![0u32; 10];
+            for_each_chunk_mut(&mut data, 0, threads, |index, piece| {
+                assert_eq!(piece.len(), 1);
+                piece[0] = index as u32;
+            });
+            assert_eq!(data, (0..10).collect::<Vec<u32>>(), "{threads} threads");
         }
     }
 
