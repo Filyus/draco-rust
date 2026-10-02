@@ -83,6 +83,7 @@ fn fine_form() -> u8 {
     *FORM.get_or_init(|| match std::env::var("DRACO_RANS_FORM").as_deref() {
         Ok("table") => 0,
         Ok("buckets") => 1,
+        Ok("hybrid") => 3,
         _ => 2,
     })
 }
@@ -367,6 +368,7 @@ impl<'a> RAnsSymbolDecoder<'a> {
             match fine_form() {
                 0 => {}
                 1 => self.build_buckets(),
+                3 => self.build_buckets_counted(true),
                 _ => self.build_count(),
             }
         }
@@ -377,6 +379,12 @@ impl<'a> RAnsSymbolDecoder<'a> {
         let backed = match (&lut, form) {
             (Slots::Narrow(slots), (false, _)) => self.run_steps(slots, out, count),
             (Slots::Wide(slots), (false, _)) => self.run_steps(slots, out, count),
+            (Slots::Narrow(slots), (true, false)) if !self.cums.is_empty() => {
+                self.run_hybrid(slots, out, count)
+            }
+            (Slots::Wide(slots), (true, false)) if !self.cums.is_empty() => {
+                self.run_hybrid(slots, out, count)
+            }
             (Slots::Narrow(slots), _) if !self.starts.is_empty() => {
                 self.run_count(slots, out, count)
             }
@@ -418,6 +426,13 @@ impl<'a> RAnsSymbolDecoder<'a> {
     ///   replaces cost up to 72% at 70% owned (Neoverse N2). A stream with
     ///   none owned decodes the same either way.
     fn build_buckets(&mut self) {
+        self.build_buckets_counted(false);
+    }
+
+    /// PROBE: `build_buckets`, and with `counted` a shared bucket no more than
+    /// `WINDOW` symbols wide holds `first << 1 | 1` for `run_hybrid` to count
+    /// from, the buckets kept whatever the share, and `cums` built beside them.
+    fn build_buckets_counted(&mut self, counted: bool) {
         /// The slot table past which the buckets are kept whatever the share.
         const ALWAYS_PAST_BYTES: usize = 1 << 19;
         let precision = self.rans_precision as usize;
@@ -440,14 +455,101 @@ impl<'a> RAnsSymbolDecoder<'a> {
                     | u64::from(first) << 42
                     | u64::from(sym.prob) << 21
                     | u64::from(sym.cum_prob)
+            } else if counted && last - first <= WINDOW as u32 {
+                u64::from(first) << 1 | 1
             } else {
                 0
             });
         }
         let owned = buckets.iter().filter(|&&entry| entry >> 63 != 0).count();
-        if self.lut.len() * self.lut.slot_bytes() > ALWAYS_PAST_BYTES || owned * 3 >= BUCKETS * 2 {
+        if counted {
+            self.buckets = buckets;
+            self.cums = self.cumulative();
+        } else if self.lut.len() * self.lut.slot_bytes() > ALWAYS_PAST_BYTES
+            || owned * 3 >= BUCKETS * 2
+        {
             self.buckets = buckets;
         }
+    }
+
+    /// Each symbol's cumulative probability, `rans_precision`, then `WINDOW`
+    /// entries of `u32::MAX`: the layout of `cums`.
+    fn cumulative(&self) -> Vec<u32> {
+        let mut cums = Vec::with_capacity(self.num_symbols + 1 + WINDOW);
+        cums.extend(
+            self.probability_table[..self.num_symbols]
+                .iter()
+                .map(|sym| sym.cum_prob),
+        );
+        cums.push(self.rans_precision);
+        cums.resize(self.num_symbols + 1 + WINDOW, u32::MAX);
+        cums
+    }
+
+    /// PROBE: `run_buckets` with a shared bucket counted through `cums` as
+    /// `run_count` does, and read through `slots` only past `WINDOW` symbols.
+    fn run_hybrid<T: Copy + Into<u32>>(
+        &mut self,
+        slots: &[T],
+        out: &mut Vec<u32>,
+        count: usize,
+    ) -> bool {
+        const LOW: u64 = (1 << 21) - 1;
+        let precision = self.rans_precision as usize;
+        let slots = &slots[..precision];
+        let buckets = &self.buckets[..BUCKETS];
+        let cums = &self.cums[..];
+        let mask = self.rans_precision_mask;
+        let bits = self.rans_precision_bits;
+        let shift = bits - BUCKETS.trailing_zeros();
+        let l_base = self.ans.l_base;
+        let buf = self.ans.buf;
+        let mut offset = self.ans.buf_offset.min(buf.len());
+        let mut state = self.ans.state;
+
+        let mut backed = true;
+        out.extend((0..count).map(|_| {
+            while state < l_base && offset > 0 {
+                offset -= 1;
+                state = (state << 8) | buf[offset] as u32;
+            }
+            backed &= state >= l_base;
+            let quo = state >> bits;
+            let rem = state & mask;
+            let entry = buckets[(rem >> shift) as usize];
+            let (symbol_id, prob, cum_prob) = if entry >> 63 != 0 {
+                (
+                    ((entry >> 42) & LOW) as u32,
+                    (entry >> 21 & LOW) as u32,
+                    (entry & LOW) as u32,
+                )
+            } else {
+                let symbol_id = if entry != 0 {
+                    let first = (entry >> 1) as usize;
+                    let window: &[u32; WINDOW] = cums[first + 1..first + 1 + WINDOW]
+                        .try_into()
+                        .unwrap_or(&[u32::MAX; WINDOW]);
+                    let mut above = 1u32 << WINDOW;
+                    for (i, &cum) in window.iter().enumerate() {
+                        above |= u32::from(cum > rem) << i;
+                    }
+                    first as u32 + above.trailing_zeros()
+                } else {
+                    slots[rem as usize].into()
+                };
+                let id = symbol_id as usize;
+                let cum_prob = cums[id];
+                (symbol_id, cums[id + 1].wrapping_sub(cum_prob), cum_prob)
+            };
+            state = quo
+                .wrapping_mul(prob)
+                .wrapping_add(rem.wrapping_sub(cum_prob));
+            symbol_id
+        }));
+
+        self.ans.buf_offset = offset;
+        self.ans.state = state;
+        backed
     }
 
     /// The run against `buckets`: the low bits of the state pick a bucket, a
@@ -537,16 +639,8 @@ impl<'a> RAnsSymbolDecoder<'a> {
                 THROUGH_SLOTS
             });
         }
-        let mut cums = Vec::with_capacity(self.num_symbols + 1 + WINDOW);
-        cums.extend(
-            self.probability_table[..self.num_symbols]
-                .iter()
-                .map(|sym| sym.cum_prob),
-        );
-        cums.push(self.rans_precision);
-        cums.resize(self.num_symbols + 1 + WINDOW, u32::MAX);
         self.starts = starts;
-        self.cums = cums;
+        self.cums = self.cumulative();
     }
 
     /// The run against `starts`: the low bits of the state pick a bucket, and
@@ -592,7 +686,14 @@ impl<'a> RAnsSymbolDecoder<'a> {
                 let window: &[u32; WINDOW] = cums[first + 1..first + 1 + WINDOW]
                     .try_into()
                     .unwrap_or(&[u32::MAX; WINDOW]);
-                start + window.iter().map(|&cum| u32::from(cum <= rem)).sum::<u32>()
+                // The cumulative probabilities rise, so the ones past `rem`
+                // are a run to the window's end: its first bit is the count,
+                // one instruction where a population count is a dozen.
+                let mut above = 1u32 << WINDOW;
+                for (i, &cum) in window.iter().enumerate() {
+                    above |= u32::from(cum > rem) << i;
+                }
+                start + above.trailing_zeros()
             } else {
                 slots[rem as usize].into()
             };
@@ -989,7 +1090,23 @@ mod tests {
             }
             assert!(pieces.steps.is_empty() && pieces.buckets.is_empty());
 
-            for (form, decoded, coder) in [("whole", &out, &whole), ("pieces", &cut, &pieces)] {
+            // PROBE: the hybrid, built directly since the form is picked once
+            // per process.
+            let mut hybrid = decoder();
+            let mut mixed = Vec::new();
+            if !steps {
+                hybrid.prepare_run(count);
+                hybrid.buckets_tried = true;
+                hybrid.build_buckets_counted(true);
+                assert!(!hybrid.buckets.is_empty() && !hybrid.cums.is_empty());
+            }
+            assert!(hybrid.decode_run(&mut mixed, count));
+
+            for (form, decoded, coder) in [
+                ("whole", &out, &whole),
+                ("pieces", &cut, &pieces),
+                ("hybrid", &mixed, &hybrid),
+            ] {
                 assert_eq!(decoded, &expected, "{alphabet} symbols, {form}");
                 assert_eq!(
                     (coder.ans.state, coder.ans.buf_offset),
