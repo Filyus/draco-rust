@@ -334,15 +334,22 @@ impl EncoderOptions {
         self.set_global_int("point_order_search", i32::from(enabled));
     }
 
-    /// The threads asked of this encode: 0, the default, is as many as the
-    /// machine has, and no count is taken past sixteen.
+    /// The threads asked of this encode: 1, the default, is the calling thread
+    /// alone, 0 is as many as the machine has, and no count is taken past
+    /// sixteen.
     pub fn get_threads(&self) -> i32 {
-        self.get_global_int("threads", 0)
+        self.get_global_int("threads", 1)
     }
 
-    /// Caps the threads an encode may use; `1` keeps everything on the calling
-    /// thread and `0`, the default, takes as many as the machine has. Neither
+    /// Caps the threads an encode may use; `1`, the default, keeps everything
+    /// on the calling thread and `0` takes as many as the machine has. Neither
     /// a count asked for nor the machine's is taken past sixteen.
+    ///
+    /// One by default because a library cannot see what its caller already
+    /// runs: a server encoding on a pool of its own, or a converter working
+    /// through files side by side, would have every encode multiply its
+    /// threads by up to sixteen. A caller with the cores to spare, encoding a
+    /// large cloud at a time, asks for them.
     ///
     /// A sequential point cloud's attributes are encoded side by side, each
     /// into a buffer of its own that is appended in order, and an attribute of

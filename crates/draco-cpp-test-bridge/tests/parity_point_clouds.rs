@@ -110,8 +110,13 @@ fn build_rust_point_cloud(sample: &Sample) -> PointCloud {
 }
 
 fn encode_rust(sample: &Sample, method: Option<i32>, speed: i32) -> Vec<u8> {
+    encode_rust_on(sample, method, speed, 1)
+}
+
+fn encode_rust_on(sample: &Sample, method: Option<i32>, speed: i32, threads: i32) -> Vec<u8> {
     let pc = build_rust_point_cloud(sample);
     let mut options = EncoderOptions::new();
+    options.set_threads(threads);
     options.set_global_int("encoding_speed", speed);
     options.set_global_int("decoding_speed", speed);
     if let Some(method) = method {
@@ -341,10 +346,11 @@ fn encoder_output_matches_cpp_for_point_clouds() {
     );
 }
 
-/// The sequential encoder at its default thread count on a cloud past both
-/// thread gates: attributes side by side (2^17 values) and each attribute's
-/// passes in pieces (2^20 values an attribute). The cases above are too small
-/// for either, so they run on one thread whatever the option says.
+/// The sequential encoder on as many threads as the machine has, on a cloud
+/// past both thread gates: attributes side by side (2^17 values) and each
+/// attribute's passes in pieces (2^20 values an attribute). The cases above
+/// are too small for either, so they run on one thread whatever the option
+/// says.
 #[test]
 fn encoder_output_matches_cpp_on_threads() {
     if !draco_cpp_test_bridge::is_available() {
@@ -355,7 +361,7 @@ fn encoder_output_matches_cpp_on_threads() {
     assert!(sample.positions.len() >= 3 << 20);
     let mut mismatches = Vec::new();
     for speed in [0, 5, 10] {
-        let rust = encode_rust(&sample, Some(0), speed);
+        let rust = encode_rust_on(&sample, Some(0), speed, 0);
         let cpp = encode_cpp(&sample, Some(0), speed).expect("C++ encodes");
         if let Some(offset) = first_difference(&rust, &cpp) {
             mismatches.push(format!(

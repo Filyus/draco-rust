@@ -209,14 +209,14 @@ impl MeshDecoder {
             edgebreaker_is_vert_hole: Vec::new(),
             traversal_method: 0,
             #[cfg(feature = "point_cloud_decode")]
-            threads: 0,
+            threads: 1,
         }
     }
 
     /// Caps the threads the decode of a point-cloud stream may use, as
-    /// [`PointCloudDecoder::set_threads`] does: `0`, the default, is as many as
-    /// the machine has up to sixteen, `1` keeps the decode on the calling
-    /// thread. A mesh stream is decoded on the calling thread whatever this is.
+    /// [`PointCloudDecoder::set_threads`] does: `1`, the default, keeps the
+    /// decode on the calling thread, `0` is as many as the machine has up to
+    /// sixteen. A mesh stream is decoded on the calling thread whatever this is.
     ///
     /// [`PointCloudDecoder::set_threads`]: crate::PointCloudDecoder::set_threads
     #[cfg(feature = "point_cloud_decode")]

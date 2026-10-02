@@ -259,13 +259,16 @@ impl PointCloudDecoder {
             version_major: 0,
             version_minor: 0,
             #[cfg(feature = "point_cloud_decode")]
-            threads: 0,
+            threads: 1,
         }
     }
 
-    /// Caps the threads a decode may use: `0`, the default, is as many as the
-    /// machine has, `1` keeps everything on the calling thread, and no count
-    /// is taken past sixteen. A thread the system refuses to start is one
+    /// Caps the threads a decode may use: `1`, the default, keeps everything on
+    /// the calling thread, `0` is as many as the machine has, and no count is
+    /// taken past sixteen. One by default because a library cannot see what
+    /// its caller already runs: a server decoding on a pool of its own would
+    /// have every decode multiply its threads by up to sixteen, and a hostile
+    /// stream would have the machine's cores by default. A thread the system refuses to start is one
     /// fewer rather than an error. [`MeshDecoder::set_threads`] passes the
     /// same cap to the point-cloud streams a mesh decoder reads.
     ///

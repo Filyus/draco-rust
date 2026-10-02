@@ -32,9 +32,9 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Gaussian splat of 742 thousand points encodes in 0.25 s instead of 0.56 s,
   one of 3.2 million in 1.00 s instead of 4.35 s, a lidar capture of 10.7
   million in 0.60 s instead of 1.72 s; with the order search 3.5 to 4.6 times
-  faster. **The default, `0`, takes as many threads as the machine has, up to
-  sixteen**; set `1` for the encode to stay on the calling thread, as it did
-  before. No count is taken past sixteen, a cloud of fewer than 2^17 values
+  faster. The default, `1`, keeps the encode on the calling thread, as
+  before; **set `0` to take as many threads as the machine has**, up to
+  sixteen. No count is taken past sixteen, a cloud of fewer than 2^17 values
   (points times attributes) starts no thread, and a thread the system refuses
   to start is one fewer rather than an error. WebAssembly has no threads and
   ignores the option.
@@ -44,16 +44,20 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   against one: a Gaussian splat of 742 thousand points decodes in 0.058 s
   instead of 0.204 s, one of 3.2 million in 0.217 s instead of 0.860 s, an
   airborne lidar capture of 10.7 million in 0.41 s instead of 0.67 s. A cloud
-  of two attributes gains next to nothing. **The default, `0`, takes as many
-  threads as the machine has, up to sixteen**; `1` decodes in order on the
-  calling thread, as before, and so does WebAssembly. No count is taken past
-  sixteen, and a thread the system refuses to start is one fewer rather than
+  of two attributes gains next to nothing. The default, `1`, decodes in
+  order on the calling thread, as before, and so does WebAssembly; **set `0`
+  to take as many threads as the machine has**, up to sixteen. No count is
+  taken past sixteen, and a thread the system refuses to start is one fewer rather than
   an error. The allocation budget and the limits bound a decode on threads as
   they bound one in order. `MeshDecoder::set_threads` passes the same cap to
   a point-cloud stream read through a mesh decoder.
-  `KeyframeAnimationDecoder` decodes with the default; to cap it, decode
-  through `PointCloudDecoder` and `KeyframeAnimation::from_point_cloud`,
-  which is all it does.
+  `KeyframeAnimationDecoder` decodes on the calling thread; for threads,
+  decode through `PointCloudDecoder` and
+  `KeyframeAnimation::from_point_cloud`, which is all it does. One thread is
+  the default because a library cannot see what its caller already runs: a
+  server or a converter working side by side would have every encode and
+  decode multiply its threads by up to sixteen, and a hostile stream would
+  have every core.
 
 ### Changed
 

@@ -537,9 +537,9 @@ decoder reads, C++ included:
 
 The rustdoc of each carries the measurements.
 
-`set_threads` and `get_threads` cap the threads an encode uses: `0`, the
-default, is as many as the machine has, `1` keeps the encode on the calling
-thread, no count is taken past sixteen, and WebAssembly ignores it. A cloud
+`set_threads` and `get_threads` cap the threads an encode uses: `1`, the
+default, keeps the encode on the calling thread, `0` is as many as the machine
+has, no count is taken past sixteen, and WebAssembly ignores it. A cloud
 of fewer than 2^17 values starts no thread, and a thread the system refuses to
 start is one fewer rather than an error. A sequential point cloud's
 attributes are encoded side by side, a large attribute's passes run in pieces,
@@ -572,7 +572,7 @@ the target does claim. `(0, 0)` means "use the default".
 | `prediction_scheme_search` | i32 | 0 | Non-zero: `set_prediction_search`. Not an upstream key |
 | `spatial_point_order` | i32 | 0 | Non-zero: `set_spatial_point_order`. Not an upstream key |
 | `point_order_search` | i32 | 0 | Non-zero: `set_point_order_search`. Not an upstream key |
-| `threads` | i32 | 0 | `set_threads`: 0 is the machine's up to sixteen. Does not change the bytes. Not an upstream key |
+| `threads` | i32 | 1 | `set_threads`: 1 is the calling thread, 0 the machine's up to sixteen. Does not change the bytes. Not an upstream key |
 
 #### Relationship to the `draco_encoder` CLI
 
@@ -710,7 +710,8 @@ decoder.decode(&mut buffer, &mut pc)?;
 ```
 
 **API Surface:** `new`, `decode`, `get_geometry_type`, and `set_threads`,
-whose default `0` takes as many threads as the machine has up to sixteen.
+whose default `1` keeps the decode on the calling thread and whose `0` takes
+as many threads as the machine has up to sixteen.
 
 ---
 

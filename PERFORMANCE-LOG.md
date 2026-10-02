@@ -4550,8 +4550,8 @@ than as a branch in the sum.
 ### The Encoder On Threads
 
 2026-10-02, same machine (16 threads). The threaded encoder developed on the
-experiment branch is brought over: `EncoderOptions::set_threads` (`0`, the
-default, is the machine's up to sixteen), a sequential point cloud's attributes
+experiment branch is brought over: `EncoderOptions::set_threads` (`0` is the
+machine's up to sixteen, `1` the default), a sequential point cloud's attributes
 encoded side by side into buffers of their own appended in order, and an
 attribute of `2^20` values or more cutting its own passes -- quantization, the
 gather, the wrap transform's bounds and corrections, the zigzag, the symbol
@@ -4586,8 +4586,8 @@ the bytes are the tree before's.
 ### The Decoder On Threads
 
 2026-10-02, same machine. The threaded point-cloud decoder from the
-experiment branch: `PointCloudDecoder::set_threads` (`0`, the default, is the
-machine's up to sixteen). The streams of a 2.0 sequential cloud lie end to end
+experiment branch: `PointCloudDecoder::set_threads` (`0` is the machine's up
+to sixteen, `1` the default). The streams of a 2.0 sequential cloud lie end to end
 with no table of where each starts, so the calling thread walks them, stepping
 over each raw stream and decoding in place the few it cannot step over, and
 hands each stretch to a worker as a job with a buffer of its own; workers take
