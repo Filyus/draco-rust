@@ -15,7 +15,7 @@
 //! encode instead of panicking, indexing out of bounds, or allocating without a
 //! bound.
 //!
-//! Three oracles:
+//! Four oracles:
 //!
 //! 1. Encoding must never panic, whatever the geometry says. Face indices are
 //!    deliberately allowed past the point count, attribute values past the
@@ -25,6 +25,10 @@
 //!    decode-side fuzzing, which never sees such a stream.
 //! 3. For a mesh, the encoder's description of the stream -- points, faces and
 //!    values per attribute -- must match what it decodes to.
+//! 4. For a point cloud whose input asks for it, the stream on two threads
+//!    must be the one on one, the opt-in orders included. Asked for, not
+//!    always: a second encode that starts threads for every pass is most of
+//!    an execution's cost, and half the inputs carry the bit.
 //!
 //! The geometry is built by hand from the input bytes rather than through
 //! `arbitrary`'s derive, so every bound is explicit and stated here rather than
@@ -115,6 +119,8 @@ struct GeometrySpec {
     deduplicate: bool,
     prediction_search: bool,
     spatial_point_order: bool,
+    point_order_search: bool,
+    on_threads: bool,
     encoding_method: i32,
     prediction_scheme: i32,
     encoding_speed: i32,
@@ -166,7 +172,7 @@ fn read_spec(reader: &mut Reader) -> GeometrySpec {
         attributes.push(read_attribute_spec(reader, num_points));
     }
 
-    // One byte, three switches. The opt-in encoder options ride in the bits
+    // One byte, five switches. The opt-in encoder options ride in the bits
     // `deduplicate` never read, so adding them left every other field -- and
     // where the payload starts -- where the committed corpus has it.
     let switches = reader.u8();
@@ -179,6 +185,8 @@ fn read_spec(reader: &mut Reader) -> GeometrySpec {
         deduplicate: switches & 1 != 0,
         prediction_search: switches & 2 != 0,
         spatial_point_order: switches & 4 != 0,
+        point_order_search: switches & 8 != 0,
+        on_threads: switches & 16 != 0,
         // -1 leaves the encoder's own choice in play; 0/1 force sequential and
         // EdgeBreaker; 2 and 3 are out of range and must be refused.
         encoding_method: reader.in_range(-1, 3),
@@ -321,6 +329,10 @@ fn build_options(spec: &GeometrySpec) -> EncoderOptions {
     }
     options.set_prediction_search(spec.prediction_search);
     options.set_spatial_point_order(spec.spatial_point_order);
+    options.set_point_order_search(spec.point_order_search);
+    // One thread unless an oracle asks for more: the default is the machine's,
+    // and a fuzzing build hands even a small cloud to threads.
+    options.set_threads(1);
     for (id, attribute) in spec.attributes.iter().enumerate() {
         let id = id as i32;
         options.set_attribute_int(id, "quantization_bits", attribute.quantization_bits);
@@ -461,17 +473,39 @@ fn fuzz_point_cloud(spec: &GeometrySpec, payload: &[u8], input: &[u8]) {
     point_cloud.set_num_points(spec.num_points);
     add_attributes(&mut point_cloud, spec, payload);
 
+    // Oracle 4: the stream does not depend on the number of threads. A fuzzing
+    // build lowers the gates that hand a cloud's attributes, and an
+    // attribute's passes, to threads, so these few hundred values take the
+    // paths a cloud of millions does.
     let options = build_options(spec);
-    let mut encoder = PointCloudEncoder::new();
-    encoder.set_point_cloud(point_cloud);
-    let mut buffer = EncoderBuffer::new();
-    if encoder.encode(&options, &mut buffer).is_err() {
-        return;
+    let encode = |threads: i32| {
+        let mut options = options.clone();
+        options.set_threads(threads);
+        let mut encoder = PointCloudEncoder::new();
+        encoder.set_point_cloud(point_cloud.clone());
+        let mut buffer = EncoderBuffer::new();
+        encoder
+            .encode(&options, &mut buffer)
+            .ok()
+            .map(|()| buffer.data().to_vec())
+    };
+    let bytes = encode(1);
+    if spec.on_threads && encode(2) != bytes {
+        panic!(
+            "the stream on two threads is not the one on one\ninput: {}\n{}",
+            hex(input),
+            describe(spec)
+        );
     }
+    let Some(bytes) = bytes else {
+        return;
+    };
 
     let mut decoded = PointCloud::new();
-    let mut decoder_buffer = DecoderBuffer::new(buffer.data());
-    if let Err(error) = PointCloudDecoder::new().decode(&mut decoder_buffer, &mut decoded) {
+    let mut decoder_buffer = DecoderBuffer::new(&bytes);
+    let mut decoder = PointCloudDecoder::new();
+    decoder.set_threads(1);
+    if let Err(error) = decoder.decode(&mut decoder_buffer, &mut decoded) {
         if !round_trip_is_claimed(spec) {
             return;
         }
@@ -542,13 +576,15 @@ fn describe(spec: &GeometrySpec) -> String {
         })
         .collect();
     format!(
-        "points={} faces={} dedup={} search={} spatial={} method={} pred={} speed={}/{} seams={} store_faces={} predictive={} version={:?}
+        "points={} faces={} dedup={} search={} spatial={} order_search={} threads={} method={} pred={} speed={}/{} seams={} store_faces={} predictive={} version={:?}
 attributes: [{}]",
         spec.num_points,
         spec.faces.len(),
         spec.deduplicate,
         spec.prediction_search,
         spec.spatial_point_order,
+        spec.point_order_search,
+        spec.on_threads,
         spec.encoding_method,
         spec.prediction_scheme,
         spec.encoding_speed,

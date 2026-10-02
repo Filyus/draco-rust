@@ -25,7 +25,7 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs)', 'cfg(fuzzing)'] }
 # SECURITY.md promises this crate contains no `unsafe`. Until now that was a
 # sentence in a document; here it is a build failure. `forbid` rather than
 # `deny` so no module can lift it locally.

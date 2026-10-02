@@ -114,7 +114,7 @@ pub(crate) fn plan_symbols_with_threads(
     let in_pieces =
         threads > 1 && symbols.len() >= crate::parallel::PASS_MIN_VALUES && num_components > 0;
     let (tag_frequencies, max_value) = if in_pieces {
-        let piece = (1 << 16) * num_components;
+        let piece = crate::parallel::PIECE * num_components;
         crate::parallel::map(symbols.len().div_ceil(piece), threads, |k| {
             count_bit_lengths(
                 &symbols[k * piece..((k + 1) * piece).min(symbols.len())],

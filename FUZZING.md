@@ -16,12 +16,12 @@ status, threat model, and known residual risk live in
 
 | Target | Path | Surface |
 |---|---|---|
-| `decode_drc` | [`fuzz/fuzz_targets/decode_drc.rs`](fuzz/fuzz_targets/decode_drc.rs) | Feeds each input through both `MeshDecoder` and `PointCloudDecoder` under tight decode limits, including the legacy decode features used for old `.drc` streams. |
+| `decode_drc` | [`fuzz/fuzz_targets/decode_drc.rs`](fuzz/fuzz_targets/decode_drc.rs) | Feeds each input through both `MeshDecoder` and `PointCloudDecoder` under tight decode limits, including the legacy decode features used for old `.drc` streams, and requires the point-cloud decode on two threads to read what the one on one does. |
 | `compress_gltf` | [`fuzz/fuzz_targets/compress_gltf.rs`](fuzz/fuzz_targets/compress_gltf.rs) | Feeds arbitrary glTF/GLB bytes into the document-preserving glTF compressor with external file resolution disabled, under tight Draco decode limits. |
 | `draco_gltf_import` | [`fuzz/fuzz_targets/draco_gltf_import.rs`](fuzz/fuzz_targets/draco_gltf_import.rs) | Imports a full scene through `draco-gltf`, decodes every Draco primitive, then exercises atomic in-place decompression, all under tight Draco decode limits. |
 | `fbx_read_scene` | [`fuzz/fuzz_targets/fbx_read_scene.rs`](fuzz/fuzz_targets/fbx_read_scene.rs) | Reads arbitrary bytes as an FBX scene under tight decode limits, in both lenient and strict modes, and checks that reading the same input twice agrees. |
 | `fbx_roundtrip` | [`fuzz/fuzz_targets/fbx_roundtrip.rs`](fuzz/fuzz_targets/fbx_roundtrip.rs) | Writes back whatever the FBX reader accepted and requires the result to satisfy the reader's strict mode, so the writer is fuzzed with scenes nobody would hand-build. The rewrite has to carry every mesh's control points, polygon corners, blend-shape targets and per-face material indices through unchanged, which counting nodes and materials cannot see. |
-| `encode_drc` | [`fuzz/fuzz_targets/encode_drc.rs`](fuzz/fuzz_targets/encode_drc.rs) | Builds a mesh or point cloud from the input - point count, triangle indices, attribute layouts and payloads, encoder options - encodes it, and requires that anything the encoder accepted decodes. |
+| `encode_drc` | [`fuzz/fuzz_targets/encode_drc.rs`](fuzz/fuzz_targets/encode_drc.rs) | Builds a mesh or point cloud from the input - point count, triangle indices, attribute layouts and payloads, encoder options, the point order search among them - encodes it, and requires that anything the encoder accepted decodes, and that a point cloud's stream does not depend on the number of threads. |
 | `mesh_text_readers` | [`fuzz/fuzz_targets/mesh_text_readers.rs`](fuzz/fuzz_targets/mesh_text_readers.rs) | Feeds each input to the OBJ, PLY and STL readers, which parse untrusted files with no limits API of their own. |
 | `ktx2_transcode` | [`fuzz/fuzz_targets/ktx2_transcode.rs`](fuzz/fuzz_targets/ktx2_transcode.rs) | Parses arbitrary bytes as KTX2 and transcodes every level small enough into every target, so that an allocation failure is a finding rather than the header's own arithmetic. |
 
@@ -56,6 +56,19 @@ a legal multi-gigabyte decode, `-rss_limit_mb` fires on it, and real findings
 drown in that noise.
 
 [`DecodeLimits::fuzzing()`]: crates/draco-core/src/decode_limits.rs
+
+A fuzzing build (`--cfg fuzzing`, which cargo-fuzz and ClusterFuzzLite pass)
+also lowers the gates that hand a point cloud to threads: the stream size and
+value count past which the decoder walks the attributes and decodes them side
+by side, and the counts past which the encoder takes attributes side by side
+and cuts an attribute's passes into pieces. At the shipped gates only a stream
+of a megabyte reaches the decoder's threads, its shared budget and its
+give-up, so no fuzz input did; a corpus of a few thousand inputs now enters
+that decode on about one in forty. The gates choose how fast a cloud is coded,
+never what is written or read, so the paths reached are the shipped ones.
+`decode_drc` decodes every point cloud on one thread and on two and fails if
+the two disagree -- a refusal against a decode, or different bytes -- and
+`encode_drc` holds a point cloud's stream on two threads to the one on one.
 
 `ktx2_transcode` covers `draco-texture`, which is the same shape of surface: a
 header of file-controlled offsets and lengths, a Zstd payload whose size the
@@ -118,13 +131,19 @@ bit counts outside 1..=30 - because that is exactly the shape of geometry
 assembled from an untrusted file. Nothing between such a file and the encoder
 re-validates it, and the encoder used to index straight off those numbers.
 
-Two oracles:
+Four oracles:
 
 1. **Encoding must not panic.** Whatever the geometry says, the answer is a
    bitstream or a `DracoError`.
 2. **Anything the encoder accepted must decode.** A stream the encoder produced
    and the decoder refuses is a bitstream bug that decode-side fuzzing cannot
    find, because it never produces such a stream.
+3. **A mesh's encode report matches its decode**: points, faces and values per
+   attribute.
+4. **A point cloud's stream does not depend on the number of threads**, the
+   opt-in point orders included, on the inputs whose switch byte asks for it.
+   A second encode that starts threads for every pass is most of an
+   execution's cost, so half the inputs carry the bit rather than all.
 
 Oracle 2 now applies at every version the encoder accepts. It was held to the
 default one while legacy encode was version-gated field by field and several of

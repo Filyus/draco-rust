@@ -85,8 +85,13 @@ pub struct PointCloudDecoder {
 /// The stream length below which a point cloud stays on the calling thread. A
 /// stream this small claiming this many values is what the allocation budget
 /// exists for, and it is read by one thread and one budget.
-#[cfg(feature = "point_cloud_decode")]
+///
+/// A fuzzing build takes it down with the other thread gates; see
+/// `parallel::ATTRIBUTES_MIN_VALUES`.
+#[cfg(all(feature = "point_cloud_decode", not(fuzzing)))]
 const PARALLEL_MIN_STREAM_BYTES: usize = 1 << 20;
+#[cfg(all(feature = "point_cloud_decode", fuzzing))]
+const PARALLEL_MIN_STREAM_BYTES: usize = 64;
 
 /// The components an attribute's integer stream codes, for the sequential
 /// decoder types that have one (1 to 3): a normal's are the two of its

@@ -23,14 +23,24 @@ const MAX_THREADS: usize = 16;
 /// Values below which attributes are encoded or decoded one after another on the
 /// calling thread rather than side by side: a few milliseconds of work, which
 /// the threads would spend starting.
-#[cfg(any(feature = "encoder", feature = "point_cloud_decode"))]
+///
+/// A fuzzing build (`--cfg fuzzing`, which cargo-fuzz and ClusterFuzzLite
+/// pass) takes this, [`PIECE`] and the decoder's stream-size gate down to
+/// sizes a fuzz input of a few hundred bytes passes. The gates choose how fast
+/// a cloud is coded, never what is written or read, so the paths a campaign
+/// then reaches are the shipped ones, threads and pieces included.
+#[cfg(all(any(feature = "encoder", feature = "point_cloud_decode"), not(fuzzing)))]
 pub(crate) const ATTRIBUTES_MIN_VALUES: usize = 1 << 17;
+#[cfg(all(any(feature = "encoder", feature = "point_cloud_decode"), fuzzing))]
+pub(crate) const ATTRIBUTES_MIN_VALUES: usize = 64;
 
 /// Values a piece of a pass over one attribute covers on a thread: a few hundred
 /// kilobytes, enough to repay handing it over and small enough that a pass
 /// still cuts into more pieces than there are threads.
-#[cfg(feature = "encoder")]
+#[cfg(all(feature = "encoder", not(fuzzing)))]
 pub(crate) const PIECE: usize = 1 << 16;
+#[cfg(all(feature = "encoder", fuzzing))]
+pub(crate) const PIECE: usize = 16;
 
 /// Values below which a pass over one attribute stays on one thread rather than
 /// running in pieces: as many pieces as the most threads asked for.
