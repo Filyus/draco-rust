@@ -204,6 +204,14 @@ jobs:
             # and every result read back, and libFuzzer replays the whole
             # corpus before it mutates anything: 1,547 s of that hour. Half an
             # hour would be almost all replay.
+            #
+            # Most of that replay went on the inputs below 100 KB, not the big
+            # ones -- the first 2,048 inputs by size took 27.5 minutes, the last
+            # 977 two and a half -- because a family of mutated fixtures holds
+            # fifty primitives each and every one was compressed twice. The
+            # target now takes the first eight a pass, about 70% less
+            # compression over the corpus; the hour stands until a soak says
+            # what the replay costs now.
             dict: gltf
             soak_seconds: 3600
           - group: gltf_import
@@ -358,8 +366,12 @@ jobs:
             exit 1
           fi
 
+      # On a soak only. A smoke run adds two minutes of inputs to the corpus,
+      # which the next night's minimization takes in, and minimizing is one more
+      # pass over the whole corpus: half an hour for `compress_gltf`, longer than
+      # every other target's whole job, on every push.
       - name: Minimize corpora
-        if: always()
+        if: ${{ always() && github.event_name != 'push' && github.event_name != 'pull_request' }}
         run: |
           for target in ${{ matrix.targets }}; do
             cargo +nightly fuzz cmin -O "$target" --fuzz-dir fuzz \

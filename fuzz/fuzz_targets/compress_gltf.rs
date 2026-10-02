@@ -21,6 +21,15 @@
 //! the default options, and once with options derived from a hash of the input,
 //! so the mode, speed and quantization vary without changing the input format
 //! the corpus is built from.
+//!
+//! Each pass compresses the first [`MAX_PRIMITIVES`] primitives and leaves the
+//! rest. A primitive's compression depends on the ones before it only through
+//! what they left in the document -- accessors already compressed, buffer views
+//! remapped -- which the first few already exercise, and the corpus is
+//! dominated by mutations of one fixture with fifty primitives over the same
+//! accessors: 119 of its 530 glTF inputs hold 78% of its primitives. Taking
+//! all of them cost the campaign most of its time on the fiftieth copy of the
+//! same work.
 
 use draco_core::decode_limits::DecodeLimits;
 use draco_core::ErrorKind;
@@ -30,6 +39,9 @@ use draco_gltf::{
     PrimitiveIndex, QuantizationBits, ValidationProfile, KHR_DRACO_MESH_COMPRESSION,
 };
 use libfuzzer_sys::fuzz_target;
+
+/// The primitives each pass compresses, in document order.
+const MAX_PRIMITIVES: usize = 8;
 
 fuzz_target!(|data: &[u8]| {
     // `DecodeLimits::fuzzing()` is deliberately far tighter than the shipped
@@ -51,12 +63,17 @@ fuzz_target!(|data: &[u8]| {
 });
 
 fn compress_and_check(mut import: Import, options: &CompressionOptions, input: &[u8]) {
+    let mut attempts = 0;
     for mesh in 0..import.document.meshes().len() {
         let primitive_count = import
             .document
             .mesh(MeshIndex(mesh))
             .map_or(0, |mesh| mesh.primitive_count());
         for primitive in 0..primitive_count {
+            if attempts == MAX_PRIMITIVES {
+                return;
+            }
+            attempts += 1;
             let already_draco = import
                 .document
                 .primitive(MeshIndex(mesh), primitive)
