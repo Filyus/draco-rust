@@ -8,6 +8,24 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Encoding and decoding are faster, with the same bytes out. A rANS write
+  multiplies by a reciprocal instead of dividing; a long rANS decode run takes
+  one dependent table read a symbol instead of two, and its slot table is half
+  the size; the symbol plan keeps 33 counts instead of a list the size of the
+  attribute; an attribute's symbols are formed in its corrections' buffer;
+  tagged values are packed through an accumulator; a delta run is corrected in
+  one flat loop under the wrap transform; and attribute-sized buffers that were
+  filled with zeros only to be overwritten are written once. On a splat of 742
+  thousand points and 58 attributes the encode takes 0.53 s instead of 0.81 s
+  and the decode 0.23 s instead of 0.30 s; on a scan of eight million points
+  the encode takes 0.45 s instead of 0.65 s and the decode 0.34 s instead of
+  0.36 s. Encoding also needs less memory at its peak, since the symbols no
+  longer take a second attribute-sized buffer: about a third less on scans and
+  lidar captures (695 MB to 440 MB on that scan, 3.0 GB to 2.1 GB on one of
+  29 million points). Decoding peaks where it did.
+
 ### Fixed
 
 - A constant attribute no longer makes the decoder refuse a large stream with
