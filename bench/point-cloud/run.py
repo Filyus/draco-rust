@@ -233,7 +233,7 @@ def main():
         make_variant(name)
     exe = {name: build(name) for name in variants if name not in ("allb", "hown")}
     rb = {name: build(name, "rbench") for name in ("hown",) if name in variants}
-    forms = ["table", "buckets", "count"]
+    forms = ["table", "buckets", "count", "hybrid"]
 
     data = os.path.join(WORK, "data")
     if not os.path.isdir(data):
@@ -279,30 +279,33 @@ def main():
             sweep.append({"bits": bits, "scale": scale, "flat": flat, "precision": precision,
                           "table_bytes": table_bytes, "owned": share,
                           "buckets_ns": times["buckets"], "table_ns": times["table"],
-                          "count_ns": times["count"]})
+                          "count_ns": times["count"], "hybrid_ns": times["hybrid"]})
+            best_old = min(times["table"], times["buckets"])
             rows.append([precision and f"2^{precision.bit_length() - 1}",
                          table_bytes and f"{table_bytes >> 10} KiB",
                          f"{share:.0%}" if share is not None else "-",
                          f"{times['table']:.2f}", f"{times['buckets']:.2f}", f"{times['count']:.2f}",
-                         pct(times["count"], min(times["table"], times["buckets"]))])
+                         f"{times['hybrid']:.2f}", pct(times["count"], best_old),
+                         pct(times["hybrid"], best_old)])
         results["buckets"] = sweep
-        table("rANS forms, ns a symbol: the count form against the faster of table and buckets",
-              ["precision", "table", "owned", "table", "buckets", "count", "count vs best"], rows)
+        table("rANS forms, ns a symbol, against the faster of table and buckets",
+              ["precision", "table", "owned", "table", "buckets", "count", "hybrid", "count vs best",
+               "hybrid vs best"], rows)
 
     if every("forms"):
         rows, record = [], []
         for name in ("aerial", "spinning", "terrestrial", "splat"):
             for order in ("plain", "search"):
                 arms = {form: (exe["head"], {"DRACO_RANS_FORM": form}) for form in forms}
-                arms["count2"] = (exe["head2"], {"DRACO_RANS_FORM": "count"})
+                arms["buckets2"] = (exe["head2"], {"DRACO_RANS_FORM": "buckets"})
                 best = compare(arms, ["dec", cloud(name), str(ITERS), "1", order, "5"])
-                c = best["count"][0]
+                b = best["buckets"][0]
                 record.append({"cloud": name, "order": order, **{k: v[0] for k, v in best.items()}})
-                rows.append([name, order, f"{c:.4f}", pct(best["count2"][0], c), pct(best["table"][0], c),
-                             pct(best["buckets"][0], c)])
+                rows.append([name, order, f"{b:.4f}", pct(best["buckets2"][0], b), pct(best["table"][0], b),
+                             pct(best["count"][0], b), pct(best["hybrid"][0], b)])
         results["forms"] = record
-        table("Decode, one thread, against the count form (slower is positive)",
-              ["cloud", "order", "count s", "count again (floor)", "table", "buckets"], rows)
+        table("Decode, one thread, against the share rule (slower is positive)",
+              ["cloud", "order", "rule s", "rule again (floor)", "table", "count", "hybrid"], rows)
 
     if every("ablation"):
         rows, record = [], []
