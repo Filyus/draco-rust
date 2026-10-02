@@ -64,6 +64,7 @@ export const viewerWireframeBtn = element<HTMLButtonElement>('viewer-wireframe')
 export const viewerBaseColorBtn = element<HTMLButtonElement>('viewer-base-color');
 export const viewerSmoothNormalsBtn = element<HTMLButtonElement>('viewer-smooth-normals');
 export const viewerGridBtn = element<HTMLButtonElement>('viewer-grid');
+export const viewerZUpBtn = element<HTMLButtonElement>('viewer-z-up');
 export const viewerDisplayBtn = element<HTMLButtonElement>('viewer-display');
 export const viewerDisplayPanel = element('viewer-display-panel');
 export const displayToneMapSelect = element<HTMLSelectElement>('display-tone-map');
@@ -107,6 +108,7 @@ export const viewerControls = [
   viewerBaseColorBtn,
   viewerSmoothNormalsBtn,
   viewerGridBtn,
+  viewerZUpBtn,
   viewerDisplayBtn,
 ];
 export const scenePanel = element('scene-panel');

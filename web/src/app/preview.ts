@@ -13,7 +13,7 @@ import { modules, state } from './state.ts';
 import { renderSceneDocumentSummary } from './scene-report.ts';
 import { setWarningSource } from './warnings.ts';
 import { updateAnimationPlayButton, updateAnimationUi } from './animation-ui.ts';
-import { viewerAutoRotateBtn, viewerBaseColorBtn, viewerCanvas, viewerControls, viewerGridBtn, viewerSection, viewerSmoothNormalsBtn, viewerWireframeBtn } from './dom.ts';
+import { viewerAutoRotateBtn, viewerBaseColorBtn, viewerCanvas, viewerControls, viewerGridBtn, viewerSection, viewerSmoothNormalsBtn, viewerWireframeBtn, viewerZUpBtn } from './dom.ts';
 
 /**
  * The 3D preview: creating the viewer on demand, loading a scene into it, and
@@ -21,7 +21,7 @@ import { viewerAutoRotateBtn, viewerBaseColorBtn, viewerCanvas, viewerControls, 
  */
 
 /** The viewer display flags a viewport button can toggle. */
-type ViewerToggle = 'wireframe' | 'baseColorOnly' | 'smoothNormals' | 'showGrid';
+type ViewerToggle = 'wireframe' | 'baseColorOnly' | 'smoothNormals' | 'showGrid' | 'zUp';
 
 export function ensureViewer() {
   if (state.viewer) return state.viewer;
@@ -189,6 +189,7 @@ const VIEWER_TOGGLES: [HTMLButtonElement, ViewerToggle][] = [
   [viewerBaseColorBtn, 'baseColorOnly'],
   [viewerSmoothNormalsBtn, 'smoothNormals'],
   [viewerGridBtn, 'showGrid'],
+  [viewerZUpBtn, 'zUp'],
 ];
 
 /**

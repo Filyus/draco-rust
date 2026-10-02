@@ -62,6 +62,7 @@ import {
   updateNode,
   updateSceneBounds,
   updateWorldMatrices,
+  Z_UP_TO_Y_UP,
 } from './scene-graph.ts';
 import { MAX_JOINTS, TONE_MAP_NEUTRAL } from './shaders.ts';
 import { DEFAULT_BACKDROP_LEVEL } from './renderer.ts';
@@ -118,6 +119,7 @@ export class Viewer {
   declare _showGrid: boolean;
   declare _baseColorOnly: boolean;
   declare _smoothNormals: boolean;
+  declare _upAxisMatrix: Mat4 | null;
 
   /** Set whenever something that affects the image changes. */
   declare _dirty: boolean;
@@ -145,6 +147,25 @@ export class Viewer {
 
   get backdropLevel() { return this._backdropLevel; }
   set backdropLevel(value: number) { this._backdropLevel = value; this.invalidate(); }
+
+  /**
+   * Whether the file's Z axis points up. The viewer is Y-up, as glTF is; a
+   * lidar or survey file is usually Z-up and lies on its side until this says
+   * so. A view setting only: the scene is turned above its roots, and its own
+   * transforms and positions stay as the file gave them.
+   */
+  get zUp() { return !!this._upAxisMatrix; }
+  set zUp(value: boolean) {
+    if (value === this.zUp) return;
+    this._upAxisMatrix = value ? Z_UP_TO_Y_UP : null;
+    this.invalidate();
+    if (!this.scene) return;
+    // The bounds turn with the scene, so the grid and the framing are redone.
+    this._updateWorldMatrices();
+    this._updateSceneBounds();
+    this._disposeGrid();
+    this._fitCameraToScene();
+  }
 
   /** Schedule one frame. Cheap and idempotent; call it whenever in doubt. */
   invalidate() {
@@ -265,6 +286,7 @@ export class Viewer {
     this.exposure = 1;
     this.iblIntensity = 1;
     this.backdropLevel = DEFAULT_BACKDROP_LEVEL;
+    this._upAxisMatrix = null;
 
     // Matrices
     this._projection = mat4.create();

@@ -11,7 +11,20 @@ export interface SceneGraphHost {
   _boundsMatrix?: Mat4;
   _scratch: Mat4;
   _jointScratch?: Mat4;
+  /**
+   * The turn from the file's up axis to the viewer's Y-up, applied above every
+   * root, or `null` when the file is already Y-up.
+   */
+  _upAxisMatrix?: Mat4 | null;
 }
+
+/** Rotates a Z-up frame onto Y-up: (x, y, z) -> (x, z, -y). Column-major. */
+export const Z_UP_TO_Y_UP: Mat4 = new Float32Array([
+  1, 0, 0, 0,
+  0, 0, -1, 0,
+  0, 1, 0, 0,
+  0, 0, 0, 1,
+]);
 
 /**
  * Scene hierarchy evaluation: world matrices, framing bounds and skin palettes.
@@ -31,7 +44,7 @@ export function updateWorldMatrices(host: SceneGraphHost) {
   else host._visitedNodes = new Set();
   for (const rootIndex of roots) {
     const node = nodes[rootIndex];
-    if (node) updateNode(host, node, null);
+    if (node) updateNode(host, node, host._upAxisMatrix ?? null);
   }
 }
 

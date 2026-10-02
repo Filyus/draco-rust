@@ -239,4 +239,25 @@ const rounded = (box: { min: number[]; max: number[] }) => ({
     assert.ok(Math.abs((probe.scene.aabb.min[1] - gridY) - step * 0.01) < step * 1e-4);
 }
 
+// A survey is Z-up: a site 100 by 200 across and 10 high lies on its side in a
+// Y-up viewer until it is told so. Told so, it stands on the grid with its
+// height along Y, and the turn is the viewer's alone -- told otherwise again,
+// the bounds are the file's own.
+{
+    const probe = probeWith(sceneWith({ skinned: false, skinIndex: -1 }));
+    const node = probe.scene.nodes[0];
+    node.trs = { translation: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] };
+    probe.scene.meshes[0].aabb = { min: [0, 0, 0], max: [100, 200, 10] };
+    probe._updateWorldMatrices();
+    probe._updateSceneBounds();
+    assert.deepEqual(rounded(probe.scene.aabb), { min: [0, 0, 0], max: [100, 200, 10] });
+
+    probe.zUp = true;
+    assert.deepEqual(rounded(probe.scene.aabb), { min: [0, 0, -200], max: [100, 10, 0] });
+    assert.ok(Math.abs(probe.camera.target[1] - 5) < 1e-9, `target ${probe.camera.target}`);
+
+    probe.zUp = false;
+    assert.deepEqual(rounded(probe.scene.aabb), { min: [0, 0, 0], max: [100, 200, 10] });
+}
+
 console.log('viewer framing ok');

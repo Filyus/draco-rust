@@ -264,6 +264,8 @@ export interface RenderHost extends CameraHost, SceneGraphHost {
   _model: Mat4;
   _normalMatrix: Mat4;
   _eye?: Vec3;
+  /** The view with the up-axis turn folded in, for the splat pass. */
+  _splatView?: Mat4;
   _grid?: { buffer: WebGLBuffer; count: number } | null;
   _gridVao?: WebGLVertexArrayObject | null;
   _morphWeights?: Float32Array;
@@ -368,19 +370,30 @@ export function render(host: RenderHost) {
 function drawSplatCloud(host: RenderHost) {
   const splats = host._splats;
   if (!splats) return;
-  const forward: [number, number, number] = [-host._view[2], -host._view[6], -host._view[10]];
+  // The cloud sits in the file's frame, so the up-axis turn joins the view
+  // rather than the splats: the pass, the sort and the eye all work in that
+  // frame, and the cloud is never rewritten.
+  const turn = host._upAxisMatrix;
+  const view = turn
+    ? mat4.multiply(host._splatView || (host._splatView = mat4.create()), host._view, turn)
+    : host._view;
+  const forward: [number, number, number] = [-view[2], -view[6], -view[10]];
   ensureOrder(host.gl, splats, forward);
-  // The eye in the world; the pass turns directions into the harmonics' own
-  // frame with the cloud's `shFrame`.
-  const eye = cameraPosition(host, host._eye || (host._eye = vec3.create()));
+  // The eye in the cloud's frame -- the turn is a rotation, so its transpose
+  // takes the world back -- and the pass turns directions from there into
+  // the harmonics' own frame with the cloud's `shFrame`.
+  const world = cameraPosition(host, host._eye || (host._eye = vec3.create()));
+  const eye: [number, number, number] = turn
+    ? [0, 1, 2].map((i) => turn[i * 4] * world[0] + turn[i * 4 + 1] * world[1] + turn[i * 4 + 2] * world[2]) as [number, number, number]
+    : [world[0], world[1], world[2]];
   drawSplats(
     host.gl,
     splats,
-    host._view as unknown as Float32Array,
+    view as unknown as Float32Array,
     host._projection as unknown as Float32Array,
     host.canvas.width,
     host.canvas.height,
-    [eye[0], eye[1], eye[2]],
+    eye,
   );
 }
 
