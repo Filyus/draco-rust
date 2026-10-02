@@ -36,7 +36,7 @@ figure at all.
 `rejected` -- tried, deliberately not kept. `retracted` -- an earlier claim
 here was withdrawn. `diagnostic` -- measured only, no change proposed.
 
-77 rounds: 46 landed, 10 diagnostic, 11 null, 8 retracted, 2 rejected.
+78 rounds: 47 landed, 10 diagnostic, 11 null, 8 retracted, 2 rejected.
 
 | Round | Verdict | Headline |
 | --- | --- | ---: |
@@ -117,6 +117,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [The Point Order Search, On One Thread](#the-point-order-search-on-one-thread) | landed | `-4.2 to -11.9% against the spatial order` |
 | [Undoing A Difference As A Sum](#undoing-a-difference-as-a-sum) | landed | `-3 to -17% decode` |
 | [Three Shorter Sums, All Null](#three-shorter-sums-all-null) | null | `-0.5 to +2%` |
+| [The Encoder On Threads](#the-encoder-on-threads) | landed | `2.3x to 4.6x on 16 threads` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -4544,6 +4545,42 @@ columns that moved to `Difference` (timed per attribute,
 The add is not what the column costs any more; the passes are. Lanes read
 eight streams at once, and the checking pass is cheaper vectorized on its own
 than as a branch in the sum.
+
+### The Encoder On Threads
+
+2026-10-02, same machine (16 threads). The threaded encoder developed on the
+experiment branch is brought over: `EncoderOptions::set_threads` (`0`, the
+default, is the machine's up to sixteen), a sequential point cloud's attributes
+encoded side by side into buffers of their own appended in order, and an
+attribute of `2^20` values or more cutting its own passes -- quantization, the
+gather, the wrap transform's bounds and corrections, the zigzag, the symbol
+plan -- into pieces of `2^16`, whose integer results are combined in order.
+Only the rANS write stays one chain. The order search and the spatial curve
+take the same threads. Every count writes the same bytes; a test encodes a
+cloud large enough for the passes to cut on 1, 2, 7, 16 and the machine's
+threads and compares, and fails with one piece of the threaded bounds dropped.
+
+At the web converter's budget, speed 5, best of three with a pause before each
+run, seconds:
+
+| cloud | order | 1 | 2 | 4 | 8 | 16 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| splat, 742K, 58 attributes | spatial | `0.559` | `0.339` | `0.310` | `0.286` | `0.246` |
+| | search | `1.946` | `1.116` | `0.750` | `0.541` | `0.423` |
+| splat, 1.9M | spatial | `2.280` | `1.511` | `1.099` | `0.738` | `0.584` |
+| | search | `4.610` | `2.188` | `1.622` | `1.418` | `1.050` |
+| splat, 3.2M | spatial | `4.352` | `3.154` | `2.021` | `1.324` | `0.996` |
+| | search | `6.126` | `3.824` | `2.617` | `1.878` | `1.684` |
+| photogrammetry scan, 8.0M, 2 attributes | spatial | `0.789` | `0.515` | `0.389` | `0.324` | `0.307` |
+| | search | `2.538` | `1.574` | `1.043` | `0.846` | `0.730` |
+| airborne lidar, 10.7M, 7 attributes | spatial | `1.720` | `1.025` | `0.774` | `0.683` | `0.600` |
+| | search | `5.286` | `3.075` | `2.097` | `1.746` | `1.444` |
+
+On sixteen threads the searched encode costs less than the spatial one did on
+one. The one-thread column ran last in a long run and reads high: against the
+tree before, alternated three times, best of five, one thread is 2.8% to 3.9%
+faster, not slower (the gather writes into its buffer instead of pushing), and
+the bytes are the tree before's.
 
 ## Unexplored
 

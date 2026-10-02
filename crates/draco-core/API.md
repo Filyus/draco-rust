@@ -537,6 +537,15 @@ decoder reads, C++ included:
 
 The rustdoc of each carries the measurements.
 
+`set_threads` and `get_threads` cap the threads an encode uses: `0`, the
+default, is as many as the machine has up to sixteen, `1` keeps the encode on
+the calling thread, and WebAssembly ignores it. A sequential point cloud's
+attributes are encoded side by side, a large attribute's passes run in pieces,
+and the order search and the spatial curve use the same threads. The stream is
+the same on any count. On sixteen threads a Gaussian splat of 742 thousand
+points encodes in 0.25 s against 0.56 s on one, a lidar capture of 10.7 million
+in 0.60 s against 1.72 s.
+
 `set_version` accepts any `(major, minor)`, but the encode does not: each
 geometry/coder combination claims the bitstream versions that have an
 encode/decode round-trip test, listed by `version::EncodeTarget::claimed_versions`
@@ -554,6 +563,7 @@ the target does claim. `(0, 0)` means "use the default".
 | `prediction_scheme_search` | i32 | 0 | Non-zero: `set_prediction_search`. Not an upstream key |
 | `spatial_point_order` | i32 | 0 | Non-zero: `set_spatial_point_order`. Not an upstream key |
 | `point_order_search` | i32 | 0 | Non-zero: `set_point_order_search`. Not an upstream key |
+| `threads` | i32 | 0 | `set_threads`: 0 is the machine's up to sixteen. Does not change the bytes. Not an upstream key |
 
 #### Relationship to the `draco_encoder` CLI
 

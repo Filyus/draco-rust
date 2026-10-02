@@ -44,6 +44,11 @@ impl SequentialNormalAttributeEncoder {
         }
     }
 
+    /// See `SequentialIntegerAttributeEncoder::set_threads`.
+    pub(crate) fn set_threads(&mut self, threads: usize) {
+        self.base.set_threads(threads);
+    }
+
     /// The prediction scheme and transform the octahedron-folded values were
     /// encoded with. Delegated: a normal is encoded as integers once folded.
     pub fn selected_prediction(

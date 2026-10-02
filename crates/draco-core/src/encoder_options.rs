@@ -207,8 +207,8 @@ impl EncoderOptions {
     ///
     /// Which spatial order is the encoder's choice and not part of this
     /// option's contract: today it is a Hilbert curve, which writes 0.35% to 4%
-    /// fewer bytes than the Morton curve it replaced, for the same encode time,
-    /// and a later version may use a better one. Every such stream decodes the
+    /// fewer bytes than a Morton curve for the same encode time, and a later
+    /// version may use a better one. Every such stream decodes the
     /// same way; only the order of the decoded points and the size differ.
     ///
     /// A point cloud's point order carries no meaning: no connectivity refers
@@ -289,10 +289,14 @@ impl EncoderOptions {
     /// capture of 10.7 million points. The stream is an ordinary one; only the
     /// order of the points in it differs.
     ///
-    /// **It costs encode time**, all of it on the calling thread: that splat
-    /// encodes in 0.5 s in file order and in 1.2, 1.4, 2.4 and 4.9 s with the
-    /// search at speed 8, 5, 3 and 0. At the default speed the clouds above
-    /// took three to six times as long as in file order. **And some decode
+    /// **It costs encode time**: on one thread that splat encodes in 0.5 s in
+    /// file order and in 1.2, 1.4, 2.4 and 4.9 s with the search at speed 8,
+    /// 5, 3 and 0, and at the default speed the clouds above took three to six
+    /// times as long as in file order. The search runs on as many threads as
+    /// [`set_threads`](Self::set_threads) allows, writing the same order on any
+    /// number: on sixteen that splat's searched encode takes 0.42 s against
+    /// 0.25 s in the spatial order, and the others 1.8 to 2.4 times their
+    /// spatial encode. **And some decode
     /// time**: in the order it finds, neighbours agree well enough that the
     /// encoder picks the more compact schemes, differences over values as they
     /// are and the raw coder over the tagged one, and those take longer to
@@ -312,7 +316,7 @@ impl EncoderOptions {
     /// **The effort follows `encoding_speed`**, the way it does elsewhere:
     /// speed 9 and 10 write the curve and nothing more, 7 and 8 count the 8
     /// dearest attribute columns over a window of 8 points, 5 and 6 (the
-    /// default) 16 over 16, 3 and 4 32 over 32, and 0 to 2 every column over
+    /// default) 16 over 16, 3 and 4 32 over 32, and 0 to 2 the 64 dearest over
     /// 64.
     ///
     /// Off by default for the reason the prediction search is: it changes the
@@ -328,6 +332,39 @@ impl EncoderOptions {
     /// Applies to the sequential coder, like the order option does.
     pub fn set_point_order_search(&mut self, enabled: bool) {
         self.set_global_int("point_order_search", i32::from(enabled));
+    }
+
+    /// The threads asked of this encode: 0, the default, is as many as the
+    /// machine has, and no count is taken past sixteen.
+    pub fn get_threads(&self) -> i32 {
+        self.get_global_int("threads", 0)
+    }
+
+    /// Caps the threads an encode may use; `1` keeps everything on the calling
+    /// thread and `0`, the default, takes as many as the machine has. Neither
+    /// a count asked for nor the machine's is taken past sixteen.
+    ///
+    /// A sequential point cloud's attributes are encoded side by side, each
+    /// into a buffer of its own that is appended in order, and an attribute of
+    /// a million values or more also cuts its own passes -- quantization, the
+    /// gather, the prediction, the symbol plan -- into pieces; only the rANS
+    /// write stays one chain. The point order search and the spatial curve run
+    /// on the same threads. Encoding the spatial order at the web converter's
+    /// budget on sixteen threads, against one: a Gaussian splat of 742
+    /// thousand points 0.56 -> 0.25 s, splats of 1.9 and 3.2 million points
+    /// 2.28 -> 0.58 s and 4.35 -> 1.00 s, a scan of eight million 0.79 ->
+    /// 0.31 s, an airborne lidar capture of 10.7 million 1.72 -> 0.60 s; with
+    /// the order search, 3.5 to 4.6 times faster. Below 2^17 values in all,
+    /// counted as points times attributes, no thread is started.
+    ///
+    /// Only work that splits into pieces independent of one another is run on
+    /// threads, and each piece's result is the same whichever thread works it,
+    /// so the stream does not depend on this. The calling thread is one of
+    /// them, and a thread the system refuses to start is one fewer rather than
+    /// an error: the encode finishes on those that did. On WebAssembly there
+    /// are no threads and the value is ignored.
+    pub fn set_threads(&mut self, threads: i32) {
+        self.set_global_int("threads", threads);
     }
 
     /// Returns the forced encoding method, if one was set.

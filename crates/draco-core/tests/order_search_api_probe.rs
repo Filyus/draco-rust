@@ -159,3 +159,58 @@ fn what_the_order_search_costs_and_saves() {
         }
     }
 }
+
+/// How an encode scales with threads: each cloud in the spatial order and with
+/// the search, at speed 5, on 1, 2, 4, 8 and 16 threads, best of three with a
+/// pause before each run, and every count's stream checked against one
+/// thread's.
+#[test]
+#[ignore = "needs clouds in DRACO_ORDER_CLOUDS: run with --release --ignored --nocapture"]
+fn how_an_encode_scales_with_threads() {
+    let Some(paths) = std::env::var_os("DRACO_ORDER_CLOUDS") else {
+        println!("DRACO_ORDER_CLOUDS is not set; nothing to measure");
+        return;
+    };
+    println!(
+        "{:<28} {:<8} {:>8} {:>8} {:>8} {:>8} {:>8}",
+        "cloud", "order", "1", "2", "4", "8", "16"
+    );
+    for path in std::env::split_paths(&paths) {
+        let source = std::fs::read(&path).expect("the cloud reads");
+        let cloud = draco_io::ply_reader::PlyReader::from_bytes(source)
+            .with_generic_attributes(true)
+            .read_mesh()
+            .expect("the cloud parses")
+            .into_point_cloud();
+        let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+        let label = format!("{name} ({}k)", cloud.num_points() / 1000);
+        for (order, search) in [("spatial", false), ("search", true)] {
+            let mut reference: Option<Vec<u8>> = None;
+            let mut row = Vec::new();
+            for threads in [1, 2, 4, 8, 16] {
+                let mut options = converter_options(&cloud, 5);
+                options.set_spatial_point_order(!search);
+                options.set_point_order_search(search);
+                options.set_threads(threads);
+                let mut best = f64::MAX;
+                for _ in 0..3 {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    let (bytes, seconds) = encode(&cloud, &options);
+                    best = best.min(seconds);
+                    match &reference {
+                        None => reference = Some(bytes),
+                        Some(r) => assert!(r == &bytes, "{name}: {threads} threads changed it"),
+                    }
+                }
+                row.push(best);
+            }
+            println!(
+                "{label:<28} {order:<8} {}",
+                row.iter()
+                    .map(|s| format!("{s:>8.3}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+        }
+    }
+}

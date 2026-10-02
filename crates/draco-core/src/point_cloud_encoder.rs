@@ -8,6 +8,7 @@ use crate::kd_tree_attributes_encoder::KdTreeAttributesEncoder;
 use crate::mesh::Mesh;
 use crate::mesh_encoder::EncodedAttributeInfo;
 use crate::metadata::METADATA_FLAG_MASK;
+use crate::parallel;
 use crate::point_cloud::PointCloud;
 use crate::point_order as order;
 use crate::sequential_attribute_encoder::{
@@ -344,6 +345,14 @@ pub struct EncodedPointCloudInfo {
     pub attributes: Vec<EncodedAttributeInfo>,
 }
 
+/// What one attribute's encoder leaves behind: its bytes, and the encoder
+/// itself where the transform data written after all the values is its to give.
+struct EncodedValues {
+    bytes: EncoderBuffer,
+    integer: Option<SequentialIntegerAttributeEncoder>,
+    normal: Option<SequentialNormalAttributeEncoder>,
+}
+
 impl GeometryEncoder for PointCloudEncoder {
     fn point_cloud(&self) -> Option<&PointCloud> {
         self.point_cloud.as_ref()
@@ -589,79 +598,110 @@ impl PointCloudEncoder {
             let mut normal_encoders: Vec<Option<SequentialNormalAttributeEncoder>> =
                 Vec::with_capacity(num_attributes as usize);
 
-            // First pass: encode all values
-            for i in 0..num_attributes {
-                let att = pc.attribute(i);
-
-                match encoder_types[i as usize] {
-                    SequentialAttributeEncoderType::Normals => {
-                        let mut att_encoder = SequentialNormalAttributeEncoder::new();
-                        att_encoder.init(pc, i, &self.options).map_err(|e| {
-                            DracoError::general(format!(
-                                "Failed to init normal attribute encoder {i}: {e}"
-                            ))
-                        })?;
-
-                        att_encoder.encode_values(
-                            pc,
-                            &point_ids,
-                            out_buffer,
-                            &self.options,
-                            self,
-                        )?;
-
-                        integer_encoders.push(None);
-                        normal_encoders.push(Some(att_encoder));
-                        continue;
-                    }
-                    SequentialAttributeEncoderType::Quantization
-                    | SequentialAttributeEncoderType::Integer => {
-                        // The prediction search, when asked for, is decided
-                        // inside `encode_values`, where both candidates are
-                        // already in memory; nothing about the call changes.
-                        let mut att_encoder = SequentialIntegerAttributeEncoder::new();
-                        att_encoder.init(i);
-
-                        att_encoder.encode_values(
-                            pc,
-                            &point_ids,
-                            out_buffer,
-                            &self.options,
-                            self,
-                            None,
-                            false,
-                        )?;
-
-                        integer_encoders.push(Some(att_encoder));
-                    }
-                    SequentialAttributeEncoderType::Generic => {
-                        let entry_size = att.byte_stride() as usize;
-                        let data = att.buffer().data();
-                        for &point_id in &point_ids {
-                            let value_index = att.mapped_index(point_id).0 as usize;
-                            let offset = value_index.checked_mul(entry_size).ok_or_else(|| {
-                                DracoError::general(
-                                    "Point cloud raw attribute offset overflow".to_string(),
-                                )
+            // First pass: encode all values. An attribute's encoder reads the
+            // cloud and the point order and writes only its own bytes, so each
+            // writes into a buffer of its own and the buffers are appended in
+            // attribute order: the stream one buffer written in that order
+            // would hold, whatever number of threads did the writing. Below a
+            // few hundred thousand values the work does not repay the threads.
+            let values_to_encode = num_points.saturating_mul(num_attributes as usize);
+            let threads = if values_to_encode >= crate::parallel::ATTRIBUTES_MIN_VALUES {
+                parallel::resolve(self.options.get_threads())
+            } else {
+                1
+            };
+            // Threads beyond one an attribute go to the attributes themselves:
+            // a scan's two or three attributes would otherwise keep two or
+            // three threads busy, each on tens of millions of values.
+            let inner_threads = (threads / num_attributes.max(1) as usize).max(1);
+            let (major, minor) = (out_buffer.version_major(), out_buffer.version_minor());
+            let this: &PointCloudEncoder = self;
+            let encoded = parallel::map(
+                num_attributes as usize,
+                threads,
+                |index| -> Result<EncodedValues, DracoError> {
+                    let i = index as i32;
+                    let att = pc.attribute(i);
+                    let mut buffer = EncoderBuffer::new();
+                    buffer.set_version(major, minor);
+                    let mut values = EncodedValues {
+                        bytes: EncoderBuffer::new(),
+                        integer: None,
+                        normal: None,
+                    };
+                    match encoder_types[index] {
+                        SequentialAttributeEncoderType::Normals => {
+                            let mut att_encoder = SequentialNormalAttributeEncoder::new();
+                            att_encoder.init(pc, i, &this.options).map_err(|e| {
+                                DracoError::general(format!(
+                                    "Failed to init normal attribute encoder {i}: {e}"
+                                ))
                             })?;
-                            let end = offset.checked_add(entry_size).ok_or_else(|| {
-                                DracoError::general(
-                                    "Point cloud raw attribute byte range overflow".to_string(),
-                                )
-                            })?;
-                            if end > data.len() {
-                                return Err(DracoError::general(
-                                    "Point cloud raw attribute data out of bounds".to_string(),
-                                ));
-                            }
-                            out_buffer.encode_data(&data[offset..end]);
+                            att_encoder.set_threads(inner_threads);
+
+                            att_encoder.encode_values(
+                                pc,
+                                &point_ids,
+                                &mut buffer,
+                                &this.options,
+                                this,
+                            )?;
+                            values.normal = Some(att_encoder);
                         }
+                        SequentialAttributeEncoderType::Quantization
+                        | SequentialAttributeEncoderType::Integer => {
+                            // The prediction search, when asked for, is decided
+                            // inside `encode_values`, where both candidates are
+                            // already in memory; nothing about the call changes.
+                            let mut att_encoder = SequentialIntegerAttributeEncoder::new();
+                            att_encoder.init(i);
+                            att_encoder.set_threads(inner_threads);
 
-                        integer_encoders.push(None);
+                            att_encoder.encode_values(
+                                pc,
+                                &point_ids,
+                                &mut buffer,
+                                &this.options,
+                                this,
+                                None,
+                                false,
+                            )?;
+                            values.integer = Some(att_encoder);
+                        }
+                        SequentialAttributeEncoderType::Generic => {
+                            let entry_size = att.byte_stride() as usize;
+                            let data = att.buffer().data();
+                            for &point_id in &point_ids {
+                                let value_index = att.mapped_index(point_id).0 as usize;
+                                let offset =
+                                    value_index.checked_mul(entry_size).ok_or_else(|| {
+                                        DracoError::general(
+                                            "Point cloud raw attribute offset overflow".to_string(),
+                                        )
+                                    })?;
+                                let end = offset.checked_add(entry_size).ok_or_else(|| {
+                                    DracoError::general(
+                                        "Point cloud raw attribute byte range overflow".to_string(),
+                                    )
+                                })?;
+                                if end > data.len() {
+                                    return Err(DracoError::general(
+                                        "Point cloud raw attribute data out of bounds".to_string(),
+                                    ));
+                                }
+                                buffer.encode_data(&data[offset..end]);
+                            }
+                        }
                     }
-                }
-
-                normal_encoders.push(None);
+                    values.bytes = buffer;
+                    Ok(values)
+                },
+            );
+            for result in encoded {
+                let values = result?;
+                out_buffer.encode_data(values.bytes.data());
+                integer_encoders.push(values.integer);
+                normal_encoders.push(values.normal);
             }
 
             // Second pass: encode transform parameters (EncodeDataNeededByPortableTransforms)

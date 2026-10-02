@@ -15,6 +15,8 @@ use crate::draco_types::DataType;
 use crate::encoder_buffer::EncoderBuffer;
 use crate::geometry_attribute::PointAttribute;
 use crate::geometry_indices::PointIndex;
+#[cfg(feature = "encoder")]
+use crate::parallel::{PASS_MIN_VALUES, PIECE};
 use crate::prediction_scheme::EntryToPointIdMap;
 use crate::quantization_utils::{Dequantizer, Quantizer};
 use crate::status::{DracoError, Status};
@@ -42,6 +44,9 @@ pub struct AttributeQuantizationTransform {
     quantization_bits: i32,
     min_values: Vec<f32>,
     range: f32,
+    /// Threads the forward passes may use; see `set_threads`.
+    #[cfg(feature = "encoder")]
+    threads: usize,
 }
 
 impl Default for AttributeQuantizationTransform {
@@ -50,6 +55,8 @@ impl Default for AttributeQuantizationTransform {
             quantization_bits: -1,
             min_values: Vec::new(),
             range: 0.0,
+            #[cfg(feature = "encoder")]
+            threads: 1,
         }
     }
 }
@@ -57,6 +64,16 @@ impl Default for AttributeQuantizationTransform {
 impl AttributeQuantizationTransform {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Lets `compute_parameters` and the quantization itself run on `threads`.
+    /// Each value is quantized as it is alone, and the bounds are combined
+    /// piece by piece in order with the comparison the single pass makes, so
+    /// they pick the same value among equals (`0.0` and `-0.0` included): the
+    /// result does not depend on the count.
+    #[cfg(feature = "encoder")]
+    pub(crate) fn set_threads(&mut self, threads: usize) {
+        self.threads = threads.max(1);
     }
 
     pub fn set_parameters(
@@ -170,8 +187,20 @@ impl AttributeQuantizationTransform {
             max_values[c] = val;
         }
 
+        // The same bounds in pieces, side by side: each piece starts from its
+        // first entry and keeps the earliest of equal values, and the pieces
+        // are folded in order the same way, so the bounds are the single
+        // pass's to the bit. Anything a piece cannot read, or a NaN, leaves the
+        // single pass below to say what is wrong as it always has.
+        #[cfg(feature = "encoder")]
+        let folded = self.threads > 1
+            && num_entries.saturating_mul(self.min_values.len()) >= PASS_MIN_VALUES
+            && self.fold_bounds_in_pieces(data, byte_stride, num_entries, &mut max_values);
+        #[cfg(not(feature = "encoder"))]
+        let folded = false;
+
         // Process remaining entries starting from index 1 (matching C++ loop)
-        for i in 1..num_entries {
+        for i in (if folded { num_entries } else { 1 })..num_entries {
             let Some(offset) = i.checked_mul(byte_stride) else {
                 return Err(DracoError::general(
                     "Attribute byte offset overflow".to_string(),
@@ -244,6 +273,77 @@ impl AttributeQuantizationTransform {
         }
 
         Ok(())
+    }
+
+    /// Folds the bounds of entries `1..num_entries` into `min_values` and
+    /// `max_values`, which hold entry 0's, a piece a thread. `false`, and the
+    /// bounds untouched, where any piece met a NaN or an entry it cannot read.
+    #[cfg(feature = "encoder")]
+    fn fold_bounds_in_pieces(
+        &mut self,
+        data: &[u8],
+        byte_stride: usize,
+        num_entries: usize,
+        max_values: &mut [f32],
+    ) -> bool {
+        let num_components = self.min_values.len();
+        let pieces = crate::parallel::map(
+            (num_entries - 1).div_ceil(PIECE),
+            self.threads,
+            |piece| -> Option<(Vec<f32>, Vec<f32>)> {
+                let start = 1 + piece * PIECE;
+                let end = (start + PIECE).min(num_entries);
+                let mut bounds: Option<(Vec<f32>, Vec<f32>)> = None;
+                for i in start..end {
+                    let offset = i.checked_mul(byte_stride)?;
+                    let entry = data.get(offset..offset.checked_add(num_components * 4)?)?;
+                    let values = entry
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|raw| f32::from_le_bytes(*raw));
+                    match &mut bounds {
+                        None => {
+                            let values: Vec<f32> = values.collect();
+                            if values.iter().any(|value| value.is_nan()) {
+                                return None;
+                            }
+                            bounds = Some((values.clone(), values));
+                        }
+                        Some((mins, maxs)) => {
+                            for (val, (min, max)) in
+                                values.zip(mins.iter_mut().zip(maxs.iter_mut()))
+                            {
+                                if val.is_nan() {
+                                    return None;
+                                }
+                                if *min > val {
+                                    *min = val;
+                                }
+                                if *max < val {
+                                    *max = val;
+                                }
+                            }
+                        }
+                    }
+                }
+                bounds
+            },
+        );
+        let Some(pieces) = pieces.into_iter().collect::<Option<Vec<_>>>() else {
+            return false;
+        };
+        for (mins, maxs) in pieces {
+            for c in 0..num_components {
+                if self.min_values[c] > mins[c] {
+                    self.min_values[c] = mins[c];
+                }
+                if max_values[c] < maxs[c] {
+                    max_values[c] = maxs[c];
+                }
+            }
+        }
+        true
     }
 
     /// Quantizes `attribute` into `target_attribute`, reporting what went wrong
@@ -321,6 +421,23 @@ impl AttributeQuantizationTransform {
             .unwrap_or(20);
         #[cfg(feature = "debug_logs")]
         let debug_cmp_cpp_file = std::env::var("DRACO_DEBUG_CMP_CPP_FILE").ok();
+
+        // The points in pieces, side by side. A point's value is a function of
+        // its own source entry, so the pieces write what one pass would; any
+        // point a piece cannot read hands the whole attribute to the passes
+        // below, which say what is wrong as they always have. The pieces read
+        // each point through its map, which the fast path below does not when
+        // it is given no point ids; so with none they run only where the map
+        // is the identity and the two read the same entries.
+        #[cfg(all(feature = "encoder", not(feature = "debug_logs")))]
+        if self.threads > 1
+            && num_points.saturating_mul(num_components) >= PASS_MIN_VALUES
+            && dst_stride == num_components * 4
+            && (!point_ids.is_empty() || attribute.is_mapping_identity())
+            && self.quantize_in_pieces(attribute, point_ids, dst_data, num_points, num_components)
+        {
+            return Ok(());
+        }
 
         // Fast path for common case: 3-component float -> 3-component uint32
         // with identity mapping (sequential encoding)
@@ -438,6 +555,61 @@ impl AttributeQuantizationTransform {
         }
 
         Ok(())
+    }
+
+    /// `generate_portable_attribute`'s generic pass over `num_points` tightly
+    /// packed target entries, a piece a thread. `false` when a point's source
+    /// entry is out of reach, the target then partly written.
+    #[cfg(all(feature = "encoder", not(feature = "debug_logs")))]
+    fn quantize_in_pieces(
+        &self,
+        attribute: &PointAttribute,
+        point_ids: EntryToPointIdMap<'_>,
+        dst_data: &mut [u8],
+        num_points: usize,
+        num_components: usize,
+    ) -> bool {
+        let max_quantized_value: i32 = ((1u64 << (self.quantization_bits as u32)) - 1) as i32;
+        let width = num_components * 4;
+        let src_data = attribute.buffer().data();
+        let src_stride = attribute.byte_stride() as usize;
+        let mins = &self.min_values[..num_components];
+        let failed = std::sync::atomic::AtomicBool::new(false);
+        crate::parallel::for_each_chunk_mut(
+            &mut dst_data[..num_points * width],
+            PIECE * width,
+            self.threads,
+            |piece, chunk| {
+                let mut quantizer = Quantizer::new();
+                quantizer.init(self.range, max_quantized_value);
+                for (offset, dst_entry) in chunk.chunks_exact_mut(width).enumerate() {
+                    let i = piece * PIECE + offset;
+                    let point_idx = if point_ids.is_empty() {
+                        PointIndex(i as u32)
+                    } else {
+                        PointIndex(point_ids.get(i).unwrap_or(u32::MAX))
+                    };
+                    let source = (attribute.mapped_index(point_idx).0 as usize)
+                        .checked_mul(src_stride)
+                        .and_then(|start| src_data.get(start..start.checked_add(width)?));
+                    let Some(src_entry) = source else {
+                        failed.store(true, std::sync::atomic::Ordering::Relaxed);
+                        return;
+                    };
+                    for ((src_component, dst_component), &min_value) in src_entry
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .zip(dst_entry.as_chunks_mut::<4>().0.iter_mut())
+                        .zip(mins)
+                    {
+                        let value = f32::from_le_bytes(*src_component) - min_value;
+                        *dst_component = (quantizer.quantize_float(value) as u32).to_le_bytes();
+                    }
+                }
+            },
+        );
+        !failed.into_inner()
     }
 }
 

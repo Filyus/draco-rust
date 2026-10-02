@@ -97,11 +97,6 @@ fn pricing_stride(len: usize, components: usize) -> usize {
     (len * components.max(1) / PRICED_VALUES).clamp(1, (len / PRICED_STEPS_AT_LEAST).max(1))
 }
 
-/// Threads the search runs on, until the encoder takes a thread count. The
-/// blocks are independent of one another and the order is the same on any
-/// number of threads; the tests drive the search on several.
-const THREADS: usize = 1;
-
 /// Positions are priced on this many bits an axis at most.
 const POSITION_BITS: u32 = 16;
 
@@ -536,9 +531,10 @@ fn grid(pc: &PointCloud, options: &EncoderOptions, threads: usize) -> Option<(i3
 /// time. Each step of the curve is to a face neighbour, where a
 /// Morton curve jumps across the grid at the edge of every aligned block.
 pub(crate) fn curve(pc: &PointCloud, options: &EncoderOptions) -> Option<Vec<PointIndex>> {
-    let (_, grid) = grid(pc, options, THREADS)?;
+    let threads = threads_for(pc, options);
+    let (_, grid) = grid(pc, options, threads)?;
     Some(
-        grid.hilbert_order(THREADS)
+        grid.hilbert_order(threads)
             .into_iter()
             .map(PointIndex)
             .collect(),
@@ -1185,11 +1181,25 @@ fn refine_block(lanes: &mut Lanes, window: usize, passes: usize) {
 /// order already beats what the search would write, when there is no position
 /// to sort by, and when the cloud is too small to be worth reordering.
 pub(crate) fn search(pc: &PointCloud, options: &EncoderOptions) -> Option<Vec<PointIndex>> {
-    search_on(pc, options, THREADS)
+    search_on(pc, options, threads_for(pc, options))
+}
+
+/// The threads the curve and the search run on: the encode's, by the same
+/// measure the encode takes them, so a cloud too small for the attributes to
+/// be encoded side by side stays on the calling thread here too.
+fn threads_for(pc: &PointCloud, options: &EncoderOptions) -> usize {
+    let values = pc
+        .num_points()
+        .saturating_mul(pc.num_attributes().max(0) as usize);
+    if values >= parallel::ATTRIBUTES_MIN_VALUES {
+        parallel::resolve(options.get_threads())
+    } else {
+        1
+    }
 }
 
 /// [`search`] on `threads`, which it writes the same order on whatever their
-/// number.
+/// number: the blocks are independent of one another.
 fn search_on(pc: &PointCloud, options: &EncoderOptions, threads: usize) -> Option<Vec<PointIndex>> {
     let count = pc.num_points();
     if count < 64 {
@@ -1911,9 +1921,7 @@ mod tests {
     fn the_curve_reads_an_attribute_through_its_explicit_map() {
         let count = 5_000;
         let (positions, _) = helix(count);
-        let perm: Vec<u32> = (0..count as u32)
-            .map(|p| p * 7919 % count as u32)
-            .collect();
+        let perm: Vec<u32> = (0..count as u32).map(|p| p * 7919 % count as u32).collect();
         let (mut mapped, options) = cloud(&positions, &[]);
         let map: Vec<AttributeValueIndex> = perm.iter().map(|&v| AttributeValueIndex(v)).collect();
         mapped.attribute_mut(0).set_explicit_mapping_from(&map);

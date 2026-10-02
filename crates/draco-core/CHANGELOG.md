@@ -20,11 +20,21 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (6.8% at speed 8, 19.8% at 0), 4.2% to 4.5% on two larger splats, 8.4% to
   8.9% on three photogrammetry scans and an airborne lidar capture. A scan or
   rotating-lidar capture in its scan order comes out byte for byte as without
-  the option. It costs encode time: three to six times the encode in file
-  order at the default speed, on the calling thread. It can cost decode time
-  too, since the schemes the encoder then finds smallest are slower to undo:
-  up to 6% on a large splat. Any Draco decoder reads the stream; the decoded
-  points come back in another order.
+  the option. It costs encode time: on one thread three to six times the
+  encode in file order at the default speed, on sixteen 1.8 to 2.4 times the
+  spatial encode. It can cost decode time too, since the schemes the encoder
+  then finds smallest are slower to undo: up to 6% on a large splat. Any Draco
+  decoder reads the stream; the decoded points come back in another order.
+- `EncoderOptions::set_threads` and `get_threads`. A sequential point cloud's
+  attributes are encoded side by side, a large attribute's own passes run in
+  pieces, and the order search and the spatial curve run on the same threads;
+  the stream is the same on any count. On sixteen threads, against one: a
+  Gaussian splat of 742 thousand points encodes in 0.25 s instead of 0.56 s,
+  one of 3.2 million in 1.00 s instead of 4.35 s, a lidar capture of 10.7
+  million in 0.60 s instead of 1.72 s; with the order search 3.5 to 4.6 times
+  faster. **The default, `0`, takes as many threads as the machine has, up to
+  sixteen**; set `1` for the encode to stay on the calling thread, as it did
+  before. WebAssembly has no threads and ignores the option.
 
 ### Changed
 

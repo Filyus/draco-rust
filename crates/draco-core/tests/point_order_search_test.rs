@@ -1,7 +1,8 @@
 //! The point order option, through the public encoder and decoder: the stream
 //! it writes must read back as the same points, must be smaller than the one
-//! without it where the input order is bad, and must be the very stream without
-//! it where the input order is already good.
+//! without it where the input order is bad, must be the very stream without it
+//! where the input order is already good, and must not depend on how many
+//! threads wrote it.
 
 #![cfg(all(feature = "encoder", feature = "point_cloud_decode"))]
 
@@ -198,6 +199,20 @@ fn an_input_order_that_is_already_good_is_written_as_it_was() {
         encode(&cloud, &plain),
         "the search declined, so the stream must be the one without it"
     );
+}
+
+#[test]
+fn the_stream_does_not_depend_on_the_number_of_threads() {
+    let points = shuffled(&helix(80_000), 2);
+    let cloud = cloud(&points);
+    let mut searched = options(8);
+    searched.set_point_order_search(true);
+    searched.set_threads(1);
+    let single = encode(&cloud, &searched);
+    for threads in [2, 7, 16, 0] {
+        searched.set_threads(threads);
+        assert_eq!(encode(&cloud, &searched), single, "{threads} threads");
+    }
 }
 
 #[test]

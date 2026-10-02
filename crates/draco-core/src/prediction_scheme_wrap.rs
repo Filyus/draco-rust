@@ -65,24 +65,21 @@ impl PredictionSchemeEncodingTransform<i32, i32> for PredictionSchemeWrapEncodin
     }
 
     fn init(&mut self, orig_data: &[i32], size: usize, num_components: usize) {
+        self.init_with_threads(orig_data, size, num_components, 1);
+    }
+
+    fn init_with_threads(
+        &mut self,
+        orig_data: &[i32],
+        size: usize,
+        num_components: usize,
+        threads: usize,
+    ) {
         self.num_components = num_components;
 
-        if size == 0 {
+        let Some((min_val, max_val)) = crate::parallel::min_max(&orig_data[..size], threads) else {
             return;
-        }
-
-        let mut min_val = orig_data[0];
-        let mut max_val = orig_data[0];
-
-        for i in 1..size {
-            let val = orig_data[i];
-            if val < min_val {
-                min_val = val;
-            }
-            if val > max_val {
-                max_val = val;
-            }
-        }
+        };
 
         self.min_value = min_val;
         self.max_value = max_val;
@@ -156,6 +153,37 @@ impl PredictionSchemeEncodingTransform<i32, i32> for PredictionSchemeWrapEncodin
                 value
             };
         }
+    }
+
+    /// The flat loop in pieces, each over its own stretch of the three slices:
+    /// a value's correction reads nothing but its own pair.
+    fn compute_corrections_with_threads(
+        &self,
+        original_vals: &[i32],
+        predicted_vals: &[i32],
+        out_corr_vals: &mut [i32],
+        num_components: usize,
+        threads: usize,
+    ) {
+        use crate::parallel::{PASS_MIN_VALUES, PIECE};
+        if threads <= 1 || out_corr_vals.len() < PASS_MIN_VALUES {
+            return self.compute_corrections(
+                original_vals,
+                predicted_vals,
+                out_corr_vals,
+                num_components,
+            );
+        }
+        crate::parallel::for_each_chunk_mut(out_corr_vals, PIECE, threads, |piece, corr| {
+            let start = piece * PIECE;
+            let end = start + corr.len();
+            self.compute_corrections(
+                &original_vals[start..end],
+                &predicted_vals[start..end],
+                corr,
+                num_components,
+            );
+        });
     }
 
     fn encode_transform_data(&mut self, buffer: &mut Vec<u8>) -> Status {

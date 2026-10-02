@@ -340,3 +340,30 @@ fn encoder_output_matches_cpp_for_point_clouds() {
         "expected both point-cloud encoders to be reached, saw methods {methods_seen:?}"
     );
 }
+
+/// The sequential encoder at its default thread count on a cloud past both
+/// thread gates: attributes side by side (2^17 values) and each attribute's
+/// passes in pieces (2^20 values an attribute). The cases above are too small
+/// for either, so they run on one thread whatever the option says.
+#[test]
+fn encoder_output_matches_cpp_on_threads() {
+    if !draco_cpp_test_bridge::is_available() {
+        println!("SKIP threaded point cloud parity: no C++ bridge");
+        return;
+    }
+    let sample = lattice(102, (true, true));
+    assert!(sample.positions.len() >= 3 << 20);
+    let mut mismatches = Vec::new();
+    for speed in [0, 5, 10] {
+        let rust = encode_rust(&sample, Some(0), speed);
+        let cpp = encode_cpp(&sample, Some(0), speed).expect("C++ encodes");
+        if let Some(offset) = first_difference(&rust, &cpp) {
+            mismatches.push(format!(
+                "speed {speed}: C++ {} bytes, Rust {} bytes, first difference at {offset}",
+                cpp.len(),
+                rust.len()
+            ));
+        }
+    }
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+}
