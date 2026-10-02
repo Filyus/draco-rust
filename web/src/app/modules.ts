@@ -10,20 +10,34 @@ import { modules, state } from './state.ts';
  * inert when a file of that type is dropped.
  */
 
+/**
+ * The query that keeps a module's glue and its wasm from the same build.
+ *
+ * A deployed page carries its build in `<meta name="build-id">`, stamped by
+ * the Pages workflow beside an import map that gives every script of the page
+ * the same query: the page, its scripts and these modules then come from one
+ * build together -- all of them cached, or all of them fetched -- and a cached
+ * page cannot pair with modules from the deploy after it. Served without the
+ * stamp, as the dev server does, every load fetches them afresh.
+ */
+const CACHE_BUST = `?v=${
+  document.querySelector<HTMLMetaElement>('meta[name="build-id"]')?.content || Date.now()
+}`;
+
+// Resolve against the page, not against this module: the packages sit next
+// to index.html, while this code is served from a subdirectory.
+const pkg = (file: string) => new URL(`pkg/${file}${CACHE_BUST}`, document.baseURI);
+
 // Load all WASM modules
 export async function loadAllModules() {
-  // Cache-bust to ensure fresh WASM/JS are loaded (helps avoid stale cached files during development)
-  const CACHE_BUST = `?v=${Date.now()}`;
-  // Resolve against the page, not against this module: the packages sit next
-  // to index.html, while this code is served from a subdirectory.
-  const pkg = (name: string) => new URL(`pkg/${name}.js${CACHE_BUST}`, document.baseURI).href;
+  const pkgModule = (name: string) => pkg(`${name}.js`).href;
   const moduleConfigs = [
-    { key: 'obj', path: pkg('obj'), statusId: 'obj-status' },
-    { key: 'ply', path: pkg('ply'), statusId: 'ply-status' },
-    { key: 'stl', path: pkg('stl'), statusId: 'stl-status' },
-    { key: 'drc', path: pkg('drc'), statusId: 'drc-status' },
-    { key: 'gltf', path: pkg('gltf'), statusId: 'gltf-status' },
-    { key: 'fbx', path: pkg('fbx'), statusId: 'fbx-status' },
+    { key: 'obj', path: pkgModule('obj'), statusId: 'obj-status' },
+    { key: 'ply', path: pkgModule('ply'), statusId: 'ply-status' },
+    { key: 'stl', path: pkgModule('stl'), statusId: 'stl-status' },
+    { key: 'drc', path: pkgModule('drc'), statusId: 'drc-status' },
+    { key: 'gltf', path: pkgModule('gltf'), statusId: 'gltf-status' },
+    { key: 'fbx', path: pkgModule('fbx'), statusId: 'fbx-status' },
   ];
 
   const loadPromises = moduleConfigs.map(config => loadModule(config));
@@ -96,9 +110,8 @@ export async function loadModule({ key, path, statusId }: { key: string; path: s
 export async function loadKtx2Module() {
   if (modules.ktx2.loaded) return modules.ktx2.module;
   try {
-    const path = new URL('pkg/ktx2.js', document.baseURI).href;
-    const module = await import(path);
-    await module.default({ module_or_path: new URL('pkg/ktx2_bg.wasm', document.baseURI) });
+    const module = await import(pkg('ktx2.js').href);
+    await module.default({ module_or_path: pkg('ktx2_bg.wasm') });
     modules.ktx2.module = module;
     modules.ktx2.loaded = true;
     log(`ktx2 v${module.version ? module.version() : '?'} loaded`, 'success');

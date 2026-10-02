@@ -205,6 +205,13 @@ jobs:
           done
           du -sh web/www
 
+      # Pages serves every file with a cache lifetime and no say over it, so
+      # a page cached from one deploy could load the wasm of the next. The
+      # stamp gives the page, its scripts and its modules one query, the
+      # commit the site was built from, and they come from one build together.
+      - name: Stamp the site with its build
+        run: node web/scripts/stamp-build.mjs web/www "$(git rev-parse --short=12 HEAD)"
+
       # Dotfiles are left out of the artifact unless `include-hidden-files` is
       # set. The built site has none; a `.nojekyll` added here would need that
       # input, or it would go missing from the deploy without any error.
