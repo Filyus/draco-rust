@@ -43,10 +43,13 @@ All decode and encode in `draco-core`.
 | Triangle mesh, EdgeBreaker predictive (type `1`) | yes (≤ `0.9.1`) | decode yes, encode explicit | Legacy connectivity; behind the legacy features. See [Legacy & compatibility](#legacy--compatibility). |
 
 The point-cloud byte parity above is with the options at their defaults.
-`EncoderOptions::set_prediction_search` and `set_spatial_point_order`, both
-off by default, write streams upstream's encoder does not: `PREDICTION_NONE`
-for an attribute, and points in a spatial order. Upstream's decoder reads both,
-checked value for value in `parity_point_cloud_options.rs`.
+`EncoderOptions::set_prediction_search`, `set_spatial_point_order` and
+`set_point_order_search`, all off by default, write streams upstream's encoder
+does not: `PREDICTION_NONE` for an attribute, and points in another order.
+Upstream's decoder reads them all, checked in `parity_point_cloud_options.rs`:
+value for value, and for a reordered stream as the same set of positions. That
+every attribute of a point moves with it is checked on this crate's own
+decoder, by `point_order_search_test.rs` and the synthetic-cloud tests.
 
 ## Attribute encoders & semantics
 

@@ -268,9 +268,9 @@ which is why this list is three items and not a work plan.
 
 ### Point-cloud encoder options not in upstream
 
-`EncoderOptions::set_prediction_search` and `set_spatial_point_order` exist only
-in this port. Both are off by default, and with them off a point cloud encodes
-to the same bytes as in C++ Draco.
+`EncoderOptions::set_prediction_search`, `set_spatial_point_order` and
+`set_point_order_search` exist only in this port. All are off by default, and
+with them off a point cloud encodes to the same bytes as in C++ Draco.
 
 When turned on, each option makes files smaller than upstream's for the same
 input. The bytes differ, but every decoder, C++ Draco's included, reads the
@@ -279,17 +279,20 @@ file:
 | option | what the encoder does differently | why upstream's decoder reads it |
 | --- | --- | --- |
 | `set_prediction_search` | May code an attribute with no prediction (`PREDICTION_NONE`) where upstream always uses `Difference`. | Upstream's decoder has read `PREDICTION_NONE` since bitstream 1.1; its encoder just never picks it for a point cloud. |
-| `set_spatial_point_order` | Writes the points in a spatial order over their positions instead of input order; a Morton curve today, open to change. | The format is unchanged; only the point order differs. |
+| `set_spatial_point_order` | Writes the points in a spatial order over their positions instead of input order; a Hilbert curve today, open to change. | The format is unchanged; only the point order differs. |
+| `set_point_order_search` | Writes the points in whichever order the search finds smallest: the input order, the curve, or the curve repaired where the other attributes disagree with the positions. | The format is unchanged; only the point order differs. |
 
-The spatial order also changes the order of the decoded points. That matters
+Both order options also change the order of the decoded points. That matters
 only to data outside the file that refers to points by index.
 
 #### Tests
 
 `parity_point_cloud_options.rs` in `draco-cpp-test-bridge` decodes streams
 written with each option using upstream's decoder and compares every value of
-every attribute. Each case first checks that the option changed the bytes, so
-an option that silently did nothing would fail rather than pass.
+every attribute, or for a reordered stream the set of positions; that every
+attribute of a point moves with it is checked on this crate's own decoder.
+Each case first checks that the option changed the bytes, so an option that
+silently did nothing would fail rather than pass.
 
 ### `Mesh::finalize` drops unused points and values
 

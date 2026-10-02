@@ -36,7 +36,7 @@ figure at all.
 `rejected` -- tried, deliberately not kept. `retracted` -- an earlier claim
 here was withdrawn. `diagnostic` -- measured only, no change proposed.
 
-74 rounds: 44 landed, 10 diagnostic, 10 null, 8 retracted, 2 rejected.
+75 rounds: 45 landed, 10 diagnostic, 10 null, 8 retracted, 2 rejected.
 
 | Round | Verdict | Headline |
 | --- | --- | ---: |
@@ -114,6 +114,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [Point Clouds On One Thread: Zeros Nobody Read, And Reads In A Row](#point-clouds-on-one-thread-zeros-nobody-read-and-reads-in-a-row) | landed | `-21 to -34%` |
 | [rANS Buckets For The Fine Slot Tables](#rans-buckets-for-the-fine-slot-tables) | landed | `-9 to -37% lidar decode` |
 | [Two Attributes' rANS Runs In One Loop](#two-attributes-rans-runs-in-one-loop) | landed | `-16 to -19% splat decode` |
+| [The Point Order Search, On One Thread](#the-point-order-search-on-one-thread) | landed | `-4.2 to -11.9% against the spatial order` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -4390,6 +4391,94 @@ them -- every value, and the budget where it ends -- on a whole stream and on
 forty damaged and four cut-short ones, and fails with the budget's hand-over
 or the symbols' order broken.
 
+### The Point Order Search, On One Thread
+
+2026-10-02, same machine, one thread, against the tree before. The order
+search developed with the threaded encoder, `set_point_order_search`, is
+brought over without the threads: it strings the points along a Hilbert curve
+over the positions, repairs the curve in blocks of 8192 points where the other
+attributes disagree with the positions -- a stretch is reversed when that
+lowers the estimated bits of the steps, `log2(1 + |delta|)` over the position
+and the dearest attribute columns -- and writes whichever of the input, the
+curve and the repair the symbol coder's own plan prices lowest on a sample,
+by a 1% margin. The blocks are independent, so the search runs on the
+calling thread and writes the same order on any number; its tests drive it
+on several.
+
+`set_spatial_point_order` moves from its Morton curve to the same Hilbert
+curve. Measured first, behind a switch that is not kept
+(`probe/morton-vs-hilbert`, `spatial_curve_probe.rs`): best of three, the
+arms rotated and a pause before each run, the curve's own cost taken on an
+encode of the positions alone.
+
+| cloud | Hilbert against Morton | encode, Morton -> Hilbert | the curve alone, Morton / Hilbert |
+| --- | ---: | ---: | ---: |
+| splat, 742K points, 58 attributes | `-1.03%` | `0.603 -> 0.608 s` | `+35 / +40 ms` |
+| splat, 1.9M, 58 | `-0.35%` | `2.014 -> 1.992 s` | `+117 / +122 ms` |
+| splat, 3.2M, 58 | `-0.44%` | `3.847 -> 3.831 s` | `+202 / +211 ms` |
+| photogrammetry scan, 8.0M | `-1.82%` | `0.824 -> 0.801 s` | `+371 / +352 ms` |
+| photogrammetry scan, 676K | `-3.31%` | `0.102 -> 0.099 s` | `+32 / +31 ms` |
+| photogrammetry scan, 1.1M | `-2.30%` | `0.166 -> 0.166 s` | `+57 / +55 ms` |
+| scan in scan order, 2.2M | `-4.04%` | `0.242 -> 0.244 s` | `+102 / +99 ms` |
+| rotating lidar, 121K | `-1.17%` | `0.013 -> 0.013 s` | `+6 / +5 ms` |
+| airborne lidar, 10.7M | `-3.19%` | `1.835 -> 1.776 s` | `+715 / +678 ms` |
+
+Smaller on every cloud for the same time, and the decode times match. The
+Morton curve is not kept as an oracle: the Hilbert tests already hold a
+stronger property, every cell visited once and every step to a face
+neighbour.
+
+The search, through the public encoder at the web converter's budget
+(positions 16 bits, harmonics 6, other floats 8), the prediction search on,
+speed 5, every stream decoded and compared with the file-order one as a set
+of points. Sizes are against the Hilbert spatial order; times are the same
+best of three:
+
+| cloud | file order | search | encode, file -> search |
+| --- | ---: | ---: | ---: |
+| splat, 742K points, 58 attributes | `+12.9%` | `-11.9%` | `0.49 -> 1.40 s` |
+| splat, 1.9M, 58 | `+11.1%` | `-4.5%` | `1.27 -> 3.82 s` |
+| splat, 3.2M, 58 | `+11.0%` | `-4.2%` | `2.12 -> 6.54 s` |
+| photogrammetry scan, 8.0M | `+48.7%` | `-8.5%` | `0.44 -> 2.49 s` |
+| photogrammetry scan, 676K | `+1.5%` | `-8.7%` | `0.06 -> 0.35 s` |
+| photogrammetry scan, 1.1M | `-3.5%` | `-8.9%` | `0.10 -> 0.50 s` |
+| airborne lidar, 10.7M | `+13.5%` | `-8.4%` | `1.19 -> 5.92 s` |
+| scan in scan order, 2.2M | `-22.0%` | `-22.0%`, input kept | `0.13 -> 0.37 s` |
+| rotating lidar, 121K | `-7.6%` | `-7.6%`, input kept | `0.01 -> 0.03 s` |
+
+The two clouds already in their scan order come out byte for byte as without
+the option, where the spatial order makes them 8% and 28% larger. The effort
+follows `encoding_speed`; on the 742K splat (speed 5 the best of three, the
+others one run each):
+
+| speed | against the spatial order | encode |
+| ---: | ---: | ---: |
+| 8 | `-6.8%` | `1.23 s` |
+| 5 | `-11.9%` | `1.40 s` |
+| 3 | `-16.5%` | `2.40 s` |
+| 0 | `-19.8%` | `4.90 s` |
+
+Off by default. On one thread the search is three to six times the encode
+in file order at the default speed; the threads that take most of that back
+are the next step. Upstream's decoder reads a searched stream as the same set
+of points (`parity_point_cloud_options.rs`).
+
+A searched stream decodes slower than the spatial one on the two larger
+splats, `0.539 -> 0.640 s` and `0.864 -> 1.033 s` (+19%, +20%), and on the
+airborne capture `0.945 -> 1.033 s` (+9%); the rest are within noise. The
+decoder is not what changed: the encoder picks each attribute's schemes by
+size, and in the searched order the compact ones are the slower to decode.
+Timed attribute by attribute (`probe/searched-decode-slowdown`) on the 1.9M
+splat, `0.545 -> 0.644 s`, the attribute loop accounts for all of it, `423 ->
+523 ms`: in the spatial order the prediction search writes 41 of the
+harmonics' columns as they are (`PREDICTION_NONE`), and in the searched order
+neighbours agree well enough that differencing them is smaller, so all 41
+are `Difference` -- and undoing a difference is a pass of its own, 2.3 ms on
+1.9M values (1.2 ns a value, an add, a wrap and a select on the value before),
+against 1.0 ms for a column read as it is. On the airborne capture one column
+goes the same way, and the colours go from the tagged scheme to raw rANS at 7
+and 8 bits, which on that stream decodes slower too.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
@@ -4399,6 +4488,13 @@ one line.
 
 ### What the point-cloud round left behind
 
+- **Undoing a difference is a serial chain.** Each value is the one before
+  plus its residual, wrapped: 1.2 ns a value on a splat's columns, and the
+  whole of what a searched splat's decode lost
+  ([The Point Order Search, On One Thread](#the-point-order-search-on-one-thread)).
+  Two attributes' chains in one loop, as the paired rANS runs do, would let
+  the core work on both at once; the pairs already hand both attributes'
+  symbols over together.
 - **The PLY reader still matches property names as strings** for every
   property of every vertex. It no longer shows in the profile after the
   allocations went, but a per-property action table built once would remove

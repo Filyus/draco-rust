@@ -10,7 +10,7 @@
 //! here carries an exact integer tag alongside its position, and the test
 //! follows each tag to the position it arrived with.
 
-#![cfg(all(feature = "encoder", feature = "decoder"))]
+#![cfg(all(feature = "encoder", feature = "point_cloud_decode"))]
 
 use draco_core::{
     DataType, DecoderBuffer, EncoderBuffer, EncoderOptions, GeometryAttributeType, PointAttribute,

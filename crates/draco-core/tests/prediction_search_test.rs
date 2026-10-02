@@ -10,7 +10,7 @@
 //! it does shrink the case it exists for, that what it produces still decodes
 //! to the same values, and that it leaves an explicit choice alone.
 
-#![cfg(all(feature = "encoder", feature = "decoder"))]
+#![cfg(all(feature = "encoder", feature = "point_cloud_decode"))]
 
 use draco_core::prediction_scheme::{PredictionSchemeMethod, PredictionSchemeTransformType};
 use draco_core::{

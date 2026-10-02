@@ -206,10 +206,10 @@ impl EncoderOptions {
     /// than in the order they were handed in.
     ///
     /// Which spatial order is the encoder's choice and not part of this
-    /// option's contract: today it is a Morton curve, and a later version may
-    /// use a better curve, or spend more encode time on the order at slower
-    /// `encoding_speed` settings. Every such stream decodes the same way; only
-    /// the order of the decoded points and the size differ.
+    /// option's contract: today it is a Hilbert curve, which writes 0.35% to 4%
+    /// fewer bytes than the Morton curve it replaced, for the same encode time,
+    /// and a later version may use a better one. Every such stream decodes the
+    /// same way; only the order of the decoded points and the size differ.
     ///
     /// A point cloud's point order carries no meaning: no connectivity refers
     /// to it, every attribute is read through the same point index, and a
@@ -224,9 +224,10 @@ impl EncoderOptions {
     /// point cloud of eight million coloured points goes from 6.26 bytes per
     /// point to 4.23, which is 32% and more than twice the splat's share. Any
     /// cloud whose attributes vary through space rather than along its file
-    /// order should expect something in that range.
+    /// order should expect something in that range. Those are the Morton
+    /// curve's figures; the Hilbert curve is 1% to 2% smaller again on both.
     ///
-    /// The Morton curve is laid over a grid as fine as the positions' own
+    /// The curve is laid over a grid as fine as the positions' own
     /// `quantization_bits`, up to 21 bits an axis. Both halves of that are
     /// measured: a coarser grid puts points the stream will distinguish into
     /// one cell, where their order is whatever the sort left them in, and a
@@ -250,15 +251,83 @@ impl EncoderOptions {
     /// tag grows by 14% here. It is not checked because the option is a
     /// statement about the order, not about the size: a caller who wants
     /// spatial locality in the decoded cloud wants it whether or not it also
-    /// happens to compress better. Whoever wants only the smaller file can
-    /// encode both ways and keep the smaller, which is what this would
-    /// otherwise be doing on their behalf and at twice the encode time.
+    /// happens to compress better. Whoever wants only the smaller file wants
+    /// [`set_point_order_search`](Self::set_point_order_search) instead, which
+    /// checks, and is allowed to trade locality for size.
     ///
     /// Applies to the sequential coder. The kd-tree coder chooses its own point
     /// order and this leaves it alone. A point cloud with no position attribute
     /// has nothing to sort by and is also left alone.
     pub fn set_spatial_point_order(&mut self, enabled: bool) {
         self.set_global_int("spatial_point_order", i32::from(enabled));
+    }
+
+    /// Whether the encoder may search for the order of a point cloud's points
+    /// that makes the stream smallest.
+    pub fn point_order_search(&self) -> bool {
+        self.get_global_int("point_order_search", 0) != 0
+    }
+
+    /// Lets the encoder search for the order of a point cloud's points that
+    /// makes the stream smallest, and leave the order alone where it finds the
+    /// one it was handed already better.
+    ///
+    /// The sequential coder writes each attribute as the difference between a
+    /// point and the one before it, so the order decides how large those
+    /// differences are. A spatial order makes neighbours in space neighbours
+    /// in the stream; this strings the points along a Hilbert curve and then
+    /// repairs it where the other attributes disagree with the positions,
+    /// which they do in a Gaussian splat, whose positions are 5% of the bytes
+    /// and whose other 56 numbers a point are the rest.
+    ///
+    /// What it buys over [`set_spatial_point_order`](Self::set_spatial_point_order)
+    /// at the same encoding speed, with the prediction search on, at the web
+    /// converter's budget: on a Gaussian splat of 742 thousand points and 58
+    /// attributes, 6.8% fewer bytes at speed 8, 11.9% at 5, 16.5% at 3 and
+    /// 19.8% at 0; 4.2% to 4.5% on two splats of two and three million points;
+    /// 8.4% to 8.9% on three photogrammetry scans and on an airborne lidar
+    /// capture of 10.7 million points. The stream is an ordinary one; only the
+    /// order of the points in it differs.
+    ///
+    /// **It costs encode time**, all of it on the calling thread: that splat
+    /// encodes in 0.5 s in file order and in 1.2, 1.4, 2.4 and 4.9 s with the
+    /// search at speed 8, 5, 3 and 0. At the default speed the clouds above
+    /// took three to six times as long as in file order. **And some decode
+    /// time**: in the order it finds, neighbours agree well enough that the
+    /// encoder picks the more compact schemes, differences over values as they
+    /// are and the raw coder over the tagged one, and those take longer to
+    /// undo -- the two larger splats decode 19% and 20% slower, the lidar
+    /// capture 9%, the rest as before.
+    ///
+    /// **It can decline.** Each order it could write -- the one it was handed,
+    /// the curve, and the curve repaired -- is priced by the symbol coder's own
+    /// plan of what it would write for a sample of the cloud, and an order
+    /// replaces another only if it undercuts it by 1%. The repair is tried on a
+    /// sample of the path's blocks first, one in sixteen on a large cloud, and
+    /// finished only if the trial pays. A scan or a rotating-lidar capture
+    /// written along its scan lines is already in an order no curve improves
+    /// on, and comes out exactly as it would without this, where a spatial
+    /// order would have made it 8% to 28% larger.
+    ///
+    /// **The effort follows `encoding_speed`**, the way it does elsewhere:
+    /// speed 9 and 10 write the curve and nothing more, 7 and 8 count the 8
+    /// dearest attribute columns over a window of 8 points, 5 and 6 (the
+    /// default) 16 over 16, 3 and 4 32 over 32, and 0 to 2 every column over
+    /// 64.
+    ///
+    /// Off by default for the reason the prediction search is: it changes the
+    /// bytes, and this crate's default is to match upstream C++ Draco.
+    ///
+    /// **This reorders the decoded points**, and unlike
+    /// [`set_spatial_point_order`](Self::set_spatial_point_order) it makes no
+    /// promise that they are spatially near one another: a point may sit
+    /// beside one that looks like it rather than one that is close. If the
+    /// search keeps the order it was handed and `set_spatial_point_order` is
+    /// also on, the spatial order is what is written.
+    ///
+    /// Applies to the sequential coder, like the order option does.
+    pub fn set_point_order_search(&mut self, enabled: bool) {
+        self.set_global_int("point_order_search", i32::from(enabled));
     }
 
     /// Returns the forced encoding method, if one was set.

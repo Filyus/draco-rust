@@ -2,7 +2,6 @@ use crate::compression_config::EncodedGeometryType;
 use crate::draco_types::DataType;
 use crate::encoder_buffer::EncoderBuffer;
 use crate::encoder_options::EncoderOptions;
-use crate::geometry_attribute::GeometryAttributeType;
 use crate::geometry_attribute::PointAttribute;
 use crate::geometry_indices::PointIndex;
 use crate::kd_tree_attributes_encoder::KdTreeAttributesEncoder;
@@ -10,6 +9,7 @@ use crate::mesh::Mesh;
 use crate::mesh_encoder::EncodedAttributeInfo;
 use crate::metadata::METADATA_FLAG_MASK;
 use crate::point_cloud::PointCloud;
+use crate::point_order as order;
 use crate::sequential_attribute_encoder::{
     select_sequential_encoder, SequentialAttributeEncoderType,
 };
@@ -153,147 +153,24 @@ fn validate_attribute_storage(att_id: i32, attribute: &PointAttribute) -> Status
 
 /// The order the sequential coder should walk the points in.
 ///
-/// Identity unless the caller asked for a spatial order and the geometry gives
-/// something to derive one from. Every attribute is read through the point
-/// index, so permuting this permutes all of them together and a point stays a
-/// point.
+/// What the caller asked for, if the geometry gives something to derive it
+/// from: a search for the order that makes the stream smallest, which may find
+/// the order it was handed already good and say so, or else a spatial order.
+/// Otherwise the points go as they came. Every attribute is read through the
+/// point index, so permuting this permutes all of them together and a point
+/// stays a point.
 fn point_order(pc: &PointCloud, options: &EncoderOptions) -> Vec<PointIndex> {
-    let identity = || (0..pc.num_points()).map(|i| PointIndex(i as u32)).collect();
-    if !options.spatial_point_order() {
-        return identity();
-    }
-    let Some(order) = morton_point_order(pc, options) else {
-        return identity();
-    };
-    order
-}
-
-/// How finely the curve resolves each axis, from how finely the positions will
-/// be stored.
-///
-/// The grid is not a free parameter. Coarser than the quantization and
-/// distinct points share a cell, where their order is whatever the sort left
-/// them in rather than anything spatial: at ten bits an axis that was 86% of
-/// the points of a million-point splat, seven to a cell. Finer than the
-/// quantization and the order sorts by differences the encode then discards,
-/// which measurably buys nothing.
-///
-/// What a fixed grid costs depends entirely on how crowded its cells get, so
-/// it is worth 5% of that splat and 1% of two interiors whose points fill
-/// their bounding box. Following the quantization is never the worse of the
-/// two, which is the reason to do it; the size of the win is the scene's.
-///
-/// Twenty-one bits an axis is the ceiling either way, being what still
-/// interleaves into a `u64` key.
-fn curve_axis_bits(options: &EncoderOptions, att_id: i32) -> u32 {
-    const MAX_AXIS_BITS: i32 = 21;
-    let quantization = options.get_attribute_int(att_id, "quantization_bits", -1);
-    if quantization <= 0 {
-        // Nothing quantizes the positions, so they reach the decoder with
-        // every bit they arrived with and there is no coarser grid to match.
-        return MAX_AXIS_BITS as u32;
-    }
-    quantization.min(MAX_AXIS_BITS) as u32
-}
-
-/// Point indices sorted along a Morton curve over the position attribute.
-///
-/// `None` where there is nothing to sort by: no position attribute, or one
-/// whose values this cannot read. Returning the caller's order unchanged is the
-/// only honest answer there — a spatial order derived from values that were not
-/// the positions would be worse than none.
-fn morton_point_order(pc: &PointCloud, options: &EncoderOptions) -> Option<Vec<PointIndex>> {
-    let att_id = (0..pc.num_attributes())
-        .find(|id| pc.attribute(*id).attribute_type() == GeometryAttributeType::Position)?;
-    let attribute = pc.attribute(att_id);
-    if attribute.num_components() < 3 {
-        return None;
-    }
-
-    let num_points = pc.num_points();
-    let mut coordinates = Vec::with_capacity(num_points * 3);
-    let mut min = [f64::INFINITY; 3];
-    let mut max = [f64::NEG_INFINITY; 3];
-    for point in 0..num_points {
-        let value_index = attribute.mapped_index(PointIndex(point as u32));
-        for (axis, (low, high)) in min.iter_mut().zip(max.iter_mut()).enumerate() {
-            let value = read_component_as_f64(attribute, value_index, axis)?;
-            // A non-finite coordinate has no place on the curve and no sensible
-            // range to normalize against, so the whole reorder is declined
-            // rather than silently bucketing it somewhere.
-            if !value.is_finite() {
-                return None;
-            }
-            *low = low.min(value);
-            *high = high.max(value);
-            coordinates.push(value);
+    if options.point_order_search() {
+        if let Some(order) = order::search(pc, options) {
+            return order;
         }
     }
-
-    let axis_bits = curve_axis_bits(options, att_id);
-    let levels = ((1u64 << axis_bits) - 1) as f64;
-    // Twenty-one bits an axis interleave into 63 and fit a u64 key.
-    let spread = |v: u32| -> u64 {
-        let mut x = u64::from(v) & 0x1f_ffff;
-        x = (x | (x << 32)) & 0x001f_0000_0000_ffff;
-        x = (x | (x << 16)) & 0x001f_0000_ff00_00ff;
-        x = (x | (x << 8)) & 0x100f_00f0_0f00_f00f;
-        x = (x | (x << 4)) & 0x10c3_0c30_c30c_30c3;
-        x = (x | (x << 2)) & 0x1249_2492_4924_9249;
-        x
-    };
-
-    let mut keyed: Vec<(u64, u32)> = (0..num_points)
-        .map(|point| {
-            let mut key = 0u64;
-            for (axis, (low, high)) in min.iter().zip(max.iter()).enumerate() {
-                let span = high - low;
-                let normalized = if span > 0.0 {
-                    (coordinates[point * 3 + axis] - low) / span
-                } else {
-                    0.0
-                };
-                key |= spread((normalized * levels) as u32) << axis;
-            }
-            (key, point as u32)
-        })
-        .collect();
-    // By key then by original index, so points sharing a cell keep the order
-    // they came in and the result does not depend on the sort's stability.
-    keyed.sort_unstable();
-    Some(
-        keyed
-            .into_iter()
-            .map(|(_, point)| PointIndex(point))
-            .collect(),
-    )
-}
-
-/// One component of one value, as an `f64`, or `None` for a type this does not
-/// read.
-fn read_component_as_f64(
-    attribute: &PointAttribute,
-    value_index: crate::geometry_indices::AttributeValueIndex,
-    component: usize,
-) -> Option<f64> {
-    let data_type = attribute.data_type();
-    let size = data_type.byte_length();
-    let offset = value_index.0 as usize * attribute.byte_stride() as usize + component * size;
-    let mut bytes = [0u8; 8];
-    attribute.buffer().read(offset, &mut bytes[..size]);
-    Some(match data_type {
-        DataType::Float32 => f32::from_le_bytes(bytes[..4].try_into().ok()?) as f64,
-        DataType::Float64 => f64::from_le_bytes(bytes),
-        DataType::Int8 => bytes[0] as i8 as f64,
-        DataType::Uint8 => bytes[0] as f64,
-        DataType::Int16 => i16::from_le_bytes(bytes[..2].try_into().ok()?) as f64,
-        DataType::Uint16 => u16::from_le_bytes(bytes[..2].try_into().ok()?) as f64,
-        DataType::Int32 => i32::from_le_bytes(bytes[..4].try_into().ok()?) as f64,
-        DataType::Uint32 => u32::from_le_bytes(bytes[..4].try_into().ok()?) as f64,
-        DataType::Int64 => i64::from_le_bytes(bytes) as f64,
-        DataType::Uint64 => u64::from_le_bytes(bytes) as f64,
-        DataType::Bool | DataType::Invalid => return None,
-    })
+    if options.spatial_point_order() {
+        if let Some(order) = order::curve(pc, options) {
+            return order;
+        }
+    }
+    (0..pc.num_points()).map(|i| PointIndex(i as u32)).collect()
 }
 
 /// Picks sequential or KD-tree encoding, as C++ `ExpertEncoder::EncodeToBuffer`
@@ -922,29 +799,5 @@ impl PointCloudEncoder {
     /// Returns the geometry type produced by this encoder.
     pub fn get_geometry_type(&self) -> EncodedGeometryType {
         EncodedGeometryType::PointCloud
-    }
-}
-
-#[cfg(test)]
-mod curve_grid_tests {
-    use super::curve_axis_bits;
-    use crate::encoder_options::EncoderOptions;
-
-    #[test]
-    fn the_grid_follows_the_positions_quantization() {
-        let mut options = EncoderOptions::new();
-        for bits in [4, 8, 14, 16, 21] {
-            options.set_attribute_int(0, "quantization_bits", bits);
-            assert_eq!(curve_axis_bits(&options, 0), bits as u32);
-        }
-
-        // Past what a u64 key can hold, the grid stops rather than wrapping.
-        options.set_attribute_int(0, "quantization_bits", 30);
-        assert_eq!(curve_axis_bits(&options, 0), 21);
-
-        // Unquantized positions keep every bit they arrived with, so the
-        // finest grid is the one that matches them.
-        let options = EncoderOptions::new();
-        assert_eq!(curve_axis_bits(&options, 0), 21);
     }
 }

@@ -21,11 +21,11 @@ only anchor a shipping without a version of its own has.
 - `create_drc` takes the two point-cloud encoder options as well:
   `prediction_search` lets the encoder choose each attribute's prediction
   scheme by the estimated cost of the candidates instead of by upstream's
-  fixed rule, and `spatial_point_order` emits the points in Morton order so
-  the difference predictor has a spatial neighbour to predict from. Both act
-  on the point-cloud coder only, so they need `point_cloud` on, and both are
-  off by default because the module's output is otherwise byte-identical to
-  C++ Draco's for the same input. Together they take a Gaussian splat scene
+  fixed rule, and `spatial_point_order` emits the points along a Hilbert
+  curve so the difference predictor has a spatial neighbour to predict from.
+  Both act on the point-cloud coder only, so they need `point_cloud` on, and
+  both are off by default because the module's output is otherwise
+  byte-identical to C++ Draco's for the same input. Together they take a Gaussian splat scene
   from 53.02 to 45.43 bytes per point and a photogrammetry capture of eight
   million coloured points from 6.26 to 4.23. The order one reorders the
   decoded points, which matters to anything outside the file that indexes into

@@ -26,7 +26,7 @@
 //!   --features encoder,decoder --test splat_render_arms_probe -- --ignored --nocapture
 //! ```
 
-#![cfg(all(feature = "encoder", feature = "decoder"))]
+#![cfg(all(feature = "encoder", feature = "point_cloud_decode"))]
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};

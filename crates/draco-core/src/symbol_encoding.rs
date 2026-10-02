@@ -88,6 +88,18 @@ impl SymbolPlan {
 /// Works out how these symbols would be coded, without coding them.
 #[cfg(feature = "encoder")]
 pub fn plan_symbols(symbols: &[u32], num_components: usize) -> SymbolPlan {
+    plan_symbols_with_threads(symbols, num_components, 1)
+}
+
+/// `plan_symbols` on `threads`: the bit-length counts and the histogram are
+/// counted in pieces and added up, which for counts is exactly the single
+/// pass's result, so the plan -- and the scheme it chooses -- is the same.
+#[cfg(feature = "encoder")]
+pub(crate) fn plan_symbols_with_threads(
+    symbols: &[u32],
+    num_components: usize,
+    threads: usize,
+) -> SymbolPlan {
     if symbols.is_empty() {
         return SymbolPlan {
             tag_frequencies: [0; 33],
@@ -99,7 +111,29 @@ pub fn plan_symbols(symbols: &[u32], num_components: usize) -> SymbolPlan {
         };
     }
 
-    let (tag_frequencies, max_value) = count_bit_lengths(symbols, num_components);
+    let in_pieces =
+        threads > 1 && symbols.len() >= crate::parallel::PASS_MIN_VALUES && num_components > 0;
+    let (tag_frequencies, max_value) = if in_pieces {
+        let piece = (1 << 16) * num_components;
+        crate::parallel::map(symbols.len().div_ceil(piece), threads, |k| {
+            count_bit_lengths(
+                &symbols[k * piece..((k + 1) * piece).min(symbols.len())],
+                num_components,
+            )
+        })
+        .into_iter()
+        .fold(
+            ([0u64; 33], 0u32),
+            |(mut total, max), (counts, piece_max)| {
+                for (total, count) in total.iter_mut().zip(counts) {
+                    *total += count;
+                }
+                (total, max.max(piece_max))
+            },
+        )
+    } else {
+        count_bit_lengths(symbols, num_components)
+    };
     let tagged_bits = compute_tagged_scheme_bits(num_components, &tag_frequencies);
     // RAW is not a candidate past its bit-length limit, so it gets no estimate
     // there: its histogram has one entry per value up to `max_value`, which a
@@ -109,7 +143,11 @@ pub fn plan_symbols(symbols: &[u32], num_components: usize) -> SymbolPlan {
         if bit_length(max_value) > K_MAX_RAW_ENCODING_BIT_LENGTH {
             (u64::MAX, Vec::new(), 0)
         } else {
-            compute_raw_scheme_bits_and_frequencies(symbols, max_value)
+            compute_raw_scheme_bits_and_frequencies(
+                symbols,
+                max_value,
+                if in_pieces { threads } else { 1 },
+            )
         };
 
     SymbolPlan {
@@ -228,12 +266,32 @@ fn count_bit_lengths(symbols: &[u32], num_components: usize) -> ([u64; 33], u32)
 fn compute_raw_scheme_bits_and_frequencies(
     symbols: &[u32],
     max_value: u32,
+    threads: usize,
 ) -> (u64, Vec<u64>, u32) {
     if symbols.is_empty() {
         return (0, Vec::new(), 0);
     }
 
-    let frequencies: Vec<u64> = histogram(symbols, max_value);
+    // On threads, one histogram a thread over its share of the symbols, added
+    // up: a histogram a piece would be an alphabet's worth of counters each.
+    let frequencies: Vec<u64> = if threads > 1 {
+        let share = symbols.len().div_ceil(threads);
+        let mut parts = crate::parallel::map(threads, threads, |k| {
+            let part =
+                &symbols[(k * share).min(symbols.len())..((k + 1) * share).min(symbols.len())];
+            histogram::<u64>(part, max_value)
+        })
+        .into_iter();
+        let mut total = parts.next().expect("one share at least");
+        for part in parts {
+            for (total, count) in total.iter_mut().zip(part) {
+                *total += count;
+            }
+        }
+        total
+    } else {
+        histogram(symbols, max_value)
+    };
 
     let num_symbols_d = symbols.len() as f64;
     let log2_num_symbols = num_symbols_d.log2();

@@ -8,7 +8,30 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `EncoderOptions::set_point_order_search`, off by default: the encoder looks
+  for the order of a sequential point cloud's points that makes the stream
+  smallest. It repairs the spatial order's curve where the other attributes
+  disagree with the positions, and keeps the order it was handed, or the
+  curve, wherever that is already better by the symbol coder's own price.
+  Against `set_spatial_point_order`, with the prediction search on: 11.9%
+  fewer bytes on a Gaussian splat of 742 thousand points at the default speed
+  (6.8% at speed 8, 19.8% at 0), 4.2% to 4.5% on two larger splats, 8.4% to
+  8.9% on three photogrammetry scans and an airborne lidar capture. A scan or
+  rotating-lidar capture in its scan order comes out byte for byte as without
+  the option. It costs encode time: three to six times the encode in file
+  order at the default speed, on the calling thread. It can cost decode time
+  too, since the schemes the encoder then finds smallest are slower to undo:
+  up to 20% on a large splat. Any Draco decoder reads the stream; the decoded
+  points come back in another order.
+
 ### Changed
+
+- `set_spatial_point_order` lays the points along a Hilbert curve instead of
+  a Morton curve: 0.35% to 4% fewer bytes on every cloud measured -- three
+  splats, four scans, two lidar captures -- for the same encode time. The
+  option's output changes; its contract, a spatial order, does not.
 
 - Encoding and decoding are faster, with the same bytes out. A rANS write
   multiplies by a reciprocal instead of dividing; a long rANS decode run takes

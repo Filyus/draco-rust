@@ -610,9 +610,9 @@ pub struct ExportOptions {
     /// Acts on the point-cloud coder only, so it does nothing unless
     /// `point_cloud` is on.
     pub prediction_search: Option<bool>,
-    /// Emits the points in Morton order rather than in the order they were
-    /// handed in, which gives the difference predictor a spatial neighbour to
-    /// predict from.
+    /// Emits the points along a Hilbert curve rather than in the order they
+    /// were handed in, which gives the difference predictor a spatial
+    /// neighbour to predict from.
     ///
     /// Off by default, for the same byte-parity reason, and it is the larger
     /// of the two: 14% on a splat, 32% on a photogrammetry capture. **It

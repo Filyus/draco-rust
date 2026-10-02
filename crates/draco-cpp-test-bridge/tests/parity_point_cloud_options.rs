@@ -1,15 +1,16 @@
-//! What upstream C++ Draco makes of the two point-cloud encoder options.
+//! What upstream C++ Draco makes of the point-cloud encoder options it does not
+//! have.
 //!
-//! Both options are off by default because this crate's output is otherwise
-//! byte-identical to C++ Draco's, and the case for turning either on rests on
-//! a claim about the other implementation: that nothing either one produces is
-//! outside what an ordinary decoder reads. `set_prediction_search` can write
+//! The options are off by default because this crate's output is otherwise
+//! byte-identical to C++ Draco's, and the case for turning any on rests on a
+//! claim about the other implementation: that nothing one produces is outside
+//! what an ordinary decoder reads. `set_prediction_search` can write
 //! `PREDICTION_NONE`, which upstream's own encoder never chooses for a point
 //! cloud but its decoder has read since bitstream 1.1;
-//! `set_spatial_point_order` changes no element of the format at all, only
-//! which point is written first.
+//! `set_spatial_point_order` and `set_point_order_search` change no element of
+//! the format at all, only which point is written first.
 //!
-//! Neither claim is ours to settle by reading our own encoder, so both are
+//! None of the claims is ours to settle by reading our own encoder, so all are
 //! settled here by the real C++ decoder, over every attribute rather than the
 //! ones a PLY happens to carry: `decode_cpp_point_cloud_fingerprint` hashes
 //! every value of every attribute of the decoded cloud.
@@ -43,17 +44,23 @@ const QUANTIZATION_BITS: i32 = 8;
 /// Positions vary smoothly, where differencing wins; the harmonics are
 /// concentrated around a centre with rare outliers stretching the quantization
 /// range, which is the shape differencing makes worse.
+///
+/// `stride` scatters the smooth values across the points: point `p` takes the
+/// value of `p * stride % NUM_POINTS`, so any odd stride is the same cloud in
+/// another order, and 1 is the order in which it is already smooth.
 fn attribute(
     kind: GeometryAttributeType,
     components: u8,
     seed: u32,
     concentrated: bool,
+    stride: usize,
 ) -> PointAttribute {
     let mut attribute = PointAttribute::new();
     attribute.init(kind, components, DataType::Float32, false, NUM_POINTS);
     let buffer = attribute.buffer_mut();
     let mut state = seed.wrapping_mul(2654435761).wrapping_add(1);
-    for point in 0..NUM_POINTS {
+    for slot in 0..NUM_POINTS {
+        let point = slot * stride % NUM_POINTS;
         for component in 0..components as usize {
             let mut unit = || {
                 state = state.wrapping_mul(1664525).wrapping_add(1013904223);
@@ -69,7 +76,7 @@ fn attribute(
             } else {
                 point as f32 * 0.01 + component as f32 * 0.25 + (unit() - 0.5)
             };
-            let offset = (point * components as usize + component) * 4;
+            let offset = (slot * components as usize + component) * 4;
             buffer.write(offset, &value.to_le_bytes());
         }
     }
@@ -78,10 +85,16 @@ fn attribute(
 
 /// A splat in miniature: a position and the named generic attributes a
 /// Gaussian splat carries, which is the data both options were written for.
-fn splat_cloud() -> PointCloud {
+fn splat_cloud(stride: usize) -> PointCloud {
     let mut cloud = PointCloud::new();
     cloud.set_num_points(NUM_POINTS);
-    cloud.add_attribute(attribute(GeometryAttributeType::Position, 3, 1, false));
+    cloud.add_attribute(attribute(
+        GeometryAttributeType::Position,
+        3,
+        1,
+        false,
+        stride,
+    ));
 
     let mut layout: Vec<(String, u8)> = vec![
         ("scale".to_string(), 3),
@@ -97,6 +110,7 @@ fn splat_cloud() -> PointCloud {
             components,
             10 + index as u32,
             name.starts_with("f_rest_"),
+            stride,
         ));
         let unique_id = cloud.attribute(id).unique_id();
         let mut metadata = Metadata::new();
@@ -109,11 +123,16 @@ fn splat_cloud() -> PointCloud {
 }
 
 fn encode(search: bool, spatial: bool) -> Vec<u8> {
-    let cloud = splat_cloud();
+    encode_cloud(splat_cloud(1), |options| {
+        options.set_prediction_search(search);
+        options.set_spatial_point_order(spatial);
+    })
+}
+
+fn encode_cloud(cloud: PointCloud, configure: impl Fn(&mut EncoderOptions)) -> Vec<u8> {
     let mut options = EncoderOptions::new();
     options.set_encoding_method(SEQUENTIAL);
-    options.set_prediction_search(search);
-    options.set_spatial_point_order(spatial);
+    configure(&mut options);
     for id in 0..cloud.num_attributes() {
         options.set_attribute_int(id, "quantization_bits", QUANTIZATION_BITS);
     }
@@ -200,4 +219,35 @@ fn cpp_reads_a_spatially_ordered_stream_as_the_same_points() {
             "C++ decoded the reordered stream to a different set of points (search: {search})"
         );
     }
+}
+
+#[test]
+fn cpp_reads_an_order_searched_stream_as_the_same_points() {
+    common::disable_noisy_debug_env();
+    if common::skip_if_cpp_bridge_unavailable() {
+        return;
+    }
+    // Scattered, so the order it came in is one worth replacing: in the
+    // smooth one the search keeps the input and writes the ordinary stream.
+    let plain = encode_cloud(splat_cloud(1031), |_| {});
+    let searched = encode_cloud(splat_cloud(1031), |options| {
+        options.set_point_order_search(true);
+    });
+    assert!(
+        searched.len() < plain.len(),
+        "the search kept the scattered order ({} against {} bytes)",
+        searched.len(),
+        plain.len()
+    );
+
+    let decoded =
+        decode_cpp_point_cloud_fingerprint(&searched).expect("C++ decodes the searched stream");
+    let reference = decode_cpp_point_cloud_fingerprint(&plain).expect("C++ decodes the stream");
+    assert_eq!(decoded.num_points, reference.num_points);
+    assert_eq!(decoded.num_attributes, reference.num_attributes);
+    assert_eq!(
+        sorted_positions(&plain),
+        sorted_positions(&searched),
+        "C++ decoded the searched stream to a different set of points"
+    );
 }

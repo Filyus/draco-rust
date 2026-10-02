@@ -10,7 +10,7 @@
 //! `cost_per_point_of_a_splat_shaped_cloud` is a measurement rather than a
 //! test and is `#[ignore]`d; run it with `--ignored --nocapture`.
 
-#![cfg(all(feature = "encoder", feature = "decoder"))]
+#![cfg(all(feature = "encoder", feature = "point_cloud_decode"))]
 
 use draco_core::{
     DataType, DecoderBuffer, EncoderBuffer, EncoderOptions, GeometryAttributeType, Metadata,

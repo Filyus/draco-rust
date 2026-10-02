@@ -31,7 +31,7 @@
 //! Planar rather than interleaved because that is SPZ's layout: it stores each
 //! field as its own array, and a byte-level compressor cares a great deal.
 
-#![cfg(all(feature = "encoder", feature = "decoder"))]
+#![cfg(all(feature = "encoder", feature = "point_cloud_decode"))]
 
 use std::path::PathBuf;
 

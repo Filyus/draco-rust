@@ -504,10 +504,11 @@ CLI-equivalent convenience: `set_compression_level`, `get_compression_level`,
 `set_attribute_quantization`, and `get_attribute_quantization`.
 
 Point-cloud options upstream does not have: `set_prediction_search`,
-`prediction_search`, `set_spatial_point_order`, and `spatial_point_order`.
-Both are off by default, and left off the output is byte-identical to C++
-Draco's. Turned on, the stream differs from what upstream writes for the same
-input but stays one every Draco decoder reads, C++ included:
+`prediction_search`, `set_spatial_point_order`, `spatial_point_order`,
+`set_point_order_search`, and `point_order_search`. All are off by default, and
+left off the output is byte-identical to C++ Draco's. Turned on, the stream
+differs from what upstream writes for the same input but stays one every Draco
+decoder reads, C++ included:
 
 - `set_prediction_search` chooses each point-cloud attribute's prediction
   scheme, `Difference` or none, by the symbol coder's own bit estimate, where
@@ -518,10 +519,21 @@ input but stays one every Draco decoder reads, C++ included:
 - `set_spatial_point_order` writes the points of a sequential point cloud in
   a spatial order over the positions, so the difference predictor predicts from
   a spatial neighbour. Which order is not part of the contract: today it is a
-  Morton curve, and a later version may choose a better one. It reorders the
+  Hilbert curve, and a later version may choose a better one. It reorders the
   decoded points, and it can make a file bigger when an attribute varies along
   the input order, such as an index or a timestamp. The kd-tree coder chooses
   its own order and is unaffected.
+- `set_point_order_search` searches for the order that makes the stream
+  smallest: it repairs the spatial order's curve where the other attributes
+  disagree with the positions, and keeps the input order, or the curve, where
+  that is already better by the coder's own price. How hard it looks follows
+  `encoding_speed`: 9 and 10 write the curve, the default 5 counts the 16
+  dearest attribute columns, 0 counts them all. On a Gaussian splat of 742
+  thousand points and 58 attributes it writes 6.8% (speed 8), 11.9% (5), 16.5%
+  (3) and 19.8% (0) fewer bytes than the spatial order, for an encode of 1.2
+  to 4.9 s against 0.5 s. It reorders the decoded
+  points and makes no promise that neighbours in the stream are neighbours in
+  space.
 
 The rustdoc of each carries the measurements.
 
@@ -541,6 +553,7 @@ the target does claim. `(0, 0)` means "use the default".
 | `quantization_bits` | i32 | unset (no quantization) | Bits per component, 1..=30 for position/generic attributes, 2..=30 for normals |
 | `prediction_scheme_search` | i32 | 0 | Non-zero: `set_prediction_search`. Not an upstream key |
 | `spatial_point_order` | i32 | 0 | Non-zero: `set_spatial_point_order`. Not an upstream key |
+| `point_order_search` | i32 | 0 | Non-zero: `set_point_order_search`. Not an upstream key |
 
 #### Relationship to the `draco_encoder` CLI
 
