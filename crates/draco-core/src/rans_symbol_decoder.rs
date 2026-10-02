@@ -68,6 +68,25 @@ fn fill_slots<T: Copy + Default + TryFrom<usize>>(
 /// of precision, 4096 beat 8192 and 16384.
 const BUCKETS: usize = 1 << 12;
 
+/// How many symbols past a bucket's first `run_count` weighs: a bucket whose
+/// slots reach that many symbols further or more goes through the slot table.
+const WINDOW: usize = 16;
+
+/// A `starts` entry for a bucket more than `WINDOW` symbols wide.
+const THROUGH_SLOTS: u32 = u32::MAX;
+
+/// PROBE: the form a table finer than steps can hold decodes through, from
+/// `DRACO_RANS_FORM` -- `table`, `buckets` (the share rule), anything else the
+/// count -- so one binary times all three.
+fn fine_form() -> u8 {
+    static FORM: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    *FORM.get_or_init(|| match std::env::var("DRACO_RANS_FORM").as_deref() {
+        Ok("table") => 0,
+        Ok("buckets") => 1,
+        _ => 2,
+    })
+}
+
 /// RAnsSymbolDecoder with runtime precision to avoid monomorphization bloat.
 /// Instead of const generics, we store the precision bits at runtime.
 /// Performance is preserved by storing `rans_precision_bits` and using bit
@@ -86,6 +105,14 @@ pub struct RAnsSymbolDecoder<'a> {
     /// owns the whole bucket, its probability and cumulative probability too.
     /// See `run_buckets`. Built by `decode_run` like `steps`; empty otherwise.
     buckets: Vec<u64>,
+    /// For a table too fine for `steps`, the count form's index: per bucket,
+    /// the first symbol whose slots reach into it, or `THROUGH_SLOTS`. See
+    /// `run_count`; empty otherwise.
+    starts: Vec<u32>,
+    /// Each symbol's cumulative probability, then `rans_precision`, then
+    /// `WINDOW` entries of `u32::MAX` so a window past the last symbol stays
+    /// in bounds and counts nothing.
+    cums: Vec<u32>,
     /// Whether `build_buckets` has run for this table, kept or not.
     buckets_tried: bool,
     num_symbols: usize,
@@ -111,6 +138,8 @@ impl<'a> RAnsSymbolDecoder<'a> {
             lut: Slots::Narrow(Vec::new()),
             steps: Vec::new(),
             buckets: Vec::new(),
+            starts: Vec::new(),
+            cums: Vec::new(),
             buckets_tried: false,
             num_symbols: 0,
             table_mask: 0,
@@ -132,6 +161,8 @@ impl<'a> RAnsSymbolDecoder<'a> {
         let _start_pos = buffer.position();
         self.steps.clear();
         self.buckets.clear();
+        self.starts.clear();
+        self.cums.clear();
         self.buckets_tried = false;
         let bitstream_version = buffer.bitstream_version();
         let num_symbols = if bitstream_version < 0x0200 {
@@ -333,7 +364,11 @@ impl<'a> RAnsSymbolDecoder<'a> {
         // slots are past what steps can hold.
         if self.steps.is_empty() && !self.buckets_tried && count >= BUCKETS {
             self.buckets_tried = true;
-            self.build_buckets();
+            match fine_form() {
+                0 => {}
+                1 => self.build_buckets(),
+                _ => self.build_count(),
+            }
         }
         // The slot table is moved out for the length of the run so the loops
         // can borrow it next to the coder state they update.
@@ -342,6 +377,10 @@ impl<'a> RAnsSymbolDecoder<'a> {
         let backed = match (&lut, form) {
             (Slots::Narrow(slots), (false, _)) => self.run_steps(slots, out, count),
             (Slots::Wide(slots), (false, _)) => self.run_steps(slots, out, count),
+            (Slots::Narrow(slots), _) if !self.starts.is_empty() => {
+                self.run_count(slots, out, count)
+            }
+            (Slots::Wide(slots), _) if !self.starts.is_empty() => self.run_count(slots, out, count),
             (Slots::Narrow(slots), (true, false)) => self.run_buckets(slots, out, count),
             (Slots::Wide(slots), (true, false)) => self.run_buckets(slots, out, count),
             (Slots::Narrow(slots), (true, true)) => self.run_table(slots, out, count),
@@ -465,6 +504,101 @@ impl<'a> RAnsSymbolDecoder<'a> {
                 let sym = table[(symbol_id & table_mask) as usize];
                 (symbol_id, sym.prob, sym.cum_prob)
             };
+            state = quo
+                .wrapping_mul(prob)
+                .wrapping_add(rem.wrapping_sub(cum_prob));
+            symbol_id
+        }));
+
+        self.ans.buf_offset = offset;
+        self.ans.state = state;
+        backed
+    }
+
+    /// Builds `starts` and `cums` for a table finer than `BUCKETS` slots, or
+    /// leaves them empty where the slot table cannot be read per bucket.
+    fn build_count(&mut self) {
+        let precision = self.rans_precision as usize;
+        if precision <= BUCKETS || self.num_symbols >= THROUGH_SLOTS as usize {
+            return;
+        }
+        let width = precision / BUCKETS;
+        let mut starts = Vec::with_capacity(BUCKETS);
+        for bucket in 0..BUCKETS {
+            let (Some(first), Some(last)) = (
+                self.lut.get(bucket * width),
+                self.lut.get((bucket + 1) * width - 1),
+            ) else {
+                return;
+            };
+            starts.push(if last - first <= WINDOW as u32 {
+                first
+            } else {
+                THROUGH_SLOTS
+            });
+        }
+        let mut cums = Vec::with_capacity(self.num_symbols + 1 + WINDOW);
+        cums.extend(
+            self.probability_table[..self.num_symbols]
+                .iter()
+                .map(|sym| sym.cum_prob),
+        );
+        cums.push(self.rans_precision);
+        cums.resize(self.num_symbols + 1 + WINDOW, u32::MAX);
+        self.starts = starts;
+        self.cums = cums;
+    }
+
+    /// The run against `starts`: the low bits of the state pick a bucket, and
+    /// the symbol is its first plus how many of the next `WINDOW` cumulative
+    /// probabilities the remainder reaches -- `WINDOW` independent compares
+    /// rather than a read of the slot table, and no branch taken by data on
+    /// whether one symbol owns the bucket. The symbol's probability is the
+    /// step to the next cumulative one, in the line the compares read.
+    ///
+    /// The symbol owning slot `rem` is the last whose cumulative probability
+    /// is at most `rem`; the bucket's first is such a one, and its last is at
+    /// most `WINDOW` further, so the count lands on it.
+    fn run_count<T: Copy + Into<u32>>(
+        &mut self,
+        slots: &[T],
+        out: &mut Vec<u32>,
+        count: usize,
+    ) -> bool {
+        let precision = self.rans_precision as usize;
+        let slots = &slots[..precision];
+        let starts = &self.starts[..BUCKETS];
+        let cums = &self.cums[..];
+        let mask = self.rans_precision_mask;
+        let bits = self.rans_precision_bits;
+        let shift = bits - BUCKETS.trailing_zeros();
+        let l_base = self.ans.l_base;
+        let buf = self.ans.buf;
+        let mut offset = self.ans.buf_offset.min(buf.len());
+        let mut state = self.ans.state;
+
+        let mut backed = true;
+        out.extend((0..count).map(|_| {
+            while state < l_base && offset > 0 {
+                offset -= 1;
+                state = (state << 8) | buf[offset] as u32;
+            }
+            backed &= state >= l_base;
+            let quo = state >> bits;
+            let rem = state & mask;
+            let start = starts[(rem >> shift) as usize];
+            let symbol_id = if start != THROUGH_SLOTS {
+                let first = start as usize;
+                let window: &[u32; WINDOW] = cums[first + 1..first + 1 + WINDOW]
+                    .try_into()
+                    .unwrap_or(&[u32::MAX; WINDOW]);
+                start + window.iter().map(|&cum| u32::from(cum <= rem)).sum::<u32>()
+            } else {
+                slots[rem as usize].into()
+            };
+            let id = symbol_id as usize;
+            let cum_prob = cums[id];
+            let prob = cums[id + 1].wrapping_sub(cum_prob);
             state = quo
                 .wrapping_mul(prob)
                 .wrapping_add(rem.wrapping_sub(cum_prob));
@@ -833,7 +967,19 @@ mod tests {
             assert!(whole.decode_run(&mut out, count));
             assert_eq!(matches!(whole.lut, Slots::Narrow(_)), narrow, "{alphabet}");
             assert_eq!(!whole.steps.is_empty(), steps, "{alphabet}");
-            assert_eq!(!whole.buckets.is_empty(), buckets, "{alphabet}");
+            // PROBE: the count form replaces the buckets wherever they could be.
+            let _ = buckets;
+            assert_eq!(
+                !whole.starts.is_empty(),
+                !steps && alphabet > 1_500,
+                "{alphabet}"
+            );
+            let through = whole
+                .starts
+                .iter()
+                .filter(|&&s| s == super::THROUGH_SLOTS)
+                .count();
+            eprintln!("PROBE {alphabet} skew {skew}: {through} buckets through the slots");
 
             let mut pieces = decoder();
             let mut cut = Vec::new();
