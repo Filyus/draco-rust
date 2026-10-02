@@ -206,8 +206,10 @@ pub(crate) fn decode_encoded(
     normalized: &std::collections::BTreeMap<String, bool>,
 ) -> Result<crate::PackedGeometry> {
     // Our own stream: the limits for hostile input do not apply.
-    let mesh =
-        crate::draco_primitive::decode_payload(bytes, &draco_core::DecodeLimits::permissive())?;
+    let mesh = crate::draco_primitive::decode_payload(
+        bytes,
+        &crate::DracoDecodeOptions::default().with_limits(draco_core::DecodeLimits::permissive()),
+    )?;
     let decoded = crate::PackedGeometry::from_draco_mesh(&mesh, mapping, normalized)?;
     let index_count = decoded.indices().map_or(0, crate::PackedIndices::count);
     if (decoded.vertex_count(), index_count) != reported {

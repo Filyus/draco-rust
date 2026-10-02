@@ -9,6 +9,28 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `ImportOptions::draco_decode_threads`: the threads one Draco decode of a
+  point-cloud primitive may take. `1`, the default, keeps it on the calling
+  thread, as before; `0` takes as many as the machine has, up to sixteen,
+  which decodes a large cloud of many attributes three to four times faster.
+  Mesh primitives decode on the calling thread whatever it says, and the
+  decoded geometry is the same on any count. `DracoPrimitiveContract::with_threads`
+  does the same for a primitive decoded on its own. Needs the `draco-core`
+  release that adds `MeshDecoder::set_threads`.
+- `DracoDecodeOptions`, the ceilings and the threads of a Draco decode in one
+  value, built from `Default` with `with_limits` and `with_threads`.
+
+### Changed
+
+- `ExtensionHandler::decode_primitive`, `ExtensionRegistry::decode_primitive`
+  and `parse_with_options` take `&DracoDecodeOptions` where they took
+  `&DecodeLimits`; pass `&DracoDecodeOptions::default().with_limits(limits)`
+  for what they did before. It is one value so that what a decode is told can
+  grow again without these changing shape. `ImportOptions` has a field more,
+  so a struct literal of it needs `..ImportOptions::default()`.
+
 ## [0.5.0](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.4.2...draco-gltf-v0.5.0) - 2026-09-29
 
 Follows the glTF 2.1 draft as it stands on Khronos's `draft-2.1` branch. GLB

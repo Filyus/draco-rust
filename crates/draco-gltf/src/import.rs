@@ -35,7 +35,7 @@ pub struct Import {
     /// The parameter that carries it is not gated -- an options struct and a
     /// function signature should not change shape with a feature.
     #[cfg(feature = "draco-decode")]
-    pub(crate) draco_decode_limits: draco_core::DecodeLimits,
+    pub(crate) draco_decode: crate::DracoDecodeOptions,
     #[cfg(feature = "resources")]
     provenance: Vec<String>,
 }
@@ -228,7 +228,7 @@ impl Import {
         let mesh = self.extensions.decode_primitive(
             &self.document,
             &self.resources,
-            &self.draco_decode_limits,
+            &self.draco_decode,
             primitive,
         )?;
         Ok((mesh, self.draco_contract(primitive)?))
@@ -238,7 +238,8 @@ impl Import {
     #[cfg(feature = "draco-decode")]
     fn draco_contract(&self, primitive: PrimitiveRef<'_>) -> Result<crate::DracoPrimitiveContract> {
         let mut contract = crate::DracoPrimitiveContract::new()
-            .with_limits(self.draco_decode_limits)
+            .with_limits(self.draco_decode.limits)
+            .with_threads(self.draco_decode.threads)
             .with_profile(self.profile);
         for (semantic, index) in primitive.attribute_indices() {
             let accessor = self.document.accessor(index);
@@ -680,9 +681,9 @@ impl Import {
             Some(&alias_resolver),
             limits,
             #[cfg(feature = "draco-decode")]
-            &self.draco_decode_limits,
+            &self.draco_decode,
             #[cfg(not(feature = "draco-decode"))]
-            &draco_core::DecodeLimits::default(),
+            &crate::DracoDecodeOptions::default(),
             profile,
             extensions,
         )?;
@@ -825,7 +826,7 @@ pub fn parse(bytes: &[u8], profile: ValidationProfile) -> Result<Import> {
         None,
         None,
         &ResourceLimits::default(),
-        &draco_core::DecodeLimits::default(),
+        &crate::DracoDecodeOptions::default(),
         profile,
         &ExtensionRegistry::default(),
     )
@@ -845,7 +846,7 @@ pub fn open(path: impl AsRef<Path>, profile: ValidationProfile) -> Result<Import
         path.parent(),
         Some(&resolver),
         &ResourceLimits::default(),
-        &draco_core::DecodeLimits::default(),
+        &crate::DracoDecodeOptions::default(),
         profile,
         &ExtensionRegistry::default(),
     )
@@ -853,7 +854,7 @@ pub fn open(path: impl AsRef<Path>, profile: ValidationProfile) -> Result<Import
 
 /// Parses a container with explicit resource, quota, profile and extension options.
 ///
-/// `draco_limits` travels with the import rather than being set on it
+/// `draco` travels with the import rather than being set on it
 /// afterwards. The difference matters only if parsing ever decodes something:
 /// it does not today, and an import built with the defaults and corrected a
 /// line later would be right by that fact alone, which is not a thing to rely
@@ -864,7 +865,7 @@ pub fn parse_with_options(
     _base: Option<&Path>,
     resolver: Option<&dyn ResourceResolver>,
     limits: &ResourceLimits,
-    draco_limits: &draco_core::DecodeLimits,
+    draco: &crate::DracoDecodeOptions,
     profile: ValidationProfile,
     extensions: &ExtensionRegistry,
 ) -> Result<Import> {
@@ -926,7 +927,7 @@ pub fn parse_with_options(
         #[cfg(any(feature = "draco-decode", feature = "draco-encode"))]
         extensions: extensions.clone(),
         #[cfg(feature = "draco-decode")]
-        draco_decode_limits: *draco_limits,
+        draco_decode: *draco,
         #[cfg(feature = "resources")]
         provenance: Vec::new(),
     })

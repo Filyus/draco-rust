@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::json::Value;
 #[cfg(feature = "draco-decode")]
-use draco_core::{decode_limits::DecodeLimits, Mesh};
+use draco_core::Mesh;
 
 #[cfg(feature = "draco-decode")]
 use crate::PrimitiveRef;
@@ -403,15 +403,16 @@ pub trait ExtensionHandler: Send + Sync {
     /// Decodes geometry for `primitive`, or returns `None` when this handler
     /// does not own that primitive.
     ///
-    /// `limits` carries the caller's ceilings on what one decode may produce;
-    /// a decode past them fails with `ErrorKind::LimitExceeded`, which a
-    /// caller can tell apart from a malformed stream.
+    /// `options` carries the caller's ceilings on what one decode may
+    /// produce -- a decode past them fails with `ErrorKind::LimitExceeded`,
+    /// which a caller can tell apart from a malformed stream -- and the
+    /// threads it may take.
     #[cfg(feature = "draco-decode")]
     fn decode_primitive(
         &self,
         _document: &Document,
         _resources: &ResourceStore,
-        _limits: &DecodeLimits,
+        _options: &crate::DracoDecodeOptions,
         _primitive: PrimitiveRef<'_>,
     ) -> Option<Result<Mesh>> {
         None
@@ -495,11 +496,12 @@ impl ExtensionRegistry {
         &self,
         document: &Document,
         resources: &ResourceStore,
-        limits: &DecodeLimits,
+        options: &crate::DracoDecodeOptions,
         primitive: PrimitiveRef<'_>,
     ) -> Result<Mesh> {
         for handler in &self.handlers {
-            if let Some(result) = handler.decode_primitive(document, resources, limits, primitive) {
+            if let Some(result) = handler.decode_primitive(document, resources, options, primitive)
+            {
                 return result;
             }
         }
@@ -640,7 +642,7 @@ impl ExtensionHandler for DracoExtension {
         &self,
         document: &Document,
         resources: &ResourceStore,
-        limits: &DecodeLimits,
+        options: &crate::DracoDecodeOptions,
         primitive: PrimitiveRef<'_>,
     ) -> Option<Result<Mesh>> {
         let extension = primitive.extension(self.name())?;
@@ -667,7 +669,7 @@ impl ExtensionHandler for DracoExtension {
                 .checked_add(length)
                 .filter(|end| *end <= buffer.len())
                 .ok_or_else(|| Error::Extension("Draco bufferView out of bounds".into()))?;
-            crate::draco_primitive::decode_payload(&buffer[start..end], limits)
+            crate::draco_primitive::decode_payload(&buffer[start..end], options)
         })())
     }
 }

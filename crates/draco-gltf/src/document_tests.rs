@@ -242,7 +242,7 @@ fn embedded_external_assets_resolve_their_aliases() {
         None,
         Some(&resolver),
         &crate::ResourceLimits::default(),
-        &draco_core::DecodeLimits::default(),
+        &crate::DracoDecodeOptions::default(),
         ValidationProfile::Gltf21Draft,
         &crate::ExtensionRegistry::default(),
     )
@@ -281,7 +281,7 @@ fn load_alias_child(
         None,
         Some(&resolver),
         &crate::ResourceLimits::default(),
-        &draco_core::DecodeLimits::default(),
+        &crate::DracoDecodeOptions::default(),
         ValidationProfile::Gltf21Draft,
         &crate::ExtensionRegistry::default(),
     )?;
@@ -956,6 +956,43 @@ mod compression_tests {
     /// large file, and a generic error would make it indistinguishable from
     /// the decoder refusing a malformed one -- the exact collapse
     /// `draco-core` once had across twelve re-wrapped errors.
+    /// The threads a caller sets travel with the limits into the import, and
+    /// so to every decode it makes, and a Draco primitive decodes the same on
+    /// the machine's threads as on one.
+    #[cfg(all(feature = "draco-encode", feature = "draco-decode"))]
+    #[test]
+    fn draco_decode_threads_travel_with_the_import() {
+        use draco_core::DecodeLimits;
+
+        let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
+        let mut import = crate::parse(input, ValidationProfile::Gltf20).unwrap();
+        import
+            .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
+            .unwrap();
+        let glb = import.to_bytes(crate::OutputFormat::GlbV2).unwrap();
+
+        let limits = DecodeLimits::default().with_max_faces(7);
+        let decode = |threads: i32| {
+            let options = crate::ImportOptions {
+                draco_decode_limits: limits,
+                draco_decode_threads: threads,
+                ..crate::ImportOptions::default()
+            };
+            let import = crate::import_slice_with_options(&glb, &options).unwrap();
+            assert_eq!(
+                import.draco_decode,
+                crate::DracoDecodeOptions::default()
+                    .with_limits(limits)
+                    .with_threads(threads)
+            );
+            let primitive = import.draco_primitives().next().unwrap();
+            let mesh = import.decode_draco_primitive(primitive).unwrap();
+            (mesh.num_points(), mesh.num_faces())
+        };
+        assert_eq!(decode(0), decode(1));
+        assert_eq!(crate::ImportOptions::default().draco_decode_threads, 1);
+    }
+
     #[cfg(all(feature = "draco-encode", feature = "draco-decode"))]
     #[test]
     fn draco_decode_limits_refuse_a_primitive_over_the_ceiling_and_keep_the_kind() {
@@ -1351,7 +1388,7 @@ mod compression_tests {
             None,
             None,
             &crate::ResourceLimits::default(),
-            &draco_core::DecodeLimits::default(),
+            &crate::DracoDecodeOptions::default(),
             ValidationProfile::Gltf20,
             &registry,
         )
@@ -1482,7 +1519,7 @@ mod compression_tests {
                     .ok_or_else(|| crate::GltfError::ExternalResourceDenied(uri.into()))
             }),
             &crate::ResourceLimits::default(),
-            &draco_core::DecodeLimits::default(),
+            &crate::DracoDecodeOptions::default(),
             ValidationProfile::Gltf20,
             &crate::ExtensionRegistry::default(),
         )
@@ -1671,7 +1708,7 @@ fn import_preserves_draft_half_float_accessors() {
         None,
         Some(&resolver),
         &crate::ResourceLimits::default(),
-        &draco_core::DecodeLimits::default(),
+        &crate::DracoDecodeOptions::default(),
         ValidationProfile::Gltf21Draft,
         &crate::ExtensionRegistry::default(),
     )
@@ -1705,7 +1742,7 @@ fn import_materializes_sparse_accessors() {
         None,
         Some(&resolver),
         &crate::ResourceLimits::default(),
-        &draco_core::DecodeLimits::default(),
+        &crate::DracoDecodeOptions::default(),
         ValidationProfile::Gltf20,
         &crate::ExtensionRegistry::default(),
     )
@@ -2001,7 +2038,7 @@ fn standalone_raw_geometry_roundtrips_json_and_glb() {
         None,
         Some(&resolver),
         &crate::ResourceLimits::default(),
-        &draco_core::DecodeLimits::default(),
+        &crate::DracoDecodeOptions::default(),
         ValidationProfile::Gltf20,
         &crate::ExtensionRegistry::default(),
     )

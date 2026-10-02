@@ -105,7 +105,7 @@ impl DracoPrimitiveExtension {
         payload: &[u8],
         contract: &DracoPrimitiveContract,
     ) -> Result<PackedGeometry> {
-        let mesh = decode_payload(payload, &contract.limits)?;
+        let mesh = decode_payload(payload, &contract.decode)?;
         self.pack(&mesh, contract)
     }
 
@@ -136,7 +136,7 @@ pub struct DracoPrimitiveContract {
     attributes: BTreeMap<String, DeclaredAccessor>,
     indices: Option<u64>,
     mode: PrimitiveMode,
-    limits: DecodeLimits,
+    decode: crate::DracoDecodeOptions,
     profile: ValidationProfile,
 }
 
@@ -159,7 +159,7 @@ impl DracoPrimitiveContract {
             attributes: BTreeMap::new(),
             indices: None,
             mode: PrimitiveMode::Triangles,
-            limits: DecodeLimits::default(),
+            decode: crate::DracoDecodeOptions::default(),
             profile: ValidationProfile::Gltf21Draft,
         }
     }
@@ -195,7 +195,16 @@ impl DracoPrimitiveContract {
     /// Caps what one decode may allocate and reconstruct.
     #[must_use]
     pub const fn with_limits(mut self, limits: DecodeLimits) -> Self {
-        self.limits = limits;
+        self.decode.limits = limits;
+        self
+    }
+
+    /// Lets a point-cloud stream decode on `threads`: `1`, the default, keeps
+    /// it on the calling thread, `0` takes as many as the machine has up to
+    /// sixteen. A mesh stream decodes on the calling thread whatever this is.
+    #[must_use]
+    pub const fn with_threads(mut self, threads: i32) -> Self {
+        self.decode.threads = threads;
         self
     }
 
@@ -207,11 +216,13 @@ impl DracoPrimitiveContract {
     }
 }
 
-pub(crate) fn decode_payload(payload: &[u8], limits: &DecodeLimits) -> Result<Mesh> {
+pub(crate) fn decode_payload(payload: &[u8], options: &crate::DracoDecodeOptions) -> Result<Mesh> {
     let mut mesh = Mesh::new();
-    MeshDecoder::new()
+    let mut decoder = MeshDecoder::new();
+    decoder.set_threads(options.threads);
+    decoder
         .decode(
-            &mut DecoderBuffer::new(payload).with_limits(*limits),
+            &mut DecoderBuffer::new(payload).with_limits(options.limits),
             &mut mesh,
         )
         .map_err(Error::Decode)?;

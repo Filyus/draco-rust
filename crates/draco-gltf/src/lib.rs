@@ -163,6 +163,52 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// demands is a dependency it did not choose.
 pub use draco_core::DecodeLimits;
 
+/// How a Draco stream is decoded: the ceilings on what one decode may
+/// reconstruct, and the threads it may take.
+///
+/// One value rather than one parameter each, so what a decode is told can grow
+/// without every function and [`extensions::ExtensionHandler`] that passes it
+/// on changing shape again. Build it from [`Default`] and the `with_` methods;
+/// the fields read as they are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DracoDecodeOptions {
+    /// Ceilings on what one decode may reconstruct; see
+    /// [`ImportOptions::draco_decode_limits`].
+    pub limits: DecodeLimits,
+    /// Threads a point-cloud stream may decode on: `1`, the default, the
+    /// calling thread, `0` as many as the machine has up to sixteen. A mesh
+    /// stream decodes on the calling thread whatever this is, and the decoded
+    /// geometry is the same on any count.
+    pub threads: i32,
+}
+
+impl Default for DracoDecodeOptions {
+    fn default() -> Self {
+        Self {
+            limits: DecodeLimits::default(),
+            threads: 1,
+        }
+    }
+}
+
+impl DracoDecodeOptions {
+    /// These options with `limits` as the decode ceilings.
+    #[must_use]
+    pub const fn with_limits(mut self, limits: DecodeLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    /// These options with `threads` as the threads a point-cloud stream may
+    /// take.
+    #[must_use]
+    pub const fn with_threads(mut self, threads: i32) -> Self {
+        self.threads = threads;
+        self
+    }
+}
+
 /// Options controlling document loading, resource resolution and validation.
 pub struct ImportOptions<'a> {
     /// Base directory used for relative external resources.
@@ -188,6 +234,16 @@ pub struct ImportOptions<'a> {
     /// not change shape with a feature, or `ImportOptions { .. }` stops
     /// compiling downstream the moment the decoder is left out.
     pub draco_decode_limits: draco_core::DecodeLimits,
+    /// Threads one Draco decode of a point-cloud primitive may take: `1`, the
+    /// default, keeps it on the calling thread, `0` takes as many as the
+    /// machine has up to sixteen. Mesh primitives decode on the calling thread
+    /// whatever this is, and the decoded geometry is the same on any count.
+    ///
+    /// One by default for the reason `draco_core::PointCloudDecoder` gives: a
+    /// caller importing files side by side, or serving many at once, would
+    /// otherwise multiply its own threads by up to sixteen. Not gated on
+    /// `draco-decode`, for the reason [`Self::draco_decode_limits`] gives.
+    pub draco_decode_threads: i32,
     /// Profile used for basic checks and strict validation when enabled.
     pub profile: ValidationProfile,
     /// Extension handlers available to validation and transforms.
@@ -201,6 +257,7 @@ impl Default for ImportOptions<'_> {
             resolver: None,
             limits: ResourceLimits::default(),
             draco_decode_limits: draco_core::DecodeLimits::default(),
+            draco_decode_threads: 1,
             profile: ValidationProfile::Gltf21Draft,
             extensions: ExtensionRegistry::default(),
         }
@@ -250,7 +307,10 @@ pub fn import_slice_with_options(bytes: &[u8], options: &ImportOptions<'_>) -> R
         options.base_path,
         resolver,
         &options.limits,
-        &options.draco_decode_limits,
+        &DracoDecodeOptions {
+            limits: options.draco_decode_limits,
+            threads: options.draco_decode_threads,
+        },
         options.profile,
         &options.extensions,
     )
