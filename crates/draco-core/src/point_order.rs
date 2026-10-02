@@ -15,15 +15,22 @@
 //!   decide that the order it was handed is already better than anything it
 //!   would write, and leave it alone.
 //!
-//! # What is minimized
+//! # What is minimized, and what decides
 //!
-//! The estimated bits of a step: `log2(1 + |delta|)` summed over the position
-//! and over the attribute columns, each in the units the encode quantizes it
-//! to. The coder spends about 1.8 to 2.9 times that on a column, close enough
-//! to flat across columns that weighting them by what they really cost bought
-//! under a third of a percent. Position goes in as 16 bits, however many the
-//! grid has, and an attribute as at most 8, so a column quantized finer than
-//! that is read at its top eight bits.
+//! The refinement minimizes the estimated bits of a step: `log2(1 + |delta|)`
+//! summed over the position and over the attribute columns, each in the units
+//! the encode quantizes it to. The coder spends about 1.8 to 2.9 times that on
+//! a column, close enough to flat across columns that weighting them by what
+//! they really cost bought under a third of a percent. Position goes in as 16
+//! bits, however many the grid has, and an attribute as at most 8, so a column
+//! quantized finer than that is read at its top eight bits.
+//!
+//! Which order is written is not decided on that estimate. It prices a step by
+//! its size, and the coder by how steps are distributed: a step that is always
+//! the same costs the coder next to nothing and the estimate its logarithm,
+//! and a column that does not follow its neighbours, which the coder writes as
+//! it is, the estimate still prices by its steps. The decision is taken on
+//! `coder_bits` instead, the coder's own plan of each order's residuals.
 //!
 //! # How
 //!
@@ -47,6 +54,7 @@ use crate::point_cloud::PointCloud;
 use crate::sequential_attribute_encoder::{
     select_sequential_encoder, SequentialAttributeEncoderType,
 };
+use crate::symbol_encoding::plan_symbols_with_threads;
 
 /// Points to a block of the path. A block is cache-sized and independent of its
 /// neighbours, which is what lets blocks run on separate threads and is also
@@ -57,21 +65,37 @@ const BLOCK: usize = 8192;
 /// the input cannot line up with the sample.
 const SAMPLE_STRIDE: usize = 17;
 
-/// An order is written only if it undercuts, in estimate, by at least this
-/// every order it would replace: the input, and for a refinement also the curve
-/// it was refined from. The estimate and the coder disagree by a few percent of
-/// the estimate: refining the file order of a scan lowered the estimate 1.7%
-/// and raised the coder's size 0.9%, and refining the curve through a lattice
-/// of repeated points lowered it 0.3% and raised the size 1%.
-const WORTH_KEEPING_BELOW: f64 = 0.97;
+/// An order is written only if it undercuts, by the coder's price, by at least
+/// this every order it would replace: the input, and for a refinement also the
+/// curve it was refined from. The price is the coder's plan on a sample, which
+/// ranks orders the way the stream does to within this; a refinement that
+/// saves a terrestrial room scan 3% passes it, one that saves 0.3% is not worth
+/// the risk of a sample that misjudged.
+const WORTH_KEEPING_BELOW: f64 = 0.99;
 
-/// One block in this many is refined first, as a trial: if what it comes to is
-/// not under both the input and the curve by [`WORTH_KEEPING_BELOW`], the rest
-/// is not worth doing.
+/// One block in this many is refined first, as a trial: if what it comes to,
+/// scaled to the whole, is not under both the input and the curve by
+/// [`WORTH_KEEPING_BELOW`], the rest is not worth doing.
 /// What a given effort makes of a given cloud is not something a threshold can
 /// say, so the trial measures it. A cloud of fewer than four blocks has its
 /// every block tried, and the trial is the whole refinement.
 const TRIAL_EVERY: usize = 16;
+
+/// How many values of an order `coder_bits` prices, over every component of
+/// every attribute: each is two reads that miss the cache, so a larger cloud,
+/// or one with more attributes, is sampled more sparsely rather than more.
+const PRICED_VALUES: usize = 1 << 21;
+
+/// The fewest steps a stride leaves, where an order has them: a histogram of
+/// fewer residuals than this stops ranking orders as the whole would.
+const PRICED_STEPS_AT_LEAST: usize = 1 << 15;
+
+/// The stride that prices about [`PRICED_VALUES`] of `len` steps of
+/// `components` values each, and never fewer than [`PRICED_STEPS_AT_LEAST`]
+/// steps.
+fn pricing_stride(len: usize, components: usize) -> usize {
+    (len * components.max(1) / PRICED_VALUES).clamp(1, (len / PRICED_STEPS_AT_LEAST).max(1))
+}
 
 /// Positions are priced on this many bits an axis at most.
 const POSITION_BITS: u32 = 16;
@@ -531,29 +555,26 @@ impl Fine {
     }
 }
 
-/// What one attribute component costs along two orders, in quarter-bits over
-/// the sampled steps.
+/// One attribute component, with what it costs along the curve in
+/// quarter-bits over the sampled steps: what ranks the columns the refinement
+/// counts.
 ///
 /// The refinement compares points on `quantizer`'s bytes, which keeps its
 /// lanes narrow. Where the encoder predicts on a finer grid, the bytes cap
 /// what breaking a column's order can cost at eight bits a step when it can
 /// cost thirty: a lidar's time, in ticks along its scan, steps by a few ticks
 /// and costs a few bits; out of scan order it costs most of its range. So the
-/// costs here, and every decision taken on them, are on `fine` where there is
-/// one; only the refinement itself works on the bytes.
+/// cost here is on that finer grid where there is one; only the refinement
+/// itself works on the bytes.
 struct Column {
     attribute: i32,
     component: usize,
     quantizer: Quantizer,
-    fine: Option<Fine>,
-    /// Along the order the points came in.
-    cost_input: u64,
-    /// Along the Hilbert order.
     cost_curve: u64,
 }
 
 /// The attribute components that vary and that the encoder predicts, with what
-/// each costs along the input order and the curve. Constant ones are left out:
+/// each costs along `curve_order`. Constant ones are left out:
 /// stepping across them is free, and 3DGS files carry three (`nx ny nz`, all
 /// zero). So are the ones the encoder copies as they are -- a `f64`, a 64-bit
 /// integer, an unquantized float -- whose cost no order changes.
@@ -601,36 +622,28 @@ fn measure_columns(
             low,
             scale: levels / span,
         };
-        let (fine, fine_levels) =
-            match fine_grid(attribute, component, count, coder, quantization_bits) {
-                Some((fine, exact)) => (Some(fine), Some(fine.levels(&exact))),
-                None => (None, None),
-            };
-        let along = |order: Option<&[u32]>| -> u64 {
-            let at = |i: usize| order.map_or(i, |o| o[i] as usize);
-            (0..count.saturating_sub(1))
-                .step_by(SAMPLE_STRIDE)
-                .map(|i| {
-                    let (a, b) = (at(i), at(i + 1));
-                    let step = match &fine_levels {
-                        Some(levels) => levels[a].abs_diff(levels[b]),
-                        None => u32::from(
-                            quantizer
-                                .byte(values[a])
-                                .abs_diff(quantizer.byte(values[b])),
-                        ),
-                    };
-                    u64::from(quarter_bits(step))
-                })
-                .sum()
-        };
+        let fine_levels = fine_grid(attribute, component, count, coder, quantization_bits)
+            .map(|(fine, exact)| fine.levels(&exact));
+        let cost_curve = (0..count.saturating_sub(1))
+            .step_by(SAMPLE_STRIDE)
+            .map(|i| {
+                let (a, b) = (curve_order[i] as usize, curve_order[i + 1] as usize);
+                let step = match &fine_levels {
+                    Some(levels) => levels[a].abs_diff(levels[b]),
+                    None => u32::from(
+                        quantizer
+                            .byte(values[a])
+                            .abs_diff(quantizer.byte(values[b])),
+                    ),
+                };
+                u64::from(quarter_bits(step))
+            })
+            .sum();
         Some(Column {
             attribute: id,
             component,
             quantizer,
-            fine,
-            cost_input: along(None),
-            cost_curve: along(Some(curve_order)),
+            cost_curve,
         })
     });
     measured.into_iter().flatten().collect()
@@ -674,48 +687,279 @@ fn fine_grid(
         .then_some((Fine { low, scale }, exact))
 }
 
-/// Quarter-bits over the sampled steps of `order`, for the position alone.
-fn position_cost(cells: &[Vec<u16>; 3], order: Option<&[u32]>, threads: usize) -> u64 {
-    let count = cells[0].len();
-    let at = |i: usize| order.map_or(i, |o| o[i] as usize);
-    in_pieces(count.saturating_sub(1), SAMPLE_STRIDE, threads, |steps| {
-        steps
-            .step_by(SAMPLE_STRIDE)
-            .map(|i| {
-                let (a, b) = (at(i), at(i + 1));
-                cells
-                    .iter()
-                    .map(|axis| u64::from(quarter_bits(u32::from(axis[a].abs_diff(axis[b])))))
-                    .sum::<u64>()
-            })
-            .sum()
-    })
+// ---------------------------------------------------------------------------
+// The coder's price
+// ---------------------------------------------------------------------------
+
+/// One attribute the way the sequential coder predicts it: its components'
+/// values, point by point, as an integer's own or a float's on its
+/// quantization grid, and the bounds the wrap transform takes from them.
+///
+/// A normal is coded on an octahedral grid of two components; it is read here
+/// as its three, quantized like any float, which prices its steps closely
+/// enough to rank orders by.
+struct Coded<'a> {
+    attribute: &'a PointAttribute,
+    components: usize,
+    /// Whether point `p`'s value is the `p`-th of the buffer.
+    identity: bool,
+    /// Per component, what is subtracted before scaling; `None` for an
+    /// integer, which is coded as it is.
+    lows: Option<Vec<f64>>,
+    scale: f64,
+    low: i32,
+    high: i32,
 }
 
-/// `sum` over the steps `0..steps`, cut into ranges taken on `threads` and
-/// added up in order. Each range starts on a multiple of `stride`, so a sum
-/// that samples every `stride`-th step samples the ones it would over the
-/// whole; the sums are of integers, so the total does not depend on the cut.
-fn in_pieces(
-    steps: usize,
+/// The value of `data_type` at `at` in `data`, for the types `exact_values`
+/// reads; zero for any other, which `coded_attributes` never hands it.
+#[inline(always)]
+fn read_exact(data: &[u8], data_type: DataType, at: usize) -> f64 {
+    let bytes = |n: usize| &data[at..at + n];
+    match data_type {
+        DataType::Float32 => f64::from(f32::from_le_bytes(bytes(4).try_into().unwrap())),
+        DataType::Uint8 => f64::from(data[at]),
+        DataType::Int8 => f64::from(data[at] as i8),
+        DataType::Uint16 => f64::from(u16::from_le_bytes(bytes(2).try_into().unwrap())),
+        DataType::Int16 => f64::from(i16::from_le_bytes(bytes(2).try_into().unwrap())),
+        DataType::Uint32 => f64::from(u32::from_le_bytes(bytes(4).try_into().unwrap())),
+        DataType::Int32 => f64::from(i32::from_le_bytes(bytes(4).try_into().unwrap())),
+        _ => 0.0,
+    }
+}
+
+impl Coded<'_> {
+    fn value(&self, point: usize, component: usize) -> i32 {
+        let attribute = self.attribute;
+        let index = if self.identity {
+            point
+        } else {
+            let AttributeValueIndex(index) = attribute.mapped_index(PointIndex(point as u32));
+            index as usize
+        };
+        let data_type = attribute.data_type();
+        let at = index * attribute.byte_stride() as usize + component * data_type.byte_length();
+        let v = read_exact(attribute.buffer().data(), data_type, at);
+        match &self.lows {
+            None => v as i64 as i32,
+            Some(lows) => ((v - lows[component]) * self.scale + 0.5).floor() as i32,
+        }
+    }
+}
+
+/// The attributes whose cost an order changes, as the coder sees them. An
+/// attribute the coder copies as it is, or one this cannot read, is left out.
+fn coded_attributes<'a>(
+    pc: &'a PointCloud,
+    options: &EncoderOptions,
+    threads: usize,
+) -> Vec<Coded<'a>> {
+    let count = pc.num_points();
+    let inner = (threads / (pc.num_attributes() as usize).max(1)).max(1);
+    let read = parallel::map(
+        pc.num_attributes() as usize,
+        threads,
+        |id| -> Option<Coded> {
+            let id = id as i32;
+            let attribute = pc.attribute(id);
+            let quantization_bits = options.get_attribute_int(id, "quantization_bits", -1);
+            let coder = select_sequential_encoder(attribute, quantization_bits);
+            let components = attribute.num_components() as usize;
+            if coder == SequentialAttributeEncoderType::Generic || components == 0 {
+                return None;
+            }
+            // The types `exact_values` reads, each point's value inside the buffer
+            // as `value_offsets` checks: what `Coded::value` then reads unchecked.
+            let data_type = attribute.data_type();
+            if !matches!(
+                data_type,
+                DataType::Float32
+                    | DataType::Uint8
+                    | DataType::Int8
+                    | DataType::Uint16
+                    | DataType::Int16
+                    | DataType::Uint32
+                    | DataType::Int32
+            ) {
+                return None;
+            }
+            let data = attribute.buffer().data();
+            let bounds: Vec<(f64, f64)> = (0..components)
+                .map(|c| {
+                    let at = value_offsets(attribute, c, count)?;
+                    let pieces = parallel::map(count.div_ceil(parallel::PIECE), inner, |k| {
+                        let end = ((k + 1) * parallel::PIECE).min(count);
+                        (k * parallel::PIECE..end).fold(
+                            (f64::INFINITY, f64::NEG_INFINITY),
+                            |(l, h), p| {
+                                let v = read_exact(data, data_type, at(p));
+                                (l.min(v), h.max(v))
+                            },
+                        )
+                    });
+                    Some(
+                        pieces
+                            .into_iter()
+                            .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), (pl, ph)| {
+                                (l.min(pl), h.max(ph))
+                            }),
+                    )
+                })
+                .collect::<Option<_>>()?;
+            let identity =
+                attribute.buffer().data().len() / attribute.byte_stride() as usize == count;
+            if coder == SequentialAttributeEncoderType::Integer {
+                let (low, high) = bounds
+                    .iter()
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), &(cl, ch)| {
+                        (l.min(cl), h.max(ch))
+                    });
+                return Some(Coded {
+                    attribute,
+                    components,
+                    identity,
+                    lows: None,
+                    scale: 1.0,
+                    low: low as i64 as i32,
+                    high: high as i64 as i32,
+                });
+            }
+            // One range for every component, as the quantization transform takes it.
+            let range = bounds.iter().map(|&(l, h)| h - l).fold(0.0, f64::max);
+            if !range.is_finite() {
+                return None;
+            }
+            let scale = if range > 0.0 {
+                ((1u64 << quantization_bits.clamp(1, 30)) - 1) as f64 / range
+            } else {
+                0.0
+            };
+            let high = bounds
+                .iter()
+                .map(|&(l, h)| ((h - l) * scale + 0.5).floor() as i32)
+                .max()
+                .unwrap_or(0);
+            Some(Coded {
+                attribute,
+                components,
+                identity,
+                lows: Some(bounds.iter().map(|&(l, _)| l).collect()),
+                scale,
+                low: 0,
+                high,
+            })
+        },
+    );
+    read.into_iter().flatten().collect()
+}
+
+/// What the sequential coder would write for the predicted attributes of the
+/// points of each of `orders`, taken in that order, in bits.
+///
+/// Each attribute is priced the way its coder chooses how to write it: the
+/// wrap-transformed difference from the point before, zigzagged, planned by
+/// the symbol coder -- which takes the cheaper of its tagged and raw schemes,
+/// raw only up to 18 bits a symbol -- and, where the prediction search is on,
+/// the cheaper of that and the values planned as they are, which no order
+/// changes. So a step that is always the same costs next to nothing, as it
+/// does in the stream, and an attribute that does not follow its neighbours
+/// costs the same in every order.
+///
+/// The orders are of the same points, all or some, and the price is of those
+/// points in each. It is taken over every `stride`-th step, the same steps of
+/// every order, so the prices compare with one another and not with the
+/// stream; the values planned as they are, the same in every order, are
+/// planned once.
+fn coder_bits(
+    attributes: &[Coded],
+    search: bool,
+    orders: &[&[u32]],
     stride: usize,
     threads: usize,
-    sum: impl Fn(std::ops::Range<usize>) -> u64 + Sync,
-) -> u64 {
-    let piece = PIECE_STEPS * stride;
-    parallel::map(steps.div_ceil(piece), threads, |k| {
-        sum(k * piece..((k + 1) * piece).min(steps))
-    })
-    .into_iter()
-    .sum()
+) -> Vec<u64> {
+    // The attributes side by side, each on what threads they leave: a splat
+    // has dozens, each a sampled pass of reads scattered over its buffer, and
+    // a scan has one or two, each worth splitting.
+    let inner = (threads / attributes.len().max(1)).max(1);
+    let priced = parallel::map(attributes.len(), threads, |a| {
+        price_attribute(&attributes[a], search, orders, stride, inner)
+    });
+    let mut bits = vec![0u64; orders.len()];
+    for attribute in priced {
+        for (total, cost) in bits.iter_mut().zip(attribute) {
+            *total += cost;
+        }
+    }
+    bits
 }
 
-/// Sampled steps a piece of a cost sum covers: enough that a piece is worth
-/// handing to a thread.
-const PIECE_STEPS: usize = 1 << 14;
-
-fn sampled_steps(count: usize) -> usize {
-    count.saturating_sub(1).div_ceil(SAMPLE_STRIDE).max(1)
+/// `coder_bits` for one attribute.
+fn price_attribute(
+    coded: &Coded,
+    search: bool,
+    orders: &[&[u32]],
+    stride: usize,
+    threads: usize,
+) -> Vec<u64> {
+    let mut bits = vec![0u64; orders.len()];
+    {
+        let components = coded.components;
+        let (low, high) = (coded.low, coded.high);
+        let span = 1 + i64::from(high) - i64::from(low);
+        let max_correction = (span / 2 - i64::from(span % 2 == 0)) as i32;
+        let min_correction = -((span / 2) as i32);
+        let zigzag = |c: i32| ((c << 1) ^ (c >> 31)) as u32;
+        let wrap = |d: i32| {
+            if d < min_correction {
+                d.wrapping_add(span as i32)
+            } else if d > max_correction {
+                d.wrapping_sub(span as i32)
+            } else {
+                d
+            }
+        };
+        let mut plain: Option<u64> = None;
+        for (k, order) in orders.iter().enumerate() {
+            let steps = order.len().div_ceil(stride);
+            let mut symbols = vec![0u32; steps * components];
+            parallel::for_each_chunk_mut(
+                &mut symbols,
+                parallel::PIECE * components,
+                threads,
+                |chunk, out| {
+                    let first = chunk * parallel::PIECE;
+                    for (i, entry) in out.chunks_mut(components).enumerate() {
+                        let at = (first + i) * stride;
+                        let p = order[at] as usize;
+                        for (c, symbol) in entry.iter_mut().enumerate() {
+                            let predicted = if at == 0 {
+                                low
+                            } else {
+                                coded.value(order[at - 1] as usize, c)
+                            };
+                            *symbol = zigzag(wrap(coded.value(p, c).wrapping_sub(predicted)));
+                        }
+                    }
+                },
+            );
+            let mut cost =
+                plan_symbols_with_threads(&symbols, components, threads).estimated_bits();
+            if search {
+                let plain = *plain.get_or_insert_with(|| {
+                    for (i, entry) in symbols.chunks_mut(components).enumerate() {
+                        let p = order[i * stride] as usize;
+                        for (c, symbol) in entry.iter_mut().enumerate() {
+                            *symbol = zigzag(coded.value(p, c));
+                        }
+                    }
+                    plan_symbols_with_threads(&symbols, components, threads).estimated_bits()
+                });
+                cost = cost.min(plain);
+            }
+            bits[k] += cost;
+        }
+    }
+    bits
 }
 
 // ---------------------------------------------------------------------------
@@ -908,16 +1152,27 @@ pub(crate) fn search(pc: &PointCloud, options: &EncoderOptions) -> Option<Vec<Po
     let curve_order = grid.hilbert_order(threads);
     let columns = measure_columns(pc, options, &curve_order, threads);
 
-    let steps = sampled_steps(count) as f64;
-    let position_input = position_cost(&cells, None, threads);
-    let position_curve = position_cost(&cells, Some(&curve_order), threads);
-    let all_input = position_input + columns.iter().map(|c| c.cost_input).sum::<u64>();
-    let all_curve = position_curve + columns.iter().map(|c| c.cost_curve).sum::<u64>();
-    let (estimate_input, estimate_curve) = (all_input as f64 / steps, all_curve as f64 / steps);
+    // Which order is written is decided on what the coder would write for
+    // each; the estimate below only steers the refinement.
+    let coded = coded_attributes(pc, options, threads);
+    let components: usize = coded.iter().map(|c| c.components).sum();
+    let prediction_search = options.prediction_search();
+    let identity: Vec<u32> = (0..count as u32).collect();
+    let whole = coder_bits(
+        &coded,
+        prediction_search,
+        &[&identity, &curve_order],
+        pricing_stride(count, components),
+        threads,
+    );
+    let (bits_input, bits_curve) = (whole[0] as f64, whole[1] as f64);
+    let curve_wins = bits_curve <= WORTH_KEEPING_BELOW * bits_input;
+    let unrefined = |curve_order: Vec<u32>| {
+        curve_wins.then(|| curve_order.into_iter().map(PointIndex).collect())
+    };
 
     let Some(effort) = effort(options.get_encoding_speed()) else {
-        return (estimate_curve <= WORTH_KEEPING_BELOW * estimate_input)
-            .then(|| curve_order.into_iter().map(PointIndex).collect());
+        return unrefined(curve_order);
     };
 
     // The dearest columns along the curve are the ones worth counting.
@@ -936,26 +1191,8 @@ pub(crate) fn search(pc: &PointCloud, options: &EncoderOptions) -> Option<Vec<Po
             .expect("a column that was measured can be read");
         values.iter().map(|&v| column.quantizer.byte(v)).collect()
     });
-    // The same columns on the encoder's grid, for pricing what was refined.
-    let fine: Vec<Option<Vec<u32>>> = parallel::map(chosen.len(), threads, |k| {
-        let column = chosen[k];
-        let grid = column.fine?;
-        let exact = exact_values(pc.attribute(column.attribute), column.component, count)
-            .expect("a column that was measured on a fine grid can be read");
-        Some(grid.levels(&exact))
-    });
-    // Compared with the input over the position and the columns that were
-    // counted, since those are the ones a result is shaped by.
-    let counted_input =
-        (position_input + chosen.iter().map(|c| c.cost_input).sum::<u64>()) as f64 / steps;
-    let counted_curve =
-        (position_curve + chosen.iter().map(|c| c.cost_curve).sum::<u64>()) as f64 / steps;
-    // What a refinement has to undercut, and what is written when it does not.
-    let to_beat = WORTH_KEEPING_BELOW * counted_input.min(counted_curve);
-    let unrefined = |curve_order: Vec<u32>| {
-        (counted_curve <= WORTH_KEEPING_BELOW * counted_input)
-            .then(|| curve_order.into_iter().map(PointIndex).collect())
-    };
+    // What a refinement has to undercut: both orders it would replace.
+    let to_beat = WORTH_KEEPING_BELOW * bits_input.min(bits_curve);
 
     let refine = |ids: &mut [u32]| {
         if ids.len() < 4 {
@@ -972,21 +1209,25 @@ pub(crate) fn search(pc: &PointCloud, options: &EncoderOptions) -> Option<Vec<Po
             refine(ids);
         }
     });
-    let trial = parallel::map(count.div_ceil(BLOCK).div_ceil(every), threads, |k| {
-        let start = k * every * BLOCK;
-        path_cost(
-            &cells,
-            &quantized,
-            &fine,
-            &order[start..(start + BLOCK).min(count)],
-            1,
-            1,
-        )
-    });
-    let (trial_cost, trial_steps) = trial
-        .into_iter()
-        .fold((0u64, 0u64), |(cost, steps), (c, s)| (cost + c, steps + s));
-    if trial_steps > 0 && trial_cost as f64 / trial_steps as f64 > to_beat {
+    // A refinement moves points only inside their blocks, so the trial blocks
+    // of the curve and of the refinement hold the same points: the two are
+    // priced on exactly those, and what the trial saves is scaled to the whole.
+    let trial_points = |path: &[u32]| -> Vec<u32> {
+        path.chunks(BLOCK)
+            .step_by(every)
+            .flatten()
+            .copied()
+            .collect()
+    };
+    let (trial_curve, trial_refined) = (trial_points(&curve_order), trial_points(&order));
+    let trial = coder_bits(
+        &coded,
+        prediction_search,
+        &[&trial_curve, &trial_refined],
+        pricing_stride(trial_curve.len(), components),
+        threads,
+    );
+    if trial[1] as f64 / trial[0].max(1) as f64 * bits_curve > to_beat {
         return unrefined(curve_order);
     }
     parallel::for_each_chunk_mut(&mut order, BLOCK, threads, |block, ids| {
@@ -997,43 +1238,11 @@ pub(crate) fn search(pc: &PointCloud, options: &EncoderOptions) -> Option<Vec<Po
 
     // The check after, over the whole result: the blocks that were not in the
     // trial might not have behaved like the ones that were.
-    let (cost, sampled) = path_cost(&cells, &quantized, &fine, &order, SAMPLE_STRIDE, threads);
-    if cost as f64 / sampled.max(1) as f64 > to_beat {
+    let stride = pricing_stride(count, components);
+    if coder_bits(&coded, prediction_search, &[&order], stride, threads)[0] as f64 > to_beat {
         return unrefined(curve_order);
     }
     Some(order.into_iter().map(PointIndex).collect())
-}
-
-/// Quarter-bits and steps over every `stride`-th step of `ids`, taking the
-/// position and the given columns (indexed by point), each on its fine grid
-/// where `fine` has one for it and on its bytes otherwise.
-fn path_cost(
-    cells: &[Vec<u16>; 3],
-    columns: &[Vec<u8>],
-    fine: &[Option<Vec<u32>>],
-    ids: &[u32],
-    stride: usize,
-    threads: usize,
-) -> (u64, u64) {
-    let steps = ids.len().saturating_sub(1);
-    let cost = in_pieces(steps, stride, threads, |range| {
-        let mut cost = 0u64;
-        for i in range.step_by(stride) {
-            let (a, b) = (ids[i] as usize, ids[i + 1] as usize);
-            for axis in cells {
-                cost += u64::from(quarter_bits(u32::from(axis[a].abs_diff(axis[b]))));
-            }
-            for (column, fine) in columns.iter().zip(fine) {
-                let step = match fine {
-                    Some(levels) => levels[a].abs_diff(levels[b]),
-                    None => u32::from(column[a].abs_diff(column[b])),
-                };
-                cost += u64::from(quarter_bits(step));
-            }
-        }
-        cost
-    });
-    (cost, steps.div_ceil(stride) as u64)
 }
 
 #[cfg(test)]
@@ -1444,14 +1653,74 @@ mod tests {
         let shuffled: Vec<u32> = (0..count as u32)
             .map(|i| i * 7_919 % count as u32)
             .collect();
-        let columns = measure_columns(&pc, &options, &shuffled, 1);
-        assert_eq!(columns.len(), 1, "only the ticks are predicted");
-        let steps = sampled_steps(count) as u64;
+        let identity: Vec<u32> = (0..count as u32).collect();
+        let along_scan = measure_columns(&pc, &options, &identity, 1);
+        let along_shuffle = measure_columns(&pc, &options, &shuffled, 1);
+        assert_eq!(along_scan.len(), 1, "only the ticks are predicted");
+        let steps = (count - 1).div_ceil(SAMPLE_STRIDE) as u64;
         assert_eq!(
-            columns[0].cost_input,
+            along_scan[0].cost_curve,
             steps * u64::from(quarter_bits(1_000))
         );
-        assert!(columns[0].cost_curve > 2 * columns[0].cost_input);
+        assert!(along_shuffle[0].cost_curve > 2 * along_scan[0].cost_curve);
+    }
+
+    /// A scan on a half-metre grid, row after row, its height periodic along a
+    /// row and its time a near-constant thousand ticks a point. In scan order
+    /// the time steps by the same few values, which the coder writes for next
+    /// to nothing and an estimate by step sizes prices at ten bits a step; on
+    /// that estimate a reorder looked worth it and wrote three times the
+    /// stream. On the coder's own price the scan order stays.
+    #[test]
+    fn a_scan_whose_steps_repeat_is_left_in_scan_order() {
+        let (rows, per_row) = (200, 300);
+        let count = rows * per_row;
+        let positions: Vec<[f32; 3]> = (0..count)
+            .map(|i| {
+                let (row, column) = (i / per_row, i % per_row);
+                [
+                    column as f32 * 0.5,
+                    row as f32 * 0.5,
+                    (column % 12) as f32 * 0.25,
+                ]
+            })
+            .collect();
+        let (mut pc, mut options) = cloud(&positions, &[]);
+        let mut ticks = PointAttribute::new();
+        ticks.init(
+            GeometryAttributeType::Generic,
+            1,
+            DataType::Int32,
+            false,
+            count,
+        );
+        for p in 0..count {
+            let time = p as i32 * 1_000 + (p % 3) as i32;
+            ticks.buffer_mut().write(p * 4, &time.to_le_bytes());
+        }
+        pc.add_attribute(ticks);
+        options.set_point_order_search(true);
+        assert!(search(&pc, &options).is_none());
+    }
+
+    /// Points spread evenly through a cube, each carrying values that owe
+    /// nothing to its neighbours. Refining the curve lowers the steps of
+    /// those values, but the coder writes them as they are whatever the order,
+    /// with the prediction search on, so the refinement buys nothing the
+    /// curve had not already bought and the curve is written.
+    #[test]
+    fn values_that_do_not_follow_their_neighbours_leave_the_curve_unrefined() {
+        let mut rng = Xorshift(17);
+        let mut unit = move || (rng.next() >> 11) as f32 / (1u64 << 53) as f32;
+        let count = 40_000;
+        let positions: Vec<[f32; 3]> = (0..count).map(|_| [unit(), unit(), unit()]).collect();
+        let extras: Vec<Vec<f32>> = (0..4)
+            .map(|_| (0..count).map(|_| unit()).collect())
+            .collect();
+        let (pc, mut options) = cloud(&positions, &extras);
+        options.set_point_order_search(true);
+        options.set_prediction_search(true);
+        assert_eq!(search(&pc, &options), curve(&pc, &options));
     }
 
     #[test]

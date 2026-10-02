@@ -36,7 +36,7 @@ figure at all.
 `rejected` -- tried, deliberately not kept. `retracted` -- an earlier claim
 here was withdrawn. `diagnostic` -- measured only, no change proposed.
 
-74 rounds: 44 landed, 10 diagnostic, 10 null, 8 retracted, 2 rejected.
+75 rounds: 45 landed, 10 diagnostic, 10 null, 8 retracted, 2 rejected.
 
 | Round | Verdict | Headline |
 | --- | --- | ---: |
@@ -116,6 +116,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [Point Clouds On Shapes No Capture Had](#point-clouds-on-shapes-no-capture-had) | landed | `lattice -0.97%` |
 | [What Each Point-Cloud Technique Is Still Worth](#what-each-point-cloud-technique-is-still-worth) | null | `5 kept, 0 removed` |
 | [The Bucket Rule On Seven Processors](#the-bucket-rule-on-seven-processors) | landed | `worst case 72% -> 17%` |
+| [The Order Decided On The Coder's Own Price](#the-order-decided-on-the-coders-own-price) | landed | `+0.039% -> +0.004% over the best order` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -4512,6 +4513,47 @@ above carry up to that on many-stream clouds. The microbenchmark's two builds
 do not: the same points from one binary, the form picked at run time,
 matched them within 2-3 points.
 
+### The Order Decided On The Coder's Own Price
+
+2026-10-02. The order search chose between the input, the curve and the
+refinement on its step-size estimate, `log2(1 + |delta|)` summed over the
+columns, with a 3% margin for the estimate's error. That estimate is the
+tagged scheme's price: the coder also has a raw scheme, which writes a step
+that is always the same for next to nothing, and with the prediction search
+on it writes a column that does not follow its neighbours as it is, whatever
+the order. Both were where the decision failed.
+
+The decision now prices each order the way the coder chooses how to write
+it: the wrap-transformed difference from the point before, zigzagged and
+planned by the symbol coder's own `plan_symbols` -- tagged against raw, raw
+only to 18 bits -- and, with the prediction search on, the cheaper of that
+and the values planned as they are. The trial blocks of the curve and of the
+refinement hold the same points, so that comparison is paired. The price is
+taken on a sample of about two million values per order, more sparsely on a
+larger cloud or one with more attributes, and with the coder's price the
+margin is 1%.
+
+Over 36 clouds -- three splats, the scans, five lidar captures and the 18
+synthetic shapes, each in its own order and shuffled -- at speed 5 on 16
+threads, against the smallest of input, curve and a forced refinement:
+
+| | over the best order, summed | clouds on it | search time, summed |
+| --- | ---: | ---: | ---: |
+| step-size estimate, 3% | `+0.039%` | 30 | `28.5 s` |
+| coder's price, every point, 3% | `+0.024%` | 32 | `83.4 s` |
+| coder's price, sampled, 1% | `+0.004%` | 34 | `31.0 s` |
+
+The curve is now kept on `far_away`, `splat` and `uniform`, where the
+refinement had cost 0.5-0.8%; the terrestrial room scan refines (3.1%), which
+the 3% margin turned down. Every capture is written as before. The one miss
+left is `skewed`, a refinement worth 0.3%, under the margin. Search time per
+cloud: drjohnson `1.56 -> 1.73 s`, the 30M-point airborne scan
+`3.71 -> 3.85 s`, most of the rest within noise. A scan rebuilt after the
+one the estimate had searched to 203 KB against its scan order's 62 KB --
+60K points on a half-metre grid, time at a near-constant 1,000 ticks a point
+-- keeps its order; it is a test now, beside one of independent noise that
+keeps the curve, and both fail on the estimate.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
@@ -4538,23 +4580,11 @@ by the round after it, below. What is left:
 - **Four streams in one loop** measured slower than two (3.0 against 2.3 ns
   a symbol), out of registers; two of them in a register-lean loop are not
   ruled out.
-- **The order search's estimate misjudges attributes that do not depend on
-  their neighbours.** On uniform noise and on a synthetic splat of
-  independent Gaussian attributes the refinement claims 7-8% over the curve
-  and loses 0.8% and 0.5% in bytes; every capture measured refines at
-  0.82-0.88 and wins. No threshold separates them honestly (aerial wins at
-  0.901, uniform loses at 0.917). The smallest next step is to encode a
-  trial block both ways with the real attribute coder and compare bytes, and
-  price that against the search's time.
-- **The estimate prices a step by its size; the coder prices how steps are
-  distributed.** A step that is always about the same -- time at a constant
-  pulse rate, a periodic pattern -- costs the coder next to nothing and the
-  estimate the logarithm of its size. A scan of 60K points on a 0.5 m grid
-  with a periodic height and time at a near-constant 1,000 ticks a point
-  searched to 203 KB where the scan order takes 62 KB. Pricing columns for
-  the decision by the entropy of their sampled steps, rather than their
-  sizes, is the smallest step; the same trial-block encode as above would
-  settle both.
+- **The order search's decision misjudged noise and repeated steps** -- taken
+  by [The Order Decided On The Coder's Own Price](#the-order-decided-on-the-coders-own-price).
+  What is left of it: a refinement worth under 1% is turned down (the
+  synthetic `skewed`, +0.31%), and the refinement itself still minimizes the
+  step-size estimate rather than the coder's price.
 - **The PLY reader still matches property names as strings** for every
   property of every vertex. It no longer shows in the profile after the
   allocations went, but a per-property action table built once would remove
