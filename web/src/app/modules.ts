@@ -58,12 +58,7 @@ export async function loadModule({ key, path, statusId }: { key: string; path: s
   }
   
   try {
-    const module = await import(path);
-    const wasmUrl = new URL(path.replace(/\.js(\?.*)?$/, '_bg.wasm$1'), window.location.href);
-    // wasm-bindgen deprecated the positional form and warns about it on
-    // every load; the object is what current glue expects.
-    await module.default({ module_or_path: wasmUrl });
-    
+    const module = await instantiate(key, path);
     modules[key].module = module;
     modules[key].loaded = true;
     if (key === 'gltf') {
@@ -97,6 +92,77 @@ export async function loadModule({ key, path, statusId }: { key: string; path: s
     }
     log(`Failed to load ${key}: ${errorMessage(error)}`, 'error');
   }
+}
+
+/** Where a wasm32 memory stops growing: 65536 pages of 64 KiB. */
+const WASM32_MEMORY_CAP = 2 ** 32;
+
+/** How many fresh instances have been made, so each import is a new one. */
+let instances = 0;
+
+/**
+ * A fresh instance of a module, with every plain function it exports guarded.
+ *
+ * The glue keeps its instance in module scope and will not initialise twice,
+ * so a fresh one needs the glue imported again under a URL it has not been
+ * imported under. The wasm is the same file and comes from the cache.
+ */
+async function instantiate(key: string, path: string) {
+  const fresh = instances++ === 0 ? path : `${path}${path.includes('?') ? '&' : '?'}instance=${instances}`;
+  const module = await import(fresh);
+  const wasmUrl = new URL(path.replace(/\.js(\?.*)?$/, '_bg.wasm$1'), window.location.href);
+  // wasm-bindgen deprecated the positional form and warns about it on
+  // every load; the object is what current glue expects.
+  const exports = await module.default({ module_or_path: wasmUrl });
+  return guard(key, path, module, exports.memory as WebAssembly.Memory);
+}
+
+/**
+ * The module with its calls watched for a trap.
+ *
+ * A release build aborts on a panic, and running out of memory is one, so
+ * either arrives as `RuntimeError: unreachable` -- and leaves the instance
+ * holding everything it had allocated, because no destructor ran. A 4 GiB
+ * memory that a large file filled stays full, and every file after it fails
+ * the same way however small. So a trapped module is dropped and made again
+ * with an empty memory, and the error says what happened in words: when the
+ * memory stood at the cap, it ran out of it.
+ *
+ * Classes pass through unwrapped -- `new` on a wrapper is not `new` on the
+ * class -- and so do their methods; a trap there is still reported, only not
+ * recovered from.
+ */
+function guard(key: string, path: string, module: any, memory: WebAssembly.Memory): any {
+  const wrapped: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(module)) {
+    const isClass = typeof value === 'function' && /^class\b/.test(Function.prototype.toString.call(value));
+    wrapped[name] = typeof value !== 'function' || isClass || name === 'default' || name === 'initSync'
+      ? value
+      : (...args: unknown[]) => {
+        try {
+          return (value as (...args: unknown[]) => unknown)(...args);
+        } catch (error) {
+          if (!(error instanceof WebAssembly.RuntimeError)) throw error;
+          throw restart(key, path, memory, error);
+        }
+      };
+  }
+  return wrapped;
+}
+
+/** Drop a trapped module, start making a fresh one, and say what happened. */
+function restart(key: string, path: string, memory: WebAssembly.Memory, error: Error) {
+  const full = memory.buffer.byteLength > WASM32_MEMORY_CAP - 64 * 2 ** 20;
+  modules[key].loaded = false;
+  modules[key].module = null;
+  instantiate(key, path).then((module) => {
+    modules[key].module = module;
+    modules[key].loaded = true;
+    log(`${key} module restarted with empty memory`, 'info');
+  }, (reload) => log(`Failed to restart ${key}: ${errorMessage(reload)}`, 'error'));
+  return new Error(full
+    ? `the ${key} module ran out of memory: a WebAssembly module holds at most 4 GiB, and this file needs more`
+    : `the ${key} module stopped (${error.message}) and is being restarted`);
 }
 
 /**
