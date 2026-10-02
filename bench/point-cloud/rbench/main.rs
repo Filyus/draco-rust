@@ -3,7 +3,12 @@
 //! whole buckets, the outliers' width sets the coder's precision. Prints the
 //! best decode time per symbol and the stream's size.
 //!
-//! usage: rbench <scale> <bits> [count] [rounds]
+//! With `spread` and `top`, a fraction `spread` of the draws is uniform over
+//! `[0, top]` instead: a flat stretch of the alphabet, which is what puts the
+//! owned share low on a table of any size -- symbols each a bucket wide or
+//! narrower own almost none.
+//!
+//! usage: rbench <scale> <bits> [count] [rounds] [spread top]
 use draco_core::symbol_encoding::{decode_symbols, encode_symbols, SymbolEncodingOptions};
 use draco_core::{DecoderBuffer, EncoderBuffer};
 use std::time::Instant;
@@ -22,13 +27,23 @@ fn main() {
         state
     };
     let top = (1u64 << bits) - 1;
+    let flat: Option<(f64, u64)> = args
+        .get(5)
+        .map(|spread| (spread.parse().unwrap(), args[6].parse().unwrap()));
     let symbols: Vec<u32> = (0..count)
         .map(|_| {
             let u = ((next() >> 11) as f64 + 0.5) / (1u64 << 53) as f64;
-            if next() % 200 == 0 {
-                (next() % (top + 1)) as u32
-            } else {
-                ((-u.ln() * scale) as u64).min(top) as u32
+            match flat {
+                Some((spread, flat_top)) => {
+                    let v = ((next() >> 11) as f64 + 0.5) / (1u64 << 53) as f64;
+                    if v < spread {
+                        (next() % (flat_top + 1)) as u32
+                    } else {
+                        ((-u.ln() * scale) as u64).min(top) as u32
+                    }
+                }
+                None if next() % 200 == 0 => (next() % (top + 1)) as u32,
+                None => ((-u.ln() * scale) as u64).min(top) as u32,
             }
         })
         .collect();
@@ -46,7 +61,7 @@ fn main() {
     }
     assert!(out == symbols, "decoded what was encoded");
     println!(
-        "scale {scale} bits {bits}: {:.2} ns/symbol, {} bytes",
+        "scale {scale} bits {bits} flat {flat:?}: {:.2} ns/symbol, {} bytes",
         best * 1e9 / count as f64,
         bytes.len()
     );

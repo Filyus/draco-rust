@@ -59,7 +59,8 @@ PATCHES = {
                       "    fn build_buckets(&mut self) {\n        return;\n")]),
     "allb": ("head", [("rans_symbol_decoder.rs",
                        "        if self.lut.len() * self.lut.slot_bytes() > L2_BYTES || owned * 4 >= BUCKETS * 3 {\n",
-                       "        eprintln!(\"OWNED {owned} PRECISION {precision}\");\n        if true {\n")]),
+                       "        eprintln!(\"OWNED {owned} PRECISION {precision} BYTES {}\",\n"
+                       "                  self.lut.len() * self.lut.slot_bytes());\n        if true {\n")]),
     "nop": ("head", [("symbol_encoding.rs",
                       ") -> Option<(Vec<u32>, Vec<u32>)> {\n",
                       ") -> Option<(Vec<u32>, Vec<u32>)> {\n    if true {\n        return None;\n    }\n")]),
@@ -236,28 +237,44 @@ def main():
 
     if every("buckets"):
         rows, sweep = [], []
-        for bits in (12, 13, 16, 18):
-            for scale in (10, 160, 320, 480, 640, 1280):
-                times, owned, precision = {}, None, None
-                for r in range(ROUNDS):
-                    for name in (("allb", "nob") if r % 2 == 0 else ("nob", "allb")):
-                        time.sleep(PAUSE)
-                        proc = subprocess.run([rb[name], str(scale), str(bits), "2000000", str(ITERS)],
-                                              capture_output=True, text=True, check=True)
-                        ns = float(re.search(r"([0-9.]+) ns/symbol", proc.stdout)[1])
-                        times[name] = min(times.get(name, ns), ns)
-                        found = re.search(r"OWNED (\d+) PRECISION (\d+)", proc.stderr)
-                        if found:
-                            owned, precision = int(found[1]), int(found[2])
-                share = owned / 4096 if owned is not None else None
-                sweep.append({"bits": bits, "scale": scale, "precision": precision, "owned": share,
-                              "buckets_ns": times["allb"], "table_ns": times["nob"]})
-                rows.append([precision and f"2^{precision.bit_length() - 1}", f"{share:.0%}" if share else "-",
-                             f"{times['allb']:.2f}", f"{times['nob']:.2f}",
-                             "buckets" if times["allb"] < times["nob"] else "table"])
+        # (scale, bits, flat): geometric residuals with outliers, then a flat
+        # stretch of the alphabet mixed in, `(spread, top)`, for the owned
+        # shares under a third the geometric draw does not reach -- down to
+        # none -- on each table size: 2^18 slots (unique symbols 2048-4095),
+        # 2^19 (4096-8191), 2^20 narrow (to 65536) and 2^20 wide.
+        points = [(scale, bits, None) for bits in (12, 13, 16, 18)
+                  for scale in (10, 160, 320, 480, 640, 1280)]
+        points += [(10, 11, flat) for flat in ((1.0, 2047), (1.0, 3000), (1.0, 4094), (0.3, 4094),
+                                               (0.5, 4094), (0.7, 4094))]
+        points += [(10, 12, flat) for flat in ((1.0, 4095), (1.0, 8190), (0.3, 8190), (0.5, 8190),
+                                               (0.7, 8190))]
+        points += [(10, 16, flat) for flat in ((1.0, 8191), (0.5, 65535), (0.7, 65535), (0.85, 65535))]
+        points += [(10, 18, flat) for flat in ((1.0, 262143), (0.5, 262143), (0.85, 262143))]
+        for scale, bits, flat in points:
+            times, owned, precision, table_bytes = {}, None, None, None
+            extra = [str(flat[0]), str(flat[1])] if flat else []
+            for r in range(ROUNDS):
+                for name in (("allb", "nob") if r % 2 == 0 else ("nob", "allb")):
+                    time.sleep(PAUSE)
+                    proc = subprocess.run([rb[name], str(scale), str(bits), "2000000", str(ITERS), *extra],
+                                          capture_output=True, text=True, check=True)
+                    ns = float(re.search(r"([0-9.]+) ns/symbol", proc.stdout)[1])
+                    times[name] = min(times.get(name, ns), ns)
+                    found = re.search(r"OWNED (\d+) PRECISION (\d+) BYTES (\d+)", proc.stderr)
+                    if found:
+                        owned, precision, table_bytes = int(found[1]), int(found[2]), int(found[3])
+            share = owned / 4096 if owned is not None else None
+            sweep.append({"bits": bits, "scale": scale, "flat": flat, "precision": precision,
+                          "table_bytes": table_bytes, "owned": share,
+                          "buckets_ns": times["allb"], "table_ns": times["nob"]})
+            rows.append([precision and f"2^{precision.bit_length() - 1}",
+                         table_bytes and f"{table_bytes >> 10} KiB",
+                         f"{share:.0%}" if share is not None else "-",
+                         f"{times['allb']:.2f}", f"{times['nob']:.2f}",
+                         "buckets" if times["allb"] < times["nob"] else "table"])
         results["buckets"] = sweep
         table("rANS buckets against the slot table, ns a symbol",
-              ["precision", "owned", "buckets", "table", "faster"], rows)
+              ["precision", "table", "owned", "buckets", "table", "faster"], rows)
 
     if every("ablation"):
         rows, record = [], []
