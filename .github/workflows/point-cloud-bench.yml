@@ -34,9 +34,9 @@ jobs:
         shell: bash
         env:
           BENCH_WORK: ${{ runner.temp }}/bench
-          # The bucket rule alone: the owned-share sweep, down to no bucket
-          # owned on every table size.
-          BENCH_ONLY: buckets
+          # The rANS forms alone: table, buckets and the count form over the
+          # owned-share sweep, and on decoding the synthetic clouds.
+          BENCH_ONLY: buckets,forms
         run: python bench/point-cloud/run.py
       - uses: actions/upload-artifact@v4
         if: always()

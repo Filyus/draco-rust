@@ -57,6 +57,11 @@ PATCHES = {
     "nob": ("head", [("rans_symbol_decoder.rs",
                       "    fn build_buckets(&mut self) {\n",
                       "    fn build_buckets(&mut self) {\n        return;\n")]),
+    "hown": ("head", [("rans_symbol_decoder.rs",
+                       "        let owned = buckets.iter().filter(|&&entry| entry >> 63 != 0).count();\n",
+                       "        let owned = buckets.iter().filter(|&&entry| entry >> 63 != 0).count();\n"
+                       "        eprintln!(\"OWNED {owned} PRECISION {precision} BYTES {}\",\n"
+                       "                  self.lut.len() * self.lut.slot_bytes());\n")]),
     "allb": ("head", [("rans_symbol_decoder.rs",
                        "        if self.lut.len() * self.lut.slot_bytes() > L2_BYTES || owned * 4 >= BUCKETS * 3 {\n",
                        "        eprintln!(\"OWNED {owned} PRECISION {precision} BYTES {}\",\n"
@@ -168,14 +173,17 @@ PARSE = re.compile(r"best ([0-9.]+) s, ([0-9]+) bytes, hash (\w+)")
 
 def compare(arms, args, rounds=None):
     """Best time of each arm, the order rotated every round, a pause before
-    every run. `arms` maps a name to an executable."""
+    every run. `arms` maps a name to an executable, or to an executable and
+    the environment variables it runs with."""
     names = list(arms)
     best = {}
     for r in range(rounds or ROUNDS):
         for k in range(len(names)):
             name = names[(k + r) % len(names)]
+            exe, extra_env = arms[name] if isinstance(arms[name], tuple) else (arms[name], {})
             time.sleep(PAUSE)
-            proc = subprocess.run([arms[name], *args], capture_output=True, text=True)
+            proc = subprocess.run([exe, *args], capture_output=True, text=True,
+                                  env={**os.environ, **extra_env})
             match = PARSE.search(proc.stderr)
             if proc.returncode != 0 or not match:
                 raise SystemExit(f"{name} {args}: {proc.returncode}\n{proc.stderr[-2000:]}")
@@ -213,18 +221,19 @@ def main():
     out(f"{POINTS} points a cloud, best of {ITERS} iterations over {ROUNDS} rounds, order rotated, "
         f"{PAUSE}s pause. `head2` is HEAD built again: its gap to `head` is the floor.\n")
 
-    variants = ["head", "head2", "nob", "nop", "nos", "noi", "q34", "always", "pick", "allb"]
+    variants = ["head", "head2", "nob", "nop", "nos", "noi", "q34", "always", "pick", "allb", "hown"]
     if ONLY:
         wanted = {"head", "head2"}
-        for experiment, names in (("buckets", ("allb", "nob")), ("ablation", ("nob", "nop", "nos")),
+        for experiment, names in (("buckets", ("hown",)), ("ablation", ("nob", "nop", "nos")),
                                   ("inner", ("noi",)), ("order", ("pick",)), ("rule", ("q34", "always"))):
             if experiment in ONLY:
                 wanted.update(names)
         variants = [name for name in variants if name in wanted]
     for name in variants:
         make_variant(name)
-    exe = {name: build(name) for name in variants if name != "allb"}
-    rb = {name: build(name, "rbench") for name in ("allb", "nob") if name in variants}
+    exe = {name: build(name) for name in variants if name not in ("allb", "hown")}
+    rb = {name: build(name, "rbench") for name in ("hown",) if name in variants}
+    forms = ["table", "buckets", "count"]
 
     data = os.path.join(WORK, "data")
     if not os.path.isdir(data):
@@ -253,28 +262,47 @@ def main():
         for scale, bits, flat in points:
             times, owned, precision, table_bytes = {}, None, None, None
             extra = [str(flat[0]), str(flat[1])] if flat else []
+            # One binary, the form picked by the probe's DRACO_RANS_FORM.
             for r in range(ROUNDS):
-                for name in (("allb", "nob") if r % 2 == 0 else ("nob", "allb")):
+                for k in range(len(forms)):
+                    form = forms[(k + r) % len(forms)]
                     time.sleep(PAUSE)
-                    proc = subprocess.run([rb[name], str(scale), str(bits), "2000000", str(ITERS), *extra],
-                                          capture_output=True, text=True, check=True)
+                    proc = subprocess.run([rb["hown"], str(scale), str(bits), "2000000", str(ITERS), *extra],
+                                          capture_output=True, text=True, check=True,
+                                          env={**os.environ, "DRACO_RANS_FORM": form})
                     ns = float(re.search(r"([0-9.]+) ns/symbol", proc.stdout)[1])
-                    times[name] = min(times.get(name, ns), ns)
+                    times[form] = min(times.get(form, ns), ns)
                     found = re.search(r"OWNED (\d+) PRECISION (\d+) BYTES (\d+)", proc.stderr)
                     if found:
                         owned, precision, table_bytes = int(found[1]), int(found[2]), int(found[3])
             share = owned / 4096 if owned is not None else None
             sweep.append({"bits": bits, "scale": scale, "flat": flat, "precision": precision,
                           "table_bytes": table_bytes, "owned": share,
-                          "buckets_ns": times["allb"], "table_ns": times["nob"]})
+                          "buckets_ns": times["buckets"], "table_ns": times["table"],
+                          "count_ns": times["count"]})
             rows.append([precision and f"2^{precision.bit_length() - 1}",
                          table_bytes and f"{table_bytes >> 10} KiB",
                          f"{share:.0%}" if share is not None else "-",
-                         f"{times['allb']:.2f}", f"{times['nob']:.2f}",
-                         "buckets" if times["allb"] < times["nob"] else "table"])
+                         f"{times['table']:.2f}", f"{times['buckets']:.2f}", f"{times['count']:.2f}",
+                         pct(times["count"], min(times["table"], times["buckets"]))])
         results["buckets"] = sweep
-        table("rANS buckets against the slot table, ns a symbol",
-              ["precision", "table", "owned", "buckets", "table", "faster"], rows)
+        table("rANS forms, ns a symbol: the count form against the faster of table and buckets",
+              ["precision", "table", "owned", "table", "buckets", "count", "count vs best"], rows)
+
+    if every("forms"):
+        rows, record = [], []
+        for name in ("aerial", "spinning", "terrestrial", "splat"):
+            for order in ("plain", "search"):
+                arms = {form: (exe["head"], {"DRACO_RANS_FORM": form}) for form in forms}
+                arms["count2"] = (exe["head2"], {"DRACO_RANS_FORM": "count"})
+                best = compare(arms, ["dec", cloud(name), str(ITERS), "1", order, "5"])
+                c = best["count"][0]
+                record.append({"cloud": name, "order": order, **{k: v[0] for k, v in best.items()}})
+                rows.append([name, order, f"{c:.4f}", pct(best["count2"][0], c), pct(best["table"][0], c),
+                             pct(best["buckets"][0], c)])
+        results["forms"] = record
+        table("Decode, one thread, against the count form (slower is positive)",
+              ["cloud", "order", "count s", "count again (floor)", "table", "buckets"], rows)
 
     if every("ablation"):
         rows, record = [], []
