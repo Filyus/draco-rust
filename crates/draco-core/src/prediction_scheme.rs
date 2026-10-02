@@ -216,6 +216,26 @@ pub trait PredictionSchemeDecodingTransform<DataType> {
     /// `out_data`; it is what lets the sequential decoder run prediction on
     /// the correction buffer itself instead of allocating a second one.
     fn compute_original_value(&self, predicted_vals: &[DataType], data: &mut [DataType]);
+
+    /// Reconstructs a run in place, every entry predicted from the one before
+    /// it: `data` holds a reconstructed first entry and corrections after it,
+    /// `num_components` values an entry, and holds the original values on
+    /// return. What the delta scheme asks of a whole attribute. A transform
+    /// that can shorten the chain from one entry to the next overrides this;
+    /// the result has to be what `compute_original_value` gives entry by entry.
+    fn compute_original_run(&self, data: &mut [DataType], num_components: usize) {
+        // Splitting the slice hands the previous entry over as the prediction
+        // directly; copying it into a scratch buffer first cost a memcpy an
+        // entry, 8% of a point cloud's decode.
+        for i in (num_components..data.len()).step_by(num_components) {
+            let (decoded, rest) = data.split_at_mut(i);
+            self.compute_original_value(
+                &decoded[i - num_components..],
+                &mut rest[..num_components],
+            );
+        }
+    }
+
     fn decode_transform_data(
         &mut self,
         buffer: &mut crate::decoder_buffer::DecoderBuffer,

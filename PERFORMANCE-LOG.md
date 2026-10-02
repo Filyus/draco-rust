@@ -36,7 +36,7 @@ figure at all.
 `rejected` -- tried, deliberately not kept. `retracted` -- an earlier claim
 here was withdrawn. `diagnostic` -- measured only, no change proposed.
 
-75 rounds: 45 landed, 10 diagnostic, 10 null, 8 retracted, 2 rejected.
+77 rounds: 46 landed, 10 diagnostic, 11 null, 8 retracted, 2 rejected.
 
 | Round | Verdict | Headline |
 | --- | --- | ---: |
@@ -115,6 +115,8 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [rANS Buckets For The Fine Slot Tables](#rans-buckets-for-the-fine-slot-tables) | landed | `-9 to -37% lidar decode` |
 | [Two Attributes' rANS Runs In One Loop](#two-attributes-rans-runs-in-one-loop) | landed | `-16 to -19% splat decode` |
 | [The Point Order Search, On One Thread](#the-point-order-search-on-one-thread) | landed | `-4.2 to -11.9% against the spatial order` |
+| [Undoing A Difference As A Sum](#undoing-a-difference-as-a-sum) | landed | `-3 to -17% decode` |
+| [Three Shorter Sums, All Null](#three-shorter-sums-all-null) | null | `-0.5 to +2%` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -4477,7 +4479,71 @@ are `Difference` -- and undoing a difference is a pass of its own, 2.3 ms on
 1.9M values (1.2 ns a value, an add, a wrap and a select on the value before),
 against 1.0 ms for a column read as it is. On the airborne capture one column
 goes the same way, and the colours go from the tagged scheme to raw rANS at 7
-and 8 bits, which on that stream decodes slower too.
+and 8 bits, which on that stream decodes slower too. Taken by
+[Undoing A Difference As A Sum](#undoing-a-difference-as-a-sum).
+
+### Undoing A Difference As A Sum
+
+2026-10-02, same machine, one thread, against the tree before. Each value of
+a differenced attribute is the one before it plus its correction, clamped and
+wrapped into the attribute's range, so the run is one dependent chain. Two
+attempts at shortening it, each timed by decoding the same streams in both
+builds, best of seven, the builds alternated three times with a pause before
+each run, the decoded values hashed and equal:
+
+**Two selects, null.** When every correction is under the range's span --
+what an encoder writes -- and the first value is in range, the clamp is the
+identity on every step, and the step is an add and two selects. Every stream
+decoded within 1% of before: the compiler already kept the general step's
+chain about that short, and a microbenchmark that said 1.9x was measuring its
+own branches.
+
+**A modular sum, landed.** Under the same conditions each step's one wrap is
+a reduction modulo the span, so a value is `min + ((v0 - min + the
+corrections since) mod span)`. A quantized attribute is stretched over
+`0..=2^bits - 1`, so its span is a power of two and the reduction is the low
+bits of a wrapping sum: the chain is the add alone, the mask off it. A
+vectorized pass checks the conditions; any stream that fails them, and any
+span that is not a power of two, takes the general step as before.
+
+| stream | before | after |
+| --- | ---: | ---: |
+| splat, 742K, searched order | `0.243 s` | `0.204 s` (`-16%`) |
+| splat, 742K, spatial order | `0.241 s` | `0.202 s` (`-16%`) |
+| splat, 1.9M, searched | `0.646 s` | `0.544 s` (`-16%`) |
+| splat, 1.9M, spatial | `0.545 s` | `0.514 s` (`-6%`) |
+| splat, 3.2M, searched | `1.043 s` | `0.869 s` (`-17%`) |
+| splat, 3.2M, spatial | `0.899 s` | `0.850 s` (`-5%`) |
+| photogrammetry scan, 8.0M, searched / spatial | `0.295 / 0.291 s` | `0.280 / 0.275 s` (`-5%`) |
+| airborne lidar, 10.7M, searched / spatial | `0.719 / 0.683 s` | `0.686 / 0.661 s` (`-5% / -3%`) |
+
+What the searched order cost on decode drops from 19-20% on the larger
+splats to 6% and 2%, and from 9% to 4% on the airborne capture. A test holds
+the run to the step-by-step result over one to four components, spans at the
+edges of `i32`, spans that are not powers of two and corrections of any size,
+counting both paths; it fails with the mask dropped.
+
+### Three Shorter Sums, All Null
+
+2026-10-02, same machine and harness: ten streams -- the splats and the
+captures above, searched and spatial -- best of seven, the builds alternated
+three times with a pause before each run, the decoded values hashed equal.
+After the modular sum a one-component differenced column is a vectorized pass
+checking the corrections and a sum pass, one add a value; the searched 1.9M
+splat still decoded 28 ms behind the spatial one, 24 of them in the 41
+columns that moved to `Difference` (timed per attribute,
+`probe/searched-decode-slowdown`). Three ways to shorten the sum
+(`probe/difference-sum-variants`):
+
+| variant | splats | captures |
+| --- | ---: | ---: |
+| eight lanes, each starting at the sum of those before it, run in one loop | `+1% to +2%` | `0 to -1%` |
+| blocks of eight, each block's running sums off the chain, one add a block on it | `-0.5% to +1%` | `+-1%` |
+| one pass, each correction checked as it is read, the general step from the first out of bounds | `+0.3% to +1.8%` | `+-0.5%` |
+
+The add is not what the column costs any more; the passes are. Lanes read
+eight streams at once, and the checking pass is cheaper vectorized on its own
+than as a branch in the sum.
 
 ## Unexplored
 
@@ -4488,13 +4554,17 @@ one line.
 
 ### What the point-cloud round left behind
 
-- **Undoing a difference is a serial chain.** Each value is the one before
-  plus its residual, wrapped: 1.2 ns a value on a splat's columns, and the
-  whole of what a searched splat's decode lost
-  ([The Point Order Search, On One Thread](#the-point-order-search-on-one-thread)).
-  Two attributes' chains in one loop, as the paired rANS runs do, would let
-  the core work on both at once; the pairs already hand both attributes'
-  symbols over together.
+- **A differenced column is three passes where one written as it is is
+  none** ([Three Shorter Sums, All Null](#three-shorter-sums-all-null)): the
+  zigzag from symbols to corrections, the check, the sum -- about 0.57 ms on
+  1.9M values, and most of what a searched splat still loses to the spatial
+  order on decode (24 of 28 ms on the 1.9M one). The add is not the cost, so
+  the next step is fewer passes: the zigzag folded into the sum, which means
+  handing the transform symbols rather than corrections. A lidar's searched
+  stream loses its 4% elsewhere -- its colours move from tagged to raw rANS,
+  paired with a shorter attribute, leaving 21M of their 32M symbols on one
+  chain the format does not split. A span that is not a power of two still
+  takes the general step.
 - **The PLY reader still matches property names as strings** for every
   property of every vertex. It no longer shows in the profile after the
   allocations went, but a per-property action table built once would remove

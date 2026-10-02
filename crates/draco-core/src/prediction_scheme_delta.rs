@@ -324,19 +324,11 @@ where
         self.transform
             .compute_original_value(&zeros, &mut data[0..num_components]);
 
-        // Decode data from the front using D(i) = D(i) + D(i - 1).
-        //
-        // The previous entry is the prediction, and it is already sitting in
-        // `data` -- splitting the slice hands it over directly, where
-        // copying it into a scratch buffer first cost a memcpy per entry (8% of
-        // decode on a point cloud, where this path carries every value).
-        for i in (num_components..size).step_by(num_components) {
-            let (decoded, rest) = data.split_at_mut(i);
-            let predicted = &decoded[i - num_components..];
-
-            self.transform
-                .compute_original_value(predicted, &mut rest[..num_components]);
-        }
+        // Decode data from the front using D(i) = D(i) + D(i - 1). The previous
+        // entry is the prediction, and it is already sitting in `data`, so the
+        // transform reconstructs the run in place.
+        self.transform
+            .compute_original_run(&mut data[..size], num_components);
 
         Ok(())
     }

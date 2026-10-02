@@ -23,7 +23,7 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the option. It costs encode time: three to six times the encode in file
   order at the default speed, on the calling thread. It can cost decode time
   too, since the schemes the encoder then finds smallest are slower to undo:
-  up to 20% on a large splat. Any Draco decoder reads the stream; the decoded
+  up to 6% on a large splat. Any Draco decoder reads the stream; the decoded
   points come back in another order.
 
 ### Changed
@@ -32,7 +32,6 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a Morton curve: 0.35% to 4% fewer bytes on every cloud measured -- three
   splats, four scans, two lidar captures -- for the same encode time. The
   option's output changes; its contract, a spatial order, does not.
-
 - Encoding and decoding are faster, with the same bytes out. A rANS write
   multiplies by a reciprocal instead of dividing; a long rANS decode run takes
   one dependent table read a symbol instead of two, and its slot table is half
@@ -63,6 +62,14 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   1.19 s; a scan with normals 7% faster. Clouds whose time goes to one wide
   position stream decode as before. The values, the errors on a damaged stream
   and the memory used are the same.
+- Decoding a differenced attribute is faster. Undoing the differences was a
+  chain of a clamp, an add and a wrap a value; over a quantized attribute,
+  whose range is a power of two, with corrections an encoder writes, the run
+  is a sum modulo that range, and the chain is the add alone. A Gaussian splat
+  of 742 thousand points decodes 16% faster, one of 1.9 million 6% (16% in
+  the order `set_point_order_search` writes), scans and lidar captures 3% to
+  6%. A stream not written that way is undone step by step as before, and
+  the values are the same either way.
 
 ### Fixed
 

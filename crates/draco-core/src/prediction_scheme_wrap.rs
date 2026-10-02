@@ -269,6 +269,66 @@ impl PredictionSchemeDecodingTransform<i32> for PredictionSchemeWrapDecodingTran
         }
     }
 
+    /// The run as a sum, where the stream allows it.
+    ///
+    /// Each value waits on the one before it, so the run costs what one step's
+    /// chain costs: a clamp, an add and a wrap, about 1.2 ns a value. That
+    /// chain shortens to the add alone when the run is a modular sum:
+    ///
+    /// * every correction is under the span in size -- what an encoder writes,
+    ///   having wrapped each into half of it -- and the first entry is in
+    ///   range. Then the clamp is the identity on every step: a prediction in
+    ///   `[min, max]` plus a correction in `(-max_dif, max_dif)` sums into
+    ///   `(min - max_dif, max + max_dif)`, where one wrap lands back in
+    ///   `[min, max]`, so the next prediction is in range too; and that one
+    ///   wrap is the reduction modulo the span, so a value is
+    ///   `min + ((v0 - min + the corrections since) mod max_dif)`.
+    /// * the span is a power of two, which makes the reduction the low bits of
+    ///   a wrapping sum. A quantized attribute is stretched over its whole
+    ///   range, `0..=2^bits - 1`, so its span is one.
+    ///
+    /// Anything else takes the general step, which is what C++ computes. The
+    /// same conditions with the wrap kept as two selects on the chain measured
+    /// no faster than the general step, so there is no middle path.
+    fn compute_original_run(&self, data: &mut [i32], num_components: usize) {
+        let (min, max, dif) = (self.min_value, self.max_value, self.max_dif);
+        let summed = data.len() > num_components
+            && (dif as u32).is_power_of_two()
+            && data[..num_components].iter().all(|v| (min..=max).contains(v))
+            // A fold rather than `all`, so the pass has no early exit and
+            // vectorizes.
+            && data[num_components..]
+                .iter()
+                .fold(true, |ok, &c| ok & (c > -dif) & (c < dif));
+        if !summed {
+            for i in (num_components..data.len()).step_by(num_components) {
+                let (decoded, rest) = data.split_at_mut(i);
+                self.compute_original_value(
+                    &decoded[i - num_components..],
+                    &mut rest[..num_components],
+                );
+            }
+            return;
+        }
+        // `min + (sum & mask)` is in `[min, max]`, so it does not overflow.
+        let mask = dif - 1;
+        if num_components == 1 {
+            let mut sum = data[0] - min;
+            for value in &mut data[1..] {
+                sum = sum.wrapping_add(*value);
+                *value = min + (sum & mask);
+            }
+        } else {
+            let mut sums: Vec<i32> = data[..num_components].iter().map(|v| v - min).collect();
+            for entry in data[num_components..].chunks_exact_mut(num_components) {
+                for (sum, value) in sums.iter_mut().zip(entry) {
+                    *sum = sum.wrapping_add(*value);
+                    *value = min + (*sum & mask);
+                }
+            }
+        }
+    }
+
     fn decode_transform_data(&mut self, buffer: &mut DecoderBuffer) -> Status {
         let truncated = |bound: &str| {
             DracoError::buffer(format!(
@@ -406,6 +466,89 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A run reconstructs to what entry-by-entry reconstruction gives, as a sum
+    /// and not: corrections an encoder writes over a power-of-two span, which
+    /// sum, including spans at the edges of `i32` and one of 2^30; and
+    /// corrections of any size, or a span that is not a power of two, which do
+    /// not. Both paths are counted, so neither passes on the other's code.
+    #[test]
+    fn a_run_is_what_entry_by_entry_reconstruction_gives() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut draw = |range: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % range
+        };
+        let mut summed_runs = 0;
+        let mut general_runs = 0;
+        for (min, max) in [
+            (0i32, 63),
+            (-100, 155),
+            (-7, 8),
+            (5, 5),
+            (0, 99),
+            (i32::MIN + 10, i32::MIN + 265),
+            (i32::MAX - 265, i32::MAX - 10),
+            (i32::MIN + 10, i32::MIN + 300),
+            (-(1 << 29), (1 << 29) - 1),
+            (-(1 << 29), 1 << 29),
+        ] {
+            let bytes = bounds_stream(min, max);
+            let mut transform = PredictionSchemeWrapDecodingTransform::<i32>::new();
+            transform
+                .decode_transform_data(&mut DecoderBuffer::new(&bytes))
+                .expect("a valid range");
+            let dif = i64::from(max) - i64::from(min) + 1;
+            for num_components in [1usize, 2, 3, 4] {
+                transform.init(num_components).unwrap();
+                for encoder_like in [true, false] {
+                    let mut data: Vec<i32> = (0..num_components * 500)
+                        .map(|_| {
+                            if encoder_like {
+                                (draw(dif as u64) as i64 - dif / 2) as i32
+                            } else {
+                                draw(u64::from(u32::MAX)) as u32 as i32
+                            }
+                        })
+                        .collect();
+                    for value in &mut data[..num_components] {
+                        *value = (i64::from(min) + draw(dif as u64) as i64) as i32;
+                    }
+
+                    let mut expected = data.clone();
+                    for i in (num_components..expected.len()).step_by(num_components) {
+                        let (decoded, rest) = expected.split_at_mut(i);
+                        transform.compute_original_value(
+                            &decoded[i - num_components..],
+                            &mut rest[..num_components],
+                        );
+                    }
+                    let mut run = data.clone();
+                    transform.compute_original_run(&mut run, num_components);
+                    assert_eq!(
+                        run, expected,
+                        "[{min}, {max}], {num_components} components, encoder-like {encoder_like}"
+                    );
+
+                    let summed = (dif as u64).is_power_of_two()
+                        && data[num_components..]
+                            .iter()
+                            .all(|&c| i64::from(c).abs() < dif);
+                    if summed {
+                        summed_runs += 1;
+                    } else {
+                        general_runs += 1;
+                    }
+                }
+            }
+        }
+        assert!(
+            summed_runs >= 24 && general_runs >= 24,
+            "{summed_runs} summed, {general_runs} general"
+        );
     }
 }
 

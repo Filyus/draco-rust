@@ -296,8 +296,8 @@ impl EncoderOptions {
     /// time**: in the order it finds, neighbours agree well enough that the
     /// encoder picks the more compact schemes, differences over values as they
     /// are and the raw coder over the tagged one, and those take longer to
-    /// undo -- the two larger splats decode 19% and 20% slower, the lidar
-    /// capture 9%, the rest as before.
+    /// undo -- the two larger splats decode 6% and 2% slower than in the
+    /// spatial order, the lidar capture 4%, the rest within 2%.
     ///
     /// **It can decline.** Each order it could write -- the one it was handed,
     /// the curve, and the curve repaired -- is priced by the symbol coder's own
