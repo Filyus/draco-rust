@@ -48,6 +48,12 @@ impl SequentialNormalAttributeDecoder {
         }
     }
 
+    /// See `SequentialIntegerAttributeDecoder::set_predecoded_symbols`.
+    #[cfg(feature = "point_cloud_decode")]
+    pub(crate) fn set_predecoded_symbols(&mut self, symbols: Vec<u32>) {
+        self.base.set_predecoded_symbols(symbols);
+    }
+
     /// The octahedron bit count read from the stream, once `decode_values` has
     /// run. Zero for 2.0 and later, where the count follows the values and the
     /// caller takes it from the transform data instead.

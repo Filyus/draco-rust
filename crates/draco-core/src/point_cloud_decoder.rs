@@ -17,6 +17,8 @@ use crate::sequential_integer_attribute_decoder::{
 };
 #[cfg(feature = "point_cloud_decode")]
 use crate::status::{DracoError, Status};
+#[cfg(feature = "point_cloud_decode")]
+use crate::symbol_encoding::decode_raw_symbol_pair;
 
 #[cfg(feature = "point_cloud_decode")]
 use crate::attribute_octahedron_transform::AttributeOctahedronTransform;
@@ -404,8 +406,28 @@ impl PointCloudDecoder {
                     None
                 };
 
+                // Symbols decoded beside the attribute before, for the one at
+                // hand.
+                let mut ahead: Option<Vec<u32>> = None;
                 for (local_i, &att_id) in att_ids.iter().enumerate() {
                     let decoder_type = decoder_types[local_i];
+                    let mut predecoded = ahead.take();
+                    if predecoded.is_none() && bitstream_version >= 0x0200 {
+                        if let (Some(&next_id), Some(&next_type)) =
+                            (att_ids.get(local_i + 1), decoder_types.get(local_i + 1))
+                        {
+                            if let Some((first, second)) = Self::pair_symbols(
+                                pc,
+                                buffer,
+                                (att_id, decoder_type),
+                                (next_id, next_type),
+                                num_points,
+                            ) {
+                                predecoded = Some(first);
+                                ahead = Some(second);
+                            }
+                        }
+                    }
                     match decoder_type {
                         1 => {
                             let point_ids = point_ids.ok_or_else(|| {
@@ -415,6 +437,9 @@ impl PointCloudDecoder {
                             })?;
                             let mut att_decoder = SequentialIntegerAttributeDecoder::new();
                             att_decoder.init(self, att_id);
+                            if let Some(symbols) = predecoded {
+                                att_decoder.set_predecoded_symbols(symbols);
+                            }
                             att_decoder.decode_values(
                                 pc, point_ids, buffer, None, None, None, None, None, None,
                             )?;
@@ -422,6 +447,9 @@ impl PointCloudDecoder {
                         2 => {
                             let mut att_decoder = SequentialQuantizationAttributeDecoder::new();
                             att_decoder.init(self, pc, att_id)?;
+                            if let Some(symbols) = predecoded {
+                                att_decoder.set_predecoded_symbols(symbols);
+                            }
                             let portable = att_decoder.decode_values(
                                 pc,
                                 point_ids.ok_or_else(|| {
@@ -447,6 +475,9 @@ impl PointCloudDecoder {
                         3 => {
                             let mut att_decoder = SequentialNormalAttributeDecoder::new();
                             att_decoder.init(self, pc, att_id)?;
+                            if let Some(symbols) = predecoded {
+                                att_decoder.set_predecoded_symbols(symbols);
+                            }
                             let portable = att_decoder.decode_values(
                                 pc,
                                 point_ids.ok_or_else(|| {
@@ -564,5 +595,292 @@ impl PointCloudDecoder {
     /// Returns the encoded geometry type handled by this decoder.
     pub fn get_geometry_type(&self) -> EncodedGeometryType {
         self.geometry_type
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Attributes whose symbols were decoded beside another's.
+    static PAIRED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Set by tests that hold the paired decode to the one without it.
+    static PAIRS_OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(feature = "point_cloud_decode")]
+impl PointCloudDecoder {
+    /// The symbols of two consecutive attributes' integer streams, decoded
+    /// side by side ([`decode_raw_symbol_pair`]), for each attribute's decode
+    /// to take instead of decoding its own. The buffer is left where it stood,
+    /// at the first attribute's stream, which is then decoded as ever.
+    ///
+    /// Where the second stream starts is found by stepping over the first
+    /// without decoding it. `None` where either attribute's stream is not one
+    /// that can be stepped over or paired -- tagged symbols, symbols too wide
+    /// for the paired loop, a prediction other than none or a plain
+    /// difference, a decoder that is not an integer one -- or where anything
+    /// goes wrong; the budget is then put
+    /// back as it was and the two are decoded one after the other, which is
+    /// what reports the error if there is one.
+    ///
+    /// A normal's stream codes its two octahedral coordinates, not the
+    /// attribute's three components.
+    fn pair_symbols(
+        pc: &PointCloud,
+        buffer: &mut DecoderBuffer,
+        first: (i32, u8),
+        second: (i32, u8),
+        num_points: usize,
+    ) -> Option<(Vec<u32>, Vec<u32>)> {
+        #[cfg(test)]
+        if PAIRS_OFF.with(|off| off.get()) {
+            return None;
+        }
+        let coded = |(att_id, decoder_type): (i32, u8)| -> Option<(usize, usize)> {
+            let components = match decoder_type {
+                1 | 2 => pc.try_attribute(att_id).ok()?.num_components() as usize,
+                3 => 2,
+                _ => return None,
+            };
+            Some((num_points.checked_mul(components)?, components))
+        };
+        // The paired loop runs on steps, which only a table of at most 2^16
+        // slots has: raw symbols of at most 11 bits. Past that each run would
+        // be decoded alone after its table had been read twice, so the two
+        // bytes that say so are read first, from a buffer of their own.
+        let pairs = |at: &DecoderBuffer| -> bool {
+            let Ok(mut look) = at.fork_at(at.position()) else {
+                return false;
+            };
+            matches!(
+                (look.decode_u8(), look.decode_u8()),
+                (Ok(1), Ok(bits)) if (1..=11).contains(&bits)
+            )
+        };
+        let (first, second) = (coded(first)?, coded(second)?);
+        let start = buffer.position();
+        let budget = buffer.budget();
+        let mut attempt = || -> Option<(Vec<u32>, Vec<u32>)> {
+            if !SequentialIntegerAttributeDecoder::seek_symbols(buffer) || !pairs(buffer) {
+                return None;
+            }
+            let first_symbols = buffer.position();
+            buffer.set_position(start).ok()?;
+            if !SequentialIntegerAttributeDecoder::skip_values(first.0, first.1, buffer).ok()? {
+                return None;
+            }
+            let mut probe = buffer.fork_at(buffer.position()).ok()?;
+            if !SequentialIntegerAttributeDecoder::seek_symbols(&mut probe) || !pairs(&probe) {
+                return None;
+            }
+            let second_symbols = probe.position();
+            buffer.set_position(first_symbols).ok()?;
+            decode_raw_symbol_pair(buffer, first, (second_symbols, second.0, second.1))
+        };
+        let symbols = attempt();
+        // `start` is a position this buffer held a moment ago.
+        let _ = buffer.set_position(start);
+        if symbols.is_none() {
+            buffer.restore_budget(budget);
+        }
+        #[cfg(test)]
+        if symbols.is_some() {
+            PAIRED.with(|paired| paired.set(paired.get() + 2));
+        }
+        symbols
+    }
+}
+
+#[cfg(all(test, feature = "point_cloud_decode", feature = "encoder"))]
+mod pair_tests {
+    use super::*;
+    use crate::encoder_buffer::EncoderBuffer;
+    use crate::encoder_options::EncoderOptions;
+    use crate::point_cloud_encoder::PointCloudEncoder;
+
+    struct Xorshift(u64);
+
+    impl Xorshift {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+
+        fn unit(&mut self) -> f32 {
+            (self.next() >> 40) as f32 / (1u64 << 24) as f32
+        }
+    }
+
+    fn float_attribute(
+        kind: GeometryAttributeType,
+        components: u8,
+        values: &[f32],
+    ) -> PointAttribute {
+        let points = values.len() / components as usize;
+        let mut attribute = PointAttribute::new();
+        attribute.init(kind, components, DataType::Float32, false, points);
+        for (i, value) in values.iter().enumerate() {
+            attribute.buffer_mut().write(i * 4, &value.to_le_bytes());
+        }
+        attribute
+    }
+
+    fn byte_attribute(
+        kind: GeometryAttributeType,
+        components: u8,
+        values: &[u8],
+    ) -> PointAttribute {
+        let points = values.len() / components as usize;
+        let mut attribute = PointAttribute::new();
+        attribute.init(kind, components, DataType::Uint8, false, points);
+        for (i, value) in values.iter().enumerate() {
+            attribute.buffer_mut().write(i, &[*value]);
+        }
+        attribute
+    }
+
+    /// Every kind of attribute stream a sequential cloud carries -- a position
+    /// the coder writes tagged, normals, quantized floats, bytes, raw floats,
+    /// attributes that never vary -- with noise in the rest, so the stream is
+    /// as large as the values.
+    fn stream(points: usize, seed: u64) -> Vec<u8> {
+        let mut rng = Xorshift(seed);
+        let mut cloud = PointCloud::new();
+        cloud.set_num_points(points);
+        let mut options = EncoderOptions::new();
+        options.set_encoding_method(0);
+        let mut next_id = 0;
+        let mut add = |cloud: &mut PointCloud, attribute: PointAttribute, bits: i32| {
+            cloud.add_attribute(attribute);
+            if bits > 0 {
+                options.set_attribute_int(next_id, "quantization_bits", bits);
+            }
+            next_id += 1;
+        };
+        let positions: Vec<f32> = (0..points * 3).map(|_| rng.unit() * 100.0).collect();
+        add(
+            &mut cloud,
+            float_attribute(GeometryAttributeType::Position, 3, &positions),
+            16,
+        );
+        let normals: Vec<f32> = (0..points * 3).map(|_| rng.unit() * 2.0 - 1.0).collect();
+        add(
+            &mut cloud,
+            float_attribute(GeometryAttributeType::Normal, 3, &normals),
+            8,
+        );
+        for _ in 0..40 {
+            let values: Vec<f32> = (0..points).map(|_| rng.unit()).collect();
+            add(
+                &mut cloud,
+                float_attribute(GeometryAttributeType::Generic, 1, &values),
+                8,
+            );
+        }
+        let colours: Vec<u8> = (0..points * 3).map(|_| (rng.next() >> 56) as u8).collect();
+        add(
+            &mut cloud,
+            byte_attribute(GeometryAttributeType::Color, 3, &colours),
+            0,
+        );
+        // No quantization on a float: the coder copies it as raw bytes.
+        let raw: Vec<f32> = (0..points).map(|_| rng.unit()).collect();
+        add(
+            &mut cloud,
+            float_attribute(GeometryAttributeType::Generic, 1, &raw),
+            0,
+        );
+        for _ in 0..3 {
+            let zeros = vec![0.0f32; points];
+            add(
+                &mut cloud,
+                float_attribute(GeometryAttributeType::Generic, 1, &zeros),
+                8,
+            );
+        }
+        let tags: Vec<u8> = (0..points).map(|_| (rng.next() >> 56) as u8).collect();
+        add(
+            &mut cloud,
+            byte_attribute(GeometryAttributeType::Generic, 1, &tags),
+            0,
+        );
+        let mut encoder = PointCloudEncoder::new();
+        encoder.set_point_cloud(cloud);
+        let mut buffer = EncoderBuffer::new();
+        encoder.encode(&options, &mut buffer).expect("encodes");
+        buffer.data().to_vec()
+    }
+
+    /// What a decode makes of `bytes` -- every attribute's bytes or the error
+    /// -- and where it left the allocation budget, with the pairs on or off.
+    fn decode(
+        bytes: &[u8],
+        pairs: bool,
+    ) -> (Result<Vec<Vec<u8>>, String>, crate::decoder_buffer::Budget) {
+        PAIRS_OFF.with(|off| off.set(!pairs));
+        let mut buffer = DecoderBuffer::new(bytes);
+        let mut cloud = PointCloud::new();
+        let decoded = PointCloudDecoder::new()
+            .decode(&mut buffer, &mut cloud)
+            .map_err(|e| e.to_string())
+            .map(|()| {
+                (0..cloud.num_attributes())
+                    .map(|id| cloud.attribute(id).buffer().data().to_vec())
+                    .collect()
+            });
+        PAIRS_OFF.with(|off| off.set(false));
+        (decoded, buffer.budget())
+    }
+
+    fn paired_by<T>(f: impl FnOnce() -> T) -> (T, usize) {
+        let before = PAIRED.with(|paired| paired.get());
+        let out = f();
+        (out, PAIRED.with(|paired| paired.get()) - before)
+    }
+
+    /// The pairs decode the cloud the one-after-the-other decode does, value
+    /// for value, and leave the budget where it leaves it. All but the tagged
+    /// position, the raw float and an odd one out are paired, the normals'
+    /// two octahedral coordinates included.
+    #[test]
+    fn paired_streams_decode_the_same_cloud_value_for_value() {
+        let bytes = stream(40_000, 1);
+        let ((alone, budget_alone), paired) = paired_by(|| decode(&bytes, false));
+        assert_eq!(paired, 0, "the reference paired");
+        let ((together, budget_together), paired) = paired_by(|| decode(&bytes, true));
+        assert!(paired >= 44, "{paired} attributes paired");
+        assert_eq!(together.expect("decodes"), alone.expect("decodes"));
+        assert_eq!(budget_together, budget_alone, "the budget");
+    }
+
+    #[test]
+    fn a_damaged_stream_is_read_paired_as_alone() {
+        let bytes = stream(20_000, 3);
+        let mut rng = Xorshift(77);
+        for trial in 0..40 {
+            let mut damaged = bytes.clone();
+            // Bytes anywhere, and bytes in the header and the attribute
+            // descriptions, where the lengths come from.
+            let at = if trial % 2 == 0 {
+                rng.next() as usize % damaged.len()
+            } else {
+                rng.next() as usize % 400
+            };
+            damaged[at] ^= 1 << (rng.next() % 8);
+            assert_eq!(
+                decode(&damaged, true),
+                decode(&damaged, false),
+                "trial {trial}: byte {at} damaged"
+            );
+        }
+        // And cut short.
+        for cut in [bytes.len() / 2, bytes.len() - 1, bytes.len() - 40, 5000] {
+            assert_eq!(
+                decode(&bytes[..cut], true),
+                decode(&bytes[..cut], false),
+                "cut at {cut}"
+            );
+        }
     }
 }

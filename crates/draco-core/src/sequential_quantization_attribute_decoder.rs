@@ -49,6 +49,12 @@ impl SequentialQuantizationAttributeDecoder {
         }
     }
 
+    /// See `SequentialIntegerAttributeDecoder::set_predecoded_symbols`.
+    #[cfg(feature = "point_cloud_decode")]
+    pub(crate) fn set_predecoded_symbols(&mut self, symbols: Vec<u32>) {
+        self.base.set_predecoded_symbols(symbols);
+    }
+
     /// The transform, carrying whatever parameters have been read so far. Below
     /// 2.0 that is everything, because `decode_values` read them; at 2.0 and
     /// later it is still empty and the caller fills it from the transform data

@@ -51,6 +51,16 @@ pub struct DecoderBuffer<'a> {
     admitted_values: usize,
 }
 
+/// A decode's standing against its budget and limits, as
+/// [`DecoderBuffer::budget`] takes it.
+#[cfg(feature = "point_cloud_decode")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Budget {
+    spent: usize,
+    decoded_bytes: u64,
+    admitted_values: usize,
+}
+
 impl<'a> DecoderBuffer<'a> {
     /// Creates a new `DecoderBuffer` from a byte slice.
     pub fn new(data: &'a [u8]) -> Self {
@@ -214,6 +224,48 @@ impl<'a> DecoderBuffer<'a> {
         self.charge_elements(count - admitted, element_size)?;
         self.admitted_values -= admitted;
         Ok(())
+    }
+
+    /// Where this decode stands against its budget and its limits, for a
+    /// decode that tries a faster way and gives it up to put back as it was.
+    #[cfg(feature = "point_cloud_decode")]
+    pub(crate) fn budget(&self) -> Budget {
+        Budget {
+            spent: self.spent,
+            decoded_bytes: self.decoded_bytes,
+            admitted_values: self.admitted_values,
+        }
+    }
+
+    /// Puts this decode's budget and limits back to `budget`.
+    #[cfg(feature = "point_cloud_decode")]
+    pub(crate) fn restore_budget(&mut self, budget: Budget) {
+        self.spent = budget.spent;
+        self.decoded_bytes = budget.decoded_bytes;
+        self.admitted_values = budget.admitted_values;
+    }
+
+    /// A buffer over the same stream at `pos`, carrying this one's version and
+    /// limits, and its budget as it stands: what it charges is checked against
+    /// everything this decode has charged before it, and [`adopt_budget`]
+    /// makes it this buffer's. For reading a second stream of the same decode
+    /// beside the first.
+    ///
+    /// [`adopt_budget`]: Self::adopt_budget
+    #[cfg(feature = "point_cloud_decode")]
+    pub(crate) fn fork_at(&self, pos: usize) -> Result<DecoderBuffer<'a>, DracoError> {
+        let mut fork = DecoderBuffer::new(self.data).with_limits(self.limits);
+        fork.set_version(self.version_major, self.version_minor);
+        fork.restore_budget(self.budget());
+        fork.set_position(pos)?;
+        Ok(fork)
+    }
+
+    /// Takes `fork`'s budget as this decode's: what was charged through it, on
+    /// top of what this buffer had charged when it was forked.
+    #[cfg(feature = "point_cloud_decode")]
+    pub(crate) fn adopt_budget(&mut self, fork: &DecoderBuffer) {
+        self.restore_budget(fork.budget());
     }
 
     /// What this decode has reserved so far, for the tests that hold the

@@ -36,7 +36,7 @@ figure at all.
 `rejected` -- tried, deliberately not kept. `retracted` -- an earlier claim
 here was withdrawn. `diagnostic` -- measured only, no change proposed.
 
-73 rounds: 43 landed, 10 diagnostic, 10 null, 8 retracted, 2 rejected.
+74 rounds: 44 landed, 10 diagnostic, 10 null, 8 retracted, 2 rejected.
 
 | Round | Verdict | Headline |
 | --- | --- | ---: |
@@ -113,6 +113,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [KTX2: Zstd, And Which Decoder](#ktx2-zstd-and-which-decoder) | landed | `3.4 -> 2.5 ms` |
 | [Point Clouds On One Thread: Zeros Nobody Read, And Reads In A Row](#point-clouds-on-one-thread-zeros-nobody-read-and-reads-in-a-row) | landed | `-21 to -34%` |
 | [rANS Buckets For The Fine Slot Tables](#rans-buckets-for-the-fine-slot-tables) | landed | `-9 to -37% lidar decode` |
+| [Two Attributes' rANS Runs In One Loop](#two-attributes-rans-runs-in-one-loop) | landed | `-16 to -19% splat decode` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -4244,7 +4245,7 @@ against C zstd -- is `tools/zstd-bench`.
 2026-10-01, `draco-core` and `draco-io`, Windows 11, Ryzen AI 7 350 (four
 full and four compact cores, 16 threads), the System allocator. The round ran
 on `experiment/hilbert-point-order`, after its parallel point-cloud decode;
-the changes below landed on `main` on their own, without that branch's
+the changes below landed on their own, without that branch's
 threads or order search. Every figure in the table is best-of against the
 same tree before the round (`7802fd6c`, exported with `git archive` and built
 with the same harness, toolchain and profile), and every pair was checked
@@ -4272,8 +4273,8 @@ What the profiles found, in order of what it bought:
 | zigzag in the corrections' own buffer | encode, splat-742k (cumulative) | `0.846 s` | `0.662 s` |
 | tagged values packed in an accumulator into a buffer of their size; delta corrections in one flat loop under wrap | encode, splat-742k / scan-8m (cumulative) | `0.844` / `0.713 s` | `0.554` / `0.500 s` |
 
-On `main` itself, the landed changes against `main` before them, one thread,
-input order, runs alternated with a pause before each, the same bytes out:
+The landed changes alone, against the tree before them, one thread, input
+order, runs alternated with a pause before each, the same bytes out:
 
 | | before | after |
 | --- | ---: | ---: |
@@ -4326,8 +4327,8 @@ positions in the wrong byte order.
 
 ### rANS Buckets For The Fine Slot Tables
 
-2026-10-02, same machine and harness as the round above, one thread, on
-`main` against `main` before, runs alternated with a pause before each. A
+2026-10-02, same machine and harness as the round above, one thread, against
+the tree before, runs alternated with a pause before each. A
 stream at 18-20 bits of precision -- most lidar captures' positions -- is past
 what the fused steps can hold, so each symbol reads a slot table of 512 KiB to
 4 MiB at a slot the state picks uniformly. 4096 buckets summarize it in 32 KB:
@@ -4353,6 +4354,42 @@ order -- 512 KiB owned by half, which the rule leaves on the slot table --
 decode within 1% of before. Every decode read back the same symbols; the C++
 parity tests pass.
 
+### Two Attributes' rANS Runs In One Loop
+
+2026-10-02, same machine and harness, one thread, against the tree before,
+runs alternated with a pause before each. A raw rANS run is one dependent
+chain: each state comes from the one before, and every symbol waits on it.
+Two attributes' runs are two chains, and in one loop the core works on both
+at once; on eight splat-like streams in a microbenchmark the stage went from
+4.4 ns a symbol, stream by stream, to 2.3 paired, and four at a time was
+slower again (3.0), out of registers. The paired loop's refill is branchless
+while four bytes remain -- with two chains a mispredicted refill stalls both.
+
+The loop runs on the fused steps, so a pair is two consecutive attributes
+whose raw symbols are at most 11 bits wide: a splat's attributes, a scan's
+normals and colours, never a fine position stream. The first attribute's
+stream is stepped over without decoding it to find where the second's
+starts, both runs are decoded together, and each attribute's decode then
+takes its symbols and steps over its own. The second stream is read through
+a buffer forked after the first was charged for, whose charges become the
+decode's, so the allocation budget and the admitted values end where the
+one-after-the-other decode leaves them; anything that does not pair, or
+fails, puts the budget back and decodes one after the other as before.
+
+| cloud | before | after |
+| --- | ---: | ---: |
+| splat, 742K points, 58 attributes | `0.234 s` | `0.190 s` (`-19%`) |
+| splat, 3.2M, 58 | `1.186 s` | `0.998 s` (`-16%`) |
+| splat, 1.1M, 58 | `0.711 s` | `0.574 s` (`-19%`) |
+| scan with normals, 1.1M | `0.072 s` | `0.067 s` (`-7%`) |
+
+The scan of position and colour only and the three lidar captures, whose
+time goes to one wide position stream, are within 1%. The decode's peak heap
+is the same on all of them. A test holds the pairs to the decode without
+them -- every value, and the budget where it ends -- on a whole stream and on
+forty damaged and four cut-short ones, and fails with the budget's hand-over
+or the symbols' order broken.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
@@ -4362,12 +4399,6 @@ one line.
 
 ### What the point-cloud round left behind
 
-- **Two rANS streams in one loop.** Built on `experiment/hilbert-point-order`
-  and worth up to 27% of a splat's decode on one thread, but there it sits on
-  that branch's parallel decode, whose prescan knows where each stream
-  starts; on `main` the attribute decode has to be split into the part before
-  the run, the run and the part after first. The buckets came over:
-  [rANS Buckets For The Fine Slot Tables](#rans-buckets-for-the-fine-slot-tables).
 - **The PLY reader still matches property names as strings** for every
   property of every vertex. It no longer shows in the profile after the
   allocations went, but a per-property action table built once would remove

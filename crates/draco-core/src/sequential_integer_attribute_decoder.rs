@@ -31,6 +31,8 @@ use crate::prediction_scheme_tex_coords_deprecated::MeshPredictionSchemeTexCoord
 use crate::prediction_scheme_tex_coords_portable::MeshPredictionSchemeTexCoordsPortableDecoder;
 use crate::prediction_scheme_wrap::PredictionSchemeWrapDecodingTransform;
 use crate::status::{DracoError, Status};
+#[cfg(feature = "point_cloud_decode")]
+use crate::symbol_encoding::skip_symbols;
 use crate::symbol_encoding::{decode_symbols, SymbolEncodingOptions};
 
 /// How a portable attribute may be sized before a value has been read.
@@ -92,6 +94,11 @@ pub struct SequentialIntegerAttributeDecoder {
     /// `decoder_->bitstream_version()` inside `InitPredictionScheme`. It
     /// decides which parent binding the fallback sites may make.
     bitstream_version: u16,
+    /// This stream's symbols, decoded already by someone who read them beside
+    /// another stream's; `decode_values` steps over them in the stream rather
+    /// than decoding them a second time. See `decode_raw_symbol_pair`.
+    #[cfg(feature = "point_cloud_decode")]
+    predecoded: Option<Vec<u32>>,
 }
 
 fn build_vertex_to_data_map_from_data_to_corner_map(
@@ -226,7 +233,60 @@ impl SequentialIntegerAttributeDecoder {
             attribute: -1,
             prediction_scheme: None,
             bitstream_version: 0,
+            #[cfg(feature = "point_cloud_decode")]
+            predecoded: None,
         }
+    }
+
+    /// Hands `decode_values` this stream's symbols, decoded already. They are
+    /// taken only if the stream's own symbols are a raw run of exactly that
+    /// many, which `decode_values` steps over; otherwise the decode fails, as
+    /// any stream that is not the one the symbols came from should.
+    #[cfg(feature = "point_cloud_decode")]
+    pub(crate) fn set_predecoded_symbols(&mut self, symbols: Vec<u32>) {
+        self.predecoded = Some(symbols);
+    }
+
+    /// Reads the header an integer stream starts with -- the prediction method,
+    /// its transform where it has one, the compression flag -- and leaves
+    /// `in_buffer` at what follows. `None` for a header `skip_values` cannot
+    /// step over: a prediction other than none or a plain difference, a byte
+    /// that names nothing, a stream that ends.
+    #[cfg(feature = "point_cloud_decode")]
+    fn read_steppable_header(
+        in_buffer: &mut DecoderBuffer,
+    ) -> Option<(
+        PredictionSchemeMethod,
+        Option<PredictionSchemeTransformType>,
+        u8,
+    )> {
+        let method_byte = in_buffer.decode_u8().ok()?;
+        let method = if method_byte == 0xFF || method_byte == 0xFE {
+            PredictionSchemeMethod::None
+        } else {
+            PredictionSchemeMethod::try_from(method_byte).ok()?
+        };
+        let mut transform = None;
+        match method {
+            PredictionSchemeMethod::None => {}
+            PredictionSchemeMethod::Difference => {
+                let transform_byte = in_buffer.decode_u8().ok()?;
+                if transform_byte != 0xFF {
+                    transform = Some(PredictionSchemeTransformType::try_from(transform_byte).ok()?);
+                }
+            }
+            _ => return None,
+        }
+        let compressed = in_buffer.decode_u8().ok()?;
+        Some((method, transform, compressed))
+    }
+
+    /// Steps `in_buffer` over an integer stream's header to the symbols it
+    /// codes, `true` when there are coded symbols there. The caller looks at
+    /// the symbols, not the header, and `decode_values` reads the header again.
+    #[cfg(feature = "point_cloud_decode")]
+    pub(crate) fn seek_symbols(in_buffer: &mut DecoderBuffer) -> bool {
+        matches!(Self::read_steppable_header(in_buffer), Some((_, _, compressed)) if compressed > 0)
     }
 
     pub fn init(&mut self, decoder: &PointCloudDecoder, attribute_id: i32) {
@@ -273,6 +333,74 @@ impl SequentialIntegerAttributeDecoder {
             return Ok(PredictionParent::legacy(att));
         }
         PredictionParent::portable(att)
+    }
+
+    /// Steps `in_buffer` over one attribute's integer stream of a 2.0 or later
+    /// bitstream without decoding its symbols, so that where the next stream
+    /// starts is known and something else can decode this one.
+    ///
+    /// `Ok(true)` when it did. `Ok(false)` when this stream is not one that can
+    /// be stepped over -- tagged symbols, a prediction that is not a plain
+    /// difference, anything the decoder would refuse -- and the caller decodes
+    /// it in place, which reads it the way it always has and says what is wrong
+    /// with it if anything is. The header it walks is the one `decode_values`
+    /// walks, in the same order: the prediction method, its transform, the
+    /// compression flag, the symbols, and the data the transform carries behind
+    /// them.
+    #[cfg(feature = "point_cloud_decode")]
+    pub(crate) fn skip_values(
+        num_values: usize,
+        num_components: usize,
+        in_buffer: &mut DecoderBuffer,
+    ) -> Result<bool, DracoError> {
+        let Some((method, transform, compressed)) = Self::read_steppable_header(in_buffer) else {
+            return Ok(false);
+        };
+        if compressed > 0 {
+            if !skip_symbols(num_values, num_components, in_buffer)? {
+                return Ok(false);
+            }
+        } else {
+            let Ok(num_bytes) = in_buffer.decode_u8() else {
+                return Ok(false);
+            };
+            if num_bytes > 4 {
+                return Ok(false);
+            }
+            if num_bytes > 0 {
+                let Some(byte_len) = num_values.checked_mul(usize::from(num_bytes)) else {
+                    return Ok(false);
+                };
+                if in_buffer.try_advance(byte_len).is_err() {
+                    return Ok(false);
+                }
+            }
+        }
+
+        if method == PredictionSchemeMethod::Difference {
+            let read = match transform {
+                Some(PredictionSchemeTransformType::NormalOctahedronCanonicalized) => {
+                    let mut predictor = PredictionSchemeDeltaDecoder::new(
+                        PredictionSchemeNormalOctahedronCanonicalizedDecodingTransform::new(),
+                    );
+                    predictor.decode_prediction_data(in_buffer)
+                }
+                Some(PredictionSchemeTransformType::NormalOctahedron) => {
+                    let mut transform =
+                        PredictionSchemeNormalOctahedronCanonicalizedDecodingTransform::new();
+                    transform.set_canonicalized(false);
+                    PredictionSchemeDeltaDecoder::new(transform).decode_prediction_data(in_buffer)
+                }
+                _ => PredictionSchemeDeltaDecoder::new(
+                    PredictionSchemeWrapDecodingTransform::<i32>::new(),
+                )
+                .decode_prediction_data(in_buffer),
+            };
+            if read.is_err() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     // Complex mesh decoding requires all 8 parameters: mesh data, traversal maps,
@@ -743,15 +871,32 @@ impl SequentialIntegerAttributeDecoder {
             // 9 KB stream ask for gigabytes before decoding a single symbol.
             // `decode_symbols` grows this as symbols actually arrive.
             let mut symbols = Vec::new();
-            let options = SymbolEncodingOptions::default();
-            decode_symbols(
-                num_values,
-                num_components,
-                &options,
-                in_buffer,
-                &mut symbols,
-            )
-            .map_err(|err| err.context("Failed to decode the entropy-coded symbols"))?;
+            #[cfg(feature = "point_cloud_decode")]
+            let ahead = self.predecoded.take();
+            #[cfg(not(feature = "point_cloud_decode"))]
+            let ahead: Option<Vec<u32>> = None;
+            if let Some(predecoded) = ahead {
+                #[cfg(feature = "point_cloud_decode")]
+                if predecoded.len() != num_values
+                    || !skip_symbols(num_values, num_components, in_buffer)?
+                {
+                    return Err(DracoError::general(
+                        "Symbols decoded ahead do not match the stream they were given for"
+                            .to_string(),
+                    ));
+                }
+                symbols = predecoded;
+            } else {
+                let options = SymbolEncodingOptions::default();
+                decode_symbols(
+                    num_values,
+                    num_components,
+                    &options,
+                    in_buffer,
+                    &mut symbols,
+                )
+                .map_err(|err| err.context("Failed to decode the entropy-coded symbols"))?;
+            }
             symbols_to_corrections(symbols, needs_zigzag_conversion)
         } else {
             // Raw uncompressed integers. Read directly as bytes.

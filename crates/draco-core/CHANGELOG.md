@@ -33,6 +33,13 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   10.7 million in 0.72 s instead of 0.85 s. The summary is used where it pays
   on the processors measured and the slot table elsewhere; the symbols are the
   same either way.
+- Decoding a point cloud of many attributes is faster: two consecutive
+  attributes' symbol runs are decoded in one loop, where the processor works
+  on both at once. A Gaussian splat of 742 thousand points and 58 attributes
+  decodes in 0.19 s instead of 0.23 s, one of 3.2 million in 1.00 s instead of
+  1.19 s; a scan with normals 7% faster. Clouds whose time goes to one wide
+  position stream decode as before. The values, the errors on a damaged stream
+  and the memory used are the same.
 
 ### Fixed
 

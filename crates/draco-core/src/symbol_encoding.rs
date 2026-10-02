@@ -614,6 +614,46 @@ pub fn decode_symbols(
     }
 }
 
+/// Steps `in_buffer` over the symbols [`decode_symbols`] would have read,
+/// without reading them.
+///
+/// `Ok(true)` when it did. `Ok(false)` when this stream cannot be stepped over
+/// without decoding it -- the tagged scheme, whose coded bytes end where its
+/// last value's bits do and nowhere the stream says -- or when it is not one the
+/// decoder would accept; the buffer's position is then unspecified and the
+/// caller goes back and decodes. Only the raw scheme is stepped over: its
+/// frequency table is read and the rANS state initialised, which walks the
+/// position past the coded bytes, and no symbol is drawn from them.
+#[cfg(feature = "point_cloud_decode")]
+pub(crate) fn skip_symbols(
+    num_values: usize,
+    num_components: usize,
+    in_buffer: &mut DecoderBuffer,
+) -> Result<bool, DracoError> {
+    if num_values == 0 {
+        return Ok(true);
+    }
+    if num_components == 0 || !num_values.is_multiple_of(num_components) {
+        return Ok(false);
+    }
+    // Draco uses: 0 = TAGGED, 1 = RAW.
+    match in_buffer.decode_u8() {
+        Ok(1) => {}
+        _ => return Ok(false),
+    }
+    let Ok(symbols_bit_length) = in_buffer.decode_u8() else {
+        return Ok(false);
+    };
+    let symbols_bit_length = u32::from(symbols_bit_length);
+    if !(1..=18).contains(&symbols_bit_length) {
+        return Ok(false);
+    }
+    let mut decoder = RAnsSymbolDecoder::new(
+        compute_rans_precision_from_unique_symbols_bit_length(symbols_bit_length),
+    );
+    Ok(decoder.create(in_buffer) && decoder.start_decoding(in_buffer))
+}
+
 /// Reserves for what the stream could plausibly produce, not for what it says.
 ///
 /// The declared count is a ceiling to decode up to, never a size to allocate:
@@ -649,6 +689,117 @@ pub fn decode_raw_symbols(
     in_buffer: &mut DecoderBuffer,
     symbols: &mut Vec<u32>,
 ) -> Status {
+    let mut decoder = open_raw_symbols(num_values, in_buffer)?;
+
+    // Growth is capped at `num_values` the same way the corner table caps at
+    // the declared face count: the target is only reached after decoding a
+    // capacity's worth of real symbols, so it never exceeds doubling of
+    // proven content, and a truthful count lands the buffer exactly at its
+    // final size instead of overshooting by up to 2x -- on a mesh whose
+    // symbols outgrow the initial input-bounded reserve, the doubling copies
+    // alone moved 700 KB per decode.
+    let mut index = 0;
+    while index < num_values {
+        if symbols.len() == symbols.capacity() {
+            let doubled = symbols.capacity().saturating_mul(2).max(symbols.len() + 1);
+            let target = doubled.min(num_values.max(symbols.len() + 1));
+            symbols
+                .try_reserve_exact(target - symbols.len())
+                .map_err(|_| {
+                    DracoError::general(format!("Failed to allocate {target} raw symbols"))
+                })?;
+        }
+        let chunk_end = num_values.min(index + (symbols.capacity() - symbols.len()));
+        // One call per chunk rather than per symbol: the run loop hoists both
+        // tables, the input and the coder state out of the loop, which it can
+        // only do over a span it owns. The chunk is already sized to the spare
+        // capacity, so this fills without reallocating.
+        if !decoder.decode_run(symbols, chunk_end - index) {
+            return Err(raw_run_outlived_its_input(num_values));
+        }
+        index = chunk_end;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "decoder")]
+fn raw_run_outlived_its_input(num_values: usize) -> DracoError {
+    DracoError::new(
+        crate::status::ErrorKind::AllocationExceedsInput,
+        format!("the stream declared {num_values} symbols, more than its coded bytes carry"),
+    )
+}
+
+/// Two attributes' raw symbols, decoded side by side -- see
+/// [`decode_run_pair`](crate::rans_symbol_decoder::decode_run_pair) for why
+/// that is faster than one after the other. `buffer` stands at the first
+/// stream's scheme byte, as [`decode_symbols`] would find it, and is left past
+/// its symbols; the second stream's scheme byte is at `second.0` in the same
+/// data, with `second.1` values of `second.2` components.
+///
+/// The second stream is read through a buffer of its own, opened there after
+/// the first stream has been charged for, and what it charges is then
+/// `buffer`'s: the two draw on one budget, in the order a decode one after the
+/// other would.
+///
+/// `None` where either stream is not one this takes -- the tagged scheme, no
+/// values, a count that is not whole entries -- or where anything goes wrong at
+/// all, a run its coded bytes do not back included. The caller then puts the
+/// budget back as it was and decodes each the ordinary way, which is what
+/// reports the error if there is one: so this changes when the symbols are
+/// decoded, never what comes of a stream.
+#[cfg(feature = "point_cloud_decode")]
+pub(crate) fn decode_raw_symbol_pair(
+    buffer: &mut DecoderBuffer,
+    first: (usize, usize),
+    second: (usize, usize, usize),
+) -> Option<(Vec<u32>, Vec<u32>)> {
+    fn open<'a>(
+        buffer: &mut DecoderBuffer<'a>,
+        num_values: usize,
+        num_components: usize,
+    ) -> Option<(RAnsSymbolDecoder<'a>, Vec<u32>)> {
+        if num_values == 0
+            || num_components == 0
+            || !num_values.is_multiple_of(num_components)
+            || buffer.decode_u8().ok()? != 1
+        {
+            return None;
+        }
+        let decoder = open_raw_symbols(num_values, buffer).ok()?;
+        // The count is backed now: what the payload cannot account for was
+        // just charged to the budget, so reserving for it is what the budget
+        // has agreed to.
+        let mut symbols = Vec::new();
+        symbols.try_reserve_exact(num_values).ok()?;
+        Some((decoder, symbols))
+    }
+    let (count_a, count_b) = (first.0, second.1);
+    let (mut decoder_a, mut symbols_a) = open(buffer, first.0, first.1)?;
+    let mut other = buffer.fork_at(second.0).ok()?;
+    let (mut decoder_b, mut symbols_b) = open(&mut other, second.1, second.2)?;
+    buffer.adopt_budget(&other);
+    let both = count_a.min(count_b);
+    let (backed_a, backed_b) = crate::rans_symbol_decoder::decode_run_pair(
+        &mut decoder_a,
+        &mut symbols_a,
+        &mut decoder_b,
+        &mut symbols_b,
+        both,
+    );
+    let rest_a = decoder_a.decode_run(&mut symbols_a, count_a - both);
+    let rest_b = decoder_b.decode_run(&mut symbols_b, count_b - both);
+    (backed_a && backed_b && rest_a && rest_b).then_some((symbols_a, symbols_b))
+}
+
+/// Reads a raw symbol stream's header and frequency table, starts its rANS
+/// coder, and charges the budget for the part of `num_values` the payload
+/// cannot account for. `in_buffer` is left past the stream.
+#[cfg(feature = "decoder")]
+fn open_raw_symbols<'a>(
+    num_values: usize,
+    in_buffer: &mut DecoderBuffer<'a>,
+) -> Result<RAnsSymbolDecoder<'a>, DracoError> {
     // Read serialized symbol-bit-length header (written by encoder)
     let symbols_bit_length = in_buffer
         .decode_u8()
@@ -701,41 +852,7 @@ pub fn decode_raw_symbols(
     if num_values > backed_by_payload {
         in_buffer.charge_unbacked(num_values - backed_by_payload, size_of::<u32>())?;
     }
-
-    // Growth is capped at `num_values` the same way the corner table caps at
-    // the declared face count: the target is only reached after decoding a
-    // capacity's worth of real symbols, so it never exceeds doubling of
-    // proven content, and a truthful count lands the buffer exactly at its
-    // final size instead of overshooting by up to 2x -- on a mesh whose
-    // symbols outgrow the initial input-bounded reserve, the doubling copies
-    // alone moved 700 KB per decode.
-    let mut index = 0;
-    while index < num_values {
-        if symbols.len() == symbols.capacity() {
-            let doubled = symbols.capacity().saturating_mul(2).max(symbols.len() + 1);
-            let target = doubled.min(num_values.max(symbols.len() + 1));
-            symbols
-                .try_reserve_exact(target - symbols.len())
-                .map_err(|_| {
-                    DracoError::general(format!("Failed to allocate {target} raw symbols"))
-                })?;
-        }
-        let chunk_end = num_values.min(index + (symbols.capacity() - symbols.len()));
-        // One call per chunk rather than per symbol: the run loop hoists both
-        // tables, the input and the coder state out of the loop, which it can
-        // only do over a span it owns. The chunk is already sized to the spare
-        // capacity, so this fills without reallocating.
-        if !decoder.decode_run(symbols, chunk_end - index) {
-            return Err(DracoError::new(
-                crate::status::ErrorKind::AllocationExceedsInput,
-                format!(
-                    "the stream declared {num_values} symbols, more than its coded bytes carry"
-                ),
-            ));
-        }
-        index = chunk_end;
-    }
-    Ok(())
+    Ok(decoder)
 }
 
 #[cfg(feature = "decoder")]
