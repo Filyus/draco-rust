@@ -356,27 +356,31 @@ impl<'a> RAnsSymbolDecoder<'a> {
     /// bits; a probability or a cumulative one is at most 2^20, inside 21 --
     /// or where the slot table alone is the faster way.
     ///
-    /// A bucket one symbol owns is the step in one read from L1, about 5.5 ns
-    /// a symbol. A bucket several symbols share sends the run to the slot
-    /// table after all, and the branch between the two, taken by data, costs
-    /// about 6 ns more each time it is mispredicted. So buckets pay where the
-    /// owned share `o` satisfies `o * (table + 6 - 5.5) > 6`, which turns on
-    /// what a slot-table read costs, and that is a matter of where the table
-    /// sits. Measured over the owned share at each precision:
+    /// A bucket one symbol owns is the step in one read from L1. A bucket
+    /// several symbols share sends the run to the slot table after all, and
+    /// the branch between the two, taken by data, costs a pipeline flush each
+    /// time it is mispredicted. So buckets pay where the reads they save
+    /// outweigh the flushes, which turns on what a slot-table read costs --
+    /// where the table sits, a property of the processor -- and on the shape
+    /// of the stream: at the same share, a flat run of symbols each a bucket
+    /// or two wide makes the branch a coin toss, where a peak owning many
+    /// buckets beside a flat tail does not.
     ///
-    /// | slot table | its read | buckets pay from |
-    /// | --- | ---: | ---: |
-    /// | 2^18 slots, 512 KB | 7.5 ns | about 75% |
-    /// | 2^19 slots, 1 MB | 9.5 ns | about 65% |
-    /// | 2^20 slots, 2 MB | 13.8 ns | about 35% |
-    /// | 2^20 slots of `u32`, 4 MB | 17 ns | under 31% |
+    /// Neither is something the decoder can know or ask, so the rule is the
+    /// one whose worst case is smallest across the processors measured (Zen 3,
+    /// 4 and 5, Ice Lake, Neoverse N2, Apple M1), over owned shares from none
+    /// to all and over smooth, flat and peaked streams:
     ///
-    /// A table that fits the L2 cache wants three quarters of the mass owned;
-    /// one that does not wants buckets whatever the share, which at the worst
-    /// share measured, 31%, costs 2% of that stream.
+    /// - A table of 2^18 slots, 512 KiB, is read from L2 on most of them, and
+    ///   the buckets pay from about two thirds owned. Below that a flat stream
+    ///   loses up to 46% to them (Zen 5), a smooth one gains up to 15% (Zen 3).
+    /// - Every larger table keeps them whatever the share: on a smooth stream
+    ///   with a third owned that costs up to 17% (Zen 5), and the share rule it
+    ///   replaces cost up to 72% at 70% owned (Neoverse N2). A stream with
+    ///   none owned decodes the same either way.
     fn build_buckets(&mut self) {
-        /// The slot table past which its reads leave the L2 cache.
-        const L2_BYTES: usize = 1 << 20;
+        /// The slot table past which the buckets are kept whatever the share.
+        const ALWAYS_PAST_BYTES: usize = 1 << 19;
         let precision = self.rans_precision as usize;
         if precision <= BUCKETS || self.num_symbols >= 1 << 21 {
             return;
@@ -402,7 +406,7 @@ impl<'a> RAnsSymbolDecoder<'a> {
             });
         }
         let owned = buckets.iter().filter(|&&entry| entry >> 63 != 0).count();
-        if self.lut.len() * self.lut.slot_bytes() > L2_BYTES || owned * 4 >= BUCKETS * 3 {
+        if self.lut.len() * self.lut.slot_bytes() > ALWAYS_PAST_BYTES || owned * 3 >= BUCKETS * 2 {
             self.buckets = buckets;
         }
     }
@@ -771,15 +775,16 @@ mod tests {
         // (alphabet, count, skew, narrow slot table, steps, buckets): 12 and 16
         // bits with steps; 18 bits with the mass on a hundred-odd symbols, a
         // geometric draw (skew 0) like a scan's corrections, where the buckets
-        // are kept, and with it spread over the alphabet, where a table in L2
-        // is the faster way and they are declined; 20 bits with a long tail,
-        // past L2, where they are kept whatever the share, over a narrow table
-        // and over one too wide for `u16`.
+        // are kept, and with it spread over the alphabet, half owned, where
+        // they are declined; 19 and 20 bits with a long tail, past 512 KiB of
+        // slots, where they are kept whatever the share -- 41% owned at 19 --
+        // over a narrow table and over one too wide for `u16`.
         for (alphabet, count, skew, narrow, steps, buckets) in [
             (40u32, 20_000usize, 4, true, true, false),
             (1_500, 100_000, 4, true, true, false),
             (3_000, 300_000, 0, true, false, true),
             (3_000, 300_000, 4, true, false, false),
+            (6_000, 300_000, 4, true, false, true),
             (60_000, 150_000, 4, true, false, true),
             (70_000, 150_000, 4, false, false, true),
         ] {

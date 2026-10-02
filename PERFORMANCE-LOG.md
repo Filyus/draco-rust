@@ -36,7 +36,7 @@ figure at all.
 `rejected` -- tried, deliberately not kept. `retracted` -- an earlier claim
 here was withdrawn. `diagnostic` -- measured only, no change proposed.
 
-73 rounds: 43 landed, 10 diagnostic, 10 null, 8 retracted, 2 rejected.
+74 rounds: 44 landed, 10 diagnostic, 10 null, 8 retracted, 2 rejected.
 
 | Round | Verdict | Headline |
 | --- | --- | ---: |
@@ -115,6 +115,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [Point Clouds, Continued: Two Chains At Once, Buckets, And Threads Inside An Attribute](#point-clouds-continued-two-chains-at-once-buckets-and-threads-inside-an-attribute) | landed | `-13 to -43%` |
 | [Point Clouds On Shapes No Capture Had](#point-clouds-on-shapes-no-capture-had) | landed | `lattice -0.97%` |
 | [What Each Point-Cloud Technique Is Still Worth](#what-each-point-cloud-technique-is-still-worth) | null | `5 kept, 0 removed` |
+| [The Bucket Rule On Seven Processors](#the-bucket-rule-on-seven-processors) | landed | `worst case 72% -> 17%` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -4465,6 +4466,51 @@ time as ticks, `+24%` on the synthetic lattice, `+19%` on a rotating
 sensor's frame, and `0-2%` where the refinement is kept. And on that frame
 it wrote 3% more: the trial turned the refinement down and the whole-path
 check, run alone, would have kept it. It stays.
+
+### The Bucket Rule On Seven Processors
+
+2026-10-02. The rANS buckets' rule -- kept past a slot table of 1 MiB,
+otherwise from three quarters owned -- was set on one laptop (Zen 5, L2 1 MB
+a core), and its size clause stood for that laptop's L2. A workflow on
+`bench/**` branches (`.github/workflows/point-cloud-bench.yml`, on those
+branches only) times the two forms on GitHub's runners, and a cloud machine
+ran the same harness: Zen 3, Zen 4 and Zen 5 servers, Ice Lake, Granite
+Rapids, Neoverse N2, Apple M1. A microbenchmark codes one stream and times the
+buckets against the slot table, order alternated, over owned shares from
+none to all on every table size, and over three shapes: a smooth geometric
+tail, a flat stretch of the alphabet, a peak beside a flat tail.
+
+**The break-even is not the L2 size.** On smooth streams Zen 5 and Ice Lake
+want the buckets from 72-76% owned on a 512 KiB table and 61-66% on 1 MiB;
+Zen 3 and N2 want them at every share measured on both, though N2's L2 is
+1 MB like Zen 5's; M1, with 12 MB of shared L2, needs them on a 4 MiB table,
+where a rule keyed to its L2 would decline them and lose up to 189%. Nor is
+it the share alone: on the same machine, table and share, a flat stream loses
+46% to the buckets and a peaked one gains 23%. Flat streams lose on every
+processor, Zen 3 and N2 included (`+6%` and `+9%` at half owned on 512 KiB).
+
+| rule, mean / worst loss over the sweep | Zen 3 | N2 | Zen 4 | Zen 5 | Ice Lake |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| past 1 MiB, or 3/4 owned (before) | `6.6% / 56%` | `7.2% / 72%` | `2.6% / 38%` | `1.6% / 31%` | `0.6% / 12%` |
+| always | `0.3% / 7%` | `0.5% / 10%` | `2.2% / 25%` | `3.7% / 46%` | `1.6% / 15%` |
+| past 512 KiB, or 2/3 owned (now) | `0.5% / 15%` | `0.5% / 10%` | `0.7% / 7%` | `1.7% / 16%` | `1.0% / 8%` |
+
+The rule before lost most on 1 MiB tables owned just under three quarters,
+where every processor wants the buckets; buckets always lost most on a
+512 KiB table owned by half on a flat stream, which is the one real stream
+the two rules split on: castle in scan order, 51% owned, where buckets
+always made the whole decode 11% slower on the laptop. The rule now keeps
+every capture and splat on the form it had: castle in scan order on the
+table, every other stream on the buckets. A splat in file order codes one
+2 MiB stream with no bucket owned; table and buckets decode it within 1% of
+each other, so the rule needs no floor.
+
+Two measurement notes. HEAD with `build_buckets` returning at once decodes a
+splat 4.5% slower than HEAD with the same stream on the same form, the code
+around it laid out differently -- the "without buckets" figures in the round
+above carry up to that on many-stream clouds. The microbenchmark's two builds
+do not: the same points from one binary, the form picked at run time,
+matched them within 2-3 points.
 
 ## Unexplored
 
