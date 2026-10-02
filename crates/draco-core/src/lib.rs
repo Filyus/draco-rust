@@ -376,6 +376,8 @@ pub mod sequential_normal_attribute_encoder;
 #[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 #[doc(hidden)]
 pub mod shannon_entropy;
+#[cfg(all(test, feature = "encoder", feature = "point_cloud_decode"))]
+mod synthetic_cloud;
 
 // =============================================================================
 // Core re-exports - always available

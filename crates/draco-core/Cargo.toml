@@ -12,10 +12,12 @@ categories = ["compression", "encoding", "graphics", "wasm"]
 # Research instruments, not tests: every one is `#[ignore]`d, reads a scene
 # or writes streams for another tool through the environment, and several
 # build on `draco-io`, which is a path-only dev-dependency and so absent from
-# the published manifest.
+# the published manifest. The synthetic-cloud writer is one too, and reads
+# its files back with `draco-io`.
 exclude = [
     "tests/*_probe.rs",
     "tests/emit_*.rs",
+    "examples/synthetic_clouds.rs",
 ]
 
 [package.metadata.docs.rs]

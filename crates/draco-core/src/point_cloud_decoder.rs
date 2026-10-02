@@ -883,4 +883,118 @@ mod pair_tests {
             );
         }
     }
+
+    /// Every synthetic shape, in its own order and shuffled, from no points to
+    /// past where the decode's run forms pay: the same values and budget
+    /// decoded with the pairs and without, and those values the source's -- to
+    /// the bit where nothing was quantized, within half a step where it was.
+    /// The large clouds must pair somewhere, and `skewed`'s bimodal attribute
+    /// is decoded through the rANS buckets.
+    #[test]
+    fn synthetic_clouds_come_back_the_same_by_every_path() {
+        use crate::synthetic_cloud::{self, Cloud};
+        let mut clouds: Vec<Cloud> = [0, 1, 2, 3, 97]
+            .into_iter()
+            .flat_map(|points| synthetic_cloud::all(points, 1))
+            .collect();
+        let big = synthetic_cloud::all(400_000, 2);
+        clouds.extend(big.iter().map(|cloud| cloud.shuffled(3)));
+        clouds.extend(big);
+        let paired: usize = std::thread::scope(|scope| {
+            let runs: Vec<_> = clouds
+                .iter()
+                .map(|cloud| scope.spawn(|| paired_by(|| every_path_agrees(cloud)).1))
+                .collect();
+            runs.into_iter()
+                .map(|run| run.join().expect("a cloud's check panicked"))
+                .sum()
+        });
+        assert!(paired > 0, "no synthetic cloud paired a single stream");
+    }
+
+    fn every_path_agrees(cloud: &crate::synthetic_cloud::Cloud) {
+        let name = format!("{} of {} points", cloud.name, cloud.points);
+        let mut options = EncoderOptions::new();
+        options.set_encoding_method(0);
+        for (id, column) in cloud.columns.iter().enumerate() {
+            if column.quantization_bits > 0 {
+                options.set_attribute_int(id as i32, "quantization_bits", column.quantization_bits);
+            }
+        }
+        let mut encoder = PointCloudEncoder::new();
+        encoder.set_point_cloud(cloud.to_point_cloud());
+        let mut buffer = EncoderBuffer::new();
+        // An empty attribute has no range to quantize over, and the encoder
+        // says so rather than read a value that is not there.
+        match encoder.encode(&options, &mut buffer) {
+            Err(e) if cloud.points == 0 && e.to_string().contains("empty attribute") => return,
+            result => result.unwrap_or_else(|e| panic!("{name}: {e}")),
+        }
+        let bytes = buffer.data().to_vec();
+        let (alone, budget_alone) = decode(&bytes, false);
+        let decoded = alone.unwrap_or_else(|e| panic!("{name}: {e}"));
+        let (together, budget_together) = decode(&bytes, true);
+        assert!(
+            together.as_ref() == Ok(&decoded),
+            "{name}: the paired decode differs"
+        );
+        assert_eq!(budget_together, budget_alone, "{name}: the budget");
+        for (column, got) in cloud.columns.iter().zip(&decoded) {
+            let source = column.values.bytes();
+            let got = &got[..source.len()];
+            if column.quantization_bits == 0 {
+                assert!(got == source, "{name}: {} changed", column.name);
+                continue;
+            }
+            let values = |bytes: &[u8]| -> Vec<f32> {
+                bytes
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|&b| f32::from_le_bytes(b))
+                    .collect()
+            };
+            let (source, got) = (values(&source), values(got));
+            if column.kind == GeometryAttributeType::Normal {
+                // Octahedral coordinates on a grid of `bits` a side: a unit
+                // vector comes back within a few cells. A zero one, which the
+                // octahedron has no point for, comes back as some direction.
+                let cell = 4.0 / (1u32 << column.quantization_bits) as f32;
+                let pairs = source.as_chunks::<3>().0.iter().zip(got.as_chunks::<3>().0);
+                for (i, (want, have)) in pairs.enumerate() {
+                    if want.iter().all(|&v| v == 0.0) {
+                        continue;
+                    }
+                    let error = want
+                        .iter()
+                        .zip(have)
+                        .map(|(w, h)| (w - h).abs())
+                        .fold(0.0, f32::max);
+                    assert!(
+                        error <= 2.0 * cell,
+                        "{name}: normal {i} came back {have:?} for {want:?}"
+                    );
+                }
+                continue;
+            }
+            // The quantizer's grid spans the widest component's range.
+            let range = (0..column.components)
+                .map(|c| {
+                    let component = source.iter().skip(c).step_by(column.components);
+                    let (lo, hi) =
+                        component.fold((f32::MAX, f32::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)));
+                    hi - lo
+                })
+                .fold(0.0f32, f32::max);
+            let step = range / ((1u32 << column.quantization_bits) - 1) as f32;
+            for (i, (&want, &have)) in source.iter().zip(&got).enumerate() {
+                let slack = (want.abs() + range) * f32::EPSILON * 4.0;
+                assert!(
+                    (want - have).abs() <= step * 0.5 + slack,
+                    "{name}: {} value {i} came back {have} for {want}, step {step}",
+                    column.name
+                );
+            }
+        }
+    }
 }
