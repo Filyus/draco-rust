@@ -356,4 +356,36 @@ if (typeof gltfModule.GltfAsset?.prototype?.compressPrimitive === 'function') {
   assert.deepEqual(Array.from(mesh.positions), [0, 0, 0, 1, 0, 0, 0, 2, 5], 'exporting does not turn the open file');
 }
 
+// A mesh with no faces is a point cloud, and goes to glTF as POINTS. Written
+// with glTF's default mode it claimed to be triangles of consecutive vertices,
+// which a count not divisible by three made a GLB the converter's own reader
+// refused to open.
+{
+  const { buildSceneFromGltf } = await import(pathToFileURL(resolve(here, '..', 'src', 'gltf-loader.ts')).href);
+  const { state } = await import(pathToFileURL(resolve(here, '..', 'src', 'app', 'state.ts')).href) as {
+    state: typeof AppState;
+  };
+  const [points] = prepareMeshesForExport([{
+    name: 'scan',
+    positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1, 2, 0, 0, 0, 2, 0]),
+  } as any], settings);
+  state.currentMeshData = { document: null, scene: null, meshes: [points] } as any;
+  state.currentFileType = 'ply';
+  state.currentSceneDocument = null;
+  const exported = await runExport({
+    format: 'glb', includeNormals: true, includeUvs: true, useDraco: false, encodingSpeed: 5,
+  });
+  const glb = new Uint8Array(exported.result.binary_data!);
+  const primitive = glbManifest(glb).meshes[0].primitives[0];
+  assert.equal(primitive.mode, 0, 'a mesh with no faces is written as points');
+  assert.equal(primitive.indices, undefined);
+  assert.ok(
+    !exported.warnings.some((warning) => warning.includes('triangulation')),
+    `points need no triangulation: ${exported.warnings}`,
+  );
+  assert.equal(new Set(exported.warnings).size, exported.warnings.length, `${exported.warnings}`);
+  const scene = await buildSceneFromGltf(glb, Object.create(null), gltfModule);
+  assert.equal(scene.meshes[0].primitives[0].mode, 0, 'and reads back as points');
+}
+
 console.log('export branch helpers passed');

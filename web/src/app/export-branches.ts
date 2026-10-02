@@ -850,8 +850,9 @@ export function exportMeshesAsGltf(
       warnings: [],
     };
   }
-  const outcome = asGltfIfAsked(exportSceneDocumentToGlb(document, settings), settings.format);
-  return { ...outcome, warnings: [...document.warnings, ...outcome.warnings] };
+  // The document's own warnings are already in the outcome: serializing it
+  // reports them before anything it finds itself.
+  return asGltfIfAsked(exportSceneDocumentToGlb(document, settings), settings.format);
 }
 
 /**

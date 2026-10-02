@@ -1,5 +1,5 @@
 /**
- * Flat triangle meshes → SceneDocument.
+ * Flat triangle meshes and point clouds → SceneDocument.
  *
  * The formats that hand over a bare mesh list — OBJ, PLY, STL and the
  * standalone Draco container — had no route to glTF at all: the document
@@ -69,7 +69,15 @@ export function buildSceneDocumentFromMeshes(
 
     const primitive: ScenePrimitive = { attributes };
     const indices = mesh.indices;
-    if (indices?.length) primitive.indices = appendIndexAccessor(document, indices);
+    if (indices?.length) {
+      primitive.indices = appendIndexAccessor(document, indices);
+    } else {
+      // No faces: a point cloud, as a scan or a lidar capture read from PLY
+      // is. Left at glTF's default mode it would claim to be triangles of
+      // consecutive vertices, which a count not divisible by three makes
+      // invalid and any other count makes into a mesh nobody wrote.
+      primitive.mode = 0;
+    }
     const material = materialIndexFor(document, materialIndices, mesh, options);
     if (material !== null) primitive.material = material;
 

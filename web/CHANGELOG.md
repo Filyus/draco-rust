@@ -73,6 +73,13 @@ only anchor a shipping without a version of its own has.
   write it Y-up", which turns the geometry exactly, `(x, y, z)` to
   `(x, z, -y)`. It starts from the preview's toggle and is the export's own
   after that; the formats with no axes of their own are written as read.
+- A point cloud exported to glTF or GLB -- a PLY, OBJ, STL or DRC with no
+  faces -- is written as `POINTS`. It was written in glTF's default mode,
+  triangles of consecutive vertices, which a vertex count not divisible by
+  three made a file the converter itself refused to open. Its export no
+  longer reports the document's warnings twice, nor that points need
+  triangulating. Draco does not compress it: the extension's encoder here
+  takes triangles only, and the export says so.
 
 ## 2026-09-05
 

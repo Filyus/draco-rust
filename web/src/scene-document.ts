@@ -660,7 +660,8 @@ function validatePrimitive(
   capabilities: SceneCapabilities,
 ) {
   if (!primitive || typeof primitive !== 'object') return errors.push(`${label} must be an object`);
-  if (primitive.mode !== undefined && primitive.mode !== 4) warnings.push(`${label}.mode=${primitive.mode} will require triangulation before glTF export`);
+  // Points have nothing to triangulate: a point cloud goes to glTF as POINTS.
+  if (primitive.mode !== undefined && primitive.mode !== 4 && primitive.mode !== 0) warnings.push(`${label}.mode=${primitive.mode} will require triangulation before glTF export`);
   if (!primitive.attributes || typeof primitive.attributes !== 'object') {
     errors.push(`${label}.attributes must be an object`);
     return;
