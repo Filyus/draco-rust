@@ -20,8 +20,8 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (6.8% at speed 8, 19.8% at 0), 4.2% to 4.5% on two larger splats, 8.4% to
   8.9% on three photogrammetry scans and an airborne lidar capture. A scan or
   rotating-lidar capture in its scan order comes out byte for byte as without
-  the option. It costs encode time: on one thread three to six times the
-  encode in file order at the default speed, on sixteen 1.8 to 2.4 times the
+  the option. It costs encode time: on one thread 2.8 to six times the
+  encode in file order at the default speed, on sixteen 1.7 to 2.4 times the
   spatial encode. It can cost decode time too, since the schemes the encoder
   then finds smallest are slower to undo: up to 6% on a large splat. Any Draco
   decoder reads the stream; the decoded points come back in another order.
@@ -34,7 +34,26 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   million in 0.60 s instead of 1.72 s; with the order search 3.5 to 4.6 times
   faster. **The default, `0`, takes as many threads as the machine has, up to
   sixteen**; set `1` for the encode to stay on the calling thread, as it did
-  before. WebAssembly has no threads and ignores the option.
+  before. No count is taken past sixteen, a cloud of fewer than 2^17 values
+  (points times attributes) starts no thread, and a thread the system refuses
+  to start is one fewer rather than an error. WebAssembly has no threads and
+  ignores the option.
+- `PointCloudDecoder::set_threads`. A sequential point cloud's attributes are
+  decoded side by side, two at a time on each thread, and dequantized side by
+  side; the decoded cloud is the same on any count. On sixteen threads,
+  against one: a Gaussian splat of 742 thousand points decodes in 0.058 s
+  instead of 0.204 s, one of 3.2 million in 0.217 s instead of 0.860 s, an
+  airborne lidar capture of 10.7 million in 0.41 s instead of 0.67 s. A cloud
+  of two attributes gains next to nothing. **The default, `0`, takes as many
+  threads as the machine has, up to sixteen**; `1` decodes in order on the
+  calling thread, as before, and so does WebAssembly. No count is taken past
+  sixteen, and a thread the system refuses to start is one fewer rather than
+  an error. The allocation budget and the limits bound a decode on threads as
+  they bound one in order. `MeshDecoder::set_threads` passes the same cap to
+  a point-cloud stream read through a mesh decoder.
+  `KeyframeAnimationDecoder` decodes with the default; to cap it, decode
+  through `PointCloudDecoder` and `KeyframeAnimation::from_point_cloud`,
+  which is all it does.
 
 ### Changed
 
@@ -53,10 +72,11 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   thousand points and 58 attributes the encode takes 0.53 s instead of 0.81 s
   and the decode 0.23 s instead of 0.30 s; on a scan of eight million points
   the encode takes 0.45 s instead of 0.65 s and the decode 0.34 s instead of
-  0.36 s. Encoding also needs less memory at its peak, since the symbols no
-  longer take a second attribute-sized buffer: about a third less on scans and
-  lidar captures (695 MB to 440 MB on that scan, 3.0 GB to 2.1 GB on one of
-  29 million points). Decoding peaks where it did.
+  0.36 s. Encoding on one thread also needs less memory at its peak, since the
+  symbols no longer take a second attribute-sized buffer: about a third less
+  on scans and lidar captures (695 MB to 440 MB on that scan, 3.0 GB to 2.1 GB
+  on one of 29 million points). On threads the attributes encoded side by side
+  each hold their working buffers at once. Decoding peaks where it did.
 - Decoding a stream coded at 18-20 bits of rANS precision -- the positions of
   most lidar captures -- is faster: a symbol whose slot range covers a whole
   1/4096 of the table is found in a 32 KB summary that stays in the L1 cache
@@ -70,8 +90,10 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   on both at once. A Gaussian splat of 742 thousand points and 58 attributes
   decodes in 0.19 s instead of 0.23 s, one of 3.2 million in 1.00 s instead of
   1.19 s; a scan with normals 7% faster. Clouds whose time goes to one wide
-  position stream decode as before. The values, the errors on a damaged stream
-  and the memory used are the same.
+  position stream decode as before. The values and the errors on a damaged
+  stream are the same; the second attribute's symbols are held while the
+  first is decoded, four bytes a value more at the peak. A run its payload
+  does not back is left to the decode in order, which refuses it as early.
 - Decoding a differenced attribute is faster. Undoing the differences was a
   chain of a clamp, an add and a wrap a value; over a quantized attribute,
   whose range is a power of two, with corrections an encoder writes, the run

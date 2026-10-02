@@ -37,6 +37,15 @@ pub struct DecoderBuffer<'a> {
     /// is what makes the bound cumulative rather than per-allocation -- see
     /// [`charge`](Self::charge).
     spent: usize,
+    /// The length of the stream the budget's ratio is taken against. The whole
+    /// stream's, not this buffer's: a buffer over one attribute's bytes is still
+    /// one decode of one stream, and judging its reservations against its own
+    /// few kilobytes would refuse a constant attribute the whole file backs.
+    budget_len: usize,
+    /// The running total shared with the buffers over other pieces of the same
+    /// stream, where this is one of them: they charge one counter, so the bound
+    /// stays cumulative over the whole decode whichever piece spends.
+    shared_spent: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
     /// The caller's ceilings on what this decode may produce, and what it has
     /// produced so far against the byte one.
     ///
@@ -49,6 +58,11 @@ pub struct DecoderBuffer<'a> {
     /// Attribute values the caller's limits admitted that no unbacked run has
     /// drawn on yet -- see [`charge_unbacked`](Self::charge_unbacked).
     admitted_values: usize,
+    /// The allowance shared with the buffers over other pieces of the same
+    /// stream while they decode beside this one, where it is in place of
+    /// `admitted_values`: one allowance for the decode, so an admitted value
+    /// excuses one unbacked value once whichever piece draws it.
+    shared_admitted: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
 }
 
 /// A decode's standing against its budget and limits, as
@@ -59,6 +73,53 @@ pub(crate) struct Budget {
     spent: usize,
     decoded_bytes: u64,
     admitted_values: usize,
+}
+
+/// The version, ceilings and budget of one decode, set aside to open buffers over
+/// pieces of its stream. See [`DecoderBuffer::child_template`].
+#[cfg(feature = "point_cloud_decode")]
+pub(crate) struct ChildTemplate {
+    version_major: u8,
+    version_minor: u8,
+    budget_len: usize,
+    limits: crate::decode_limits::DecodeLimits,
+    decoded_bytes: u64,
+    /// What the stream had spent when this was taken, and what it and every
+    /// piece opened from this have spent since.
+    spent: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    spent_at_start: usize,
+    /// The stream's admitted-value allowance while the pieces are out, and what
+    /// it held when this was taken.
+    admitted: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    admitted_at_start: usize,
+}
+
+#[cfg(feature = "point_cloud_decode")]
+impl ChildTemplate {
+    /// A buffer over `data`, a stretch of the stream this was taken from. It
+    /// charges the counter every other such buffer, and the stream itself,
+    /// charges, so what the pieces spend side by side is bounded the way what
+    /// one buffer spends in order is.
+    pub(crate) fn open<'a>(&self, data: &'a [u8]) -> DecoderBuffer<'a> {
+        let mut buffer = DecoderBuffer::new(data).with_limits(self.limits);
+        buffer.version_major = self.version_major;
+        buffer.version_minor = self.version_minor;
+        buffer.spent = self.spent_at_start;
+        buffer.budget_len = self.budget_len;
+        buffer.decoded_bytes = self.decoded_bytes;
+        buffer.shared_spent = Some(self.spent.clone());
+        buffer.shared_admitted = Some(self.admitted.clone());
+        buffer
+    }
+
+    /// What the pieces opened from this, and the stream beside them, have
+    /// spent since it was taken.
+    #[cfg(test)]
+    pub(crate) fn spent_since(&self) -> usize {
+        self.spent
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .saturating_sub(self.spent_at_start)
+    }
 }
 
 impl<'a> DecoderBuffer<'a> {
@@ -76,10 +137,61 @@ impl<'a> DecoderBuffer<'a> {
             version_major: DEFAULT_MESH_VERSION.0,
             version_minor: DEFAULT_MESH_VERSION.1,
             spent: 0,
+            budget_len: data.len(),
+            shared_spent: None,
             limits: crate::decode_limits::DecodeLimits::default(),
             decoded_bytes: 0,
             admitted_values: 0,
+            shared_admitted: None,
         }
+    }
+
+    /// What a buffer over a stretch of this one's stream needs from it, taken
+    /// now so that the stretch can be opened later, on another thread, while this
+    /// buffer goes on being read.
+    ///
+    /// This buffer's admitted-value allowance and what it has spent move into
+    /// counters the pieces share, and this buffer draws on and charges them too
+    /// until [`rejoin`](Self::rejoin): the pieces and whatever this buffer
+    /// decodes in the meantime are one decode, every charge checked against
+    /// what all of them have spent.
+    #[cfg(feature = "point_cloud_decode")]
+    pub(crate) fn child_template(&mut self) -> ChildTemplate {
+        let admitted =
+            std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(self.admitted_values));
+        let spent = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(self.spent));
+        self.shared_admitted = Some(admitted.clone());
+        self.shared_spent = Some(spent.clone());
+        ChildTemplate {
+            version_major: self.version_major,
+            version_minor: self.version_minor,
+            budget_len: self.budget_len,
+            limits: self.limits,
+            decoded_bytes: self.decoded_bytes,
+            spent,
+            spent_at_start: self.spent,
+            admitted,
+            admitted_at_start: self.admitted_values,
+        }
+    }
+
+    /// Takes the allowance and the budget back from the pieces opened from
+    /// `template`: as they and this buffer left them where their work is kept,
+    /// and as they stood when it was taken where it is thrown away to be
+    /// decoded again in order.
+    #[cfg(feature = "point_cloud_decode")]
+    pub(crate) fn rejoin(&mut self, template: &ChildTemplate, kept: bool) {
+        use std::sync::atomic::Ordering;
+        (self.admitted_values, self.spent) = if kept {
+            (
+                template.admitted.load(Ordering::Relaxed),
+                template.spent.load(Ordering::Relaxed),
+            )
+        } else {
+            (template.admitted_at_start, template.spent_at_start)
+        };
+        self.shared_admitted = None;
+        self.shared_spent = None;
     }
 
     /// Decodes under `limits` rather than under
@@ -162,8 +274,13 @@ impl<'a> DecoderBuffer<'a> {
     ///
     /// [`MAX_ALLOCATED_BYTES_PER_INPUT_BYTE`]: crate::decode_budget::MAX_ALLOCATED_BYTES_PER_INPUT_BYTE
     pub(crate) fn charge(&mut self, bytes: usize) -> crate::status::Status {
-        let total = self.spent.saturating_add(bytes);
-        crate::decode_budget::ensure_allocation_is_backed(total, self.data.len())?;
+        let total = match &self.shared_spent {
+            Some(shared) => shared
+                .fetch_add(bytes, std::sync::atomic::Ordering::Relaxed)
+                .saturating_add(bytes),
+            None => self.spent.saturating_add(bytes),
+        };
+        crate::decode_budget::ensure_allocation_is_backed(total, self.budget_len)?;
         self.spent = total;
         Ok(())
     }
@@ -220,16 +337,44 @@ impl<'a> DecoderBuffer<'a> {
         count: usize,
         element_size: usize,
     ) -> crate::status::Status {
-        let admitted = count.min(self.admitted_values);
-        self.charge_elements(count - admitted, element_size)?;
-        self.admitted_values -= admitted;
-        Ok(())
+        use std::sync::atomic::Ordering;
+        let Some(shared) = &self.shared_admitted else {
+            let admitted = count.min(self.admitted_values);
+            self.charge_elements(count - admitted, element_size)?;
+            self.admitted_values -= admitted;
+            return Ok(());
+        };
+        // Drawn before the charge so no other piece can draw the same values,
+        // and handed back if the charge refuses the rest. A compare-exchange
+        // loop rather than `fetch_update`, deprecated since 1.99, or the
+        // `try_update` it became, which is past this crate's 1.88.
+        let mut left = shared.load(Ordering::Relaxed);
+        let admitted = loop {
+            let admitted = count.min(left);
+            match shared.compare_exchange(
+                left,
+                left - admitted,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break admitted,
+                Err(now) => left = now,
+            }
+        };
+        let shared = shared.clone();
+        self.charge_elements(count - admitted, element_size)
+            .inspect_err(|_| {
+                shared.fetch_add(admitted, Ordering::Relaxed);
+            })
     }
 
     /// Where this decode stands against its budget and its limits, for a
     /// decode that tries a faster way and gives it up to put back as it was.
+    /// A buffer read on one thread; one whose pieces share their counters is
+    /// not one this is taken of.
     #[cfg(feature = "point_cloud_decode")]
     pub(crate) fn budget(&self) -> Budget {
+        debug_assert!(self.shared_spent.is_none() && self.shared_admitted.is_none());
         Budget {
             spent: self.spent,
             decoded_bytes: self.decoded_bytes,
@@ -245,17 +390,19 @@ impl<'a> DecoderBuffer<'a> {
         self.admitted_values = budget.admitted_values;
     }
 
-    /// A buffer over the same stream at `pos`, carrying this one's version and
-    /// limits, and its budget as it stands: what it charges is checked against
-    /// everything this decode has charged before it, and [`adopt_budget`]
-    /// makes it this buffer's. For reading a second stream of the same decode
-    /// beside the first.
+    /// A buffer over the same stream at `pos`, carrying this one's version,
+    /// limits and the length its budget is judged against, and its budget as
+    /// it stands: what it charges is checked against everything this decode
+    /// has charged before it, and [`adopt_budget`] makes it this buffer's. For
+    /// reading a second stream of the same decode beside the first, on the
+    /// same thread.
     ///
     /// [`adopt_budget`]: Self::adopt_budget
     #[cfg(feature = "point_cloud_decode")]
     pub(crate) fn fork_at(&self, pos: usize) -> Result<DecoderBuffer<'a>, DracoError> {
         let mut fork = DecoderBuffer::new(self.data).with_limits(self.limits);
         fork.set_version(self.version_major, self.version_minor);
+        fork.budget_len = self.budget_len;
         fork.restore_budget(self.budget());
         fork.set_position(pos)?;
         Ok(fork)
@@ -794,5 +941,55 @@ mod tests {
         assert!(buffer
             .charge_unbacked(u32::MAX as usize, size_of::<u32>())
             .is_err());
+    }
+
+    /// Pieces of one stream decoded side by side draw on one allowance: what
+    /// two of them draw together is what one buffer could, the rest pays the
+    /// budget they share, and the stream takes back what is left -- or all of
+    /// it, where their work is thrown away to be decoded again in order.
+    #[cfg(feature = "point_cloud_decode")]
+    #[test]
+    fn pieces_decoded_side_by_side_share_one_allowance() {
+        let data = [0u8; 113];
+        let mut stream = DecoderBuffer::new(&data);
+        stream.admit_attribute(1_000, 1, 1).unwrap();
+        let template = stream.child_template();
+        let mut a = template.open(&data);
+        let mut b = template.open(&data);
+        a.charge_unbacked(600, size_of::<u32>()).unwrap();
+        b.charge_unbacked(600, size_of::<u32>()).unwrap();
+        stream.charge_unbacked(100, size_of::<u32>()).unwrap();
+        assert_eq!(template.spent_since(), 300 * size_of::<u32>());
+
+        stream.rejoin(&template, true);
+        assert_eq!(stream.admitted_values, 0);
+        assert_eq!(stream.spent(), 300 * size_of::<u32>());
+        stream.rejoin(&template, false);
+        assert_eq!(stream.admitted_values, 1_000);
+        assert_eq!(stream.spent(), 0);
+    }
+
+    /// What the stream charges while its pieces are out counts against the
+    /// ceiling they charge: two charges, each under it alone, are refused
+    /// together whichever of them made it.
+    #[cfg(feature = "point_cloud_decode")]
+    #[test]
+    fn the_stream_and_its_pieces_charge_one_budget() {
+        let data = [0u8; 113];
+        let two_thirds = (113 << 20) * 2 / 3;
+        for stream_first in [true, false] {
+            let mut stream = DecoderBuffer::new(&data);
+            let template = stream.child_template();
+            let mut piece = template.open(&data);
+            let (first, second) = if stream_first {
+                (stream.charge(two_thirds), piece.charge(two_thirds))
+            } else {
+                (piece.charge(two_thirds), stream.charge(two_thirds))
+            };
+            assert!(
+                first.is_ok() && second.is_err(),
+                "stream first: {stream_first}"
+            );
+        }
     }
 }

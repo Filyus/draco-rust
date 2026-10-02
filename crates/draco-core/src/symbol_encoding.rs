@@ -788,55 +788,120 @@ fn raw_run_outlived_its_input(num_values: usize) -> DracoError {
     )
 }
 
-/// Two attributes' raw symbols, decoded side by side -- see
+/// The two attributes' raw symbols, decoded side by side -- see
 /// [`decode_run_pair`](crate::rans_symbol_decoder::decode_run_pair) for why
-/// that is faster than one after the other. `buffer` stands at the first
-/// stream's scheme byte, as [`decode_symbols`] would find it, and is left past
-/// its symbols; the second stream's scheme byte is at `second.0` in the same
-/// data, with `second.1` values of `second.2` components.
+/// that is faster than one after the other. Each `(buffer, values,
+/// components)` names a stream whose buffer stands at its scheme byte, as
+/// [`decode_symbols`] would find it, and each buffer is left past its symbols.
+///
+/// `None` where either stream is not one this takes -- the tagged scheme, no
+/// values, a count that is not whole entries -- or where anything goes wrong at
+/// all, a run its coded bytes do not back included. The caller then decodes
+/// each the ordinary way, which is what reports the error if there is one: so
+/// this changes when the symbols are decoded, never what comes of a stream.
+///
+/// Both streams' headers are read before either is charged, so a pair the
+/// second stream turns down has charged nothing for the first, which its
+/// ordinary decode then charges once. The buffers here can be pieces of one
+/// decode whose charges cannot be put back.
+#[cfg(feature = "point_cloud_decode")]
+pub(crate) fn decode_raw_symbol_pair(
+    (buffer_a, count_a, components_a): (&mut DecoderBuffer, usize, usize),
+    (buffer_b, count_b, components_b): (&mut DecoderBuffer, usize, usize),
+) -> Option<(Vec<u32>, Vec<u32>)> {
+    let started_a = start_raw_run((&mut *buffer_a, count_a, components_a))?;
+    let started_b = start_raw_run((&mut *buffer_b, count_b, components_b))?;
+    let opened_a = reserve_raw_run(buffer_a, started_a, count_a)?;
+    let opened_b = reserve_raw_run(buffer_b, started_b, count_b)?;
+    decode_opened_pair(opened_a, count_a, opened_b, count_b)
+}
+
+/// [`decode_raw_symbol_pair`] for two streams of one buffer: `buffer` stands
+/// at the first stream's scheme byte, `first` its values and components, and
+/// is left past its symbols; the second stream's scheme byte is at `second.0`
+/// in the same data, with `second.1` values of `second.2` components.
 ///
 /// The second stream is read through a buffer of its own, opened there after
 /// the first stream has been charged for, and what it charges is then
 /// `buffer`'s: the two draw on one budget, in the order a decode one after the
-/// other would.
-///
-/// `None` where either stream is not one this takes -- the tagged scheme, no
-/// values, a count that is not whole entries -- or where anything goes wrong at
-/// all, a run its coded bytes do not back included. The caller then puts the
-/// budget back as it was and decodes each the ordinary way, which is what
-/// reports the error if there is one: so this changes when the symbols are
-/// decoded, never what comes of a stream.
+/// other would. The caller puts the budget back as it was
+/// where this returns `None`.
 #[cfg(feature = "point_cloud_decode")]
-pub(crate) fn decode_raw_symbol_pair(
+pub(crate) fn decode_raw_symbol_pair_in(
     buffer: &mut DecoderBuffer,
     first: (usize, usize),
     second: (usize, usize, usize),
 ) -> Option<(Vec<u32>, Vec<u32>)> {
-    fn open<'a>(
-        buffer: &mut DecoderBuffer<'a>,
-        num_values: usize,
-        num_components: usize,
-    ) -> Option<(RAnsSymbolDecoder<'a>, Vec<u32>)> {
-        if num_values == 0
-            || num_components == 0
-            || !num_values.is_multiple_of(num_components)
-            || buffer.decode_u8().ok()? != 1
-        {
-            return None;
-        }
-        let decoder = open_raw_symbols(num_values, buffer).ok()?;
-        // The count is backed now: what the payload cannot account for was
-        // just charged to the budget, so reserving for it is what the budget
-        // has agreed to.
-        let mut symbols = Vec::new();
-        symbols.try_reserve_exact(num_values).ok()?;
-        Some((decoder, symbols))
-    }
-    let (count_a, count_b) = (first.0, second.1);
-    let (mut decoder_a, mut symbols_a) = open(buffer, first.0, first.1)?;
+    let opened_a = open_raw_run((buffer, first.0, first.1))?;
     let mut other = buffer.fork_at(second.0).ok()?;
-    let (mut decoder_b, mut symbols_b) = open(&mut other, second.1, second.2)?;
+    let opened_b = open_raw_run((&mut other, second.1, second.2))?;
     buffer.adopt_budget(&other);
+    decode_opened_pair(opened_a, first.0, opened_b, second.1)
+}
+
+/// A raw stream's coder, started, and room reserved for its symbols, or `None`
+/// where the stream is not one a pair takes: no values, a count that is not
+/// whole entries, the tagged scheme, a header that does not read, or a count
+/// its payload does not back over an alphabet of more than one symbol.
+///
+/// The last is what lets the room be reserved whole. A count past what the
+/// payload backs is the one the decode in order grows its room for a chunk at
+/// a time, refusing the run as soon as the payload is spent; reserving and
+/// filling the whole count first would spend in memory and time what that
+/// early refusal saves, so such a run is left to the decode in order. An
+/// alphabet of one is the exception: its coder never runs out, the decode in
+/// order fills the whole count too, and the pair charges it as that does.
+#[cfg(feature = "point_cloud_decode")]
+fn open_raw_run<'a>(
+    (buffer, num_values, num_components): (&mut DecoderBuffer<'a>, usize, usize),
+) -> Option<(RAnsSymbolDecoder<'a>, Vec<u32>)> {
+    let started = start_raw_run((&mut *buffer, num_values, num_components))?;
+    reserve_raw_run(buffer, started, num_values)
+}
+
+/// [`open_raw_run`] up to the charge: the coder started and the part of the
+/// count its payload does not back, nothing charged and nothing reserved.
+#[cfg(feature = "point_cloud_decode")]
+fn start_raw_run<'a>(
+    (buffer, num_values, num_components): (&mut DecoderBuffer<'a>, usize, usize),
+) -> Option<(RAnsSymbolDecoder<'a>, usize)> {
+    if num_values == 0
+        || num_components == 0
+        || !num_values.is_multiple_of(num_components)
+        || buffer.decode_u8().ok()? != 1
+    {
+        return None;
+    }
+    let (decoder, backed) = start_raw_symbols(buffer).ok()?;
+    let unbacked = num_values.saturating_sub(backed);
+    (unbacked == 0 || decoder.num_symbols() == 1).then_some((decoder, unbacked))
+}
+
+/// The rest of [`open_raw_run`]: the unbacked part charged as the decode in
+/// order charges it, and room reserved for the whole count.
+#[cfg(feature = "point_cloud_decode")]
+fn reserve_raw_run<'a>(
+    buffer: &mut DecoderBuffer<'a>,
+    (decoder, unbacked): (RAnsSymbolDecoder<'a>, usize),
+    num_values: usize,
+) -> Option<(RAnsSymbolDecoder<'a>, Vec<u32>)> {
+    if unbacked > 0 {
+        buffer.charge_unbacked(unbacked, size_of::<u32>()).ok()?;
+    }
+    let mut symbols = Vec::new();
+    symbols.try_reserve_exact(num_values).ok()?;
+    Some((decoder, symbols))
+}
+
+/// Two opened runs decoded side by side as far as both go, and each on alone
+/// after that.
+#[cfg(feature = "point_cloud_decode")]
+fn decode_opened_pair(
+    (mut decoder_a, mut symbols_a): (RAnsSymbolDecoder<'_>, Vec<u32>),
+    count_a: usize,
+    (mut decoder_b, mut symbols_b): (RAnsSymbolDecoder<'_>, Vec<u32>),
+    count_b: usize,
+) -> Option<(Vec<u32>, Vec<u32>)> {
     let both = count_a.min(count_b);
     let (backed_a, backed_b) = crate::rans_symbol_decoder::decode_run_pair(
         &mut decoder_a,
@@ -858,6 +923,36 @@ fn open_raw_symbols<'a>(
     num_values: usize,
     in_buffer: &mut DecoderBuffer<'a>,
 ) -> Result<RAnsSymbolDecoder<'a>, DracoError> {
+    let (decoder, backed_by_payload) = start_raw_symbols(in_buffer)?;
+    // Only the part of the count the payload cannot plausibly account for is
+    // charged, so a real stream charges nothing and a runaway is bounded.
+    //
+    // Neither the payload nor the coder gives an exact bound here. rANS spends
+    // well under a bit on a near-certain symbol, and its state does not have
+    // to fall out of range once the bytes are spent: a near-deterministic
+    // alphabet keeps producing symbols from state alone indefinitely, which is
+    // how a small stream asked for two billion values and got them, in nine
+    // seconds. An alphabet of *one* is the extreme -- no payload at all, so
+    // nothing in the stream says how far the run goes -- and a constant
+    // attribute reaches it legitimately, at any count. So the unbacked part is
+    // drawn first from the values the caller's limits admitted for the
+    // attributes, which a constant attribute's run is, and only what exceeds
+    // them reaches the budget; see `DecoderBuffer::charge_unbacked`.
+    if num_values > backed_by_payload {
+        in_buffer.charge_unbacked(num_values - backed_by_payload, size_of::<u32>())?;
+    }
+    Ok(decoder)
+}
+
+/// Reads a raw symbol stream's header and frequency table and starts its rANS
+/// coder, with the number of symbols its payload backs: sixty-four a byte, the
+/// same measured dial the reserve uses. The densest coding a Draco encoder
+/// produces is 4.4 symbols per *bit* on the seeded ribbon at speed 0, which is
+/// 35 a byte. `in_buffer` is left past the stream.
+#[cfg(feature = "decoder")]
+fn start_raw_symbols<'a>(
+    in_buffer: &mut DecoderBuffer<'a>,
+) -> Result<(RAnsSymbolDecoder<'a>, usize), DracoError> {
     // Read serialized symbol-bit-length header (written by encoder)
     let symbols_bit_length = in_buffer
         .decode_u8()
@@ -888,29 +983,7 @@ fn open_raw_symbols<'a>(
         ));
     }
     let payload_bytes = before_payload.saturating_sub(in_buffer.remaining_size());
-    // Only the part of the count the payload cannot plausibly account for is
-    // charged, so a real stream charges nothing and a runaway is bounded.
-    //
-    // Neither the payload nor the coder gives an exact bound here. rANS spends
-    // well under a bit on a near-certain symbol, and its state does not have
-    // to fall out of range once the bytes are spent: a near-deterministic
-    // alphabet keeps producing symbols from state alone indefinitely, which is
-    // how a small stream asked for two billion values and got them, in nine
-    // seconds. An alphabet of *one* is the extreme -- no payload at all, so
-    // nothing in the stream says how far the run goes -- and a constant
-    // attribute reaches it legitimately, at any count. So the unbacked part is
-    // drawn first from the values the caller's limits admitted for the
-    // attributes, which a constant attribute's run is, and only what exceeds
-    // them reaches the budget; see `DecoderBuffer::charge_unbacked`.
-    //
-    // Sixty-four symbols per payload byte is the same measured dial the
-    // reserve below uses: the densest coding a Draco encoder produces is 4.4
-    // symbols per *bit* on the seeded ribbon at speed 0, which is 35 per byte.
-    let backed_by_payload = payload_bytes.saturating_mul(64);
-    if num_values > backed_by_payload {
-        in_buffer.charge_unbacked(num_values - backed_by_payload, size_of::<u32>())?;
-    }
-    Ok(decoder)
+    Ok((decoder, payload_bytes.saturating_mul(64)))
 }
 
 #[cfg(feature = "decoder")]
@@ -1163,6 +1236,76 @@ mod roundtrip_tests {
             out.len() < 50_000_000,
             "the sink was filled to the declared count before failing"
         );
+    }
+
+    /// A pair takes only runs their payloads back. A count past that is the
+    /// one the decode in order refuses after reserving what the input bounds;
+    /// the pair would have reserved the whole count and filled it first.
+    #[cfg(feature = "point_cloud_decode")]
+    #[test]
+    fn a_pair_leaves_a_run_its_payload_does_not_back_to_the_decode_in_order() {
+        let options = SymbolEncodingOptions::default();
+        let encode = |symbols: &[u32]| {
+            let mut target = EncoderBuffer::new();
+            encode_symbols(symbols, 1, &options, &mut target).unwrap();
+            assert_eq!(target.data()[0], 1, "the raw scheme, which a pair takes");
+            target.data().to_vec()
+        };
+
+        // A count its payload backs is paired, and decodes as in order.
+        let symbols: Vec<u32> = (0..50_000u32).map(|i| i % 3).collect();
+        let data = encode(&symbols);
+        let (mut a, mut b) = (DecoderBuffer::new(&data), DecoderBuffer::new(&data));
+        let (pa, pb) = decode_raw_symbol_pair((&mut a, symbols.len(), 1), (&mut b, 50_000, 1))
+            .expect("a backed pair");
+        assert_eq!((pa.as_slice(), pb.as_slice()), (&symbols[..], &symbols[..]));
+
+        // A count it does not back: refused by the decode in order from a
+        // sink the input bounds, and not opened for the pair at all.
+        let rare: Vec<u32> = (0..50_000u32).map(|i| u32::from(i % 997 == 0)).collect();
+        let data = encode(&rare);
+        const DECLARED: usize = 20_000_000;
+        let admitted = || {
+            let mut buffer = DecoderBuffer::new(&data);
+            buffer.admit_attribute(DECLARED, 1, 1).unwrap();
+            buffer
+        };
+        let mut out = Vec::new();
+        let error = decode_symbols(DECLARED, 1, &options, &mut admitted(), &mut out)
+            .expect_err("a count the payload cannot back decoded in order");
+        assert_eq!(
+            error.kind(),
+            crate::status::ErrorKind::AllocationExceedsInput
+        );
+        assert!(out.capacity() < 1_000_000, "{}", out.capacity());
+        assert!(open_raw_run((&mut admitted(), DECLARED, 1)).is_none());
+        let (mut a, mut b) = (admitted(), admitted());
+        assert!(decode_raw_symbol_pair((&mut a, DECLARED, 1), (&mut b, DECLARED, 1)).is_none());
+    }
+
+    /// A pair the second stream turns down charges nothing for the first: a
+    /// constant run, whose whole count is unbacked, paired with a stream of
+    /// the tagged scheme leaves the first buffer's budget where it was, for
+    /// its ordinary decode to charge once.
+    #[cfg(feature = "point_cloud_decode")]
+    #[test]
+    fn a_pair_turned_down_charges_neither_stream() {
+        let options = SymbolEncodingOptions::default();
+        let encode = |symbols: &[u32]| {
+            let mut target = EncoderBuffer::new();
+            encode_symbols(symbols, 1, &options, &mut target).unwrap();
+            target.data().to_vec()
+        };
+        let constant = encode(&[0; 4_000]);
+        let tagged = encode(&[u32::MAX, 1, 2, 3]);
+        assert_eq!((constant[0], tagged[0]), (1, 0), "raw, then tagged");
+
+        let mut a = DecoderBuffer::new(&constant);
+        a.admit_attribute(100_000, 1, 1).unwrap();
+        let before = a.budget();
+        let mut b = DecoderBuffer::new(&tagged);
+        assert!(decode_raw_symbol_pair((&mut a, 100_000, 1), (&mut b, 4, 1)).is_none());
+        assert_eq!(a.budget(), before);
     }
 
     /// A count the coded bytes cannot account for is charged to the budget,

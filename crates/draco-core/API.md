@@ -528,7 +528,7 @@ decoder reads, C++ included:
   disagree with the positions, and keeps the input order, or the curve, where
   that is already better by the coder's own price. How hard it looks follows
   `encoding_speed`: 9 and 10 write the curve, the default 5 counts the 16
-  dearest attribute columns, 0 counts them all. On a Gaussian splat of 742
+  dearest attribute columns, 0 to 2 the 64 dearest. On a Gaussian splat of 742
   thousand points and 58 attributes it writes 6.8% (speed 8), 11.9% (5), 16.5%
   (3) and 19.8% (0) fewer bytes than the spatial order, for an encode of 1.2
   to 4.9 s against 0.5 s. It reorders the decoded
@@ -538,13 +538,22 @@ decoder reads, C++ included:
 The rustdoc of each carries the measurements.
 
 `set_threads` and `get_threads` cap the threads an encode uses: `0`, the
-default, is as many as the machine has up to sixteen, `1` keeps the encode on
-the calling thread, and WebAssembly ignores it. A sequential point cloud's
+default, is as many as the machine has, `1` keeps the encode on the calling
+thread, no count is taken past sixteen, and WebAssembly ignores it. A cloud
+of fewer than 2^17 values starts no thread, and a thread the system refuses to
+start is one fewer rather than an error. A sequential point cloud's
 attributes are encoded side by side, a large attribute's passes run in pieces,
 and the order search and the spatial curve use the same threads. The stream is
 the same on any count. On sixteen threads a Gaussian splat of 742 thousand
 points encodes in 0.25 s against 0.56 s on one, a lidar capture of 10.7 million
 in 0.60 s against 1.72 s.
+
+`PointCloudDecoder::set_threads` does the same for a decode: a sequential point
+cloud's attributes are decoded side by side, two at a time on each thread, and
+dequantized side by side, once the stream is large enough to repay it. The
+decoded cloud is the same on any count. `MeshDecoder::set_threads` passes the
+same cap to a point-cloud stream read through a mesh decoder. On sixteen threads that splat decodes in
+0.058 s against 0.204 s on one, the lidar capture in 0.41 s against 0.67 s.
 
 `set_version` accepts any `(major, minor)`, but the encode does not: each
 geometry/coder combination claims the bitstream versions that have an
@@ -678,7 +687,9 @@ println!("Faces: {}", mesh.num_faces());
 println!("Points: {}", mesh.num_points());
 ```
 
-**API Surface:** `new` and `decode`.
+**API Surface:** `new`, `decode`, and `set_threads` (with
+`point_cloud_decode`), which caps the threads of a point-cloud stream read
+through the mesh decoder as `PointCloudDecoder::set_threads` does.
 
 ---
 
@@ -698,7 +709,8 @@ let mut pc = PointCloud::new();
 decoder.decode(&mut buffer, &mut pc)?;
 ```
 
-**API Surface:** `new` and `decode`.
+**API Surface:** `new`, `decode`, `get_geometry_type`, and `set_threads`,
+whose default `0` takes as many threads as the machine has up to sixteen.
 
 ---
 

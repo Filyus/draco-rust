@@ -180,6 +180,8 @@ pub struct MeshDecoder {
     edgebreaker_vertex_to_corner_map: Vec<u32>,
     edgebreaker_is_vert_hole: Vec<bool>,
     traversal_method: u8,
+    #[cfg(feature = "point_cloud_decode")]
+    threads: i32,
 }
 
 impl Default for MeshDecoder {
@@ -206,7 +208,20 @@ impl MeshDecoder {
             edgebreaker_vertex_to_corner_map: Vec::new(),
             edgebreaker_is_vert_hole: Vec::new(),
             traversal_method: 0,
+            #[cfg(feature = "point_cloud_decode")]
+            threads: 0,
         }
+    }
+
+    /// Caps the threads the decode of a point-cloud stream may use, as
+    /// [`PointCloudDecoder::set_threads`] does: `0`, the default, is as many as
+    /// the machine has up to sixteen, `1` keeps the decode on the calling
+    /// thread. A mesh stream is decoded on the calling thread whatever this is.
+    ///
+    /// [`PointCloudDecoder::set_threads`]: crate::PointCloudDecoder::set_threads
+    #[cfg(feature = "point_cloud_decode")]
+    pub fn set_threads(&mut self, threads: i32) {
+        self.threads = threads;
     }
 
     /// Decodes a Draco mesh from `in_buffer` into `out_mesh`.
@@ -250,6 +265,7 @@ impl MeshDecoder {
                 // Delegate to PointCloudDecoder which reads num_points + attributes
                 // directly into the Mesh's underlying PointCloud.
                 let mut pc_decoder = crate::point_cloud_decoder::PointCloudDecoder::new();
+                pc_decoder.set_threads(self.threads);
                 return pc_decoder.decode_after_header(
                     self.version_major,
                     self.version_minor,

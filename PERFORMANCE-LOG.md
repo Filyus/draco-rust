@@ -36,7 +36,7 @@ figure at all.
 `rejected` -- tried, deliberately not kept. `retracted` -- an earlier claim
 here was withdrawn. `diagnostic` -- measured only, no change proposed.
 
-78 rounds: 47 landed, 10 diagnostic, 11 null, 8 retracted, 2 rejected.
+79 rounds: 48 landed, 10 diagnostic, 11 null, 8 retracted, 2 rejected.
 
 | Round | Verdict | Headline |
 | --- | --- | ---: |
@@ -118,6 +118,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [Undoing A Difference As A Sum](#undoing-a-difference-as-a-sum) | landed | `-3 to -17% decode` |
 | [Three Shorter Sums, All Null](#three-shorter-sums-all-null) | null | `-0.5 to +2%` |
 | [The Encoder On Threads](#the-encoder-on-threads) | landed | `2.3x to 4.6x on 16 threads` |
+| [The Decoder On Threads](#the-decoder-on-threads) | landed | `3.5x to 4.0x splat decode on 16 threads` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -4581,6 +4582,47 @@ one. The one-thread column ran last in a long run and reads high: against the
 tree before, alternated three times, best of five, one thread is 2.8% to 3.9%
 faster, not slower (the gather writes into its buffer instead of pushing), and
 the bytes are the tree before's.
+
+### The Decoder On Threads
+
+2026-10-02, same machine. The threaded point-cloud decoder from the
+experiment branch: `PointCloudDecoder::set_threads` (`0`, the default, is the
+machine's up to sixteen). The streams of a 2.0 sequential cloud lie end to end
+with no table of where each starts, so the calling thread walks them, stepping
+over each raw stream and decoding in place the few it cannot step over, and
+hands each stretch to a worker as a job with a buffer of its own; workers take
+two jobs at a time and decode their symbols in one loop. The pieces draw on one
+allocation budget and one allowance of admitted values, shared counters the
+stream charges once they are done, so a decode on threads is bounded as one in
+order is. Dequantization and the octahedral normals run one attribute a
+thread. Anything that goes wrong puts the position and the budget back and
+decodes in order, which reports the error.
+
+On one thread the side-by-side decode was 1% to 2.5% slower than the decode in
+order with its pairs, which the tree before had: each job decodes into a cloud
+and a buffer of its own. One thread, and WebAssembly, so keep the decode in
+order; the jobs run only on two or more. Against the tree before, alternated
+three times, best of seven, the one-thread decode is then within -0.3% to
++1.0%, the airborne capture +1.3% and +1.6%, the values the same.
+
+Best of five, seconds; the one-thread column ran last in a long run and reads
+high (`0.712` against `0.519` for the 1.9M splat in the alternated runs):
+
+| stream | 1 | 2 | 4 | 8 | 16 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| splat, 742K, spatial order | `0.288` | `0.161` | `0.105` | `0.069` | `0.058` |
+| splat, 1.9M, spatial | `0.712` | `0.422` | `0.246` | `0.156` | `0.140` |
+| splat, 3.2M, spatial | `1.170` | `0.675` | `0.408` | `0.261` | `0.217` |
+| photogrammetry scan, 8.0M, 2 attributes | `0.394` | `0.268` | `0.262` | `0.262` | `0.262` |
+| airborne lidar, 10.7M, 7 attributes | `0.924` | `0.549` | `0.468` | `0.433` | `0.459` |
+
+Against the alternated one-thread figures, sixteen threads decode the splats
+3.5 to 4.0 times faster and the lidar capture 1.6 times; the scan's two
+attributes leave one chain, the position's, and gain nothing. The tests decode
+streams of every synthetic shape and damaged and constant-heavy ones on 1, 2, 4,
+5, 12 and 16 threads against the decode in order, and the pairs of the decode
+in order against the decode without them, budget included; the latter fail with
+the budget's hand-over dropped.
 
 ## Unexplored
 

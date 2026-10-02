@@ -1,7 +1,7 @@
 //! PROBE: decode times of streams written once, for an A/B between builds.
 //! `emit` writes the streams; `decode` times them, best of seven.
 
-#![cfg(all(feature = "encoder", feature = "decoder"))]
+#![cfg(all(feature = "encoder", feature = "point_cloud_decode"))]
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -38,8 +38,13 @@ fn options(cloud: &PointCloud) -> EncoderOptions {
 #[test]
 #[ignore = "PROBE"]
 fn emit() {
-    let out = PathBuf::from(std::env::var_os("DRACO_STREAM_DIR").expect("DRACO_STREAM_DIR"));
-    let clouds = std::env::var_os("DRACO_ORDER_CLOUDS").expect("DRACO_ORDER_CLOUDS");
+    let (Some(out), Some(clouds)) = (
+        std::env::var_os("DRACO_STREAM_DIR").map(PathBuf::from),
+        std::env::var_os("DRACO_ORDER_CLOUDS"),
+    ) else {
+        eprintln!("set DRACO_STREAM_DIR and DRACO_ORDER_CLOUDS to emit streams");
+        return;
+    };
     for path in std::env::split_paths(&clouds) {
         let source = std::fs::read(&path).expect("reads");
         let cloud = draco_io::ply_reader::PlyReader::from_bytes(source)
@@ -64,7 +69,10 @@ fn emit() {
 #[test]
 #[ignore = "PROBE"]
 fn decode() {
-    let dir = PathBuf::from(std::env::var_os("DRACO_STREAM_DIR").expect("DRACO_STREAM_DIR"));
+    let Some(dir) = std::env::var_os("DRACO_STREAM_DIR").map(PathBuf::from) else {
+        eprintln!("set DRACO_STREAM_DIR to the streams to decode");
+        return;
+    };
     let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir)
         .unwrap()
         .map(|e| e.unwrap().path())
@@ -79,7 +87,11 @@ fn decode() {
             std::thread::sleep(Duration::from_millis(300));
             let started = Instant::now();
             let mut decoded = PointCloud::new();
-            PointCloudDecoder::new()
+            // On one thread: the arms differ in the work one decode does, which
+            // threads would spread over however many cores the machine has.
+            let mut decoder = PointCloudDecoder::new();
+            decoder.set_threads(1);
+            decoder
                 .decode(&mut DecoderBuffer::new(&bytes), &mut decoded)
                 .expect("decodes");
             best = best.min(started.elapsed().as_secs_f64());
