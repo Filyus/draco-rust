@@ -92,6 +92,12 @@ export interface ExportSettings {
   includeNormals: boolean;
   includeUvs: boolean;
   useDraco: boolean;
+  /**
+   * The source keeps Z up and the target is Y-up glTF space, so the geometry
+   * is turned on the way: see `turnZUpToYUp`. Read only by the flat-mesh
+   * route, the one formats that state no axes of their own take.
+   */
+  zUpToYUp?: boolean;
   /** Whether binary FBX arrays may use zlib compression. */
   fbxCompression?: boolean;
   /**
@@ -447,7 +453,13 @@ async function exportFlattenedMeshes(settings: ExportSettings, loaded: LoadedFil
       + 'animation and the node hierarchy are not written',
     );
   }
-  const meshes = prepareMeshesForExport(sourceMeshes, settings);
+  const prepared = prepareMeshesForExport(sourceMeshes, settings);
+  // glTF is Y-up by definition, and this route's FBX declares glTF's space.
+  // The formats with no axes of their own keep the file's coordinates as
+  // they were, which is the only convention such a file had.
+  const meshes = settings.zUpToYUp && Y_UP_TARGETS.has(format)
+    ? prepared.map(turnZUpToYUp)
+    : prepared;
   if (meshes.length === 0) {
     throw new Error('The document contains no triangle geometry to export');
   }
@@ -562,6 +574,43 @@ export function prepareMeshesForExport(
     normalSets: layerSets(mesh.normalSets),
     colorSets: layerSets(mesh.colorSets),
   }));
+}
+
+/** The targets that are written in Y-up glTF space. */
+export const Y_UP_TARGETS: ReadonlySet<string> = new Set(['glb', 'gltf', 'fbx', 'fbx-legacy']);
+
+/**
+ * A Z-up mesh turned into Y-up space: `(x, y, z)` becomes `(x, z, -y)`, the
+ * quarter turn about X that the viewer shows a Z-up file through.
+ *
+ * Exact -- a swap and a sign, no arithmetic -- and done into new arrays,
+ * because a prepared mesh shares the reader's: turning them in place would
+ * turn the open file, and a second export would turn it again. Directions
+ * turn the same way as points, and FBX's control points and normal sets with
+ * them, since its writer rebuilds polygons from those.
+ */
+export function turnZUpToYUp(mesh: PreparedMesh): PreparedMesh {
+  // Into an array of the same kind: a writer may insist on the typed array
+  // the reader produced.
+  const turn = (values: ArrayLike<number>): ArrayLike<number> => {
+    const out: { [index: number]: number; length: number } = ArrayBuffer.isView(values)
+      ? new (values.constructor as new (length: number) => Float64Array)(values.length)
+      : new Array<number>(values.length);
+    for (let i = 0; i < values.length; i++) out[i] = values[i];
+    for (let i = 0; i + 2 < values.length; i += 3) {
+      out[i + 1] = values[i + 2];
+      // Subtracted rather than negated, so a zero stays +0 in the file.
+      out[i + 2] = 0 - values[i + 1];
+    }
+    return out;
+  };
+  return {
+    ...mesh,
+    positions: turn(mesh.positions),
+    normals: mesh.normals && turn(mesh.normals),
+    controlPoints: mesh.controlPoints && turn(mesh.controlPoints),
+    normalSets: mesh.normalSets.map((set) => ({ ...set, values: turn(set.values) })),
+  };
 }
 
 export function prepareFbxSceneForExport(

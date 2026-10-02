@@ -1,8 +1,8 @@
 import { formatFileSize } from './format.ts';
 import { errorMessage, log } from './log.ts';
-import { colorBits, dracoOptions, encodingMethod, encodingSpeed, exportFormat, exportStatFields, exportStats, fbxCompressionLevel, fbxOptions, genericBits, includeNormals, includeUvs, normalBits, positionBits, texcoordBits, useDraco, useFbxCompression, useFbxLegacy } from './dom.ts';
+import { colorBits, dracoOptions, encodingMethod, encodingSpeed, exportFormat, exportStatFields, exportStats, exportZUp, fbxCompressionLevel, fbxOptions, genericBits, includeNormals, includeUvs, normalBits, positionBits, texcoordBits, upAxisOptions, useDraco, useFbxCompression, useFbxLegacy } from './dom.ts';
 import { state } from './state.ts';
-import { runExport } from './export-branches.ts';
+import { runExport, Y_UP_TARGETS } from './export-branches.ts';
 import type { DracoStats, ExportOutcome, ExportResult, ExportSettings } from './export-branches.ts';
 import { setWarningSource } from './warnings.ts';
 
@@ -29,7 +29,19 @@ export function updateExportOptions() {
     dracoOptions.style.display = 'none';
   }
   fbxOptions.style.display = format === 'fbx' || format === 'fbx-legacy' ? 'block' : 'none';
+  upAxisOptions.style.display = upAxisApplies(format) ? 'block' : 'none';
 }
+
+/**
+ * Whether the export can be told the source is Z-up: only a target written in
+ * Y-up space can do anything with it, and only a source that states no axes
+ * needs telling -- glTF and FBX bring their own.
+ */
+function upAxisApplies(format: string) {
+  return Y_UP_TARGETS.has(format) && AXISLESS_SOURCES.has(state.currentFileType ?? '');
+}
+
+const AXISLESS_SOURCES: ReadonlySet<string> = new Set(['ply', 'obj', 'stl', 'drc']);
 
 /**
  * Put away what the last export reported.
@@ -49,6 +61,7 @@ function exportSettings(): ExportSettings {
     includeNormals: includeNormals.checked,
     includeUvs: includeUvs.checked,
     useDraco: useDraco.checked,
+    zUpToYUp: upAxisApplies(exportFormat.value) && exportZUp.checked,
     fbxCompression: useFbxCompression.checked,
     fbxCompressionLevel: Number(fbxCompressionLevel.value),
     fbxLegacyCompatibility: useFbxLegacy.checked,

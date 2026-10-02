@@ -284,6 +284,17 @@
                         </label>
                     </div>
 
+                    <div class="option-group" id="up-axis-options" style="display: none;">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="export-z-up" aria-describedby="export-z-up-note">
+                            <span>Source is Z-up: write it Y-up</span>
+                        </label>
+                        <p class="slider-note" id="export-z-up-note">
+                            This target is Y-up; lidar and survey files keep Z up. The turn is exact,
+                            (x, y, z) to (x, z, &#8722;y), and follows the preview's Z up until changed here.
+                        </p>
+                    </div>
+
                     <button id="export-btn" class="primary-btn">
                         <span>⬇</span> Convert &amp; Download
                     </button>

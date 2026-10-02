@@ -42,6 +42,7 @@ import {
   exportFormat,
   exportSection,
   exportSidebar,
+  exportZUp,
   fileInfo,
   fileInput,
   folderInput,
@@ -338,6 +339,7 @@ function setupEventListeners() {
   });
   updateQuantThumbColor(fbxCompressionLevel);
   useFbxLegacy.addEventListener('change', clearExportReport);
+  exportZUp.addEventListener('change', clearExportReport);
 
   // Draco checkbox
   useDraco.addEventListener('change', () => {
@@ -479,6 +481,8 @@ async function handleModel(model: IntakeEntry, entries: IntakeEntry[]) {
   dropZone.style.display = 'none';
 
   state.currentFileType = extension;
+  // Which export options apply can depend on the kind of file open.
+  updateExportOptions();
 
   // Read before the parse and consulted after it fails: when the intake has
   // already said what was missing and how to supply it, the error does not say

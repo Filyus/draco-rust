@@ -13,7 +13,7 @@ import { modules, state } from './state.ts';
 import { renderSceneDocumentSummary } from './scene-report.ts';
 import { setWarningSource } from './warnings.ts';
 import { updateAnimationPlayButton, updateAnimationUi } from './animation-ui.ts';
-import { viewerAutoRotateBtn, viewerBaseColorBtn, viewerCanvas, viewerControls, viewerGridBtn, viewerSection, viewerSmoothNormalsBtn, viewerWireframeBtn, viewerZUpBtn } from './dom.ts';
+import { viewerAutoRotateBtn, viewerBaseColorBtn, viewerCanvas, viewerControls, viewerGridBtn, viewerSection, viewerSmoothNormalsBtn, viewerWireframeBtn, viewerZUpBtn, exportZUp } from './dom.ts';
 
 /**
  * The 3D preview: creating the viewer on demand, loading a scene into it, and
@@ -205,6 +205,12 @@ export function installViewerToggles() {
       if (!state.viewer) return;
       state.viewer[flag] = !state.viewer[flag];
       syncViewerToolbar();
+      // The export's own setting starts from what the preview was told, and
+      // stays the export's: changing it there does not turn the preview.
+      if (flag === 'zUp' && exportZUp.checked !== state.viewer.zUp) {
+        exportZUp.checked = state.viewer.zUp;
+        exportZUp.dispatchEvent(new Event('change'));
+      }
     });
   }
 }

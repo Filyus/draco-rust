@@ -67,6 +67,12 @@ only anchor a shipping without a version of its own has.
   made again with an empty memory, so the next file is not refused for what the
   last one left behind, and running out of memory is reported as that instead
   of as `unreachable`.
+- A "Z up" toggle on the viewport toolbar stands a lidar or survey file up in
+  the Y-up preview, splats included. It turns the view only.
+- Exporting a PLY, OBJ, STL or DRC to glTF or FBX offers "Source is Z-up:
+  write it Y-up", which turns the geometry exactly, `(x, y, z)` to
+  `(x, z, -y)`. It starts from the preview's toggle and is the export's own
+  after that; the formats with no axes of their own are written as read.
 
 ## 2026-09-05
 

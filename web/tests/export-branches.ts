@@ -319,4 +319,41 @@ if (typeof gltfModule.GltfAsset?.prototype?.compressPrimitive === 'function') {
   console.log('export-branches: Draco leg skipped (this WASM profile has no encoder)');
 }
 
+// A Z-up source exported to a Y-up target is turned (x, y, z) -> (x, z, -y),
+// exactly, into new arrays of the kind it came in: the open file is not
+// turned with it, so a second export starts from the same coordinates.
+{
+  const { turnZUpToYUp } = await import(pathToFileURL(resolve(here, '..', 'src', 'app', 'export-branches.ts')).href);
+  const [mesh] = prepareMeshesForExport([{
+    name: 'survey',
+    positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 2, 5]),
+    normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+    indices: new Uint32Array([0, 1, 2]),
+  } as any], settings);
+  const turned = turnZUpToYUp(mesh);
+  assert.ok(turned.positions instanceof Float32Array, 'the turn keeps the reader\'s array type');
+  assert.deepEqual(Array.from(turned.positions), [0, 0, 0, 1, 0, 0, 0, 5, -2]);
+  assert.deepEqual(Array.from(turned.normals!), [0, 1, 0, 0, 1, 0, 0, 1, 0]);
+  assert.deepEqual(Array.from(mesh.positions), [0, 0, 0, 1, 0, 0, 0, 2, 5], 'the source is left as it was');
+
+  // Through the route: only when asked, and only for a Y-up target.
+  const { state } = await import(pathToFileURL(resolve(here, '..', 'src', 'app', 'state.ts')).href) as {
+    state: typeof AppState;
+  };
+  state.currentMeshData = { document: null, scene: null, meshes: [mesh] } as any;
+  state.currentFileType = 'ply';
+  state.currentSceneDocument = null;
+  const bounds = async (zUpToYUp: boolean) => {
+    const routed = await runExport({
+      format: 'glb', includeNormals: true, includeUvs: true, useDraco: false, encodingSpeed: 5, zUpToYUp,
+    });
+    const position = glbManifest(routed.result.binary_data!).accessors
+      .find((accessor: any) => accessor.type === 'VEC3' && accessor.min);
+    return { min: position.min, max: position.max };
+  };
+  assert.deepEqual(await bounds(false), { min: [0, 0, 0], max: [1, 2, 5] });
+  assert.deepEqual(await bounds(true), { min: [0, 0, -2], max: [1, 5, 0] });
+  assert.deepEqual(Array.from(mesh.positions), [0, 0, 0, 1, 0, 0, 0, 2, 5], 'exporting does not turn the open file');
+}
+
 console.log('export branch helpers passed');
