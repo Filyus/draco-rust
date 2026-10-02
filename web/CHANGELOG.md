@@ -56,6 +56,17 @@ only anchor a shipping without a version of its own has.
 - The viewer's format choice ranks a texture every material samples through
   `normalTexture` as a normal map and takes BC5 on the desktop family and
   EAC RG11 on the mobile one, with the color ranking as the fallback.
+- `parse_ply_bytes` reads a large point cloud in a little over half the
+  memory: the file goes to the reader without a second copy, and a property
+  that is not `float` is held in its own width until it crosses, rather than
+  every one widened to `f64` at once. A 29-million-point airborne scan peaks at
+  2.2 GiB instead of 3.9, so a file of that size with a `double` timestamp now
+  fits the 4 GiB a WebAssembly module can hold. What JavaScript receives is
+  unchanged.
+- A module that traps -- out of memory, or any panic in a release build -- is
+  made again with an empty memory, so the next file is not refused for what the
+  last one left behind, and running out of memory is reported as that instead
+  of as `unreachable`.
 
 ## 2026-09-05
 

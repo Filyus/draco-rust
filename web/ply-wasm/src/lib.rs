@@ -98,12 +98,27 @@ pub struct PlyExtra {
 /// `f32` for a `float` property, which is every property a splat has: its
 /// payload is sixty floats a point over millions of points, and widening it to
 /// `f64` for the crossing would double the largest thing this module hands
-/// over. Everything else goes as `f64`, which holds every other PLY scalar
-/// type exactly.
+/// over. Everything else crosses as `f64`, which holds every other PLY scalar
+/// type exactly -- but is held here in the file's own width, one little-endian
+/// value a point, and widened only on its way out, one property at a time. A
+/// lidar file carries half a dozen such properties, mostly a byte or two wide,
+/// and widening them all at once held eight bytes a point for each, beside the
+/// mesh they came from, in a memory that stops at 4 GiB.
 #[cfg(feature = "read")]
 pub enum PlyExtraValues {
     F32(Vec<f32>),
-    F64(Vec<f64>),
+    Native(Vec<u8>),
+}
+
+#[cfg(feature = "read")]
+impl PlyExtraValues {
+    /// A `Native` property's values widened to `f64`, as they cross.
+    fn widened(bytes: &[u8], data_type: DataType) -> Vec<f64> {
+        bytes
+            .chunks_exact(data_type.byte_length().max(1))
+            .map(|value| scalar_as_f64(data_type, value))
+            .collect()
+    }
 }
 
 /// Parse result containing meshes and any warnings/errors.
@@ -186,7 +201,9 @@ fn extra_to_js(extra: &PlyExtra) -> JsValue {
     set_js(&obj, "name", &JsValue::from_str(&extra.name));
     let values = match &extra.values {
         PlyExtraValues::F32(values) => f32_array_to_js(values),
-        PlyExtraValues::F64(values) => f64_array_to_js(values),
+        PlyExtraValues::Native(bytes) => {
+            f64_array_to_js(&PlyExtraValues::widened(bytes, extra.data_type))
+        }
     };
     set_js(&obj, "values", &values);
     obj.into()
@@ -219,18 +236,25 @@ fn data_type_name(data_type: DataType) -> &'static str {
 /// kept as a second way in.
 #[cfg(feature = "read")]
 #[wasm_bindgen]
-pub fn parse_ply_bytes(data: &[u8]) -> JsValue {
+pub fn parse_ply_bytes(data: Vec<u8>) -> JsValue {
     // Catch any panics
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        parse_ply_with_core(data).unwrap_or_else(|error| match std::str::from_utf8(data) {
-            Ok(content) if is_ascii_ply(data) => parse_ply_internal(content),
-            _ => ParseResult {
-                success: false,
-                meshes: vec![],
-                error: Some(error),
-                warnings: vec![],
-                header: parse_header_info(data),
-            },
+        // Owned, so the core reader takes the file without a copy of it. The
+        // text reader is the fallback for an ASCII file the core reader
+        // refuses, and the only reason left to keep a second one.
+        let header = parse_header_info(&data);
+        let text = is_ascii_ply(&data).then(|| data.clone());
+        parse_ply_with_core(data).unwrap_or_else(|error| {
+            match text.as_deref().map(std::str::from_utf8) {
+                Some(Ok(content)) => parse_ply_internal(content),
+                _ => ParseResult {
+                    success: false,
+                    meshes: vec![],
+                    error: Some(error),
+                    warnings: vec![],
+                    header,
+                },
+            }
         })
     }));
 
@@ -258,7 +282,8 @@ pub fn parse_ply_bytes(data: &[u8]) -> JsValue {
 }
 
 #[cfg(feature = "read")]
-fn parse_ply_with_core(data: &[u8]) -> Result<ParseResult, String> {
+fn parse_ply_with_core(data: Vec<u8>) -> Result<ParseResult, String> {
+    let header = parse_header_info(&data);
     // Reported from the same parse as the mesh, so the warnings describe the
     // buffer that produced these meshes. A PLY carrying its payload in
     // properties this reader has no attribute for -- a Gaussian splat is the
@@ -268,7 +293,7 @@ fn parse_ply_with_core(data: &[u8]) -> Result<ParseResult, String> {
     // Unnamed properties are carried rather than dropped, and the loss report
     // stops naming what is carried, so the warnings below list only what
     // really did not survive -- list properties, which have no fixed width.
-    let (mesh, loss) = PlyReader::from_bytes(data.to_vec())
+    let (mesh, loss) = PlyReader::from_bytes(data)
         .with_generic_attributes(true)
         .read_mesh_reporting_loss()
         .map_err(|error| error.to_string())?;
@@ -278,7 +303,7 @@ fn parse_ply_with_core(data: &[u8]) -> Result<ParseResult, String> {
         meshes: vec![mesh_data],
         error: None,
         warnings: loss.dropped().iter().map(ToString::to_string).collect(),
-        header: parse_header_info(data),
+        header,
     })
 }
 
@@ -362,16 +387,15 @@ fn read_extras(mesh: &Mesh) -> Vec<PlyExtra> {
             let width = data_type.byte_length();
             let stride = attribute.byte_stride() as usize;
             let data = attribute.buffer().data();
-            PlyExtraValues::F64(
-                (0..points)
-                    .map(|point| {
-                        let at =
-                            attribute.mapped_index(PointIndex(point as u32)).0 as usize * stride;
-                        data.get(at..at + width)
-                            .map_or(0.0, |bytes| scalar_as_f64(data_type, bytes))
-                    })
-                    .collect(),
-            )
+            let mut bytes = Vec::with_capacity(points * width);
+            for point in 0..points {
+                let at = attribute.mapped_index(PointIndex(point as u32)).0 as usize * stride;
+                match data.get(at..at + width) {
+                    Some(value) => bytes.extend_from_slice(value),
+                    None => bytes.resize(bytes.len() + width, 0),
+                }
+            }
+            PlyExtraValues::Native(bytes)
         };
         extras.push(PlyExtra {
             name,
@@ -1173,7 +1197,8 @@ end_header
 0 0 0 1.2 -3.0 -2.5 1.0 2 0.5 0.25
 "#;
 
-        let result = parse_ply_with_core(ply.as_bytes()).expect("a splat PLY still parses");
+        let result =
+            parse_ply_with_core(ply.as_bytes().to_vec()).expect("a splat PLY still parses");
         assert!(result.success);
         assert_eq!(result.meshes[0].positions.len(), 3);
         let names: Vec<&str> = result.meshes[0]
@@ -1207,7 +1232,7 @@ end_header
 3 0 1 2
 "#;
 
-        let result = parse_ply_with_core(ply.as_bytes()).expect("parses");
+        let result = parse_ply_with_core(ply.as_bytes().to_vec()).expect("parses");
         assert!(result.warnings.is_empty(), "{:?}", result.warnings);
     }
 
@@ -1282,14 +1307,16 @@ end_header
     #[test]
     fn test_parse_binary_little_endian_ply_bytes() {
         let data = binary_ply_quad("binary_little_endian");
-        let result = parse_ply_with_core(&data).expect("little-endian binary PLY should parse");
+        let result =
+            parse_ply_with_core(data.to_vec()).expect("little-endian binary PLY should parse");
         assert_binary_quad_result(result, "binary_little_endian");
     }
 
     #[test]
     fn test_parse_binary_big_endian_ply_bytes() {
         let data = binary_ply_quad("binary_big_endian");
-        let result = parse_ply_with_core(&data).expect("big-endian binary PLY should parse");
+        let result =
+            parse_ply_with_core(data.to_vec()).expect("big-endian binary PLY should parse");
         assert_binary_quad_result(result, "binary_big_endian");
     }
 
@@ -1334,7 +1361,7 @@ end_header
         let points = 8usize;
         let bytes = tiny_splat_ply(points);
 
-        let result = parse_ply_with_core(&bytes).expect("the PLY reads");
+        let result = parse_ply_with_core(bytes.to_vec()).expect("the PLY reads");
         assert!(result.success);
         // Everything a splat has is carried, so nothing is reported lost.
         assert!(result.warnings.is_empty(), "{:?}", result.warnings);
@@ -1389,14 +1416,18 @@ end_header
         }
         bytes.extend_from_slice(&big.to_le_bytes());
 
-        let result = parse_ply_with_core(&bytes).expect("the PLY reads");
+        let result = parse_ply_with_core(bytes.to_vec()).expect("the PLY reads");
         let extra = &result.meshes[0].extras[0];
         assert_eq!(extra.name, "segment");
         assert_eq!(extra.data_type, DataType::Uint32);
-        let PlyExtraValues::F64(values) = &extra.values else {
-            panic!("an integer property travels as f64");
+        let PlyExtraValues::Native(bytes) = &extra.values else {
+            panic!("an integer property is held in its own width");
         };
-        assert_eq!(values, &[f64::from(big)]);
+        assert_eq!(bytes, &big.to_le_bytes());
+        assert_eq!(
+            PlyExtraValues::widened(bytes, extra.data_type),
+            [f64::from(big)]
+        );
     }
 }
 
@@ -1485,7 +1516,8 @@ mod writer_tests {
         let result = create_ply_internal(&mesh, &options);
         assert!(result.success, "{:?}", result.error);
 
-        let read = parse_ply_with_core(&result.binary_data.unwrap()).expect("it reads back");
+        let read =
+            parse_ply_with_core(result.binary_data.unwrap().to_vec()).expect("it reads back");
         let extras = &read.meshes[0].extras;
         let find = |name: &str| {
             extras
@@ -1498,10 +1530,13 @@ mod writer_tests {
         };
         assert_eq!(opacity, &[-3.25, 0.000123456]);
         assert_eq!(find("segment").data_type, DataType::Uint8);
-        let PlyExtraValues::F64(segment) = &find("segment").values else {
-            panic!("an integer property reads back as f64");
+        let PlyExtraValues::Native(segment) = &find("segment").values else {
+            panic!("an integer property reads back in its own width");
         };
-        assert_eq!(segment, &[7.0, 200.0]);
+        assert_eq!(
+            PlyExtraValues::widened(segment, DataType::Uint8),
+            [7.0, 200.0]
+        );
     }
 
     /// A property PLY has no type for is refused rather than narrowed.
