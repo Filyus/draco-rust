@@ -36,7 +36,7 @@ figure at all.
 `rejected` -- tried, deliberately not kept. `retracted` -- an earlier claim
 here was withdrawn. `diagnostic` -- measured only, no change proposed.
 
-75 rounds: 45 landed, 10 diagnostic, 10 null, 8 retracted, 2 rejected.
+76 rounds: 45 landed, 10 diagnostic, 10 null, 8 retracted, 3 rejected.
 
 | Round | Verdict | Headline |
 | --- | --- | ---: |
@@ -116,6 +116,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [Point Clouds On Shapes No Capture Had](#point-clouds-on-shapes-no-capture-had) | landed | `lattice -0.97%` |
 | [What Each Point-Cloud Technique Is Still Worth](#what-each-point-cloud-technique-is-still-worth) | null | `5 kept, 0 removed` |
 | [The Bucket Rule On Seven Processors](#the-bucket-rule-on-seven-processors) | landed | `worst case 72% -> 17%` |
+| [Counting A Bucket's Symbols Instead Of Reading The Slot Table](#counting-a-buckets-symbols-instead-of-reading-the-slot-table) | rejected | `-13 to -23% on Zen and N2, +5 to +10% on M1` |
 | [The Order Decided On The Coder's Own Price](#the-order-decided-on-the-coders-own-price) | landed | `+0.039% -> +0.004% over the best order` |
 
 
@@ -4512,6 +4513,32 @@ around it laid out differently -- the "without buckets" figures in the round
 above carry up to that on many-stream clouds. The microbenchmark's two builds
 do not: the same points from one binary, the form picked at run time,
 matched them within 2-3 points.
+
+### Counting A Bucket's Symbols Instead Of Reading The Slot Table
+
+2026-10-02. A shared rANS bucket reads the slot table, 0.5-4 MiB, on the
+chain every symbol waits on. The bucket's first symbol plus how many of the
+next 16 cumulative probabilities the remainder reaches names the symbol
+without that read: sixteen compares side by side, the count as the first set
+bit of their mask (`probe/rans-bucket-count`, picked at run time by
+`DRACO_RANS_FORM` so one binary times every form).
+
+Alone it costs 10-13 ns a symbol whatever the share, where an owned bucket
+is 5.3: it loses everywhere a table fits L2. Kept behind the owned bucket's
+fast path, for the shared buckets only, it was measured against the faster
+of table and buckets:
+
+| table | Zen 5 | Zen 3 (two runners) | Neoverse N2 | Apple M1 |
+| --- | ---: | ---: | ---: | ---: |
+| 512 KiB | up to `+68%` | `-6%` / `+2%` | `+16%` | `+27%` |
+| 1 MiB | `-4%` to `+23%` | `-14%` / `-10%` | `-2%` | `+21%` |
+| 2 MiB | `-7%` to `-19%` | `-14%` / `-13%` | `-19%` | `+10%` |
+| 4 MiB | `-4%` to `-23%` | `-16%` / `-18%` | `-23%` | `+5%` |
+
+Means over each sweep's points. On whole decodes the same: up to 13% faster
+on N2 and Zen 3, up to 11% slower on M1. Rejected: a third form, worth
+having only at 2^20 slots and there losing on the processor whose L2 holds
+the table, for a gain the share rule's two constants already mostly take.
 
 ### The Order Decided On The Coder's Own Price
 
