@@ -249,8 +249,8 @@ pub trait PredictionSchemeDecodingTransform<DataType> {
     /// the result has to be what `compute_original_value` gives entry by entry.
     fn compute_original_run(&self, data: &mut [DataType], num_components: usize) {
         // Splitting the slice hands the previous entry over as the prediction
-        // directly; copying it into a scratch buffer first cost a memcpy an
-        // entry, 8% of a point cloud's decode.
+        // directly; copying it into a scratch buffer first would cost a memcpy
+        // an entry, 8% of a point cloud's decode.
         for i in (num_components..data.len()).step_by(num_components) {
             let (decoded, rest) = data.split_at_mut(i);
             self.compute_original_value(

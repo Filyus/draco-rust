@@ -80,7 +80,8 @@ impl Default for DecodeLimits {
 }
 
 impl DecodeLimits {
-    /// No ceiling at all, which is what this crate did before the type existed.
+    /// No ceiling at all: every count a stream declares is admitted, so a
+    /// decode is bounded only by what the machine will allocate.
     ///
     /// For a caller that decodes trusted local input and would rather have a
     /// scan loaded whole than a refusal.
