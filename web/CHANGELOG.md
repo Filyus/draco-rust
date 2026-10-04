@@ -32,6 +32,10 @@ only anchor a shipping without a version of its own has.
   it by point number, and it can make a file bigger when an attribute varies
   along the order it came in rather than through space.
 
+- A `.drc` point cloud written by Draco 1.0 to 1.2 with the KD-tree opens.
+  Those releases encoded any cloud of positions alone that way, in a layout
+  bitstreams before 2.3 use, and the converter refused every one of them.
+
 - `create_drc` given no indices writes a file C++ Draco can read. The mesh of
   points and no faces it makes lacked the byte that names how the faces are
   coded, which C++ Draco expects even when there are none, so C++ Draco --

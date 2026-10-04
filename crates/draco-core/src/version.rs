@@ -151,9 +151,10 @@ impl EncodeTarget {
             EncodeTarget::MeshEdgebreaker => &[(2, 2), (2, 1), (2, 0), (1, 2), (1, 1)],
             EncodeTarget::MeshSequential => &[(2, 2), (1, 3)],
             EncodeTarget::PointCloudSequential => &[(2, 3), (1, 3)],
-            // No version branch exists on either side of the KD-tree coder,
-            // while C++ splits its layout at 2.3 — so anything older would
-            // write a header that does not describe the payload.
+            // C++ splits the KD-tree layout at 2.3. The decoder reads both
+            // sides of the split; the encoder writes only the newer one, so
+            // anything older would put a header in front of a payload it does
+            // not describe.
             EncodeTarget::PointCloudKdTree => &[(2, 3)],
         }
     }

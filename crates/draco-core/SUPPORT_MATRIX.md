@@ -242,5 +242,12 @@ refused on its own.
   rANS) start faces, a split-count/mode prefix, hole events after topology
   splits, a 2-bit split-edge selector, fixed-u32 counts before bitstream 2.0,
   and an always-present header flags field.
+- **Pre-2.3 KD-tree.** Draco `1.0.0` to `1.2.5` chose the KD-tree for a point
+  cloud of float positions alone and wrote bitstreams 2.0 to 2.2 in a layout of
+  their own: a method byte, the point count again, and for float positions a
+  quantization header with one range for all three axes, ahead of the same
+  tree. It decodes behind `legacy_bitstream_decode`, both the quantized method
+  those encoders wrote and the integer one, and matches C++ Draco's decode on
+  fixtures from all three releases. Nothing encodes it.
 - **Portable texcoord prediction** preserves the C++ cast/wrapping order around
   unsigned intermediate arithmetic.

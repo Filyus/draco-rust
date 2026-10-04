@@ -49,6 +49,18 @@ async function loadWasm(name: string) {
     assert.equal(mesh.indices.length, 0, `${name}: a cloud carries no indices`);
     assert.equal(mesh.normals.length / 3, 4, `${name}: the normals did not survive`);
   }
+
+  // Draco 1.0 to 1.2 wrote a cloud of positions alone with the KD-tree, in the
+  // layout bitstreams before 2.3 use, which the module once refused outright.
+  for (const release of ['1.0.0', '1.1.0', '1.2.5']) {
+    const name = `legacy_draco/point_cloud_pos.kd.${release}.drc`;
+    const bytes = new Uint8Array(await readFile(resolve(repo, 'testdata', name)));
+    const result = drc.parse_drc_bytes(bytes);
+    assert.equal(result.success, true, `${name} did not decode: ${result.error}`);
+    const mesh = result.meshes[0];
+    assert.equal(mesh.positions.length / 3, 64, `${name}: unexpected point count`);
+    assert.equal(mesh.indices.length, 0, `${name}: a cloud carries no indices`);
+  }
 }
 
 // ---------------------------------------------------------------------------

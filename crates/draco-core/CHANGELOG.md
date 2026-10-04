@@ -142,6 +142,14 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   an attribute per corner -- read out of bounds. A varint index is checked
   before it is narrowed to 32 bits, so one past `u32` cannot pass as a small
   index. No encoder writes such a stream.
+- KD-tree point clouds from Draco 1.0 to 1.2 decode. Those releases wrote
+  bitstreams 2.0 to 2.2 with a header of their own in front of the tree -- a
+  method byte, the point count again, and for float positions a quantization
+  header with one range for all three axes -- which the decoder read as the
+  2.3 layout and refused, so a point cloud of positions alone written by any
+  of them could not be read. Behind `legacy_bitstream_decode`, on by default;
+  checked against C++ Draco 1.5.7 on fixtures written by Draco 1.0.0, 1.1.0
+  and 1.2.5. The repeated point count must equal the geometry header's.
 - The encoder writes C++ Draco's bytes where a prediction residual's symbol
   passes `i32::MAX` under the constrained multi-parallelogram scheme. Upstream
   computes its rANS table-size estimate there in `int32_t`, where it turns

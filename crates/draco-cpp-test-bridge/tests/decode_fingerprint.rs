@@ -137,6 +137,9 @@ fn cpp_and_rust_decode_fingerprints_match_for_point_cloud_fixtures() {
         "legacy_draco/point_cloud_pos_norm.seq.1.0.0.drc",
         "legacy_draco/point_cloud_pos_norm.seq.1.1.0.drc",
         "legacy_draco/point_cloud_pos_norm.kd.1.3.0.drc",
+        "legacy_draco/point_cloud_pos.kd.1.0.0.drc",
+        "legacy_draco/point_cloud_pos.kd.1.1.0.drc",
+        "legacy_draco/point_cloud_pos.kd.1.2.5.drc",
         "production_draco/bpy_point_cloud.seq.v2.3.pos_norm_color.drc",
         "production_draco/bpy_point_cloud.kd.v2.3.pos_norm_color.drc",
     ];
@@ -272,4 +275,69 @@ fn a_sequential_mesh_without_faces_matches_cpp_both_ways() {
         );
         assert_eq!(rust.num_attributes, 1, "{name}");
     }
+}
+
+/// The pre-2.3 integer KD-tree layout, which no command-line encoder of that
+/// era writes, built from this crate's 2.3 stream: version 2.2, a method byte
+/// of 1 ahead of the compression level, the point count again behind it, and
+/// the same tree. C++ Draco 1.5.7 reading it to the same fingerprint as this
+/// decoder is what says the layout was read the way upstream reads it.
+#[test]
+fn cpp_reads_a_pre_2_3_integer_kd_tree_as_rust_does() {
+    if !draco_cpp_test_bridge::is_available() {
+        eprintln!("SKIPPING: C++ test bridge not available");
+        return;
+    }
+    const POINTS: usize = 40;
+    let mut cloud = draco_core::point_cloud::PointCloud::new();
+    cloud.set_num_points(POINTS);
+    let mut position = PointAttribute::new();
+    position.init(
+        GeometryAttributeType::Position,
+        3,
+        DataType::Uint32,
+        false,
+        POINTS,
+    );
+    let mut weight = PointAttribute::new();
+    weight.init(
+        GeometryAttributeType::Generic,
+        1,
+        DataType::Uint8,
+        false,
+        POINTS,
+    );
+    for p in 0..POINTS {
+        let v = p as u32;
+        let xyz = [v * 97 % 5000, v * 31 % 300, 4000 - v * 13];
+        let bytes: Vec<u8> = xyz.iter().flat_map(|c| c.to_le_bytes()).collect();
+        position.buffer_mut().update(&bytes, Some(p * 12));
+        weight.buffer_mut().update(&[(v * 7) as u8], Some(p));
+    }
+    cloud.add_attribute(position);
+    cloud.add_attribute(weight);
+    let mut encoder = draco_core::point_cloud_encoder::PointCloudEncoder::new();
+    encoder.set_point_cloud(cloud);
+    let mut written = EncoderBuffer::new();
+    encoder
+        .encode(&EncoderOptions::new(), &mut written)
+        .unwrap();
+    let modern = written.data().to_vec();
+    assert_eq!((modern[5], modern[6], modern[8]), (2, 3, 1));
+
+    const LEVEL: usize = 11 + 4 + 1 + 1 + 5 + 5;
+    let mut legacy = modern[..LEVEL].to_vec();
+    legacy[6] = 2;
+    legacy.push(1);
+    legacy.push(modern[LEVEL]);
+    legacy.extend_from_slice(&(POINTS as u32).to_le_bytes());
+    legacy.extend_from_slice(&modern[LEVEL + 1..]);
+
+    let rust = rust_decode_point_cloud_fingerprint(&legacy);
+    let cpp = draco_cpp_test_bridge::decode_cpp_point_cloud_fingerprint(&legacy)
+        .expect("C++ point-cloud decode failed");
+    assert_eq!(rust.num_points, cpp.num_points);
+    assert_eq!(rust.num_attributes, cpp.num_attributes);
+    assert_eq!(rust.attribute_hash, cpp.attribute_hash);
+    assert_eq!(rust, rust_decode_point_cloud_fingerprint(&modern));
 }

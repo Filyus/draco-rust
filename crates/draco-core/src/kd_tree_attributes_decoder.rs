@@ -161,6 +161,12 @@ impl KdTreeAttributesDecoder {
         point_cloud: &mut PointCloud,
         in_buffer: &mut DecoderBuffer,
     ) -> Status {
+        if in_buffer.bitstream_version() < 0x0203 {
+            #[cfg(feature = "legacy_bitstream_decode")]
+            return self.decode_pre_2_3_attributes(point_cloud, in_buffer);
+            #[cfg(not(feature = "legacy_bitstream_decode"))]
+            return Err(DracoError::bitstream_version_unsupported());
+        }
         self.decode_portable_attributes(point_cloud, in_buffer)?;
         self.decode_data_needed_by_portable_transforms(point_cloud, in_buffer)?;
         self.transform_attributes_to_original_format(point_cloud)
@@ -258,28 +264,7 @@ impl KdTreeAttributesDecoder {
             )));
         }
 
-        // The attribute buffers are taken here rather than when the attributes
-        // were declared. The values exist now -- `decoded` holds them and its
-        // length has just been checked against the declared count -- so this is
-        // memory backed by data instead of by a header. The fills below write
-        // at computed offsets and need the room in one piece, which is why this
-        // path sizes up front at all.
-        for &att_id in &self.attribute_ids {
-            let att = point_cloud.try_attribute_mut(att_id)?;
-            let stride = usize::try_from(att.byte_stride()).map_err(|_| {
-                DracoError::general(format!("Attribute {att_id} has a negative byte stride"))
-            })?;
-            let required = att.size().checked_mul(stride).ok_or_else(|| {
-                DracoError::general(format!(
-                    "Attribute {att_id}'s buffer size overflows a usize"
-                ))
-            })?;
-            if att.buffer().data_size() < required {
-                att.buffer_mut().try_resize(required).map_err(|_| {
-                    DracoError::allocation_exceeds_input(required, decoded.len() * 4)
-                })?;
-            }
-        }
+        self.take_attribute_buffers(point_cloud, decoded.len())?;
 
         // Fill non-float attributes directly, and create portable attributes for float.
         for (att_id, offset, num_components) in float_specs {
@@ -337,6 +322,274 @@ impl KdTreeAttributesDecoder {
             total_dimensionality,
         });
 
+        Ok(())
+    }
+
+    /// Sizes every attribute's buffer for its declared points.
+    ///
+    /// Taken once the KD-tree has produced the values rather than when the
+    /// attributes were declared: `decoded_values` exist by then and their
+    /// count has been checked against the declared one, so this is memory
+    /// backed by data instead of by a header. The fills write at computed
+    /// offsets and need the room in one piece, which is why the values are not
+    /// pushed instead.
+    fn take_attribute_buffers(
+        &self,
+        point_cloud: &mut PointCloud,
+        decoded_values: usize,
+    ) -> Status {
+        for &att_id in &self.attribute_ids {
+            let att = point_cloud.try_attribute_mut(att_id)?;
+            let stride = usize::try_from(att.byte_stride()).map_err(|_| {
+                DracoError::general(format!("Attribute {att_id} has a negative byte stride"))
+            })?;
+            let required = att.size().checked_mul(stride).ok_or_else(|| {
+                DracoError::general(format!(
+                    "Attribute {att_id}'s buffer size overflows a usize"
+                ))
+            })?;
+            if att.buffer().data_size() < required {
+                att.buffer_mut().try_resize(required).map_err(|_| {
+                    DracoError::allocation_exceeds_input(required, decoded_values * 4)
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The layout bitstreams before 2.3 use, which upstream still reads in
+    /// `DecodeDataNeededByPortableTransforms`.
+    ///
+    /// The tree itself is the same; what differs is the header in front of it
+    /// and what comes after. A method byte picks between two encodings: `0`
+    /// for one float position quantized as a whole (`FloatPointsTreeDecoder`,
+    /// with a quantization header of its own and one range for all three
+    /// axes), `1` for integer attributes written as decoded. Each repeats the
+    /// point count, and neither has a transform to undo afterwards. Draco 1.0
+    /// to 1.2 write the first for any point cloud of positions alone.
+    ///
+    /// Two checks are stricter than upstream's. The repeated count must equal
+    /// the geometry header's, where upstream sizes the attributes by the
+    /// repeated one and leaves the cloud disagreeing with itself; and the
+    /// quantized encoding needs a `Float32` attribute and at least one bit,
+    /// where upstream writes floats into whatever it is given and divides by
+    /// zero.
+    #[cfg(feature = "legacy_bitstream_decode")]
+    fn decode_pre_2_3_attributes(
+        &mut self,
+        point_cloud: &mut PointCloud,
+        in_buffer: &mut DecoderBuffer,
+    ) -> Status {
+        let mut total_dimensionality = 0usize;
+        for &att_id in &self.attribute_ids {
+            let att = point_cloud.try_attribute(att_id)?;
+            if att.data_type().byte_length() > 4 {
+                return Err(DracoError::unsupported_feature(format!(
+                    "Attribute {att_id} is {:?}, wider than the 32 bits a pre-2.3 KD-tree holds",
+                    att.data_type()
+                )));
+            }
+            total_dimensionality += att.num_components() as usize;
+        }
+        let method = in_buffer
+            .decode_u8()
+            .map_err(|_| DracoError::buffer("Buffer ran out reading the KD-tree method"))?;
+        match method {
+            0 => self.decode_pre_2_3_quantized_positions(point_cloud, in_buffer),
+            1 => self.decode_pre_2_3_integers(point_cloud, in_buffer, total_dimensionality),
+            other => Err(DracoError::general(format!(
+                "Pre-2.3 KD-tree method {other} is neither quantized (0) nor integer (1)"
+            ))),
+        }
+    }
+
+    /// The point count a pre-2.3 KD-tree repeats after its header.
+    #[cfg(feature = "legacy_bitstream_decode")]
+    fn decode_pre_2_3_point_count(
+        point_cloud: &PointCloud,
+        in_buffer: &mut DecoderBuffer,
+    ) -> Result<u32, DracoError> {
+        let num_points = in_buffer
+            .decode_u32()
+            .map_err(|_| DracoError::buffer("Buffer ran out reading the KD-tree point count"))?;
+        if num_points as usize != point_cloud.num_points() {
+            return Err(DracoError::general(format!(
+                "KD-tree header repeats {num_points} points against the {} the geometry declares",
+                point_cloud.num_points()
+            )));
+        }
+        Ok(num_points)
+    }
+
+    #[cfg(feature = "legacy_bitstream_decode")]
+    fn decode_pre_2_3_integers(
+        &mut self,
+        point_cloud: &mut PointCloud,
+        in_buffer: &mut DecoderBuffer,
+        total_dimensionality: usize,
+    ) -> Status {
+        let compression_level = in_buffer.decode_u8().map_err(|_| {
+            DracoError::buffer("Buffer ran out reading the KD-tree compression level")
+        })?;
+        if compression_level > 6 {
+            return Err(DracoError::general(format!(
+                "KD-tree compression level {compression_level} outside the supported range 0..=6"
+            )));
+        }
+        let num_points = Self::decode_pre_2_3_point_count(point_cloud, in_buffer)?;
+        let dimension = u32::try_from(total_dimensionality).map_err(|_| {
+            DracoError::general(format!(
+                "Total dimensionality {total_dimensionality} does not fit the coder's u32"
+            ))
+        })?;
+        let mut decoder = DynamicIntegerPointsKdTreeDecoder::new(compression_level, dimension);
+        let decoded = decoder.decode_points(in_buffer, num_points)?;
+        // A tree that yields fewer points than the header repeats would leave
+        // the rest of every attribute unwritten; upstream refuses it too.
+        if decoder.num_decoded_points() != num_points
+            || decoded.len() != num_points as usize * total_dimensionality
+        {
+            return Err(DracoError::general(format!(
+                "KD-tree produced {} points against the {num_points} its header repeats",
+                decoder.num_decoded_points()
+            )));
+        }
+        self.take_attribute_buffers(point_cloud, decoded.len())?;
+
+        // Each value is written as the low bytes of its 32 bits, whatever the
+        // attribute's type, as upstream's output iterator copies them.
+        let mut offset = 0usize;
+        for &att_id in &self.attribute_ids {
+            let att = point_cloud.try_attribute_mut(att_id)?;
+            let num_components = att.num_components() as usize;
+            let width = att.data_type().byte_length();
+            let stride = att.byte_stride() as usize;
+            for point in 0..num_points as usize {
+                let base = att.mapped_index(PointIndex(point as u32)).0 as usize * stride;
+                let row = &decoded[point * total_dimensionality + offset..][..num_components];
+                for (component, value) in row.iter().enumerate() {
+                    att.buffer_mut().update(
+                        &value.to_le_bytes()[..width],
+                        Some(base + component * width),
+                    );
+                }
+            }
+            offset += num_components;
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "legacy_bitstream_decode")]
+    fn decode_pre_2_3_quantized_positions(
+        &mut self,
+        point_cloud: &mut PointCloud,
+        in_buffer: &mut DecoderBuffer,
+    ) -> Status {
+        let att_id = match self.attribute_ids.as_slice() {
+            &[att_id] => att_id,
+            ids => {
+                return Err(DracoError::general(format!(
+                    "The quantized pre-2.3 KD-tree carries one attribute, not {}",
+                    ids.len()
+                )))
+            }
+        };
+        let att = point_cloud.try_attribute(att_id)?;
+        if att.num_components() != 3 || att.data_type() != DataType::Float32 {
+            return Err(DracoError::general(format!(
+                "The quantized pre-2.3 KD-tree carries three Float32 components, not {} {:?}",
+                att.num_components(),
+                att.data_type()
+            )));
+        }
+        // Upstream reads this level and never uses it; the quantization header
+        // below carries the one the tree was written at.
+        in_buffer.decode_u8().map_err(|_| {
+            DracoError::buffer("Buffer ran out reading the KD-tree compression level")
+        })?;
+        let num_points = Self::decode_pre_2_3_point_count(point_cloud, in_buffer)?;
+
+        let read_u32 = |in_buffer: &mut DecoderBuffer, what: &str| {
+            in_buffer
+                .decode_u32()
+                .map_err(|_| DracoError::buffer(format!("Buffer ran out reading the {what}")))
+        };
+        match read_u32(in_buffer, "quantized KD-tree version")? {
+            3 => {
+                let method = in_buffer.decode_u8().map_err(|_| {
+                    DracoError::buffer("Buffer ran out reading the quantized KD-tree method")
+                })?;
+                // `KDTREE` in upstream's `PointCloudCompressionMethod`, the
+                // only method there is.
+                if method != 1 {
+                    return Err(DracoError::general(format!(
+                        "Quantized KD-tree method {method} is not the KD-tree (1)"
+                    )));
+                }
+            }
+            // Version 2 has no method field: the KD-tree was all there was.
+            2 => {}
+            other => {
+                return Err(DracoError::general(format!(
+                    "Quantized KD-tree version {other} is neither 2 nor 3"
+                )))
+            }
+        }
+        let bits = read_u32(in_buffer, "quantized KD-tree's quantization bits")?;
+        if bits == 0 || bits > 31 {
+            return Err(DracoError::general(format!(
+                "Quantized KD-tree declares {bits} quantization bits, outside 1..=31"
+            )));
+        }
+        let range = in_buffer.decode_f32().map_err(|_| {
+            DracoError::buffer("Buffer ran out reading the quantized KD-tree range")
+        })?;
+        let tree_points = read_u32(in_buffer, "quantized KD-tree's point count")?;
+        if tree_points != num_points {
+            return Err(DracoError::general(format!(
+                "Quantized KD-tree declares {tree_points} points against the {num_points} before it"
+            )));
+        }
+        let compression_level = read_u32(in_buffer, "quantized KD-tree's compression level")?;
+        if compression_level > 6 {
+            return Err(DracoError::general(format!(
+                "KD-tree compression level {compression_level} outside the supported range 0..=6"
+            )));
+        }
+
+        let decoded = if num_points == 0 {
+            Vec::new()
+        } else {
+            let mut decoder = DynamicIntegerPointsKdTreeDecoder::new(compression_level as u8, 3);
+            let decoded = decoder.decode_points(in_buffer, num_points)?;
+            if decoder.num_decoded_points() != num_points
+                || decoded.len() != num_points as usize * 3
+            {
+                return Err(DracoError::general(format!(
+                    "KD-tree produced {} points against the {num_points} its header declares",
+                    decoder.num_decoded_points()
+                )));
+            }
+            decoded
+        };
+        self.take_attribute_buffers(point_cloud, decoded.len())?;
+
+        // Upstream's `DequantizePoints3`: the values are offset by the largest
+        // quantized value to make them unsigned, and share one step for all
+        // three axes. The subtraction wraps in `uint32_t` and is then read as
+        // `int32_t`, which the wrapping cast below reproduces.
+        let max_quantized_value = (1u32 << bits) - 1;
+        let delta = range / max_quantized_value as f32;
+        let att = point_cloud.try_attribute_mut(att_id)?;
+        let stride = att.byte_stride() as usize;
+        for (point, row) in decoded.as_chunks::<3>().0.iter().enumerate() {
+            let base = att.mapped_index(PointIndex(point as u32)).0 as usize * stride;
+            for (component, &value) in row.iter().enumerate() {
+                let coordinate = value.wrapping_sub(max_quantized_value) as i32 as f32 * delta;
+                att.buffer_mut()
+                    .update(&coordinate.to_le_bytes(), Some(base + component * 4));
+            }
+        }
         Ok(())
     }
 

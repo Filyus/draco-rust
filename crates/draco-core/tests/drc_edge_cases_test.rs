@@ -994,8 +994,9 @@ fn a_sequential_face_index_past_the_points_is_refused() {
 /// Upstream's reproducer for a 2.0 KD-tree point cloud whose tree yields other
 /// than the point count its header declares (`TestRejectMismatchedLegacyPointCount`
 /// in its KD-tree encoding test), byte for byte; C++ Draco 1.5.7 crashes on
-/// it. This decoder refuses it before the count is compared, on a KD-tree bit
-/// length past 32, so what this pins is the refusal, not where it happens.
+/// it. The count the pre-2.3 header repeats, 168, already disagrees with the
+/// geometry header's 218,205,440, and this decoder refuses that before the
+/// tree is read.
 #[cfg(feature = "legacy_bitstream_decode")]
 #[test]
 fn a_legacy_kd_tree_yielding_other_than_its_point_count_is_refused() {
@@ -1009,7 +1010,147 @@ fn a_legacy_kd_tree_yielding_other_than_its_point_count_is_refused() {
         0x00, 0x00, 0x68, 0x24, 0x00, 0x20, 0x00, 0x0e, 0x18, 0xff, 0xff, 0xff,
     ];
     let refused = decode_malformed_without_panic(DecoderKind::PointCloud, &STREAM);
-    assert!(refused.is_err(), "{refused:?}");
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|e| e.contains("repeats 168 points against the 218205440")),
+        "{refused:?}"
+    );
+}
+
+/// Point clouds Draco 1.0 to 1.2 wrote with the KD-tree, which before 2.3
+/// came in a layout of its own: a method byte, the point count again, and for
+/// float positions a quantization header with one range for all three axes.
+/// The three fixtures are one source at 11 bits, so they decode alike, and
+/// every source point is within a quantization step of a decoded one -- the
+/// tree reorders the points, so they are matched as a set.
+#[cfg(feature = "legacy_bitstream_decode")]
+#[test]
+fn pre_2_3_kd_tree_point_clouds_decode() {
+    let source: Vec<[f32; 3]> =
+        std::fs::read_to_string(repo_testdata_dir().join("point_cloud_pos.ply"))
+            .unwrap()
+            .split("end_header\n")
+            .nth(1)
+            .unwrap()
+            .lines()
+            .map(|line| {
+                let v: Vec<f32> = line
+                    .split_whitespace()
+                    .map(|t| t.parse().unwrap())
+                    .collect();
+                [v[0], v[1], v[2]]
+            })
+            .collect();
+    let decode = |version: &str| -> Vec<[f32; 3]> {
+        let path =
+            repo_testdata_dir().join(format!("legacy_draco/point_cloud_pos.kd.{version}.drc"));
+        let bytes = std::fs::read(&path).unwrap();
+        let mut cloud = PointCloud::new();
+        PointCloudDecoder::new()
+            .decode(&mut DecoderBuffer::new(&bytes), &mut cloud)
+            .unwrap_or_else(|e| panic!("{version}: {e}"));
+        let position = cloud.attribute(0);
+        assert_eq!(position.data_type(), DataType::Float32, "{version}");
+        position.buffer().data()[..cloud.num_points() * 12]
+            .as_chunks::<12>()
+            .0
+            .iter()
+            .map(|p| {
+                std::array::from_fn(|c| f32::from_le_bytes(p[c * 4..][..4].try_into().unwrap()))
+            })
+            .collect()
+    };
+
+    let decoded = decode("1.0.0");
+    assert_eq!(decoded.len(), source.len());
+    assert_eq!(decode("1.1.0"), decoded);
+    assert_eq!(decode("1.2.5"), decoded);
+    let range = source.iter().flatten().fold(0f32, |m, v| m.max(v.abs()));
+    let step = range / ((1 << 11) - 1) as f32;
+    for point in &source {
+        let nearest = decoded
+            .iter()
+            .map(|d| (0..3).map(|c| (d[c] - point[c]).abs()).fold(0f32, f32::max))
+            .fold(f32::INFINITY, f32::min);
+        assert!(
+            nearest <= step,
+            "{point:?} is {nearest} from every decoded point"
+        );
+    }
+}
+
+/// A 2.3 integer KD-tree stream rewritten into the pre-2.3 layout: the version
+/// set to 2.2, a method byte of 1 ahead of the compression level and the point
+/// count again behind it. The tree after them is unchanged, so the two decode
+/// to the same values, including a `Uint8` attribute written from the low byte
+/// of each decoded value. No encoder that writes the old layout picks this
+/// method from the command line, so the stream is built rather than kept.
+#[cfg(feature = "legacy_bitstream_decode")]
+#[test]
+fn a_pre_2_3_integer_kd_tree_decodes_as_its_2_3_twin() {
+    const POINTS: usize = 40;
+    let mut cloud = PointCloud::new();
+    cloud.set_num_points(POINTS);
+    let mut position = PointAttribute::new();
+    position.init(
+        GeometryAttributeType::Position,
+        3,
+        DataType::Uint32,
+        false,
+        POINTS,
+    );
+    let mut weight = PointAttribute::new();
+    weight.init(
+        GeometryAttributeType::Generic,
+        1,
+        DataType::Uint8,
+        false,
+        POINTS,
+    );
+    for p in 0..POINTS {
+        let v = p as u32;
+        let xyz = [v * 97 % 5000, v * 31 % 300, 4000 - v * 13];
+        let bytes: Vec<u8> = xyz.iter().flat_map(|c| c.to_le_bytes()).collect();
+        position.buffer_mut().update(&bytes, Some(p * 12));
+        weight.buffer_mut().update(&[(v * 7) as u8], Some(p));
+    }
+    cloud.add_attribute(position);
+    cloud.add_attribute(weight);
+    let mut encoder = PointCloudEncoder::new();
+    encoder.set_point_cloud(cloud);
+    let mut enc = EncoderBuffer::new();
+    encoder.encode(&EncoderOptions::new(), &mut enc).unwrap();
+    let modern = enc.data().to_vec();
+    assert_eq!(
+        (modern[5], modern[6], modern[8]),
+        (2, 3, 1),
+        "a 2.3 KD-tree stream"
+    );
+
+    // Header, point count, one decoder, two attributes of five bytes each.
+    const LEVEL: usize = 11 + 4 + 1 + 1 + 5 + 5;
+    assert!(modern[LEVEL] <= 6, "byte {LEVEL} is the compression level");
+    let mut legacy = modern[..LEVEL].to_vec();
+    legacy[6] = 2;
+    legacy.push(1);
+    legacy.push(modern[LEVEL]);
+    legacy.extend_from_slice(&(POINTS as u32).to_le_bytes());
+    legacy.extend_from_slice(&modern[LEVEL + 1..]);
+
+    let decode = |bytes: &[u8]| {
+        let mut cloud = PointCloud::new();
+        PointCloudDecoder::new()
+            .decode(&mut DecoderBuffer::new(bytes), &mut cloud)
+            .unwrap();
+        (0..2)
+            .map(|id| {
+                let att = cloud.attribute(id);
+                att.buffer().data()[..POINTS * att.byte_stride() as usize].to_vec()
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(decode(&legacy), decode(&modern));
 }
 
 #[test]
