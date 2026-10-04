@@ -31,10 +31,9 @@ use crate::status::{DracoError, ErrorKind, Status};
 ///
 /// The counts are the *decoded* ones, not the ones a source file was authored
 /// with. Draco splits a point wherever an attribute seam runs through it, and
-/// the growth is real: measured across ten assets it runs from zero to 7.7%,
-/// and one exporter's 65,532-point primitive decodes to 76,742. A ceiling
-/// derived from what an exporter writes would refuse files that follow its own
-/// convention.
+/// the growth is real: a primitive an exporter kept under 65,536 points can
+/// decode to more than that. A ceiling derived from what an exporter writes
+/// would refuse files that follow its own convention.
 ///
 /// Install with [`DecoderBuffer::with_limits`](crate::decoder_buffer::DecoderBuffer::with_limits).
 ///

@@ -166,27 +166,24 @@ impl EncoderOptions {
     /// point-cloud attribute is always `Difference`, and differencing costs
     /// more than it saves whenever consecutive values do not correlate.
     /// Spherical-harmonic coefficients in a Gaussian splat are the case that
-    /// prompted this — predicted they cost 6.35 bits per 8-bit value, coded
-    /// directly 5.72, against an order-0 entropy of 5.685. The opposite case is
-    /// just as real: on smoothly varying data, turning prediction off has made
-    /// a file 2.5x larger. Neither is knowable from the attribute's type, so
-    /// this looks at its values.
+    /// prompted this: predicted, they cost more bits than coded directly. The
+    /// opposite case is just as real: on smoothly varying data, turning
+    /// prediction off makes a file much larger. Neither is knowable from the
+    /// attribute's type, so this looks at its values.
     ///
     /// **It is worth turning on only for data of that shape**, and the honest
-    /// version of "that shape" is narrow. On a photogrammetry capture — eight
-    /// million points carrying position and colour — the search finds nothing
-    /// at all: both attributes are well served by differencing, and coding
-    /// either directly is 27% worse. Attributes whose values do not follow
-    /// their neighbours are what this is for, and a scanned surface is the
-    /// opposite of that.
+    /// version of "that shape" is narrow. On a photogrammetry capture carrying
+    /// position and colour the search finds nothing at all: both attributes
+    /// are well served by differencing, and coding either directly is worse.
+    /// Attributes whose values do not follow their neighbours are what this is
+    /// for, and a scanned surface is the opposite of that.
     ///
     /// The cost is encode time and nothing else. The candidates are ranked by
     /// the same bit estimate the symbol coder uses to choose its own scheme,
     /// which is an entropy pass over each candidate's symbols, not a second
     /// encode, and the winner's estimate is what the coder is then handed
-    /// rather than working it out again: on a splat of a million points and 58
-    /// attributes the option adds about a third to the encode. Decoding is
-    /// unaffected, and every stream this can produce is one an ordinary decoder
+    /// rather than working it out again. On a cloud of many attributes the
+    /// encode still takes noticeably longer. Decoding is unaffected, and every stream this can produce is one an ordinary decoder
     /// reads: the scheme is a byte the bitstream has always carried,
     /// `PREDICTION_NONE` included.
     ///
@@ -206,9 +203,9 @@ impl EncoderOptions {
     /// than in the order they were handed in.
     ///
     /// Which spatial order is the encoder's choice and not part of this
-    /// option's contract: today it is a Hilbert curve, which writes 0.35% to 4%
-    /// fewer bytes than a Morton curve for the same encode time, and a later
-    /// version may use a better one. Every such stream decodes the
+    /// option's contract: today it is a Hilbert curve, which writes fewer bytes
+    /// than a Morton curve for the same encode time, and a later version may
+    /// use a better one. Every such stream decodes the
     /// same way; only the order of the decoded points and the size differ.
     ///
     /// A point cloud's point order carries no meaning: no connectivity refers
@@ -219,13 +216,10 @@ impl EncoderOptions {
     /// exporter happened to write next.
     ///
     /// **This is the general one of the two.** It was written for Gaussian
-    /// splats, where it takes a scene from 53.02 bytes per point to 45.47, and
-    /// it does more on ordinary captured geometry: a 223 MB photogrammetry
-    /// point cloud of eight million coloured points goes from 6.26 bytes per
-    /// point to 4.23, which is 32% and more than twice the splat's share. Any
-    /// cloud whose attributes vary through space rather than along its file
-    /// order should expect something in that range. Those are the Morton
-    /// curve's figures; the Hilbert curve is 1% to 2% smaller again on both.
+    /// splats, and it does more on ordinary captured geometry: a
+    /// photogrammetry point cloud of coloured points gains a larger share than
+    /// a splat does. Any cloud whose attributes vary through space rather than
+    /// along its file order gains from it.
     ///
     /// The curve is laid over a grid as fine as the positions' own
     /// `quantization_bits`, up to 21 bits an axis. Both halves of that are
@@ -247,8 +241,8 @@ impl EncoderOptions {
     /// does not check. The gain comes from attributes that vary through space;
     /// an attribute that varies along the order it was handed in — an index, a
     /// timestamp, anything written in sequence — is scrambled by the reorder
-    /// and costs more afterwards. A cloud of positions plus a running integer
-    /// tag grows by 14% here. It is not checked because the option is a
+    /// and costs more afterwards: a cloud of positions plus a running integer
+    /// tag grows. It is not checked because the option is a
     /// statement about the order, not about the size: a caller who wants
     /// spatial locality in the decoded cloud wants it whether or not it also
     /// happens to compress better. Whoever wants only the smaller file wants

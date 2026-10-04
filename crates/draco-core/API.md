@@ -649,9 +649,9 @@ length by a step at 4, 6, 8 and 10.
 
 The two thresholds worth knowing before picking a value are the middle ones.
 Below 4, the schemes that predict one attribute from another need shared
-vertices to have anything to reuse, so they pay off on OBJ/PLY-shaped geometry
-(13–34% smaller in measurement) and do nothing on glTF-shaped geometry, where
-every vertex is already unique. At 6 the encoder splits the mesh along
+vertices to have anything to reuse, so they pay off on OBJ/PLY-shaped
+geometry, where files come out noticeably smaller, and do nothing on
+glTF-shaped geometry, where every vertex is already unique. At 6 the encoder splits the mesh along
 attribute seams, which is free for glTF geometry — same bytes, noticeably faster
 decode — and can more than triple a welded mesh with UV or normal seams.
 

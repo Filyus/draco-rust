@@ -266,9 +266,9 @@ impl CornerTable {
     /// Reserves corner storage for `faces` without changing `num_faces()`.
     ///
     /// Growing a face at a time keeps a claimed face count from allocating
-    /// anything, but it also reallocates: decoding a 69k-face mesh moved
-    /// through ten reallocations totalling 3.9 MB to reach a 1.7 MB table, and
-    /// every one of them copied what was already there. Reserving up front
+    /// anything, but it also reallocates: a large mesh moves through a chain of
+    /// reallocations that together copy more than the final table holds.
+    /// Reserving up front
     /// costs one allocation instead, so this takes a ceiling the caller has
     /// already bounded against the input rather than the count the header
     /// claims. Capacity only: a caller that over-reserves still sees the same
@@ -737,7 +737,7 @@ impl CornerTable {
     /// The next corner within the same face.
     ///
     /// The wrap is a branch on purpose. Replacing it with `c + 1 - 3 * wraps`
-    /// measured **8.8% slower** end-to-end on the Bunny: the wrap lands on one
+    /// measured clearly slower end to end: the wrap lands on one
     /// corner in three in a fixed pattern the branch predictor learns, and the
     /// arithmetic form puts a multiply and a subtract on the dependency chain
     /// that every `swing_left`/`swing_right` waits on.
@@ -788,7 +788,7 @@ impl CornerTable {
     /// This is not the fusion that was tried and rejected at
     /// [`prediction_scheme_parallelogram`](crate::prediction_scheme_parallelogram):
     /// that one read the whole face triple as an array and handed it back
-    /// through memory, and measured 1.4% slower. This stays a scalar load.
+    /// through memory, and measured slower. This stays a scalar load.
     pub fn vertex_after(&self, corner: CornerIndex) -> VertexIndex {
         count_load!(VertexAfter);
         // `next_in_face` in the inner position: the sentinel lands past the map

@@ -79,9 +79,9 @@ impl<'a> RAnsBitDecoder<'a> {
     /// past the encoded bits, and the difference is not an oversight. The
     /// obvious test -- the rABS state having fallen below `l_base` after
     /// renormalization, with no bytes left to refill it -- is not a fault
-    /// signal: measured over this crate's own round-trip suite it holds on
-    /// 21049 of 79359 reads (26%), every one of them in a stream this crate
-    /// encoded and decoded back byte-exactly. The rABS tail legitimately draws
+    /// signal: over this crate's own round-trip suite it holds on a large share
+    /// of reads, every one of them in a stream this crate encoded and decoded
+    /// back byte-exactly. The rABS tail legitimately draws
     /// from state alone. Upstream has no check here either.
     ///
     /// So over-reading an rANS stream has to be prevented by bounding the read
