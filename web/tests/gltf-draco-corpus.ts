@@ -43,6 +43,10 @@ const KNOWN = new Map(Object.entries({
   'testdata/Box/glTF_Binary/Box_Draco.glb': 'primitive uses Draco compression',
   'testdata/BoxMetaDraco/glTF/BoxMetaDraco.gltf': 'primitive uses Draco compression',
   'testdata/bun_zipper.glb': 'primitive uses Draco compression',
+  'testdata/gltf_transform/sphere_edgebreaker_speed0.glb': 'primitive uses Draco compression',
+  'testdata/gltf_transform/sphere_sequential.glb': 'primitive uses Draco compression',
+  'testdata/gltf_transform/two_objects_edgebreaker_speed0.glb': 'primitive uses Draco compression',
+  'testdata/gltf_transform/two_objects_sequential.glb': 'primitive uses Draco compression',
   'testdata/SphereTwoMaterials/sphere_two_materials_mesh_and_point_cloud.gltf': 'only TRIANGLES',
   'testdata/SphereTwoMaterials/sphere_two_materials_point_cloud.gltf': 'only TRIANGLES',
   // A Gaussian splat is a POINTS primitive, and KHR_draco_mesh_compression
