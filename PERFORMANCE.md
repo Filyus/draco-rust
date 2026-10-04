@@ -139,27 +139,38 @@ DRACO_CPP_BUILD_DIR=... DRACO_CPP_SOURCE_DIR=.../src cargo run --release   --man
 A model that exists only as a `.drc` reaches the sibling matrices, which take
 `.obj`, through `examples/drc_to_obj.rs`.
 
-Ryzen AI 7 350, one thread, C++ Draco 1.5.7 release, speed 4, 10-bit positions,
-medians of nine rounds of twenty. All three wrote byte-identical output.
+Ryzen AI 7 350, one thread, C++ Draco 1.5.7 release, 10-bit positions,
+medians of nine rounds of twenty, at speed 4 (EdgeBreaker) and speed 10
+(sequential). Every cell wrote byte-identical output on both sides.
 
-Measured 2026-09-04 at `0667cfe1`:
+Measured 2026-10-04 at `99969d2d`, speed 4:
 
 | model | faces | C++ encode | Rust encode | | C++ decode | Rust decode | |
 |---|---|---|---|---|---|---|---|
-| bunny | 69,451 | `19,196.0 [18,739.0..22,145.0]` | `11,812.0 [11,609.8..13,298.7]` | `1.63x` | `6,181.0 [6,100.0..7,251.0]` | `4,453.3 [4,395.5..5,700.4]` | `1.39x` |
-| lamp | 12,082 | `2,753.0 [2,728.0..2,803.0]` | `1,913.3 [1,874.2..1,957.5]` | `1.44x` | `1,293.0 [1,258.0..1,322.0]` | `986.0 [959.3..1,004.1]` | `1.31x` |
-| car | 1,744 | `649.0 [638.0..662.0]` | `376.7 [369.6..391.5]` | `1.72x` | `263.0 [259.0..268.0]` | `152.4 [149.4..164.2]` | `1.73x` |
+| bunny | 69,451 | `20,258.0 [19,862.0..22,279.0]` | `12,093.5 [11,356.5..12,447.6]` | `1.68x` | `6,487.0 [6,122.0..7,320.0]` | `4,739.5 [4,548.7..5,353.8]` | `1.37x` |
+| lamp | 12,082 | `2,935.0 [2,892.0..2,985.0]` | `1,949.9 [1,916.2..1,965.7]` | `1.51x` | `1,357.0 [1,335.0..1,389.0]` | `1,060.0 [1,035.9..1,067.5]` | `1.28x` |
+| car | 1,744 | `690.0 [675.0..709.0]` | `368.5 [358.2..378.7]` | `1.87x` | `284.0 [274.0..320.0]` | `165.4 [163.0..183.2]` | `1.72x` |
 
-Microseconds. A same-session repeat of the run agreed to within `1-2%` on
-every ratio (bunny `1.61x`/`1.38x`, lamp `1.45x`/`1.32x`, car `1.72x`/`1.75x`).
-The ratios are stable across runs to within 0.02x; the absolute figures are
-not, and are comparable only inside their own run. Against the previous
-snapshot on this machine (`1.60x`/`1.36x`, `1.42x`/`1.36x`, `1.80x`/`1.78x`),
-every ratio moved by `0.03x` or less -- inside run-to-run noise, not a
-regression or an improvement. An earlier run of the same command on a quieter
-machine read `1.62x / 1.34x`, `1.40x / 1.37x` and `1.79x / 1.80x` while its
-absolute encode times were some 20% lower -- which is the reason ratios are
-quoted from a run rather than carried between them.
+Speed 10:
+
+| model | faces | C++ encode | Rust encode | | C++ decode | Rust decode | |
+|---|---|---|---|---|---|---|---|
+| bunny | 69,451 | `3,791.0 [3,552.0..4,379.0]` | `1,359.6 [1,159.6..1,547.2]` | `2.79x` | `1,627.0 [1,396.0..2,051.0]` | `620.9 [432.7..717.7]` | `2.62x` |
+| lamp | 12,082 | `555.0 [542.0..596.0]` | `226.3 [208.6..238.3]` | `2.45x` | `255.0 [246.0..299.0]` | `104.4 [97.0..105.8]` | `2.44x` |
+| car | 1,744 | `149.0 [143.0..154.0]` | `61.2 [58.7..78.1]` | `2.44x` | `65.0 [64.0..68.0]` | `29.7 [27.7..31.0]` | `2.19x` |
+
+Microseconds. The ratios are stable across runs to within about 0.02x; the
+absolute figures are not, and are comparable only inside their own run, which
+is why ratios are quoted from a run rather than carried between them.
+
+The same session timed the draco-core 2.2.1 release beside this tree, the two
+binaries alternated (2.2.1, this, this, 2.2.1) with the C++ side as the control
+that should not move. At speed 4 the Rust encode is 3-5% faster than 2.2.1's
+and the decode 0-4%: the point-cloud rounds since reached the attribute coding
+a mesh shares -- the rANS write and read, the symbol plan, the tagged packing,
+the wrap transform's loop -- and not the connectivity, which is most of an
+EdgeBreaker mesh's time. At speed 10, where attribute coding is most of the
+work, the encode is 15-26% faster and the decode 7-17%.
 
 ### Real Models, Compress Then Decompress, Every Speed
 
