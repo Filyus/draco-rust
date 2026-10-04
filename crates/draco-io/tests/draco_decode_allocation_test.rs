@@ -16,6 +16,10 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use draco_core::decoder_buffer::DecoderBuffer;
+use draco_core::dynamic_integer_points_kd_tree::{
+    DynamicIntegerPointsKdTreeDecoder, DynamicIntegerPointsKdTreeEncoder, PointDVector,
+};
+use draco_core::encoder_buffer::EncoderBuffer;
 use draco_core::mesh::Mesh;
 use draco_core::mesh_decoder::MeshDecoder;
 use draco_core::point_cloud::PointCloud;
@@ -254,23 +258,19 @@ fn zero_byte_raw_corrections_do_not_reserve_one_value_per_claimed_point() {
     );
 }
 
-/// The KD-tree walk stacks were `(32 * dimension + 1) * dimension` entries
-/// each, taken in the decoder's constructor, where `dimension` is the sum of
-/// the attributes' component counts -- one byte of the descriptor each, at
-/// five bytes per attribute.
+/// A KD-tree point cloud whose attributes add up to a dimension of 6375 and
+/// whose stream ends before the KD-tree data.
 ///
-/// Quadratic in a number the stream picks that cheaply: 25 attributes of 255
-/// components in 143 bytes reached `5,202,025,500` bytes in a single
-/// `vec![0; n]`. That one cannot fail gracefully, so this did not return an
-/// error -- it aborted the process, which in the WASM modules takes the page.
-/// The stacks are grown by the walk now, so a row costs a split and a split
-/// costs input.
+/// The dimension is the sum of the attributes' component counts, one byte of
+/// the descriptor each at five bytes per attribute, so the stream picks it
+/// cheaply. A walk sized from it up front, `(32 * dimension + 1) * dimension`
+/// entries per stack, asks for `5,202,025,500` bytes here. That request cannot
+/// fail gracefully, and in the WASM modules it takes the page. The decoder
+/// allocates its row only when the walk starts, which this stream never
+/// reaches.
 ///
-/// With the fix reverted this test reports `10,404,193,277 bytes for a 143
-/// byte stream` on a machine that can satisfy the request, and dies inside the
-/// allocator on one that cannot. Either way an `is_err` assertion would have
-/// seen nothing: the decode's *verdict* was never wrong, only what it spent
-/// reaching it.
+/// An `is_err` assertion alone would pass either way. The verdict is the same,
+/// only what the decode spends reaching it differs.
 #[test]
 fn a_declared_kd_tree_dimension_does_not_size_the_walk_stacks() {
     const ATTRIBUTES: usize = 25;
@@ -299,6 +299,51 @@ fn a_declared_kd_tree_dimension_does_not_size_the_walk_stacks() {
         requested < 1024 * 1024,
         "decode reserved {requested} bytes for a {} byte stream",
         stream.len()
+    );
+}
+
+/// A valid KD-tree stream that walks the full depth of its tree.
+///
+/// Three equal points of 255 components with 32-bit values split on every bit
+/// of every component, so the walk goes `32 * 255` levels deep. The stream
+/// for it is about 1 KB. Keeping a base and levels row per level would take
+/// about 16 MB for this, and the same stream shape with 2048 components is
+/// about 8 KB and would take 1 GB. The decoder keeps one row and an undo log
+/// of what each level changed, which is linear in the depth.
+#[test]
+fn a_deep_kd_tree_walk_does_not_keep_a_row_per_level() {
+    const COMPONENTS: usize = 255;
+    const POINTS: usize = 3;
+
+    let mut points = PointDVector::new(POINTS, COMPONENTS);
+    for p in 0..POINTS {
+        points.point_mut(p).fill(0xffff_ffff);
+    }
+    let expected = points.as_slice().to_vec();
+    let mut encoded = EncoderBuffer::new();
+    {
+        // The encoder takes about 16 MB of stacks for this. Holding the lock
+        // keeps that out of whatever another test is measuring meanwhile.
+        let _guard = MEASURING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        DynamicIntegerPointsKdTreeEncoder::new(2, COMPONENTS as u32).encode_points(
+            &mut points,
+            32,
+            &mut encoded,
+        );
+    }
+
+    let (decoded, requested) = reserved_by(|| {
+        DynamicIntegerPointsKdTreeDecoder::new(2, COMPONENTS as u32)
+            .decode_points(&mut DecoderBuffer::new(encoded.data()), POINTS as u32)
+    });
+
+    assert_eq!(decoded.expect("the stream decodes"), expected);
+    assert!(
+        requested < 2 * 1024 * 1024,
+        "decode reserved {requested} bytes for a {} byte stream",
+        encoded.size()
     );
 }
 

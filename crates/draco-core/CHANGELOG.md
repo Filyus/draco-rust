@@ -163,6 +163,14 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   correctly and kept another, 22 bytes larger on the one mesh in six thousand
   sampled that reaches it. The estimate is never written to the stream, so
   it is now computed in upstream's widths.
+- A KD-tree point cloud with many components no longer makes the decoder take
+  memory in the square of the component count. The walk kept a row of
+  `dimension` values for every level of the tree, which goes `32 * dimension`
+  levels deep, so three equal points of 2048 components in about 8 KB of
+  stream asked for about 1 GB. The decoder now keeps one row and undoes each
+  split on the way back, which is linear in the dimension. The decoded values
+  are unchanged. Decoding a cloud of three components takes as long as before,
+  within 1%, and one of 64 components takes 9.6% less.
 
 ## [2.2.1](https://github.com/Filyus/draco-rust/compare/draco-core-v2.2.0...draco-core-v2.2.1) - 2026-09-29
 

@@ -29,70 +29,17 @@ fn most_significant_bit(value: u32) -> u32 {
     31 - value.leading_zeros()
 }
 
-/// Grows both walk stacks to hold at least `rows` rows of `dimension` entries,
-/// and returns how many rows they hold afterwards.
-///
-/// Doubling, so the check the walk makes per split is a comparison against a
-/// number it already has and the resize is rare. Fallible on purpose: the row
-/// count follows a walk the stream drives, so a malformed stream that keeps
-/// splitting keeps asking, and the answer has to be an error the decode
-/// reports rather than an abort inside the allocator.
+/// What one split of the decoder's walk changed in its current row, kept so
+/// the walk can put it back when it returns to a shallower node.
 #[cfg(feature = "decoder")]
-fn grow_rows(
-    base: &mut Vec<u32>,
-    levels: &mut Vec<u32>,
-    dimension: usize,
-    rows: usize,
-    have: usize,
-) -> Result<usize, ()> {
-    let target = rows.max(have.saturating_mul(2));
-    let needed = target.checked_mul(dimension).ok_or(())?;
-    for stack in [&mut *base, &mut *levels] {
-        if stack.len() < needed {
-            stack.try_reserve(needed - stack.len()).map_err(|_| ())?;
-            stack.resize(needed, 0);
-        }
-    }
-    Ok(target)
-}
-
-/// Copies the row at `src` onto the `dim` values that follow it.
-///
-/// `copy_within` with a length only known at run time is a `memmove` call, and
-/// a node's row is a handful of words -- the call dominated what it copied.
-/// Dispatching the common dimensions to a constant length turns each into a
-/// few loads and stores; anything wider falls back to the call, where its size
-/// makes the call worth what it costs.
-#[cfg(feature = "decoder")]
-#[inline]
-fn copy_row_to_next(stack: &mut [u32], src: usize, dim: usize) {
-    #[inline(always)]
-    fn fixed<const N: usize>(stack: &mut [u32], src: usize) {
-        // The caller bounds both rows before it reaches here, so this is the
-        // same range `copy_within` would have taken.
-        debug_assert!(stack.len() >= src + 2 * N);
-        let Some(window) = stack.get_mut(src..src + 2 * N) else {
-            return;
-        };
-        let (row, next) = window.split_at_mut(N);
-        next.copy_from_slice(row);
-    }
-
-    match dim {
-        1 => fixed::<1>(stack, src),
-        2 => fixed::<2>(stack, src),
-        3 => fixed::<3>(stack, src),
-        4 => fixed::<4>(stack, src),
-        5 => fixed::<5>(stack, src),
-        6 => fixed::<6>(stack, src),
-        7 => fixed::<7>(stack, src),
-        8 => fixed::<8>(stack, src),
-        9 => fixed::<9>(stack, src),
-        10 => fixed::<10>(stack, src),
-        11 => fixed::<11>(stack, src),
-        12 => fixed::<12>(stack, src),
-        _ => stack.copy_within(src..src + dim, src + dim),
-    }
+#[derive(Clone, Copy)]
+struct SplitUndo {
+    /// The depth of the node that split. Its row keeps the new level of
+    /// `axis`. The row one deeper also has the split bit set in its base.
+    depth: u32,
+    axis: u32,
+    old_level: u32,
+    old_base: u32,
 }
 
 fn increment_mod(v: u32, m: u32) -> u32 {
@@ -525,8 +472,12 @@ pub struct DynamicIntegerPointsKdTreeDecoder<'a> {
     num_points: u32,
     num_decoded_points: u32,
     dimension: u32,
-    base_stack: Vec<u32>,
-    levels_stack: Vec<u32>,
+    /// The base and levels of the node being decoded, `dimension` values
+    /// each, in that order.
+    row: Vec<u32>,
+    /// What the splits on the walk's current path changed in `row`, deepest
+    /// last.
+    undo: Vec<SplitUndo>,
     numbers_decoder: NumbersDecoder<'a>,
     remaining_bits_decoder: DirectBitDecoder,
     axis_decoder: DirectBitDecoder,
@@ -535,15 +486,9 @@ pub struct DynamicIntegerPointsKdTreeDecoder<'a> {
 
 #[cfg(feature = "decoder")]
 impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
-    /// Builds the decoder without its walk stacks.
-    ///
-    /// They used to be taken here, `(32 * dimension + 1) * dimension` entries
-    /// each: quadratic in a dimension the stream picks, one component at a
-    /// time, at five bytes per attribute. A 143-byte file naming 25 attributes
-    /// of 255 components reached `5,202,025,500` bytes in one `vec![0; n]`,
-    /// which cannot fail gracefully -- it aborts, and in the WASM modules that
-    /// takes the page. The stacks are grown by the walk instead, a row at a
-    /// time, as the splits that need them are decoded.
+    /// Builds the decoder. Nothing here is sized by `dimension`, which the
+    /// stream picks at five bytes per attribute. The walk allocates its row
+    /// when it starts.
     pub fn new(compression_level: u8, dimension: u32) -> Self {
         assert!(compression_level <= 6);
         let numbers_decoder = match compression_level {
@@ -558,8 +503,8 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
             num_points: 0,
             num_decoded_points: 0,
             dimension,
-            base_stack: Vec::new(),
-            levels_stack: Vec::new(),
+            row: Vec::new(),
+            undo: Vec::new(),
             numbers_decoder,
             remaining_bits_decoder: DirectBitDecoder::new(),
             axis_decoder: DirectBitDecoder::new(),
@@ -681,82 +626,112 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
     }
 
     fn decode_internal(&mut self, num_points: u32, out: &mut Vec<u32>) -> bool {
-        // The two stacks move out of `self` for the duration of the walk so the
-        // node's base and level rows can be read in place. Held as fields they
-        // would alias the `&mut self` the decoders need, which is why this used
-        // to copy each row into a scratch vector and copy it back -- six
-        // memcpys per node, on a walk that visits two nodes per point.
-        let mut base_stack = std::mem::take(&mut self.base_stack);
-        let mut levels_stack = std::mem::take(&mut self.levels_stack);
-        base_stack.clear();
-        levels_stack.clear();
-        let ok = self.decode_walk(num_points, out, &mut base_stack, &mut levels_stack);
-        self.base_stack = base_stack;
-        self.levels_stack = levels_stack;
+        // The row and its undo log move out of `self` for the duration of the
+        // walk so the node's base and levels can be read in place while the
+        // decoders take `&mut self`.
+        let mut row = std::mem::take(&mut self.row);
+        let mut undo = std::mem::take(&mut self.undo);
+        let ok = self.decode_walk(num_points, out, &mut row, &mut undo);
+        self.row = row;
+        self.undo = undo;
         ok
     }
 
+    /// Walks the tree depth first, keeping one row for the node being decoded.
+    ///
+    /// The tree can be `32 * dimension` levels deep, and a row per level is
+    /// quadratic in the dimension even for a stream that reaches that depth
+    /// legitimately: three equal points of 2048 components encode to about
+    /// 8 KB and reach depth 65,536. A split at depth `d` raises one level in
+    /// the row of `d`, and the row of `d + 1` is that row with one more base
+    /// bit set. So the row of any node on the current path is the current row
+    /// with the splits below it taken back. The walk logs each split with its
+    /// depth, and on reaching a node at depth `t` it undoes the splits deeper
+    /// than `t` and the base bit of the last split at `t`.
+    ///
+    /// That is enough because the pending nodes are never deeper than the
+    /// node just decoded. A split at depth `d` takes its node off the top of
+    /// the stack, where everything below is shallower than `d`, and pushes
+    /// its halves at `d` and `d + 1`. So the depths on the stack strictly
+    /// increase towards its top, and a node is reached only after everything
+    /// deeper than it has been decoded. It also means a node at the current
+    /// depth can only be the second half of the split just made, whose row is
+    /// already the current one.
     fn decode_walk(
         &mut self,
         num_points: u32,
         out: &mut Vec<u32>,
-        base_stack: &mut Vec<u32>,
-        levels_stack: &mut Vec<u32>,
+        row: &mut Vec<u32>,
+        undo: &mut Vec<SplitUndo>,
     ) -> bool {
         #[derive(Clone, Copy)]
         struct Status {
             num_remaining_points: u32,
             last_axis: u32,
-            stack_pos: usize,
+            depth: u32,
         }
 
         let dimension = self.dimension as usize;
-        // The root's row, and a little beyond it. Every row after that is added
-        // by the split that needs it, so the stacks follow the walk the stream
-        // actually drives rather than the deepest one it could claim.
-        let Ok(mut rows) = grow_rows(base_stack, levels_stack, dimension, 8, 0) else {
+        let Some(row_len) = dimension.checked_mul(2) else {
             return false;
         };
-        base_stack[0..dimension].fill(0);
-        levels_stack[0..dimension].fill(0);
+        row.clear();
+        if row.try_reserve(row_len).is_err() {
+            return false;
+        }
+        row.resize(row_len, 0);
+        undo.clear();
+        let mut depth = 0u32;
 
         let mut stack: Vec<Status> = Vec::new();
         stack.push(Status {
             num_remaining_points: num_points,
             last_axis: 0,
-            stack_pos: 0,
+            depth: 0,
         });
 
         while let Some(status) = stack.pop() {
             let num_remaining_points = status.num_remaining_points;
             let last_axis = status.last_axis;
-            let stack_pos = status.stack_pos;
 
-            let row_start = stack_pos * dimension;
-            let row_end = row_start + dimension;
-            // The child's rows are the ones immediately after this node's, so
-            // propagating to a child is a copy within the stack rather than a
-            // round trip through a scratch buffer.
-            let child_start = row_end;
-            // This node's own row, which every branch below reads. It was
-            // added by the split that pushed this node, or by the root setup,
-            // so a well-formed walk never fails here; the check stays because
-            // it is what turns a malformed one into a refusal rather than a
-            // panic in the row accesses, and it leaves the compiler a bound to
-            // carry through the node.
-            if base_stack.len() < row_end || levels_stack.len() < row_end {
-                return false;
+            // The second half of the split just made is at the current depth,
+            // and its row needs nothing undone. It is the node popped after
+            // every split that has one.
+            if status.depth != depth {
+                // The ordering of the stack keeps every pending node at or
+                // above the current depth. A node below it would be reading a
+                // row this walk never built.
+                if status.depth > depth {
+                    return false;
+                }
+                while let Some(&split) = undo.last() {
+                    if split.depth < status.depth {
+                        break;
+                    }
+                    let axis = split.axis as usize;
+                    row[axis] = split.old_base;
+                    if split.depth == status.depth {
+                        // The node's own split, whose level stays raised.
+                        break;
+                    }
+                    row[dimension + axis] = split.old_level;
+                    undo.pop();
+                }
+                depth = status.depth;
             }
+            // Both halves of the row are `dimension` long. Saying so for the
+            // levels too lets the leaf loop below check one bound for the
+            // base, the levels and the output point together.
+            let (base, levels) = row.split_at_mut(dimension);
+            let Some(levels) = levels.get_mut(..dimension) else {
+                return false;
+            };
 
             if num_remaining_points > num_points {
                 return false;
             }
 
-            let Some(axis) = self.get_axis(
-                num_remaining_points,
-                &levels_stack[row_start..row_end],
-                last_axis,
-            ) else {
+            let Some(axis) = self.get_axis(num_remaining_points, levels, last_axis) else {
                 return false;
             };
             if axis >= self.dimension {
@@ -764,19 +739,17 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
             }
             let axis = axis as usize;
 
-            let level = levels_stack[row_start + axis];
+            let level = levels[axis];
 
             if (self.bit_length - level) == 0 {
                 for _ in 0..num_remaining_points {
-                    out.extend_from_slice(&base_stack[row_start..row_end]);
+                    out.extend_from_slice(base);
                     self.num_decoded_points += 1;
                 }
                 continue;
             }
 
             if num_remaining_points <= 2 {
-                let old_base = &base_stack[row_start..row_end];
-                let levels = &levels_stack[row_start..row_end];
                 for _ in 0..num_remaining_points {
                     // The point is assembled in the output vector rather than
                     // in a scratch row that is then appended: the axis order is
@@ -801,7 +774,7 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
                                 return false;
                             }
                         }
-                        p[axis_j] = value | old_base[axis_j];
+                        p[axis_j] = value | base[axis_j];
                         axis_j = increment_mod(axis_j as u32, self.dimension) as usize;
                     }
                     self.num_decoded_points += 1;
@@ -813,22 +786,8 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
                 return false;
             }
 
-            // Splitting is the one branch that writes the child's row, so it is
-            // the one that adds it. A row costs a split, and a split costs
-            // input, which is what keeps the stacks proportional to the stream
-            // rather than to the dimension it declares.
-            if stack_pos + 2 > rows {
-                let Ok(grown) = grow_rows(base_stack, levels_stack, dimension, stack_pos + 2, rows)
-                else {
-                    return false;
-                };
-                rows = grown;
-            }
-
             let num_remaining_bits = self.bit_length - level;
             let modifier = 1u32 << (num_remaining_bits - 1);
-            copy_row_to_next(base_stack, row_start, dimension);
-            base_stack[child_start + axis] += modifier;
 
             let incoming_bits = most_significant_bit(num_remaining_points);
             let mut number = 0u32;
@@ -844,10 +803,10 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
             let mut second_half = num_remaining_points - first_half;
 
             if first_half != second_half {
-                // The loop count comes from the stream, so a tree that claims
-                // more splits than the half bits cover used to read zeros past
-                // the end and keep building. `DirectBitDecoder` reports the
-                // exhaustion exactly; refuse rather than invent the swap.
+                // The loop count comes from the stream, so a tree can claim
+                // more splits than the half bits cover. `DirectBitDecoder`
+                // reports the exhaustion exactly, and the walk refuses rather
+                // than invent the swap.
                 let Some(keep_order) = self.half_decoder.decode_next_bit() else {
                     return false;
                 };
@@ -856,23 +815,36 @@ impl<'a> DynamicIntegerPointsKdTreeDecoder<'a> {
                 }
             }
 
-            levels_stack[row_start + axis] += 1;
-            copy_row_to_next(levels_stack, row_start, dimension);
+            // Both halves see the split axis one level deeper. The first half
+            // stays at this depth and keeps the base, the second goes one
+            // deeper with the split bit set in its base.
+            let Some(child_depth) = depth.checked_add(1) else {
+                return false;
+            };
+            undo.push(SplitUndo {
+                depth,
+                axis: axis as u32,
+                old_level: levels[axis],
+                old_base: base[axis],
+            });
+            levels[axis] += 1;
+            base[axis] += modifier;
 
             if first_half != 0 {
                 stack.push(Status {
                     num_remaining_points: first_half,
                     last_axis: axis as u32,
-                    stack_pos,
+                    depth,
                 });
             }
             if second_half != 0 {
                 stack.push(Status {
                     num_remaining_points: second_half,
                     last_axis: axis as u32,
-                    stack_pos: stack_pos + 1,
+                    depth: child_depth,
                 });
             }
+            depth = child_depth;
         }
 
         true

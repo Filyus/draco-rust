@@ -109,6 +109,7 @@ impl<'a> FoldedBit32Decoder<'a> {
         self.bit_decoder.decode_next_bit()
     }
 
+    #[inline]
     pub fn decode_least_significant_bits32(&mut self, nbits: u32, value: &mut u32) -> bool {
         if nbits == 0 || nbits > 32 {
             return false;

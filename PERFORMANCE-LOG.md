@@ -36,7 +36,7 @@ figure at all.
 `rejected` -- tried, deliberately not kept. `retracted` -- an earlier claim
 here was withdrawn. `diagnostic` -- measured only, no change proposed.
 
-79 rounds: 48 landed, 10 diagnostic, 11 null, 8 retracted, 2 rejected.
+80 rounds: 49 landed, 10 diagnostic, 11 null, 8 retracted, 2 rejected.
 
 | Round | Verdict | Headline |
 | --- | --- | ---: |
@@ -119,6 +119,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [Three Shorter Sums, All Null](#three-shorter-sums-all-null) | null | `-0.5 to +2%` |
 | [The Encoder On Threads](#the-encoder-on-threads) | landed | `2.3x to 4.6x on 16 threads` |
 | [The Decoder On Threads](#the-decoder-on-threads) | landed | `3.5x to 4.0x splat decode on 16 threads` |
+| [The KD-Tree Walk On One Row](#the-kd-tree-walk-on-one-row) | landed | `33 MB -> linear, +0.7% to -9.6% time` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -4623,6 +4624,70 @@ streams of every synthetic shape and damaged and constant-heavy ones on 1, 2, 4,
 5, 12 and 16 threads against the decode in order, and the pairs of the decode
 in order against the decode without them, budget included; the latter fail with
 the budget's hand-over dropped.
+
+### The KD-Tree Walk On One Row
+
+2026-10-04, callgrind in WSL, Rust only. The KD-tree decoder kept a base row
+and a levels row for every depth of its walk, `dimension` values each, and the
+tree goes `32 * dimension` levels deep. Growing the rows with the walk kept a
+header from sizing them, but a stream that walks the whole depth still paid
+the square of the dimension. Three equal points of 255 components encode to
+1,062 bytes and made the decode ask for 33,415,300 bytes. With 2048 components
+the stream is about 8 KB and the rows about 1 GB.
+
+A split at depth `d` raises one level in its own row, and the row of `d + 1`
+is that row with one base bit set. The walk now keeps one row and logs each
+split with its depth, its axis, the old level and the old base. Reaching a node
+at depth `t` undoes the splits deeper than `t` and the base bit of the last
+split at `t`. This works because the depths on the walk's stack strictly increase
+towards its top. Every entry still in the log is a level raised in the
+current row, so there are at most `32 * dimension` of them at 16 bytes each,
+next to the row's `2 * dimension` values. A split writes two values instead of
+copying two rows.
+
+The first version logged two 24-byte entries per split and was slower by 3.4%
+to 6.5%. One 16-byte entry per split brought it to +0.8% to +4.7%. Two more
+things were in the remainder. Splitting the row gave the levels a length of
+`row.len() - dimension`, so the leaf loop checked the base, the levels and the
+output point against three different bounds. Narrowing the levels to
+`dimension` restored the shared bound. Separately, the rewritten walk tipped
+the inliner against `FoldedBit32Decoder::decode_least_significant_bits32`, and
+the call cost about 550,000 instructions at level 6. It now carries
+`#[inline]`.
+
+That version did fewer instructions everywhere, but the clock disagreed for
+three components: best of 200 decodes, level 2 took 2.3% longer and level 6
+2.6%, slower in every round. The walk read the top of the log and branched on
+it at every node. The depths on the stack in fact strictly increase, so a node
+at the current depth is always the second half of the split just made, and its
+row needs nothing undone. Skipping the log for it brought both within noise.
+
+One decode, instructions, generated cloud of `bits`-bit values:
+
+| level | dimension | points | bits | before | after | |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 3 | 50,000 | 14 | `19,906,738` | `18,980,508` | `-4.7%` |
+| 2 | 3 | 50,000 | 14 | `23,020,135` | `22,058,073` | `-4.2%` |
+| 6 | 3 | 50,000 | 14 | `24,994,210` | `24,284,023` | `-2.8%` |
+| 4 | 6 | 20,000 | 12 | `12,397,058` | `11,901,887` | `-4.0%` |
+| 2 | 64 | 2,000 | 16 | `8,075,702` | `7,766,385` | `-3.8%` |
+
+Best of 200 decodes in WSL, the builds alternated over three rounds. The
+reference build itself moved by 1% to 4% between rounds:
+
+| level | dimension | points | before | after | |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 3 | 50,000 | `928 us` | `915 us` | `-1.4%` |
+| 2 | 3 | 50,000 | `1,096 us` | `1,102 us` | `+0.5%` |
+| 6 | 3 | 50,000 | `1,139 us` | `1,147 us` | `+0.7%` |
+| 4 | 6 | 20,000 | `537 us` | `520 us` | `-3.1%` |
+| 2 | 64 | 2,000 | `254 us` | `229 us` | `-9.6%` |
+
+The output hashes match. A probe decoded 2,400 generated streams over every
+level, dimensions 1 to 100 and four point shapes, plus 30 damaged copies of
+each, 74,400 decodes in all, with both builds. Every result, the error
+or the decoded values, was byte-identical, and the same probe disagreed on
+24,000 of them with the undo condition off by one.
 
 ## Unexplored
 
