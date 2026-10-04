@@ -10,8 +10,13 @@ readme = "README.md"
 keywords = ["draco", "gltf", "glb", "compression", "scene"]
 categories = ["compression", "graphics", "rendering::data-formats"]
 # The probe is a research instrument, `#[ignore]`d, that reads its scene
-# through the environment; it is left out as `draco-core`'s probes are.
-exclude = ["tests/roundtrip_test.rs", "tests/*_probe.rs"]
+# through the environment; it is left out as `draco-core`'s probes are. The
+# two tests read the repository's testdata, which the package does not carry.
+exclude = [
+    "tests/roundtrip_test.rs",
+    "tests/gltf_transform_fixtures_test.rs",
+    "tests/*_probe.rs",
+]
 
 [package.metadata.docs.rs]
 all-features = true

@@ -32,3 +32,5 @@ mimalloc = "0.1"
 dhat = "0.3"
 draco-core = { path = "../draco-core" }
 draco-io = { path = "../draco-io" }
+# The corpus probe reads the Draco streams out of glTF files and imports them.
+draco-gltf = { path = "../draco-gltf" }
