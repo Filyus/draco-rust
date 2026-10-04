@@ -146,6 +146,18 @@ it, so the compiler decides this, not the version: released 1.5.7 and upstream
 job sets it. Nothing asserted is lost: 349 comparisons across grid, soup and
 degenerate meshes, in 37 seconds. Exploring the 30-bit region stays a local run.
 
+One case past that sample runs on its own, because it holds parity in place by
+reproducing an upstream defect. Upstream estimates an rANS table's size from
+`max_symbol + 1` as an `int32_t`, so once a residual's symbol passes
+`i32::MAX` the estimate turns negative and the constrained multi-parallelogram
+search keeps the configuration it scored that way. The choice is written to the
+stream, so an estimate computed correctly writes different bytes: 4546 against
+C++ Draco's 4524 on case #3506 of the sweep. The estimate is a cost heuristic,
+never a value a decoder reads, so `ShannonEntropyTracker` computes it in
+upstream's widths, and
+`the_case_where_upstreams_table_estimate_goes_negative_matches` in the same
+file holds the bytes to C++ Draco's.
+
 #### Alternative: refuse these values, as upstream does
 
 This has been built and measured once. The steps and the cost:

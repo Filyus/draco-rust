@@ -142,6 +142,13 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   an attribute per corner -- read out of bounds. A varint index is checked
   before it is narrowed to 32 bits, so one past `u32` cannot pass as a small
   index. No encoder writes such a stream.
+- The encoder writes C++ Draco's bytes where a prediction residual's symbol
+  passes `i32::MAX` under the constrained multi-parallelogram scheme. Upstream
+  computes its rANS table-size estimate there in `int32_t`, where it turns
+  negative and decides which configuration is kept; this encoder computed it
+  correctly and kept another, 22 bytes larger on the one mesh in six thousand
+  sampled that reaches it. The estimate is never written to the stream, so
+  it is now computed in upstream's widths.
 
 ## [2.2.1](https://github.com/Filyus/draco-rust/compare/draco-core-v2.2.0...draco-core-v2.2.1) - 2026-09-29
 

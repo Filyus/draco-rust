@@ -30,12 +30,13 @@
 //!    which high quantization plus a bad parallelogram average produces. The
 //!    value arrived reinterpreted as negative, so upstream's estimate of a
 //!    catastrophically expensive configuration came out *cheaper* than every
-//!    sane one, and C++ picked it. Rust, computing the same estimate in
-//!    `i64`/`u64` throughout, correctly rejected that configuration -- so the
-//!    two disagreed by 22 bytes on a mesh where Rust was right. The parameter
-//!    is still `int32_t` in released 1.5.7 and in upstream `main`, which have
-//!    identical entropy sources, so this defect is present in whatever C++
-//!    build the sweep is run against.
+//!    sane one, and C++ picked it. Computing the estimate correctly made the
+//!    two disagree by 22 bytes on case #3506 (`grid`, 250 points, normals and
+//!    texture coordinates at 19/14/29 bits, speed 1), past the default sample.
+//!    The estimate is a cost heuristic, never a value in the stream, so this
+//!    port reproduces upstream's arithmetic instead and writes C++ Draco's
+//!    bytes -- 22 fewer of them, on that mesh. The parameter is still
+//!    `int32_t` in released 1.5.7 and in upstream `main`.
 //! 6. The encoding half of the portable texcoord predictor was missing the
 //!    three overflow guards upstream applies before its scaled-space
 //!    multiplications. Upstream shares one predictor between encoder and
@@ -354,6 +355,41 @@ fn encode_cpp(case: &Case) -> Option<Vec<u8>> {
     )
 }
 
+/// Defect 5's case, past the default sample: the one mesh where upstream's
+/// `int32_t` table estimate goes negative and changes which configuration the
+/// constrained multi-parallelogram search keeps. Drawing the cases before it
+/// costs nothing; only this one is encoded.
+#[test]
+fn the_case_where_upstreams_table_estimate_goes_negative_matches() {
+    if !draco_cpp_test_bridge::is_available() {
+        println!("SKIP: no C++ bridge");
+        return;
+    }
+    let mut rng = Rng(0x5eed_1234_abcd_0001);
+    for _ in 0..3506 {
+        make_case(&mut rng);
+    }
+    let case = make_case(&mut rng);
+    assert_eq!(
+        (
+            case.kind,
+            case.positions.len() / 3,
+            case.uv_bits,
+            case.speed
+        ),
+        ("grid", 250, 29, 1),
+        "the sequence no longer draws the case this test is about"
+    );
+    let rust = encode_rust(&case).expect("Rust encode");
+    let cpp = encode_cpp(&case).expect("C++ encode");
+    assert!(
+        rust == cpp,
+        "C++ {} bytes, Rust {} bytes",
+        cpp.len(),
+        rust.len()
+    );
+}
+
 #[test]
 fn random_sweep() {
     if !draco_cpp_test_bridge::is_available() {
@@ -371,6 +407,12 @@ fn random_sweep() {
     // does not. `SWEEP_ASSERTED_ONLY` keeps the part that carries the
     // expectations, which is what an unattended run can conclude anything from.
     let asserted_only = std::env::var_os("SWEEP_ASSERTED_ONLY").is_some();
+    // `SWEEP_ONLY=<index>` encodes that one case of the sequence: a finding
+    // reported as `#3506` comes back in seconds rather than after the 3506
+    // cases before it are encoded twice.
+    let only: Option<u64> = std::env::var("SWEEP_ONLY")
+        .ok()
+        .and_then(|v| v.parse().ok());
 
     // Each encode is wrapped in `catch_unwind`, and a panicking case is a
     // finding to be collected rather than a crash to be watched. Silence the
@@ -390,6 +432,9 @@ fn random_sweep() {
 
     for i in 0..iterations {
         let case = make_case(&mut rng);
+        if only.is_some_and(|only| i != only) {
+            continue;
+        }
         // Draw every case either way, so the sequence a given seed produces is
         // the same in both modes and a finding keeps its index.
         if asserted_only && !case.is_asserted() {
@@ -510,7 +555,7 @@ fn random_sweep() {
     // A sweep that silently stopped generating the well-formed meshes it
     // asserts on would pass while checking nothing.
     assert!(
-        compared > iterations as usize / 4,
+        only.is_some() || compared > iterations as usize / 4,
         "expected most cases to reach a byte comparison, got {compared} of {iterations}"
     );
 }

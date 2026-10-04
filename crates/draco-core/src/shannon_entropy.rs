@@ -5,8 +5,6 @@
 //! choose between coding schemes and to size rANS tables. Port of Draco's
 //! `shannon_entropy.h`.
 
-use crate::rans_symbol_coding::approximate_rans_frequency_table_bits;
-
 /// Largest symbol held in the dense frequency table; anything above it goes to
 /// the sparse side table instead.
 ///
@@ -155,7 +153,9 @@ impl ShannonEntropyTracker {
                 old_symbol_entropy_norm = self.f_times_log2_f(frequency);
             } else if frequency == 0 {
                 ret_data.num_unique_symbols += 1;
-                if symbol as i32 > ret_data.max_symbol {
+                // Unsigned, as upstream compares: a symbol past `i32::MAX` is
+                // the largest yet, and is stored reinterpreted as negative.
+                if symbol > ret_data.max_symbol as u32 {
                     ret_data.max_symbol = symbol as i32;
                 }
             }
@@ -230,16 +230,24 @@ impl ShannonEntropyTracker {
         bits.ceil() as i64
     }
 
+    /// Upstream's `GetNumberOfRAnsTableBits`, in upstream's integer widths.
+    ///
+    /// Upstream passes `max_symbol + 1` to `ApproximateRAnsFrequencyTableBits`
+    /// as an `int32_t`, so once the largest symbol passes `i32::MAX` the
+    /// estimate comes out negative, and the constrained multi-parallelogram
+    /// search scores that configuration as the cheapest. The choice is written
+    /// to the stream, so computing the estimate correctly here -- in `u32`, as
+    /// `rans_symbol_coding` does -- picks another configuration and another
+    /// stream: on one 250-point mesh at 29-bit texture coordinates, 4546 bytes
+    /// where C++ Draco writes 4524. This is a cost heuristic, never a bitstream
+    /// value, so reproducing upstream's arithmetic costs nothing in
+    /// correctness and keeps the bytes C++ Draco's.
     pub fn get_number_of_r_ans_table_bits_static(entropy_data: &EntropyData) -> i64 {
-        // `max_symbol` is a symbol value stored as `i32`, so a residual near
-        // `u32::MAX` lands on `i32::MAX` and the increment overflows. Upstream
-        // computes the same expression in `int` and wraps; the result feeds a
-        // table-size estimate that the encoder compares against another
-        // estimate, so this is a cost heuristic rather than a bitstream value.
-        approximate_rans_frequency_table_bits(
-            entropy_data.max_symbol.wrapping_add(1) as u32,
-            entropy_data.num_unique_symbols as u32,
-        ) as i64
+        let max_value = entropy_data.max_symbol.wrapping_add(1);
+        let unique = entropy_data.num_unique_symbols;
+        let zero_frequency_bits =
+            8i32.wrapping_mul(unique.wrapping_add(max_value.wrapping_sub(unique) / 64));
+        8 * i64::from(unique) + i64::from(zero_frequency_bits)
     }
 }
 
