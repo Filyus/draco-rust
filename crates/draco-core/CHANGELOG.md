@@ -78,9 +78,10 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the encode takes 0.45 s instead of 0.65 s and the decode 0.34 s instead of
   0.36 s. Meshes gain through the same attribute coding. Against 2.2.1, over
   three meshes of 1.7 to 69 thousand faces, the sequential coder (speed 10)
-  encodes 15-26% faster and decodes 7-17% faster; EdgeBreaker (speed 4)
-  encodes 3-5% faster and decodes up to 4% faster, since its time is mostly
-  connectivity, which is unchanged. Encoding on one thread also needs less
+  encodes 15-26% faster and decodes 7-17% faster. EdgeBreaker (speed 4)
+  gains little, since its time is mostly connectivity, which is unchanged:
+  about 2% fewer instructions to encode and 2-3% fewer to decode, all of them
+  in the attribute symbols. Encoding on one thread also needs less
   memory at its peak, since the
   symbols no longer take a second attribute-sized buffer: about a third less
   on scans and lidar captures (695 MB to 440 MB on that scan, 3.0 GB to 2.1 GB

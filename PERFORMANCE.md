@@ -172,6 +172,17 @@ the wrap transform's loop -- and not the connectivity, which is most of an
 EdgeBreaker mesh's time. At speed 10, where attribute coding is most of the
 work, the encode is 15-26% faster and the decode 7-17%.
 
+Gains that small on the clock can be a code-layout artifact, so the same three
+meshes were counted under callgrind (`encode_drc`/`decode_drc`, one iteration
+minus none, both trees built in WSL). At speed 4 the encode does 1.5-2.2% fewer
+instructions than 2.2.1's and the decode 1.7-3.2%; at speed 10 the encode does
+8-14% fewer, the control that had to move. On the 69K-face mesh the whole
+speed-4 difference is in the attribute symbols -- the plan from bit-length
+counts, the symbols formed in place, the rANS write; on the decode side the
+rANS run and the zero-fill it no longer does -- and the connectivity is the
+same instruction for instruction. The clock's extra percent on encode is
+work callgrind does not count, fewer allocations and page faults, or layout.
+
 ### Real Models, Compress Then Decompress, Every Speed
 
 File: `crates/draco-cpp-test-bridge/tests/bench_real_models.rs`
