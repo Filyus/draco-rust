@@ -21,6 +21,9 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   release that adds `MeshDecoder::set_threads`.
 - `DracoDecodeOptions`, the ceilings and the threads of a Draco decode in one
   value, built from `Default` with `with_limits` and `with_threads`.
+- `Import::accessor_source`, an accessor source held to the `ResourceLimits`
+  the import was read with, and `DocumentAccessorSource::with_limits` for one
+  built by hand. `read_primitive` and the geometry readers use the former.
 
 ### Changed
 
@@ -41,6 +44,11 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   reports a failed allocation instead of aborting the process when its
   `count` asks for more memory than there is. An accessor with a view has its
   last element checked against the view before anything is reserved for it.
+  That alone does not hold on Linux, which grants a reservation up to its RAM
+  and swap and kills the process when the zeros are written if a container
+  allows less -- measured: 14 GiB reserved under a 13.4 GiB cgroup, then
+  SIGKILL. So those zeros are also held to `ResourceLimits::max_resource_bytes`
+  when the import sets it, and refused past it before anything is reserved.
 - A Draco extension's buffer view with a `byteOffset` past 4 GiB is refused on
   a 32-bit target, WebAssembly included, rather than truncated to an offset
   that happened to fit.

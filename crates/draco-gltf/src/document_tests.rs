@@ -1737,6 +1737,40 @@ fn a_sparse_accessor_without_a_view_fails_to_reserve_rather_than_aborts() {
     );
 }
 
+/// A sparse accessor without a view is held to the ceiling the import was read
+/// with: its zeros are 12,000 bytes, refused under a 10,000-byte
+/// `max_resource_bytes` and read without one. A fallible reservation alone
+/// does not do this, since Linux grants it and kills the process on the write.
+#[cfg(feature = "accessors")]
+#[test]
+fn a_sparse_accessor_without_a_view_is_held_to_the_import_limits() {
+    let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":16,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAAAAAA=="}],"bufferViews":[{"buffer":0,"byteLength":4},{"buffer":0,"byteOffset":4,"byteLength":12}],"accessors":[{"componentType":5126,"count":1000,"type":"VEC3","sparse":{"count":1,"indices":{"bufferView":0,"componentType":5125},"values":{"bufferView":1}}}]}"#;
+    let read = |max_resource_bytes: Option<usize>| {
+        let options = crate::ImportOptions {
+            limits: crate::ResourceLimits {
+                max_resource_bytes,
+                ..crate::ResourceLimits::default()
+            },
+            profile: ValidationProfile::Gltf20,
+            ..crate::ImportOptions::default()
+        };
+        let import = crate::import_slice_with_options(input, &options).unwrap();
+        let result = import
+            .accessor_source()
+            .read_accessor(0)
+            .map(|accessor| accessor.bytes.len());
+        result
+    };
+    assert_eq!(read(None).unwrap(), 12_000);
+    let limited = read(Some(10_000));
+    assert!(
+        limited
+            .as_ref()
+            .is_err_and(|e| e.to_string().contains("materializes 12000 bytes")),
+        "{limited:?}"
+    );
+}
+
 #[cfg(feature = "geometry")]
 #[test]
 fn import_preserves_draft_half_float_accessors() {

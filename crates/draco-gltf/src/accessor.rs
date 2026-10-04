@@ -1,11 +1,12 @@
 use crate::{AccessorSource, DecodedAccessor, GltfError};
-use crate::{Document, Error, ResourceStore, Result};
+use crate::{Document, Error, ResourceLimits, ResourceStore, Result};
 use draco_core::draco_types::DataType;
 
 /// Accessor source backed by a [`Document`] and its resolved resources.
 pub struct DocumentAccessorSource<'a> {
     document: &'a Document,
     resources: &'a ResourceStore,
+    limits: ResourceLimits,
 }
 
 /// Tightly packed accessor payload for geometry consumers.
@@ -45,7 +46,20 @@ impl<'a> DocumentAccessorSource<'a> {
         Self {
             document,
             resources,
+            limits: ResourceLimits::default(),
         }
+    }
+
+    /// Applies `limits` to what an accessor materializes.
+    ///
+    /// Only one materialization is not already bounded by bytes the file holds:
+    /// a sparse accessor without a buffer view, whose zeros are sized by its
+    /// `count` alone. That one is held to `max_resource_bytes`, the ceiling on
+    /// any one decoded resource. [`Import::accessor_source`](crate::Import::accessor_source)
+    /// applies the limits the import was read with.
+    pub fn with_limits(mut self, limits: ResourceLimits) -> Self {
+        self.limits = limits;
+        self
     }
 
     /// Copies one complete buffer view from the resolved resource store.
@@ -163,7 +177,21 @@ impl<'a> DocumentAccessorSource<'a> {
         } else if accessor.get("sparse").is_some() {
             // Nothing in the file backs these zeros, so the reservation is
             // fallible: a count in the billions has to come back as an error,
-            // not abort the process.
+            // not abort the process. Fallible is not enough on its own. Linux
+            // grants any reservation up to its RAM and swap and kills the
+            // process when the pages are written -- the resize below -- if a
+            // container's limit is lower, so the caller's ceiling is checked
+            // first.
+            if self
+                .limits
+                .max_resource_bytes
+                .is_some_and(|limit| byte_len > limit)
+            {
+                return Err(Error::ResourceLimit(format!(
+                    "sparse accessor {index} materializes {byte_len} bytes, over the {} allowed",
+                    self.limits.max_resource_bytes.unwrap_or_default()
+                )));
+            }
             let mut zeros = Vec::new();
             zeros.try_reserve_exact(byte_len).map_err(|_| {
                 Error::ResourceLimit("accessor materialization allocation failed".into())

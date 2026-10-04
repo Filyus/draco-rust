@@ -4,8 +4,6 @@ use std::collections::BTreeMap;
 
 #[cfg(feature = "accessors")]
 use draco_gltf::AccessorData;
-#[cfg(any(feature = "accessors", feature = "raw-resources"))]
-use draco_gltf::DocumentAccessorSource;
 use draco_gltf::{
     parse, parse_with_options, Document, DracoDecodeOptions, ExtensionRegistry, Import,
     OutputFormat, ResourceLimits, ResourceResolver, ValidationProfile,
@@ -315,7 +313,8 @@ impl GltfAsset {
     #[cfg(feature = "accessors")]
     #[wasm_bindgen(js_name = readAccessor)]
     pub fn read_accessor(&self, index: usize) -> Result<PackedAccessor, JsValue> {
-        DocumentAccessorSource::new(&self.import.document, &self.import.resources)
+        self.import
+            .accessor_source()
             .read_accessor(index)
             .map(|inner| PackedAccessor { inner })
             .map_err(wasm_error)
@@ -327,7 +326,8 @@ impl GltfAsset {
     #[cfg(feature = "raw-resources")]
     #[wasm_bindgen(js_name = bufferViewBytes)]
     pub fn buffer_view_bytes(&self, index: usize) -> Result<Vec<u8>, JsValue> {
-        DocumentAccessorSource::new(&self.import.document, &self.import.resources)
+        self.import
+            .accessor_source()
             .read_buffer_view(index)
             .map_err(wasm_error)
     }

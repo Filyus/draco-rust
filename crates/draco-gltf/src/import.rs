@@ -36,6 +36,10 @@ pub struct Import {
     /// function signature should not change shape with a feature.
     #[cfg(feature = "draco-decode")]
     pub(crate) draco_decode: crate::DracoDecodeOptions,
+    /// The resource quotas this import was read with, which also bound what
+    /// its accessors materialize; see [`Import::accessor_source`].
+    #[cfg(feature = "geometry")]
+    limits: crate::ResourceLimits,
     #[cfg(feature = "resources")]
     provenance: Vec<String>,
 }
@@ -102,6 +106,13 @@ impl ResourceResolver for AliasResolver<'_> {
 }
 
 impl Import {
+    /// An accessor source over this import's document and buffers, held to the
+    /// resource limits the import was read with.
+    #[cfg(feature = "geometry")]
+    pub fn accessor_source(&self) -> crate::DocumentAccessorSource<'_> {
+        crate::DocumentAccessorSource::new(&self.document, &self.resources).with_limits(self.limits)
+    }
+
     #[cfg(feature = "write")]
     pub(crate) const fn validation_profile(&self) -> ValidationProfile {
         self.profile
@@ -303,7 +314,7 @@ impl Import {
                 let compressed = extension.pack(&decoded, &contract)?;
                 // The spec: attributes the extension does not list "must be
                 // processed as usual". Their count must match the stream.
-                let source = crate::DocumentAccessorSource::new(&self.document, &self.resources);
+                let source = self.accessor_source();
                 let mut attributes = compressed.attributes().to_vec();
                 for (semantic, index) in reference.attribute_indices() {
                     if extension.unique_id(semantic).is_none() {
@@ -327,7 +338,7 @@ impl Import {
             ));
         }
 
-        let source = crate::DocumentAccessorSource::new(&self.document, &self.resources);
+        let source = self.accessor_source();
         let attributes = reference
             .attribute_indices()
             .map(|(semantic, index)| read_packed_attribute(&source, semantic, index))
@@ -385,7 +396,7 @@ impl Import {
             .and_then(Value::as_u64)
             .and_then(|value| usize::try_from(value).ok());
         let mode = value.get("mode").and_then(Value::as_u64).unwrap_or(4) as u32;
-        let source = crate::DocumentAccessorSource::new(&self.document, &self.resources);
+        let source = self.accessor_source();
         Ok(crate::decode_geometry(&source, mode, &attributes, indices)?)
     }
 
@@ -928,6 +939,8 @@ pub fn parse_with_options(
         extensions: extensions.clone(),
         #[cfg(feature = "draco-decode")]
         draco_decode: *draco,
+        #[cfg(feature = "geometry")]
+        limits: *limits,
         #[cfg(feature = "resources")]
         provenance: Vec::new(),
     })
