@@ -85,11 +85,9 @@ fn supports_mesh_bitstream(major: u8, _minor: u8) -> bool {
 fn supports_point_cloud_bitstream(major: u8, minor: u8, method: u8) -> bool {
     // Current PointCloudDecoder supports:
     // - v2.0+ sequential (method=0), covering the Draco 1.0.0+ policy floor
-    // - v2.3 KD-tree (method=1)
+    // - v2.0+ KD-tree (method=1), the pre-2.3 layout included
     // - our v1.3 sequential format (method=0)
-    (major == 2 && method == 0)
-        || (major == 2 && minor == 3 && method == 1)
-        || (major == 1 && minor == 3 && method == 0)
+    (major == 2 && (method == 0 || method == 1)) || (major == 1 && minor == 3 && method == 0)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
