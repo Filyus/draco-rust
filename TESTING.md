@@ -63,6 +63,56 @@ Purpose: end-to-end encoding speed behavior through the I/O API.
 cargo test --manifest-path crates/Cargo.toml -p draco-io --test encoding_speed_test --release -- --nocapture
 ```
 
+### Draco glTF From glTF-Transform
+
+File: `crates/draco-gltf/tests/gltf_transform_fixtures_test.rs`
+
+Package: `draco-gltf`
+
+Purpose: Draco glTF as glTF-Transform writes it -- placeholder accessors, the
+extension's own attribute ids, several primitives in one binary chunk --
+imports, decodes to the counts its accessors declare, and decodes to the same
+triangles through EdgeBreaker (standard and valence traversals) and the
+sequential coder. The fixtures and how they were made are in
+`testdata/gltf_transform/README.md`. Runs in CI.
+
+```sh
+cargo test --manifest-path crates/Cargo.toml -p draco-gltf --test gltf_transform_fixtures_test
+```
+
+### Someone Else's Files Against C++
+
+File: `crates/draco-cpp-test-bridge/tests/external_draco_corpus_probe.rs`
+
+Package: `draco-cpp-test-bridge`
+
+Purpose: a directory no test can carry -- files a user reports, a sample-model
+repository, what another tool writes -- walked whole. Every `.drc`, and every
+Draco primitive's stream in a `.gltf` or `.glb`, is decoded here and by C++
+Draco and must have the same fingerprint; every glTF must also import and
+decode through draco-gltf under both validation profiles. Ignored unless
+`DRACO_CORPUS_DIR` is set; it needs the C++ bridge.
+
+```sh
+DRACO_CORPUS_DIR=<dir> cargo test --manifest-path crates/Cargo.toml -p draco-cpp-test-bridge --test external_draco_corpus_probe --release -- --ignored --nocapture
+```
+
+Corpora it has passed, 2026-10-04, on this tree and on the draco-core 2.2.1
+release alike: the Draco variants of a public glTF sample-model collection
+(253 streams in 16 files, written by gltf-pipeline), and those 16 models
+re-encoded by glTF-Transform 4.5.1 in seven modes (1,771 streams in 112 files).
+To build the second, with `@gltf-transform/cli` installed:
+
+```sh
+gltf-transform draco <in> <out>.glb                                    # EdgeBreaker
+gltf-transform draco <in> <out>.glb --encode-speed 10 --decode-speed 10
+gltf-transform draco <in> <out>.glb --encode-speed 0 --decode-speed 0  # valence traversal
+gltf-transform draco <in> <out>.glb --method sequential
+gltf-transform draco <in> <out>.glb --quantize-position 16 --quantize-normal 16 --quantize-texcoord 16 --quantize-color 16 --quantize-generic 16
+gltf-transform draco <in> <out>.glb --quantize-position 6 --quantize-normal 4 --quantize-texcoord 6 --quantize-color 4 --quantize-generic 4
+gltf-transform draco <in> <out>.glb --quantization-volume scene
+```
+
 ## C++ I/O Smoke Examples
 
 ### Focused Real I/O Smoke Test
