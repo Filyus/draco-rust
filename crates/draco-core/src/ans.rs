@@ -239,6 +239,26 @@ mod tests {
         assert_eq!(decoder.state, ANS_L_BASE);
     }
 
+    /// The tag in the last byte says how many bytes before it hold the rest of
+    /// the state; a buffer holding fewer is refused, never read before its
+    /// start. Upstream lacked the check for the four-byte tag, which read four
+    /// bytes before a one-byte buffer.
+    #[test]
+    fn read_init_rejects_a_state_tag_the_buffer_is_too_short_for() {
+        let short: [&[u8]; 6] = [
+            &[0x40],
+            &[0x80],
+            &[0x00, 0x80],
+            &[0xC0],
+            &[0x00, 0xC0],
+            &[0x00, 0x00, 0xC0],
+        ];
+        for buffer in short {
+            let mut decoder = AnsDecoder::new(buffer);
+            assert!(!decoder.read_init(ANS_L_BASE, true), "{buffer:02x?}");
+        }
+    }
+
     #[test]
     fn read_init_rejects_state_above_ans_window() {
         let mut decoder = AnsDecoder::new(&[0xff, 0xff, 0xbf]);
