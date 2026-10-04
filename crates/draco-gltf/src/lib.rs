@@ -38,6 +38,8 @@ pub use document::{
 };
 #[cfg(feature = "draco-decode")]
 mod draco_primitive;
+#[cfg(feature = "draco-decode")]
+mod parallel;
 #[cfg(feature = "draco-encode")]
 pub use draco_primitive::{DracoAccessor, DracoPrimitiveEncoding};
 #[cfg(feature = "draco-decode")]
@@ -234,10 +236,13 @@ pub struct ImportOptions<'a> {
     /// not change shape with a feature, or `ImportOptions { .. }` stops
     /// compiling downstream the moment the decoder is left out.
     pub draco_decode_limits: draco_core::DecodeLimits,
-    /// Threads one Draco decode of a point-cloud primitive may take: `1`, the
-    /// default, keeps it on the calling thread, `0` takes as many as the
-    /// machine has up to sixteen. Mesh primitives decode on the calling thread
-    /// whatever this is, and the decoded geometry is the same on any count.
+    /// Threads Draco decoding may take: `1`, the default, keeps it on the
+    /// calling thread, `0` takes as many as the machine has up to sixteen.
+    /// [`Import::read_primitives`] and `Import::decompress_in_place` decode
+    /// that many primitives side by side, each on one thread. A point-cloud
+    /// primitive read on its own splits its attributes across them, and a mesh
+    /// primitive read on its own decodes on the calling thread. The decoded
+    /// geometry is the same on any count.
     ///
     /// One by default for the reason `draco_core::PointCloudDecoder` gives: a
     /// caller importing files side by side, or serving many at once, would

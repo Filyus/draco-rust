@@ -235,11 +235,25 @@ impl Import {
         &self,
         primitive: PrimitiveRef<'_>,
     ) -> Result<(draco_core::Mesh, crate::DracoPrimitiveContract)> {
-        self.validate(&self.extensions)?;
+        self.decode_draco_mesh_with(primitive, &self.draco_decode, false)
+    }
+
+    /// Decodes `primitive` with `options`, validating the document first
+    /// unless the caller already has.
+    #[cfg(feature = "draco-decode")]
+    fn decode_draco_mesh_with(
+        &self,
+        primitive: PrimitiveRef<'_>,
+        options: &crate::DracoDecodeOptions,
+        validated: bool,
+    ) -> Result<(draco_core::Mesh, crate::DracoPrimitiveContract)> {
+        if !validated {
+            self.validate(&self.extensions)?;
+        }
         let mesh = self.extensions.decode_primitive(
             &self.document,
             &self.resources,
-            &self.draco_decode,
+            options,
             primitive,
         )?;
         Ok((mesh, self.draco_contract(primitive)?))
@@ -292,6 +306,68 @@ impl Import {
         &self,
         primitive: crate::PrimitiveIndex,
     ) -> Result<crate::PackedGeometry> {
+        #[cfg(feature = "draco-decode")]
+        return self.read_primitive_with(primitive, &self.draco_decode, false);
+        #[cfg(not(feature = "draco-decode"))]
+        return self.read_primitive_with(primitive);
+    }
+
+    /// Reads several primitives into packed buffers, in the order given.
+    ///
+    /// The same as calling [`read_primitive`](Self::read_primitive) for each,
+    /// geometry and errors included: on a failure this returns the error of the
+    /// first primitive in `primitives` that fails. With the `draco-decode`
+    /// feature the primitives are read side by side on the threads
+    /// [`ImportOptions::draco_decode_threads`](crate::ImportOptions::draco_decode_threads)
+    /// allows, each on one thread, and the document is validated once for all
+    /// of them rather than once a primitive. A scene of many Draco primitives
+    /// is where this pays: each one is a stream of its own, so they decode
+    /// without waiting on one another.
+    ///
+    /// Up to that many primitives are decoded at once, each held to the Draco
+    /// ceilings on its own, so the peak is that many decodes in flight. On
+    /// WebAssembly every primitive is read on the calling thread.
+    #[cfg(feature = "geometry")]
+    pub fn read_primitives(
+        &self,
+        primitives: &[crate::PrimitiveIndex],
+    ) -> Result<Vec<crate::PackedGeometry>> {
+        #[cfg(feature = "draco-decode")]
+        {
+            let workers = crate::parallel::resolve_threads(self.draco_decode.threads)
+                .min(primitives.len())
+                .max(1);
+            // Several primitives side by side take one thread each, so the
+            // threads asked for are not multiplied by a point cloud's own.
+            let options = if workers > 1 {
+                self.draco_decode.with_threads(1)
+            } else {
+                self.draco_decode
+            };
+            // Validated once here. A document that fails is left to each Draco
+            // primitive to validate again, so the error lands where a loop of
+            // `read_primitive` calls would have met it.
+            let validated = self.validate(&self.extensions).is_ok();
+            crate::parallel::try_map_indexed(primitives.len(), workers, |index| {
+                self.read_primitive_with(primitives[index], &options, validated)
+            })
+        }
+        #[cfg(not(feature = "draco-decode"))]
+        primitives
+            .iter()
+            .map(|&primitive| self.read_primitive_with(primitive))
+            .collect()
+    }
+
+    /// [`read_primitive`](Self::read_primitive) with the Draco options to
+    /// decode under, and whether the document has already been validated.
+    #[cfg(feature = "geometry")]
+    fn read_primitive_with(
+        &self,
+        primitive: crate::PrimitiveIndex,
+        #[cfg(feature = "draco-decode")] draco: &crate::DracoDecodeOptions,
+        #[cfg(feature = "draco-decode")] validated: bool,
+    ) -> Result<crate::PackedGeometry> {
         let reference = self
             .document
             .primitive(primitive.mesh, primitive.primitive)
@@ -310,7 +386,8 @@ impl Import {
                 )?
                 .map(crate::DracoPrimitiveExtension::from_contract)
                 .ok_or_else(|| Error::Extension("missing Draco extension".into()))?;
-                let (decoded, contract) = self.decode_draco_mesh(reference)?;
+                let (decoded, contract) =
+                    self.decode_draco_mesh_with(reference, draco, validated)?;
                 let compressed = extension.pack(&decoded, &contract)?;
                 // The spec: attributes the extension does not list "must be
                 // processed as usual". Their count must match the stream.
@@ -580,9 +657,14 @@ impl Import {
                 primitives.push(crate::PrimitiveIndex::new(mesh.index(), primitive_index));
             }
         }
-        for primitive in primitives {
-            let geometry = self.read_primitive(primitive)?;
-            self.write_raw_primitive_inner(primitive, &geometry)?;
+        // As many primitives at a time as there are threads to decode them, so
+        // no more decoded geometry is held at once than there are workers.
+        let batch = crate::parallel::resolve_threads(self.draco_decode.threads);
+        for primitives in primitives.chunks(batch) {
+            let geometries = self.read_primitives(primitives)?;
+            for (&primitive, geometry) in primitives.iter().zip(&geometries) {
+                self.write_raw_primitive_inner(primitive, geometry)?;
+            }
         }
         self.document.validate(self.profile)?;
         self.extensions.validate(&self.document)?;

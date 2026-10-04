@@ -993,6 +993,166 @@ mod compression_tests {
         assert_eq!(crate::ImportOptions::default().draco_decode_threads, 1);
     }
 
+    /// A GLB of one mesh with `count` primitives, each a strip of quads of its
+    /// own length and depth, and every fifth one left uncompressed so the
+    /// ordinary accessor path is read among the Draco ones.
+    #[cfg(all(feature = "draco-encode", feature = "draco-decode"))]
+    fn glb_of_many_primitives(count: usize) -> Vec<u8> {
+        let strip = |primitive: usize| {
+            let quads = 2 + primitive % 7;
+            let mut positions = Vec::new();
+            for column in 0..=quads {
+                for row in 0..2 {
+                    for value in [column as f32, row as f32, primitive as f32] {
+                        positions.extend_from_slice(&value.to_le_bytes());
+                    }
+                }
+            }
+            let mut indices = Vec::new();
+            for quad in 0..quads as u16 {
+                let corner = quad * 2;
+                for index in [
+                    corner,
+                    corner + 2,
+                    corner + 1,
+                    corner + 1,
+                    corner + 2,
+                    corner + 3,
+                ] {
+                    indices.extend_from_slice(&index.to_le_bytes());
+                }
+            }
+            crate::PackedGeometry::new(
+                crate::PrimitiveMode::Triangles,
+                vec![crate::PackedAttribute::new(
+                    "POSITION",
+                    (quads + 1) * 2,
+                    3,
+                    crate::ComponentType::F32,
+                    false,
+                    positions,
+                )
+                .unwrap()],
+                Some(
+                    crate::PackedIndices::new(quads * 6, crate::ComponentType::U16, indices)
+                        .unwrap(),
+                ),
+            )
+            .unwrap()
+        };
+        let mut import = crate::Import::from_geometry(
+            &strip(0),
+            ValidationProfile::Gltf20,
+            crate::GeometryWriteOptions::default(),
+        )
+        .unwrap();
+        for primitive in 1..count {
+            import
+                .push_primitive(
+                    crate::MeshIndex(0),
+                    &strip(primitive),
+                    crate::GeometryWriteOptions::default(),
+                )
+                .unwrap();
+        }
+        for primitive in (0..count).filter(|primitive| primitive % 5 != 3) {
+            import
+                .compress_primitive(
+                    crate::MeshIndex(0),
+                    primitive,
+                    crate::CompressionOptions::default(),
+                )
+                .unwrap();
+        }
+        import.to_bytes(crate::OutputFormat::GlbV2).unwrap()
+    }
+
+    #[cfg(all(feature = "draco-encode", feature = "draco-decode"))]
+    fn import_with_threads(
+        glb: &[u8],
+        threads: i32,
+        limits: draco_core::DecodeLimits,
+    ) -> crate::Import {
+        let options = crate::ImportOptions {
+            draco_decode_limits: limits,
+            draco_decode_threads: threads,
+            ..crate::ImportOptions::default()
+        };
+        crate::import_slice_with_options(glb, &options).unwrap()
+    }
+
+    /// Reading primitives together gives what reading them one by one gives,
+    /// geometry for geometry and in the order asked, on any thread count.
+    #[cfg(all(feature = "draco-encode", feature = "draco-decode"))]
+    #[test]
+    fn read_primitives_matches_reading_each_on_any_thread_count() {
+        let glb = glb_of_many_primitives(24);
+        let mut primitives: Vec<_> = (0..24)
+            .map(|primitive| crate::PrimitiveIndex::new(crate::MeshIndex(0), primitive))
+            .collect();
+        // Out of document order, and one primitive twice.
+        primitives.reverse();
+        primitives.push(crate::PrimitiveIndex::new(crate::MeshIndex(0), 5));
+
+        let one_thread = import_with_threads(&glb, 1, draco_core::DecodeLimits::default());
+        let expected: Vec<_> = primitives
+            .iter()
+            .map(|&primitive| one_thread.read_primitive(primitive).unwrap())
+            .collect();
+        for threads in [1, 2, 4, 0] {
+            let import = import_with_threads(&glb, threads, draco_core::DecodeLimits::default());
+            assert_eq!(
+                import.read_primitives(&primitives).unwrap(),
+                expected,
+                "threads {threads}"
+            );
+        }
+        assert!(one_thread.read_primitives(&[]).unwrap().is_empty());
+    }
+
+    /// With several primitives over the caller's ceiling, the error is the
+    /// first one in the order asked, as a loop of `read_primitive` meets it.
+    #[cfg(all(feature = "draco-encode", feature = "draco-decode"))]
+    #[test]
+    fn read_primitives_reports_the_first_failure_in_order() {
+        let glb = glb_of_many_primitives(24);
+        let primitives: Vec<_> = (0..24)
+            .map(|primitive| crate::PrimitiveIndex::new(crate::MeshIndex(0), primitive))
+            .collect();
+        // Strips of more than five quads have more than ten faces.
+        let limits = draco_core::DecodeLimits::default().with_max_faces(10);
+
+        let one_thread = import_with_threads(&glb, 1, limits);
+        let expected = primitives
+            .iter()
+            .find_map(|&primitive| one_thread.read_primitive(primitive).err())
+            .expect("some primitive is over the ceiling")
+            .to_string();
+        for threads in [1, 2, 4, 0] {
+            let import = import_with_threads(&glb, threads, limits);
+            let error = import.read_primitives(&primitives).unwrap_err();
+            assert_eq!(error.to_string(), expected, "threads {threads}");
+        }
+    }
+
+    /// Decompressing a scene in place writes the same file on any thread count.
+    #[cfg(all(feature = "draco-encode", feature = "draco-decode", feature = "write"))]
+    #[test]
+    fn decompress_in_place_writes_the_same_bytes_on_any_thread_count() {
+        let glb = glb_of_many_primitives(24);
+        let decompressed = |threads: i32| {
+            let mut import =
+                import_with_threads(&glb, threads, draco_core::DecodeLimits::default());
+            import.decompress_in_place().unwrap();
+            assert_eq!(import.draco_primitives().count(), 0);
+            import.to_bytes(crate::OutputFormat::GlbV2).unwrap()
+        };
+        let expected = decompressed(1);
+        for threads in [2, 4, 0] {
+            assert!(decompressed(threads) == expected, "threads {threads}");
+        }
+    }
+
     #[cfg(all(feature = "draco-encode", feature = "draco-decode"))]
     #[test]
     fn draco_decode_limits_refuse_a_primitive_over_the_ceiling_and_keep_the_kind() {

@@ -36,7 +36,7 @@ figure at all.
 `rejected` -- tried, deliberately not kept. `retracted` -- an earlier claim
 here was withdrawn. `diagnostic` -- measured only, no change proposed.
 
-81 rounds: 49 landed, 11 diagnostic, 11 null, 8 retracted, 2 rejected.
+82 rounds: 50 landed, 11 diagnostic, 11 null, 8 retracted, 2 rejected.
 
 | Round | Verdict | Headline |
 | --- | --- | ---: |
@@ -121,6 +121,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [The Decoder On Threads](#the-decoder-on-threads) | landed | `3.5x to 4.0x splat decode on 16 threads` |
 | [The KD-Tree Walk On One Row](#the-kd-tree-walk-on-one-row) | landed | `33 MB -> linear, +0.7% to -9.6% time` |
 | [Threads, Re-Measured For 2.3.0](#threads-re-measured-for-230) | diagnostic | `2.1x to 4.0x on 16 threads` |
+| [glTF Primitives Side By Side](#gltf-primitives-side-by-side) | landed | `2.9x to 3.5x on 8 threads, 14x from validating once` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -4736,6 +4737,42 @@ decode more than twice as fast as one on both splats: one thread decodes in
 order, two or more take the job path with the pairs on each worker. The searched
 order was not re-measured here, so the release notes no longer quote its
 3.5x to 4.6x.
+
+### glTF Primitives Side By Side
+
+2026-10-05, same laptop, draco-gltf. Inside one EdgeBreaker mesh the
+connectivity decodes as one chain and is most of the time, so threads there
+cannot buy much. The primitives of a glTF scene are separate Draco streams
+with nothing between them, so `Import::read_primitives` decodes them side by
+side on `ImportOptions::draco_decode_threads`, each on one thread, and
+`decompress_in_place` takes them in batches of that many. Results come back in
+the order asked, and a failure reports the first failing primitive in that
+order, as a loop would.
+
+`primbench` in the scratchpad, release build, best of five over two sweeps in
+opposite directions. "Loop" is a `read_primitive` per primitive on the same
+import. Milliseconds:
+
+| scene | primitives | loop | 1 | 2 | 4 | 8 | 16 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| city scene, Draco by this crate | 61 | `194` | `191` | `119` | `76` | `56` | `64` |
+| car model, Draco by this crate | 81 | `159` | `161` | `97` | `64` | `56` | `58` |
+| VirtualCity, Draco by glTF-Transform | 167 | `54.5` | `3.8` | `2.4` | `2.0` | `1.9` | `1.8` |
+| BrainStem, Draco by glTF-Transform | 59 | `17.6` | `13.1` | `6.9` | `4.0` | `3.7` | `3.8` |
+
+The two small scenes are faster on one thread already. `read_primitive`
+validates the whole document on every call, so a loop over N primitives
+validates it N times, and on VirtualCity that was most of the loop's time.
+`read_primitives` validates once. A document that fails is left to each Draco
+primitive to validate again, so the error lands where the loop would have met
+it. On the two large scenes 8 threads read 2.9 and 3.5 times faster than the
+loop, and 16 is no better than 8 on this machine's 8 cores.
+
+The outputs were compared with `==` on every iteration. The tests hold
+`read_primitives` to the loop on 24 primitives in reverse order with one
+repeated, on 1, 2, 4 and the machine's threads, the first failure in order
+under a face ceiling, and `decompress_in_place` to the same bytes on every
+count. Without the sort by index the first and last of those fail.
 
 ## Unexplored
 
