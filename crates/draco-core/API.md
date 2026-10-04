@@ -528,12 +528,10 @@ decoder reads, C++ included:
   disagree with the positions, and keeps the input order, or the curve, where
   that is already better by the coder's own price. How hard it looks follows
   `encoding_speed`: 9 and 10 write the curve, the default 5 counts the 16
-  dearest attribute columns, 0 to 2 the 64 dearest. On a Gaussian splat of 742
-  thousand points and 58 attributes it writes 6.8% (speed 8), 11.9% (5), 16.5%
-  (3) and 19.8% (0) fewer bytes than the spatial order, for an encode of 1.2
-  to 4.9 s against 0.5 s. It reorders the decoded
-  points and makes no promise that neighbours in the stream are neighbours in
-  space.
+  dearest attribute columns, 0 to 2 the 64 dearest. It gains the most over the
+  spatial order on Gaussian splats, and more the lower the speed, for several
+  times the encode time of the file order. It reorders the decoded points and
+  makes no promise that neighbours in the stream are neighbours in space.
 
 The rustdoc of each carries the measurements.
 
@@ -544,16 +542,16 @@ of fewer than 2^17 values starts no thread, and a thread the system refuses to
 start is one fewer rather than an error. A sequential point cloud's
 attributes are encoded side by side, a large attribute's passes run in pieces,
 and the order search and the spatial curve use the same threads. The stream is
-the same on any count. On sixteen threads a Gaussian splat of 742 thousand
-points encodes in 0.25 s against 0.56 s on one, a lidar capture of 10.7 million
-in 0.60 s against 1.72 s.
+the same on any count. A large cloud of many attributes, a Gaussian splat for
+one, encodes several times faster on many threads.
 
 `PointCloudDecoder::set_threads` does the same for a decode: a sequential point
 cloud's attributes are decoded side by side, two at a time on each thread, and
 dequantized side by side, once the stream is large enough to repay it. The
 decoded cloud is the same on any count. `MeshDecoder::set_threads` passes the
-same cap to a point-cloud stream read through a mesh decoder. On sixteen threads that splat decodes in
-0.058 s against 0.204 s on one, the lidar capture in 0.41 s against 0.67 s.
+same cap to a point-cloud stream read through a mesh decoder. Such a cloud also
+decodes several times faster on many threads, and one of two attributes gains
+next to nothing.
 
 `set_version` accepts any `(major, minor)`, but the encode does not: each
 geometry/coder combination claims the bitstream versions that have an

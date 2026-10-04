@@ -8,169 +8,193 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.3.0](https://github.com/Filyus/draco-rust/compare/draco-core-v2.2.1...draco-core-v2.3.0) - 2026-10-04
+
 ### Added
 
-- `EncoderOptions::set_point_order_search`, off by default: the encoder looks
-  for the order of a sequential point cloud's points that makes the stream
-  smallest. It repairs the spatial order's curve where the other attributes
-  disagree with the positions, and keeps the order it was handed, or the
-  curve, wherever that is already better by the symbol coder's own price.
-  Against `set_spatial_point_order`, with the prediction search on: 11.9%
-  fewer bytes on a Gaussian splat of 742 thousand points at the default speed
-  (6.8% at speed 8, 19.8% at 0), 4.2% to 4.5% on two larger splats, 8.4% to
-  8.9% on three photogrammetry scans and an airborne lidar capture. A scan or
-  rotating-lidar capture in its scan order comes out byte for byte as without
-  the option. It costs encode time: on one thread 2.8 to six times the
-  encode in file order at the default speed, on sixteen 1.7 to 2.4 times the
-  spatial encode. It can cost decode time too, since the schemes the encoder
-  then finds smallest are slower to undo: up to 6% on a large splat. Any Draco
-  decoder reads the stream; the decoded points come back in another order.
-- `EncoderOptions::set_threads` and `get_threads`. A sequential point cloud's
-  attributes are encoded side by side, a large attribute's own passes run in
-  pieces, and the order search and the spatial curve run on the same threads;
-  the stream is the same on any count. On sixteen threads, against one: a
-  Gaussian splat of 742 thousand points encodes in 0.25 s instead of 0.56 s,
-  one of 3.2 million in 1.00 s instead of 4.35 s, a lidar capture of 10.7
-  million in 0.60 s instead of 1.72 s; with the order search 3.5 to 4.6 times
-  faster. The default, `1`, keeps the encode on the calling thread, as
-  before; **set `0` to take as many threads as the machine has**, up to
-  sixteen. No count is taken past sixteen, a cloud of fewer than 2^17 values
-  (points times attributes) starts no thread, and a thread the system refuses
-  to start is one fewer rather than an error. WebAssembly has no threads and
-  ignores the option.
-- `PointCloudDecoder::set_threads`. A sequential point cloud's attributes are
-  decoded side by side, two at a time on each thread, and dequantized side by
-  side; the decoded cloud is the same on any count. On sixteen threads,
-  against one: a Gaussian splat of 742 thousand points decodes in 0.058 s
-  instead of 0.204 s, one of 3.2 million in 0.217 s instead of 0.860 s, an
-  airborne lidar capture of 10.7 million in 0.41 s instead of 0.67 s. A cloud
-  of two attributes gains next to nothing. The default, `1`, decodes in
-  order on the calling thread, as before, and so does WebAssembly; **set `0`
-  to take as many threads as the machine has**, up to sixteen. No count is
-  taken past sixteen, and a thread the system refuses to start is one fewer rather than
-  an error. The allocation budget and the limits bound a decode on threads as
-  they bound one in order. `MeshDecoder::set_threads` passes the same cap to
-  a point-cloud stream read through a mesh decoder.
-  `KeyframeAnimationDecoder` decodes on the calling thread; for threads,
-  decode through `PointCloudDecoder` and
-  `KeyframeAnimation::from_point_cloud`, which is all it does. One thread is
-  the default because a library cannot see what its caller already runs: a
-  server or a converter working side by side would have every encode and
-  decode multiply its threads by up to sixteen, and a hostile stream would
-  have every core.
-- With `legacy_bitstream_encode`, `set_version` takes 2.0, 2.1 and 2.2 for a
-  KD-tree point cloud, which is then written in the layout Draco 1.0 to 1.2
-  wrote: one three-component position, `Float32` quantized or `Uint32`, the
-  rule those encoders chose the KD-tree by. The output is theirs byte for byte,
-  checked against what Draco 1.0.0, 1.1.0 and 1.2.5 wrote, and C++ Draco 1.5.7
-  reads every combination of version, method and speed.
+- **Point clouds encode and decode on several threads. Off by default.**
+  `EncoderOptions::set_threads` and `PointCloudDecoder::set_threads` take a
+  thread count:
+  - `1` (default): the calling thread only, as before.
+  - `0`: as many threads as the machine has, up to 16.
+  - Any other count: that many threads, up to 16.
+
+  Time by thread count, and the speed-up over one thread, on a laptop with 16
+  hardware threads, speed 5, spatial point order, prediction search on:
+
+  | cloud | | 1 thread | 2 threads | 4 threads | 8 threads | 16 threads |
+  |---|---|---:|---:|---:|---:|---:|
+  | Gaussian splat, 742K points | encode | 0.579 s | 0.357 s (1.6×) | 0.252 s (2.3×) | 0.208 s (2.8×) | 0.196 s (3.0×) |
+  | | decode | 0.209 s | 0.096 s (2.2×) | 0.069 s (3.0×) | 0.055 s (3.8×) | 0.052 s (4.0×) |
+  | Gaussian splat, 3.2M points | encode | 3.412 s | 2.359 s (1.4×) | 1.713 s (2.0×) | 1.245 s (2.7×) | 0.999 s (3.4×) |
+  | | decode | 0.887 s | 0.448 s (2.0×) | 0.346 s (2.6×) | 0.279 s (3.2×) | 0.269 s (3.3×) |
+  | Airborne lidar, 10.7M points | encode | 1.660 s | 1.026 s (1.6×) | 0.707 s (2.3×) | 0.674 s (2.5×) | 0.605 s (2.7×) |
+  | | decode | 0.685 s | 0.384 s (1.8×) | 0.348 s (2.0×) | 0.333 s (2.1×) | 0.329 s (2.1×) |
+
+  How it behaves:
+  - The stream and the decoded cloud are the same on any thread count.
+  - Threads apply to sequential point clouds. The encoder works on the
+    attributes side by side and splits a large attribute's passes, the order
+    search and the spatial curve into pieces. The decoder takes two
+    attributes at a time on each thread and dequantizes side by side.
+  - A cloud of fewer than 2^17 values (points times attributes) encodes
+    without starting a thread. A cloud of two attributes decodes barely faster.
+  - A thread the system refuses to start is one fewer, not an error. The
+    allocation budget and the decode limits bound a decode on threads as they
+    bound one in order. WebAssembly has no threads and ignores the option.
+  - `MeshDecoder::set_threads` passes the count to a point-cloud stream read
+    through a mesh decoder. `KeyframeAnimationDecoder` decodes on the calling
+    thread. For threads, decode through `PointCloudDecoder` and
+    `KeyframeAnimation::from_point_cloud`, which is all it does.
+  - One thread is the default because a library cannot see what its caller
+    already runs. A server or a converter working side by side would have
+    every encode and decode multiply its threads by up to 16, and a
+    hostile stream would get every core.
+- **The encoder can search for the point order that makes the stream
+  smallest. Off by default.** `EncoderOptions::set_point_order_search`, for
+  sequential point clouds. It starts from the spatial curve, repairs it where
+  the other attributes disagree with the positions, and keeps the original
+  order or the curve wherever either is already cheaper.
+  - Against `set_spatial_point_order`, with the prediction search on: 11.9%
+    fewer bytes on a Gaussian splat of 742 thousand points at the default
+    speed (6.8% at speed 8, 19.8% at speed 0), 4.2% to 4.5% on two larger
+    splats, 8.4% to 8.9% on three photogrammetry scans and an airborne lidar
+    capture.
+  - A scan or a rotating-lidar capture in its scan order comes out byte for
+    byte as without the option.
+  - Encoding takes longer: on 1 thread 2.8 to 6 times the encode in file
+    order at the default speed, on 16 threads 1.7 to 2.4 times the spatial
+    encode.
+  - Decoding can be slower too, up to 6% on a large splat, because the
+    schemes the encoder then finds smallest take more to undo.
+  - Any Draco decoder reads the stream. The decoded points come back in
+    another order.
+- **KD-tree point clouds can be written in the layout of Draco 1.0 to 1.2.**
+  With `legacy_bitstream_encode`, `set_version` takes 2.0, 2.1 and 2.2 for a
+  KD-tree point cloud.
+  - As in those encoders, the point cloud is one three-component position,
+    `Float32` quantized or `Uint32`.
+  - The output is byte for byte what Draco 1.0.0, 1.1.0 and 1.2.5 wrote, and
+    C++ Draco 1.5.7 reads every combination of version, method and speed.
 
 ### Changed
 
-- `set_spatial_point_order` lays the points along a Hilbert curve instead of
-  a Morton curve: 0.35% to 4% fewer bytes on every cloud measured -- three
-  splats, four scans, two lidar captures -- for the same encode time. The
-  option's output changes; its contract, a spatial order, does not.
-- Encoding and decoding are faster, with the same bytes out. A rANS write
-  multiplies by a reciprocal instead of dividing; a long rANS decode run takes
-  one dependent table read a symbol instead of two, and its slot table is half
-  the size; the symbol plan keeps 33 counts instead of a list the size of the
-  attribute; an attribute's symbols are formed in its corrections' buffer;
-  tagged values are packed through an accumulator; a delta run is corrected in
-  one flat loop under the wrap transform; and attribute-sized buffers that were
-  filled with zeros only to be overwritten are written once. On a splat of 742
-  thousand points and 58 attributes the encode takes 0.53 s instead of 0.81 s
-  and the decode 0.23 s instead of 0.30 s; on a scan of eight million points
-  the encode takes 0.45 s instead of 0.65 s and the decode 0.34 s instead of
-  0.36 s. Meshes gain through the same attribute coding. Against 2.2.1, over
-  three meshes of 1.7 to 69 thousand faces, the sequential coder (speed 10)
-  encodes 15-26% faster and decodes 7-17% faster. EdgeBreaker (speed 4)
-  gains little, since its time is mostly connectivity, which is unchanged:
-  about 2% fewer instructions to encode and 2-3% fewer to decode, all of them
-  in the attribute symbols. Encoding on one thread also needs less
-  memory at its peak, since the
-  symbols no longer take a second attribute-sized buffer: about a third less
-  on scans and lidar captures (695 MB to 440 MB on that scan, 3.0 GB to 2.1 GB
-  on one of 29 million points). On threads the attributes encoded side by side
-  each hold their working buffers at once. Decoding peaks where it did.
-- Decoding a stream coded at 18-20 bits of rANS precision -- the positions of
-  most lidar captures -- is faster: a symbol whose slot range covers a whole
-  1/4096 of the table is found in a 32 KB summary that stays in the L1 cache
-  instead of a slot table of half a megabyte or more. A rotating-lidar capture
-  of 13 million points decodes in 0.37 s instead of 0.58 s, an airborne one of
-  10.7 million in 0.72 s instead of 0.85 s. The summary is used where it pays
-  on the processors measured and the slot table elsewhere; the symbols are the
-  same either way.
-- Decoding a point cloud of many attributes is faster: two consecutive
-  attributes' symbol runs are decoded in one loop, where the processor works
-  on both at once. A Gaussian splat of 742 thousand points and 58 attributes
-  decodes in 0.19 s instead of 0.23 s, one of 3.2 million in 1.00 s instead of
-  1.19 s; a scan with normals 7% faster. Clouds whose time goes to one wide
-  position stream decode as before. The values and the errors on a damaged
-  stream are the same; the second attribute's symbols are held while the
-  first is decoded, four bytes a value more at the peak. A run its payload
-  does not back is left to the decode in order, which refuses it as early.
-- Decoding a differenced attribute is faster. Undoing the differences was a
-  chain of a clamp, an add and a wrap a value; over a quantized attribute,
-  whose range is a power of two, with corrections an encoder writes, the run
-  is a sum modulo that range, and the chain is the add alone. A Gaussian splat
-  of 742 thousand points decodes 16% faster, one of 1.9 million 6% (16% in
-  the order `set_point_order_search` writes), scans and lidar captures 3% to
-  6%. A stream not written that way is undone step by step as before, and
-  the values are the same either way.
+- **Encoding and decoding are faster, with the same bytes out.** Attribute
+  symbols are coded with less work and fewer copies:
+  - Tagged values are packed through an accumulator.
+  - A delta run is corrected in one flat loop under the wrap transform.
+  - The symbol plan keeps 33 counts instead of a list the size of the
+    attribute.
+  - A long rANS decode run takes one dependent table read per symbol instead
+    of two, from a slot table half the size.
+  - Buffers that were filled with zeros only to be overwritten are written
+    once.
+  - An attribute's symbols are formed in its corrections' buffer instead of a
+    second one.
+  - A rANS write multiplies by a reciprocal instead of dividing.
+
+  What it gives:
+  - Point clouds: a splat of 742 thousand points and 58 attributes encodes in
+    0.53 s instead of 0.81 s and decodes in 0.23 s instead of 0.30 s. A scan
+    of eight million points encodes in 0.45 s instead of 0.65 s and decodes
+    in 0.34 s instead of 0.36 s.
+  - Meshes, against 2.2.1 on three meshes of 1.7 to 69 thousand faces: the
+    sequential coder (speed 10) encodes 15% to 26% faster and decodes 7% to
+    17% faster. EdgeBreaker (speed 4) gains little, since most of its time is
+    connectivity, which is unchanged: about 2% fewer instructions to encode
+    and 2% to 3% fewer to decode, all in the attribute symbols.
+  - Encoding on one thread takes about a third less memory at its peak on
+    scans and lidar captures: 440 MB instead of 695 MB on that scan, 2.1 GB
+    instead of 3.0 GB on one of 29 million points. On threads, each attribute
+    encoded side by side holds its own buffers. Decoding peaks where it did.
+- **Lidar positions decode faster.** For a stream coded at 18 to 20 bits of
+  rANS precision, which covers the positions of most lidar captures, a symbol
+  whose slot range covers a whole 1/4096 of the table is found in a 32 KB
+  summary that stays in the L1 cache, instead of a slot table of half a
+  megabyte or more.
+  - A rotating-lidar capture of 13 million points decodes in 0.37 s instead
+    of 0.58 s, an airborne one of 10.7 million in 0.72 s instead of 0.85 s.
+  - The summary is used where it pays on the processors measured and the
+    slot table elsewhere. The symbols are the same either way.
+- **Point clouds with many attributes decode faster.** The symbol runs of two
+  consecutive attributes are decoded in one loop, where the processor works
+  on both at once.
+  - A splat of 742 thousand points and 58 attributes decodes in 0.19 s
+    instead of 0.23 s, one of 3.2 million in 1.00 s instead of 1.19 s, and a
+    scan with normals 7% faster. Clouds whose time goes to one wide position
+    stream decode as before.
+  - The values, and the errors on a damaged stream, are the same. The second
+    attribute's symbols are held while the first is decoded, four bytes a
+    value more at the peak. A run its payload does not back is left to the
+    decode in order, which refuses it as early.
+- **Differenced attributes decode faster.** Over a quantized attribute, whose
+  range is a power of two, with corrections an encoder writes, undoing the
+  differences is a sum modulo that range instead of a clamp, an add and a
+  wrap per value.
+  - A splat of 742 thousand points decodes 16% faster, one of 1.9 million 6%
+    faster (16% in the order `set_point_order_search` writes), and scans and
+    lidar captures 3% to 6% faster.
+  - A stream not written that way is undone step by step as before. The
+    values are the same either way.
+- **`set_spatial_point_order` uses a Hilbert curve instead of a Morton
+  curve.** 0.35% to 4% fewer bytes on every cloud measured (three splats,
+  four scans, two lidar captures), with the same encode time. The option's
+  output changes, and it is still a spatial order.
 
 ### Fixed
 
-- A constant attribute no longer makes the decoder refuse a large stream with
-  `AllocationExceedsInput`. Values that are all equal entropy-code to a run
-  carrying no payload, so a point cloud whose constant attributes summed past
-  67,108,864 values -- an unfilled RGB channel on 22.4 million points, which
-  real scans carry -- was refused, including streams this crate's own encoder
-  wrote and C++ Draco decodes. Such a run is now accounted against the
-  attribute's declared size, which `DecodeLimits` has already admitted, rather
-  than against the internal allocation backstop. A stream claiming more values
-  than the limits allow is still refused at its header, before anything is
-  decoded. With `DecodeLimits::permissive()` nothing bounds that count, as the
-  name says.
-- A sequentially encoded mesh with no faces, or no points, now carries the
-  connectivity method byte, as C++ Draco writes and reads it in every version.
-  The encoder left it out, so C++ Draco could not decode such a stream -- a
-  mesh of points and no indices, which the web converter writes for input
-  without them -- and the decoder read C++ Draco's one byte early: without
-  compressed connectivity it refused the stream, and with it returned the mesh
-  without its attributes. The stream is one byte longer and now identical to
-  C++ Draco's. A faceless stream written by an earlier version no longer
-  decodes correctly here, just as it never did in C++ Draco.
-- The decoder refuses a sequentially encoded mesh whose faces name a point
-  past its point count, on every connectivity path, as C++ Draco's main
-  branch now does (1.5.7 does not). It accepted such a stream and returned faces past the end of the
-  points, and a caller following them -- writing an index buffer, looking up
-  an attribute per corner -- read out of bounds. A varint index is checked
-  before it is narrowed to 32 bits, so one past `u32` cannot pass as a small
-  index. No encoder writes such a stream.
-- KD-tree point clouds from Draco 1.0 to 1.2 decode. Those releases wrote
-  bitstreams 2.0 to 2.2 with a header of their own in front of the tree -- a
+- **A large point cloud with a constant attribute decodes.** Values that are
+  all equal entropy-code to a run with no payload, and a point cloud whose
+  constant attributes summed past 67,108,864 values was refused with
+  `AllocationExceedsInput`. Real scans carry such attributes, an unfilled RGB
+  channel on 22.4 million points for one, and the refused streams included
+  ones this crate's own encoder wrote and C++ Draco decodes.
+  - Such a run is now counted against the attribute's declared size, which
+    `DecodeLimits` has already admitted, rather than against the internal
+    allocation backstop.
+  - A stream claiming more values than the limits allow is still refused at
+    its header, before anything is decoded. `DecodeLimits::permissive()`
+    puts no bound on that count, as the name says.
+- **A mesh with no faces, or no points, carries the connectivity method
+  byte**, as C++ Draco writes and reads it in every version.
+  - Without it C++ Draco could not decode such a stream, which the web
+    converter writes for input without indices. This decoder read C++
+    Draco's stream one byte early: without compressed connectivity it
+    refused the stream, and with it returned the mesh without its attributes.
+  - The stream is one byte longer and now identical to C++ Draco's. A
+    faceless stream written by an earlier version no longer decodes
+    correctly here, just as it never did in C++ Draco.
+- **A face index past the point count is refused** on every sequential
+  connectivity path, as C++ Draco's main branch now does (1.5.7 does not).
+  - Such a stream decoded to faces past the end of the points, and a caller
+    following them, writing an index buffer or looking up an attribute per
+    corner, read out of bounds.
+  - A varint index is checked before it is narrowed to 32 bits, so one past
+    `u32` cannot pass as a small index. No encoder writes such a stream.
+- **KD-tree point clouds from Draco 1.0 to 1.2 decode.** Those releases wrote
+  bitstreams 2.0 to 2.2 with a header of their own in front of the tree: a
   method byte, the point count again, and for float positions a quantization
-  header with one range for all three axes -- which the decoder read as the
-  2.3 layout and refused, so a point cloud of positions alone written by any
-  of them could not be read. Behind `legacy_bitstream_decode`, on by default;
-  checked against C++ Draco 1.5.7 on fixtures written by Draco 1.0.0, 1.1.0
-  and 1.2.5. The repeated point count must equal the geometry header's.
-- The encoder writes C++ Draco's bytes where a prediction residual's symbol
-  passes `i32::MAX` under the constrained multi-parallelogram scheme. Upstream
+  header with one range for all three axes. The decoder read it as the 2.3
+  layout and refused it, so no point cloud of positions alone written by
+  those releases could be read.
+  - Behind `legacy_bitstream_decode`, which is on by default.
+  - Checked against C++ Draco 1.5.7 on files written by Draco 1.0.0, 1.1.0
+    and 1.2.5. The repeated point count must equal the geometry header's.
+- **The encoder writes C++ Draco's bytes when a residual symbol passes
+  `i32::MAX`** under the constrained multi-parallelogram scheme. Upstream
   computes its rANS table-size estimate there in `int32_t`, where it turns
-  negative and decides which configuration is kept; this encoder computed it
+  negative and decides which configuration is kept. This encoder computed it
   correctly and kept another, 22 bytes larger on the one mesh in six thousand
-  sampled that reaches it. The estimate is never written to the stream, so
-  it is now computed in upstream's widths.
-- A KD-tree point cloud with many components no longer makes the decoder take
-  memory in the square of the component count. The walk kept a row of
-  `dimension` values for every level of the tree, which goes `32 * dimension`
-  levels deep, so three equal points of 2048 components in about 8 KB of
-  stream asked for about 1 GB. The decoder now keeps one row and undoes each
-  split on the way back, which is linear in the dimension. The decoded values
-  are unchanged. Decoding a cloud of three components takes as long as before,
-  within 1%, and one of 64 components takes 9.6% less.
+  sampled that reaches it. The estimate is never written to the stream, so it
+  is now computed in upstream's widths.
+- **KD-tree decoder memory grows linearly with the number of components, not
+  with its square.** The decoder kept a row of `dimension` values for every
+  level of the tree, which goes `32 * dimension` levels deep. Three equal
+  points of 2048 components, in about 8 KB of stream, needed about 1 GB.
+  - The decoder now keeps one row and undoes each split on the way back. The
+    same stream needs about 1 MB.
+  - The decoded values are unchanged. A cloud of three components decodes as
+    fast as before, within 1%, and one of 64 components 9.6% faster.
 
 ## [2.2.1](https://github.com/Filyus/draco-rust/compare/draco-core-v2.2.0...draco-core-v2.2.1) - 2026-09-29
 

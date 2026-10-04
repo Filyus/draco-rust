@@ -22,16 +22,29 @@ writes. The deliberate exceptions are in
 [`COMPATIBILITY.md`](https://github.com/Filyus/draco-rust/blob/main/COMPATIBILITY.md).
 
 Three point-cloud encoder options go past upstream on request:
-`set_prediction_search`, `set_spatial_point_order` and `set_point_order_search`
-make smaller files that any Draco decoder reads, but not the bytes C++ Draco
-writes. All are off by default.
+[`set_prediction_search`], [`set_spatial_point_order`] and
+[`set_point_order_search`] make smaller files that any Draco decoder reads, but
+not the bytes C++ Draco writes. All are off by default.
+
+Point clouds encode and decode on several threads on request:
+[`EncoderOptions::set_threads`] and [`PointCloudDecoder::set_threads`]. One
+thread is the default, `0` takes as many as the machine has, up to 16. On 16
+threads a Gaussian splat encodes about 3 times and decodes about 4 times faster
+than on one. The stream and the decoded cloud are the same on any thread count.
 
 The crate encodes and decodes:
 
 - EdgeBreaker standard meshes: speeds 5 to 9.
 - EdgeBreaker valence meshes: below speed 5 for more compression.
-- Sequential meshes: speed 10 or an explicit `set_encoding_method`.
+- Sequential meshes: speed 10 or an explicit [`set_encoding_method`].
 - Point clouds: sequential and KD-tree attribute paths.
+
+[`set_prediction_search`]: https://docs.rs/draco-core/latest/draco_core/encoder_options/struct.EncoderOptions.html#method.set_prediction_search
+[`set_spatial_point_order`]: https://docs.rs/draco-core/latest/draco_core/encoder_options/struct.EncoderOptions.html#method.set_spatial_point_order
+[`set_point_order_search`]: https://docs.rs/draco-core/latest/draco_core/encoder_options/struct.EncoderOptions.html#method.set_point_order_search
+[`EncoderOptions::set_threads`]: https://docs.rs/draco-core/latest/draco_core/encoder_options/struct.EncoderOptions.html#method.set_threads
+[`PointCloudDecoder::set_threads`]: https://docs.rs/draco-core/latest/draco_core/point_cloud_decoder/struct.PointCloudDecoder.html#method.set_threads
+[`set_encoding_method`]: https://docs.rs/draco-core/latest/draco_core/encoder_options/struct.EncoderOptions.html#method.set_encoding_method
 
 Defaults differ:
 
@@ -55,21 +68,21 @@ For the detailed algorithm matrix, see
 
 ```toml
 [dependencies]
-draco-core = "2.2"
+draco-core = "2.3"
 ```
 
 Decoder-only builds:
 
 ```toml
 [dependencies]
-draco-core = { version = "2.2", default-features = false, features = ["decoder"] }
+draco-core = { version = "2.3", default-features = false, features = ["decoder"] }
 ```
 
 Encoder-only builds:
 
 ```toml
 [dependencies]
-draco-core = { version = "2.2", default-features = false, features = ["encoder"] }
+draco-core = { version = "2.3", default-features = false, features = ["encoder"] }
 ```
 
 ## Feature Flags

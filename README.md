@@ -97,9 +97,9 @@ features and what they cost.
 
 ## Compatibility and status
 
-`draco-core` is at 1.0 and its public API is covered by SemVer. Point clouds,
-sequential meshes and both EdgeBreaker traversals encode and decode; the
-per-algorithm matrix lives in
+`draco-core` is past 1.0 and its public API is covered by SemVer. Point clouds,
+sequential meshes and both EdgeBreaker traversals encode and decode, and point
+clouds can use several threads on request. The per-algorithm matrix lives in
 [`crates/draco-core/SUPPORT_MATRIX.md`](crates/draco-core/SUPPORT_MATRIX.md).
 
 Where this port deliberately behaves differently from C++ Draco — what the
