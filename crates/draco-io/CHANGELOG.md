@@ -24,6 +24,19 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a time: the splat above writes in 0.24 s instead of 1.98 s. The files are
   byte for byte the same.
 
+### Fixed
+
+- A truncated ASCII PLY is refused, as upstream Draco refuses it, instead of
+  being read as the smaller file it happens to hold. An element block with
+  fewer lines than its header declares, a vertex line with fewer values than
+  its properties -- which read as a vertex whose missing coordinates were
+  zero -- and a face line that ends inside its index list or before a
+  property after it, which dropped the face, are all errors now. A face of
+  fewer than three corners is complete and is still skipped.
+- An STL too short for a binary header and not beginning with `solid` is
+  refused as a truncated binary file. An empty file or 83 zero bytes read as
+  an ASCII file with no facets and returned an empty mesh.
+
 ## [0.5.1](https://github.com/Filyus/draco-rust/compare/draco-io-v0.5.0...draco-io-v0.5.1) - 2026-09-25
 
 ### Added

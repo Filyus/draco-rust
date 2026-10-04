@@ -697,19 +697,30 @@ fn parse_ply_header(bytes: &[u8]) -> io::Result<(PlyHeader, usize)> {
     ))
 }
 
-/// Consumes `count` lines, stopping at the end of the text.
+/// Takes the `count` lines of element `name`, refusing a body that ends first.
 ///
 /// The count comes from an `element` header line, so it is file-controlled and
 /// unrelated to how many lines actually follow: a 130-byte file declaring four
 /// billion elements spun this loop for seven seconds before the reader had read
 /// a single vertex. Stopping when the iterator is exhausted makes the work
-/// proportional to the file rather than to a number printed in it.
-fn skip_ascii_element_lines(lines: &mut std::str::Lines<'_>, count: usize) {
-    for _ in 0..count {
-        if lines.next().is_none() {
-            return;
-        }
+/// proportional to the file rather than to a number printed in it -- and a body
+/// shorter than its header says is a truncated file, which upstream refuses
+/// rather than reading as a smaller one.
+fn take_ascii_element_lines<'a>(
+    lines: &mut std::str::Lines<'a>,
+    name: &str,
+    count: usize,
+    mut keep: impl FnMut(&'a str),
+) -> io::Result<()> {
+    for taken in 0..count {
+        let Some(line) = lines.next() else {
+            return Err(invalid_ply(format!(
+                "ASCII PLY ends after {taken} of {count} {name} lines"
+            )));
+        };
+        keep(line);
     }
+    Ok(())
 }
 
 fn ascii_scalar_token_count(data_type: DataType) -> usize {
@@ -729,24 +740,15 @@ fn split_ascii_vertex_lines<'a>(
     let mut face_lines = Vec::new();
 
     for element in &header.elements {
-        match element.name.as_str() {
-            // Each `count` comes from the header and is unrelated to how many
-            // lines follow, so the loop has to end with the text rather than
-            // with the number: a file declaring four billion elements spun here
-            // for seconds without a body to match.
+        let (name, count) = (element.name.as_str(), element.count);
+        match name {
             "vertex" => {
-                for _ in 0..element.count {
-                    let Some(line) = lines.next() else { break };
-                    vertex_lines.push(line);
-                }
+                take_ascii_element_lines(&mut lines, name, count, |line| vertex_lines.push(line))?
             }
             "face" => {
-                for _ in 0..element.count {
-                    let Some(line) = lines.next() else { break };
-                    face_lines.push(line);
-                }
+                take_ascii_element_lines(&mut lines, name, count, |line| face_lines.push(line))?
             }
-            _ => skip_ascii_element_lines(&mut lines, element.count),
+            _ => take_ascii_element_lines(&mut lines, name, count, |_| {})?,
         }
     }
 
@@ -1061,6 +1063,11 @@ fn parse_ascii_face_line(
     if parts.is_empty() {
         return Ok(());
     }
+    // A line that ends before its properties do is a truncated file, and the
+    // face is refused with it rather than dropped from a mesh that still reads.
+    // A face of fewer than three corners is a different thing -- complete, and
+    // with no triangle in it -- and is skipped.
+    let short_line = || invalid_ply(format!("ASCII PLY face line `{line}` has too few values"));
 
     if header.face_properties.is_empty() {
         let indices: Vec<u32> = parts
@@ -1080,9 +1087,12 @@ fn parse_ascii_face_line(
         // the wasm32 target this ships to, where the leading count's own slot
         // pushes it past the end.
         let Some(end) = polygon_size.checked_add(1) else {
-            return Ok(());
+            return Err(short_line());
         };
-        if polygon_size < 3 || indices.len() < end {
+        if indices.len() < end {
+            return Err(short_line());
+        }
+        if polygon_size < 3 {
             return Ok(());
         }
 
@@ -1098,13 +1108,13 @@ fn parse_ascii_face_line(
         match property.kind {
             PlyPropertyKind::Scalar(_) => {
                 if cursor >= parts.len() {
-                    return Ok(());
+                    return Err(short_line());
                 }
                 cursor += 1;
             }
             PlyPropertyKind::List { .. } => {
                 if cursor >= parts.len() {
-                    return Ok(());
+                    return Err(short_line());
                 }
                 let count: usize = parts[cursor]
                     .parse()
@@ -1114,10 +1124,10 @@ fn parse_ascii_face_line(
                 // leaves `usize` -- and the sum, having wrapped, then passes
                 // for a length this line does hold.
                 let Some(end) = cursor.checked_add(count) else {
-                    return Ok(());
+                    return Err(short_line());
                 };
                 if parts.len() < end {
-                    return Ok(());
+                    return Err(short_line());
                 }
 
                 if index_property == Some(position) {
@@ -1235,10 +1245,17 @@ fn read_ply_ascii_body(
         let mut color_component = 0usize;
         let mut cursor = 0usize;
 
+        // A line shorter than its properties is a truncated file, not a vertex
+        // whose missing values are zero.
+        let short_line = || {
+            invalid_ply(format!(
+                "ASCII PLY vertex line `{trimmed}` has too few values"
+            ))
+        };
         for (property_index, property) in header.vertex_properties.iter().enumerate() {
             let Some(data_type) = property.scalar_type() else {
                 if cursor >= parts.len() {
-                    break;
+                    return Err(short_line());
                 }
                 let count: usize = parts[cursor]
                     .parse()
@@ -1249,7 +1266,7 @@ fn read_ply_ascii_body(
                 continue;
             };
             if cursor >= parts.len() {
-                break;
+                return Err(short_line());
             }
             let token = parts[cursor];
             cursor += ascii_scalar_token_count(data_type);
@@ -1295,6 +1312,11 @@ fn read_ply_ascii_body(
                     }
                 }
             }
+        }
+        // A list declared last can claim more values than the line holds,
+        // which the checks above, made before each property, cannot see.
+        if cursor > parts.len() {
+            return Err(short_line());
         }
 
         match schema.position_data_type {
@@ -2592,7 +2614,7 @@ property uchar flags
 end_header
 0 0 0 0.25
 1 0 0 0.75
-3 0 1 1
+3 0 1 1 7
 "#;
 
         let (mesh, report) = PlyReader::from_bytes(ply.as_bytes().to_vec())

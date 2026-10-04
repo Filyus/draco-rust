@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use draco_io::obj_reader::ObjReader;
 use draco_io::ply_reader::PlyReader;
+use draco_io::stl_reader::StlReader;
 
 /// Counts bytes requested, so a test can assert on what a reader *reserves*
 /// rather than on how long it takes to fail.
@@ -286,4 +287,111 @@ fn a_binary_face_list_reserves_from_the_body_not_from_its_count() {
         "reading a {} byte file reserved {requested} bytes",
         file.len()
     );
+}
+
+/// A file that ends before its header says it does is refused, not read as the
+/// smaller file it happens to hold. Each case is a complete file with one part
+/// cut short, beside the complete file itself, which reads; and a face of two
+/// corners, which is complete and only has no triangle in it, still reads.
+#[test]
+fn a_truncated_ascii_ply_is_refused() {
+    let file = |header_tail: &str, body: &str| {
+        format!(
+            "ply\nformat ascii 1.0\nelement vertex 3\n\
+             property float x\nproperty float y\nproperty float z\n{header_tail}end_header\n{body}"
+        )
+    };
+    let face = "element face 1\nproperty list uchar int vertex_indices\n";
+    let flagged_face =
+        "element face 1\nproperty list uchar int vertex_indices\nproperty uchar flags\n";
+    let vertices = "0 0 0\n1 0 0\n0 1 0\n";
+
+    let reads = [
+        ("complete", file(face, &format!("{vertices}3 0 1 2\n"))),
+        ("two-corner face", file(face, &format!("{vertices}2 0 1\n"))),
+    ];
+    let refused = [
+        ("vertex block", file("", "0 0 0\n1 0 0\n")),
+        ("face block", file(face, vertices)),
+        ("vertex line", file(face, "0 0 0\n1 0\n0 1 0\n3 0 1 2\n")),
+        ("face list", file(face, &format!("{vertices}3 0 1\n"))),
+        (
+            "scalar after a face list",
+            file(flagged_face, &format!("{vertices}3 0 1 2\n")),
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (case, text) in &reads {
+        if let Err(e) = PlyReader::read_from_bytes(text.as_bytes()) {
+            failures.push(format!("{case}: refused: {e}"));
+        }
+    }
+    for (case, text) in &refused {
+        if let Ok(mesh) = PlyReader::read_from_bytes(text.as_bytes()) {
+            failures.push(format!(
+                "{case}: read {} points and {} faces",
+                mesh.num_points(),
+                mesh.num_faces()
+            ));
+        }
+    }
+
+    // A list declared last on a vertex can claim more values than the line
+    // holds; nothing after it is left to find the line short.
+    let listed = |line: &str| {
+        format!(
+            "ply\nformat ascii 1.0\nelement vertex 1\nproperty float x\nproperty float y\n\
+             property float z\nproperty list uchar float extra\nend_header\n{line}\n"
+        )
+    };
+    if let Err(e) = PlyReader::read_from_bytes(listed("0 0 0 2 1 2").as_bytes()) {
+        failures.push(format!("vertex list: refused: {e}"));
+    }
+    if PlyReader::read_from_bytes(listed("0 0 0 2 1").as_bytes()).is_ok() {
+        failures.push("vertex list: a list one value short read".into());
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Inputs from upstream's own recent reader fixes that this crate already
+/// refuses, held here so a refactor cannot quietly start accepting them: a
+/// binary PLY face list cut off mid-index, and OBJ faces naming vertices that
+/// do not exist, counting forward and back.
+#[test]
+fn inputs_upstream_now_refuses_stay_refused() {
+    let mut binary = b"ply\nformat binary_little_endian 1.0\nelement vertex 3\n\
+property float x\nproperty float y\nproperty float z\n\
+element face 1\nproperty list uchar int vertex_indices\nend_header\n"
+        .to_vec();
+    binary.extend_from_slice(&[0; 36]);
+    binary.extend_from_slice(&[3, 0, 0, 0, 0, 1, 0, 0, 0]); // three indices promised, two given
+
+    let mut failures = Vec::new();
+    if PlyReader::read_from_bytes(&binary).is_ok() {
+        failures.push("binary PLY with a truncated face list");
+    }
+    if ObjReader::read_from_bytes(b"f 1 2 3\n").is_ok() {
+        failures.push("OBJ face with no vertices");
+    }
+    if ObjReader::read_from_bytes(b"v 0 0 0\nf -2 1 1\n").is_ok() {
+        failures.push("OBJ face counting back past the first vertex");
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Input too short to hold a binary STL's header is refused unless it is
+/// text: an empty file and 83 zero bytes read as an ASCII file without
+/// facets. A short ASCII file still reads, empty or not.
+#[test]
+fn input_shorter_than_a_binary_stl_header_is_refused_unless_it_is_text() {
+    let mut failures = Vec::new();
+    for (case, bytes) in [("empty", &[][..]), ("83 zero bytes", &[0u8; 83][..])] {
+        if let Ok(mesh) = StlReader::read_from_bytes(bytes) {
+            failures.push(format!("{case}: read {} faces", mesh.num_faces()));
+        }
+    }
+    if let Err(e) = StlReader::read_from_bytes(b"solid t\nendsolid t\n") {
+        failures.push(format!("short ASCII file: refused: {e}"));
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
 }

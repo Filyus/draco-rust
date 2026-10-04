@@ -104,9 +104,13 @@ fn invalid_stl(message: &str) -> io::Error {
 /// the 80-byte header of a binary file, so a reader trusting it reads a binary
 /// mesh as text and finds no facets at all. The length does decide — a binary
 /// file is exactly 84 bytes plus 50 per triangle, and that is checked first.
+///
+/// Input too short for a binary header is text only if it says so. Anything
+/// else goes to the binary reader to be refused as the truncated file it is:
+/// read as text, an empty file or 83 zero bytes parsed into an empty mesh.
 fn is_binary_stl(bytes: &[u8]) -> bool {
     if bytes.len() < BINARY_HEADER_LENGTH {
-        return false;
+        return !bytes.starts_with(b"solid");
     }
     let count = u32::from_le_bytes(bytes[80..84].try_into().unwrap()) as usize;
     if let Some(expected) = count
