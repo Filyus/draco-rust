@@ -36,7 +36,7 @@ figure at all.
 `rejected` -- tried, deliberately not kept. `retracted` -- an earlier claim
 here was withdrawn. `diagnostic` -- measured only, no change proposed.
 
-80 rounds: 49 landed, 10 diagnostic, 11 null, 8 retracted, 2 rejected.
+81 rounds: 49 landed, 11 diagnostic, 11 null, 8 retracted, 2 rejected.
 
 | Round | Verdict | Headline |
 | --- | --- | ---: |
@@ -120,6 +120,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [The Encoder On Threads](#the-encoder-on-threads) | landed | `2.3x to 4.6x on 16 threads` |
 | [The Decoder On Threads](#the-decoder-on-threads) | landed | `3.5x to 4.0x splat decode on 16 threads` |
 | [The KD-Tree Walk On One Row](#the-kd-tree-walk-on-one-row) | landed | `33 MB -> linear, +0.7% to -9.6% time` |
+| [Threads, Re-Measured For 2.3.0](#threads-re-measured-for-230) | diagnostic | `2.1x to 4.0x on 16 threads` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -4550,6 +4551,9 @@ than as a branch in the sum.
 
 ### The Encoder On Threads
 
+Re-measured in one run for the release: see
+[Threads, Re-Measured For 2.3.0](#threads-re-measured-for-230).
+
 2026-10-02, same machine (16 threads). The threaded encoder developed on the
 experiment branch is brought over: `EncoderOptions::set_threads` (`0` is the
 machine's up to sixteen, `1` the default), a sequential point cloud's attributes
@@ -4585,6 +4589,9 @@ faster, not slower (the gather writes into its buffer instead of pushing), and
 the bytes are the tree before's.
 
 ### The Decoder On Threads
+
+Re-measured in one run for the release: see
+[Threads, Re-Measured For 2.3.0](#threads-re-measured-for-230).
 
 2026-10-02, same machine. The threaded point-cloud decoder from the
 experiment branch: `PointCloudDecoder::set_threads` (`0` is the machine's up
@@ -4688,6 +4695,47 @@ level, dimensions 1 to 100 and four point shapes, plus 30 damaged copies of
 each, 74,400 decodes in all, with both builds. Every result, the error
 or the decoded values, was byte-identical, and the same probe disagreed on
 24,000 of them with the undo condition off by one.
+
+### Threads, Re-Measured For 2.3.0
+
+2026-10-04, same laptop (16 hardware threads), the tree released as
+draco-core 2.3.0. The two rounds above that introduced threads took their
+figures from different runs: the one-thread column of
+[The Decoder On Threads](#the-decoder-on-threads) ran last in a long run and
+reads high, the changelog draft took its one-thread decode from an
+alternated run instead, and the lidar decode on 16 threads appeared as
+`0.41 s` in one place and `0.459 s` in another. This round measures every
+cell in one run so the release notes quote one source.
+
+`pcprof` built against the release tree, speed 5, spatial point order,
+prediction search on, best of 3 encodes and 5 decodes per cell, a 2 s pause
+after each. Every thread count ran twice, ascending and then descending, and
+the table keeps the better of the two, so neither end of the sweep always
+runs first after a pause. The stream hash and the decoded hash are the same at
+every thread count. Seconds:
+
+| cloud | | 1 | 2 | 4 | 8 | 16 | 16 vs 1 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| splat, 742K, 58 attributes | encode | `0.579` | `0.357` | `0.252` | `0.208` | `0.196` | `3.0x` |
+| | decode | `0.209` | `0.096` | `0.069` | `0.055` | `0.052` | `4.0x` |
+| splat, 3.2M | encode | `3.412` | `2.359` | `1.713` | `1.245` | `0.999` | `3.4x` |
+| | decode | `0.887` | `0.448` | `0.346` | `0.279` | `0.269` | `3.3x` |
+| airborne lidar, 10.7M, 7 attributes | encode | `1.660` | `1.026` | `0.707` | `0.674` | `0.605` | `2.7x` |
+| | decode | `0.685` | `0.384` | `0.348` | `0.333` | `0.329` | `2.1x` |
+
+Against the earlier tables, on 16 threads: the 742K splat encodes in
+`0.196 s` against `0.246 s`, the 3.2M splat and the lidar capture encode where
+they did (`0.999` against `0.996`, `0.605` against `0.600`). The one-thread
+encode of the 3.2M splat is `3.41 s` where the long run read `4.35 s`, which
+is most of why its speed-up reads 3.4x here and 4.4x there. Decoding, the
+742K splat takes `0.052 s` against `0.058 s` and the lidar capture `0.329 s`
+against `0.459 s`, but the 3.2M splat takes `0.269 s` against `0.217 s`. It
+is faster than before on 2 and 4 threads and slower on 8 and 16, which was not
+looked into. Two threads
+decode more than twice as fast as one on both splats: one thread decodes in
+order, two or more take the job path with the pairs on each worker. The searched
+order was not re-measured here, so the release notes no longer quote its
+3.5x to 4.6x.
 
 ## Unexplored
 
