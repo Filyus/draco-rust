@@ -1027,21 +1027,7 @@ fn a_legacy_kd_tree_yielding_other_than_its_point_count_is_refused() {
 #[cfg(feature = "legacy_bitstream_decode")]
 #[test]
 fn pre_2_3_kd_tree_point_clouds_decode() {
-    let source: Vec<[f32; 3]> =
-        std::fs::read_to_string(repo_testdata_dir().join("point_cloud_pos.ply"))
-            .unwrap()
-            .split("end_header\n")
-            .nth(1)
-            .unwrap()
-            .lines()
-            .map(|line| {
-                let v: Vec<f32> = line
-                    .split_whitespace()
-                    .map(|t| t.parse().unwrap())
-                    .collect();
-                [v[0], v[1], v[2]]
-            })
-            .collect();
+    let source = point_cloud_pos_source();
     let decode = |version: &str| -> Vec<[f32; 3]> {
         let path =
             repo_testdata_dir().join(format!("legacy_draco/point_cloud_pos.kd.{version}.drc"));
@@ -1080,12 +1066,193 @@ fn pre_2_3_kd_tree_point_clouds_decode() {
     }
 }
 
+/// The 64 positions the `point_cloud_pos.kd.*` fixtures were encoded from.
+#[cfg(feature = "legacy_bitstream_decode")]
+fn point_cloud_pos_source() -> Vec<[f32; 3]> {
+    std::fs::read_to_string(repo_testdata_dir().join("point_cloud_pos.ply"))
+        .unwrap()
+        .split("end_header\n")
+        .nth(1)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let v: Vec<f32> = line
+                .split_whitespace()
+                .map(|t| t.parse().unwrap())
+                .collect();
+            [v[0], v[1], v[2]]
+        })
+        .collect()
+}
+
+/// A point cloud of one three-component position.
+#[cfg(feature = "legacy_bitstream_encode")]
+fn position_cloud(data_type: DataType, values: &[[u32; 3]]) -> PointCloud {
+    let mut cloud = PointCloud::new();
+    cloud.set_num_points(values.len());
+    let mut position = PointAttribute::new();
+    position.init(
+        GeometryAttributeType::Position,
+        3,
+        data_type,
+        false,
+        values.len(),
+    );
+    for (p, value) in values.iter().enumerate() {
+        let bytes: Vec<u8> = value.iter().flat_map(|c| c.to_le_bytes()).collect();
+        position.buffer_mut().update(&bytes, Some(p * 12));
+    }
+    cloud.add_attribute(position);
+    cloud
+}
+
+#[cfg(feature = "legacy_bitstream_encode")]
+fn encode_pre_2_3(cloud: PointCloud, minor: u8, speed: i32, bits: i32) -> Vec<u8> {
+    let mut options = EncoderOptions::new();
+    options.set_version(2, minor);
+    // Asked for, as `encoding_method` would be upstream: at speed 10 the
+    // default is the sequential coder, which writes no 2.x below 2.3.
+    options.set_encoding_method(1);
+    options.set_global_int("encoding_speed", speed);
+    options.set_global_int("decoding_speed", speed);
+    options.set_attribute_int(0, "quantization_bits", bits);
+    let mut encoder = PointCloudEncoder::new();
+    encoder.set_point_cloud(cloud);
+    let mut buffer = EncoderBuffer::new();
+    encoder
+        .encode(&options, &mut buffer)
+        .unwrap_or_else(|e| panic!("2.{minor} speed {speed}: {e}"));
+    buffer.data().to_vec()
+}
+
+/// The pre-2.3 KD-tree encoder writes what Draco 1.0.0, 1.1.0 and 1.2.5 wrote:
+/// the three fixtures, byte for byte, from their own source at their own
+/// settings (`-cl 7` is speed 3). Between them they pin the method byte, the
+/// quantization header, that era's quantizer and the bit length it told the
+/// tree, and the bit coders' size prefixes, which are `u32` before 2.2.
+#[cfg(all(
+    feature = "legacy_bitstream_decode",
+    feature = "legacy_bitstream_encode"
+))]
+#[test]
+fn the_pre_2_3_kd_tree_encoder_writes_what_draco_1_0_to_1_2_wrote() {
+    let source: Vec<[u32; 3]> = point_cloud_pos_source()
+        .iter()
+        .map(|p| p.map(f32::to_bits))
+        .collect();
+    // Three points at the origin: a range of zero, so every coordinate is
+    // `0 / 0` in the quantizer, which those builds turned into `i32::MIN`.
+    let zeros = [[0u32; 3]; 3];
+    for (name, values) in [
+        ("point_cloud_pos", &source[..]),
+        ("point_cloud_zeros", &zeros[..]),
+    ] {
+        for (minor, release) in [(0, "1.0.0"), (1, "1.1.0"), (2, "1.2.5")] {
+            let written = encode_pre_2_3(position_cloud(DataType::Float32, values), minor, 3, 11);
+            let path = repo_testdata_dir().join(format!("legacy_draco/{name}.kd.{release}.drc"));
+            let theirs = std::fs::read(&path).unwrap();
+            let first = written.iter().zip(&theirs).position(|(a, b)| a != b);
+            assert!(
+                written == theirs,
+                "{name} at 2.{minor} against Draco {release}: {} bytes against {}, \
+                 first difference at {first:?}",
+                written.len(),
+                theirs.len()
+            );
+        }
+    }
+}
+
+/// Every compression level and pre-2.3 version, through both encodings, back
+/// to the values: integers exactly and in a set, since the tree reorders the
+/// points, and floats to within a quantization step. The clouds include one
+/// point, repeated points and a cloud entirely at the origin, whose range of
+/// zero sends every coordinate through the quantizer's NaN case.
+#[cfg(all(
+    feature = "legacy_bitstream_decode",
+    feature = "legacy_bitstream_encode"
+))]
+#[test]
+fn pre_2_3_kd_tree_point_clouds_round_trip() {
+    let mut integers: Vec<[u32; 3]> = (0..300u32)
+        .map(|i| [i * 7919 % 100_000, i * 104_729 % 4096, u32::MAX - i * 31])
+        .collect();
+    integers.extend_from_slice(&[[5, 5, 5], [5, 5, 5], [0, 0, 0]]);
+    let floats: Vec<[f32; 3]> = (0..200)
+        .map(|i| {
+            let t = i as f32 * 0.37;
+            [t.sin() * 40.0, t.cos() * -3.5, (t * 0.1).fract() - 0.5]
+        })
+        .collect();
+    let float_clouds: [&[[f32; 3]]; 3] = [&floats, &[[1.5, -2.0, 0.25]], &[[0.0; 3], [0.0; 3]]];
+
+    let decode = |bytes: &[u8]| -> Vec<[u32; 3]> {
+        let mut cloud = PointCloud::new();
+        PointCloudDecoder::new()
+            .decode(&mut DecoderBuffer::new(bytes), &mut cloud)
+            .unwrap();
+        cloud.attribute(0).buffer().data()[..cloud.num_points() * 12]
+            .as_chunks::<12>()
+            .0
+            .iter()
+            .map(|p| {
+                std::array::from_fn(|c| u32::from_le_bytes(p[c * 4..][..4].try_into().unwrap()))
+            })
+            .collect()
+    };
+    for minor in 0..=2u8 {
+        for speed in 4..=10 {
+            let context = format!("2.{minor} speed {speed}");
+            let mut sorted = integers.clone();
+            sorted.sort();
+            let written = encode_pre_2_3(
+                position_cloud(DataType::Uint32, &integers),
+                minor,
+                speed,
+                11,
+            );
+            assert_eq!(written[8], 1, "{context}: the KD-tree");
+            let mut decoded = decode(&written);
+            decoded.sort();
+            assert_eq!(decoded, sorted, "{context}: integers");
+
+            for (k, cloud) in float_clouds.iter().enumerate() {
+                let bits = [11, 1, 30][k];
+                let values: Vec<[u32; 3]> = cloud.iter().map(|p| p.map(f32::to_bits)).collect();
+                let written = encode_pre_2_3(
+                    position_cloud(DataType::Float32, &values),
+                    minor,
+                    speed,
+                    bits,
+                );
+                let decoded: Vec<[f32; 3]> = decode(&written)
+                    .iter()
+                    .map(|p| p.map(f32::from_bits))
+                    .collect();
+                assert_eq!(decoded.len(), cloud.len(), "{context}: float cloud {k}");
+                let range = cloud.iter().flatten().fold(0f32, |m, v| m.max(v.abs()));
+                let step = range / ((1u32 << bits) - 1) as f32;
+                for point in cloud.iter() {
+                    let nearest = decoded
+                        .iter()
+                        .map(|d| (0..3).map(|c| (d[c] - point[c]).abs()).fold(0f32, f32::max))
+                        .fold(f32::INFINITY, f32::min);
+                    assert!(
+                        nearest <= step,
+                        "{context}: float cloud {k}: {point:?} is {nearest} away"
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// A 2.3 integer KD-tree stream rewritten into the pre-2.3 layout: the version
 /// set to 2.2, a method byte of 1 ahead of the compression level and the point
 /// count again behind it. The tree after them is unchanged, so the two decode
 /// to the same values, including a `Uint8` attribute written from the low byte
-/// of each decoded value. No encoder that writes the old layout picks this
-/// method from the command line, so the stream is built rather than kept.
+/// of each decoded value. The old layout's encoders, this crate's included,
+/// take one attribute, so a stream of two is built rather than written.
 #[cfg(feature = "legacy_bitstream_decode")]
 #[test]
 fn a_pre_2_3_integer_kd_tree_decodes_as_its_2_3_twin() {

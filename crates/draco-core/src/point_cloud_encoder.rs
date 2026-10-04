@@ -2,7 +2,7 @@ use crate::compression_config::EncodedGeometryType;
 use crate::draco_types::DataType;
 use crate::encoder_buffer::EncoderBuffer;
 use crate::encoder_options::EncoderOptions;
-use crate::geometry_attribute::PointAttribute;
+use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use crate::geometry_indices::PointIndex;
 use crate::kd_tree_attributes_encoder::KdTreeAttributesEncoder;
 use crate::mesh::Mesh;
@@ -201,6 +201,30 @@ fn select_encoding_method(
         return Ok(SEQUENTIAL);
     }
 
+    // Before 2.3 the rule is that of the encoders that wrote it, Draco 1.0 to
+    // 1.2: one attribute, a three-component position, either `Uint32` or a
+    // `Float32` with quantization asked for.
+    if is_pre_2_3_target(options) {
+        let possible = point_cloud.num_attributes() == 1 && {
+            let attribute = point_cloud.attribute(0);
+            attribute.attribute_type() == GeometryAttributeType::Position
+                && attribute.num_components() == 3
+                && match attribute.data_type() {
+                    DataType::Uint32 => true,
+                    DataType::Float32 => options.get_attribute_int(0, "quantization_bits", -1) > 0,
+                    _ => false,
+                }
+        };
+        return match (possible, requested) {
+            (true, _) => Ok(KD_TREE),
+            (false, Some(KD_TREE)) => Err(DracoError::general(
+                "Invalid encoding method: before 2.3 the KD-tree takes one three-component position alone"
+                    .to_string(),
+            )),
+            (false, _) => Ok(SEQUENTIAL),
+        };
+    }
+
     // Every attribute must be an integer type, or a float that something has
     // asked to quantize -- the KD-tree coder works on integers alone.
     let mut kd_tree_possible = true;
@@ -237,6 +261,16 @@ fn select_encoding_method(
         return Err(DracoError::general("Invalid encoding method.".to_string()));
     }
     Ok(SEQUENTIAL)
+}
+
+/// Whether the stream is being written in the KD-tree layout bitstreams before
+/// 2.3 use. Only `legacy_bitstream_encode` claims those versions, so without it
+/// the answer is always no.
+fn is_pre_2_3_target(options: &EncoderOptions) -> bool {
+    let (major, minor) = options.get_version();
+    cfg!(feature = "legacy_bitstream_encode")
+        && (major, minor) != (0, 0)
+        && crate::version::bitstream_version(major, minor) < 0x0203
 }
 
 /// Geometry context used by attribute encoders and prediction selection.
@@ -494,6 +528,17 @@ impl PointCloudEncoder {
 
             // Encode number of attribute encoders
             out_buffer.encode_u8(1); // We have only 1 encoder
+
+            #[cfg(feature = "legacy_bitstream_encode")]
+            if is_pre_2_3_target(&self.options) {
+                att_encoder
+                    .encode_attributes_encoder_data(pc, out_buffer)
+                    .map_err(|err| err.context("Failed to encode attribute metadata"))?;
+                att_encoder
+                    .encode_pre_2_3(pc, &self.options, out_buffer)
+                    .map_err(|err| err.context("Failed to encode attributes"))?;
+                return Ok(Vec::new());
+            }
 
             // Init (Transform attributes to portable format)
             att_encoder

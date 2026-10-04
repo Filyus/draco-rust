@@ -58,6 +58,12 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   server or a converter working side by side would have every encode and
   decode multiply its threads by up to sixteen, and a hostile stream would
   have every core.
+- With `legacy_bitstream_encode`, `set_version` takes 2.0, 2.1 and 2.2 for a
+  KD-tree point cloud, which is then written in the layout Draco 1.0 to 1.2
+  wrote: one three-component position, `Float32` quantized or `Uint32`, the
+  rule those encoders chose the KD-tree by. The output is theirs byte for byte,
+  checked against what Draco 1.0.0, 1.1.0 and 1.2.5 wrote, and C++ Draco 1.5.7
+  reads every combination of version, method and speed.
 
 ### Changed
 

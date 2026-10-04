@@ -196,7 +196,7 @@ comparing values rather than counts:
 | Triangle mesh, EdgeBreaker | 2.2, 2.1, 2.0, 1.2, 1.1 |
 | Triangle mesh, sequential | 2.2, 1.3 |
 | Point cloud, sequential | 2.3, 1.3 |
-| Point cloud, KD-tree | 2.3 |
+| Point cloud, KD-tree | 2.3, 2.2, 2.1, 2.0 |
 
 `set_version` refuses anything else. It used to accept the whole interval from
 1.0 to the newest — 259 values for a mesh, including minors that never existed
@@ -248,6 +248,10 @@ refused on its own.
   quantization header with one range for all three axes, ahead of the same
   tree. It decodes behind `legacy_bitstream_decode`, both the quantized method
   those encoders wrote and the integer one, and matches C++ Draco's decode on
-  fixtures from all three releases. Nothing encodes it.
+  fixtures from all three releases. `legacy_bitstream_encode` writes it at
+  2.0, 2.1 and 2.2 under those encoders' rule -- one three-component
+  position, `Float32` quantized or `Uint32` -- and byte for byte what they
+  wrote, checked against their output for an ordinary cloud and for one
+  whose range is zero, where every coordinate quantizes through a NaN.
 - **Portable texcoord prediction** preserves the C++ cast/wrapping order around
   unsigned intermediate arithmetic.

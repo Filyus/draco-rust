@@ -303,6 +303,118 @@ impl KdTreeAttributesEncoder {
         Ok(())
     }
 
+    /// Writes the pre-2.3 layout, as Draco 1.0 to 1.2 wrote it in
+    /// `KdTreeAttributesEncoder::EncodeDataNeededByPortableTransforms`.
+    ///
+    /// Those encoders took one three-component attribute and nothing else. A
+    /// `Float32` one goes through `FloatPointsTreeEncoder`: a header of its own
+    /// with one range for all three axes, every coordinate quantized against
+    /// it by that era's `Quantizer` and offset by the largest quantized value to
+    /// make it unsigned, and the tree told the bit length `bits + 1` rather than
+    /// measuring it. A `Uint32` one is written as it is, the tree told 32 bits.
+    /// Everything that decides a byte follows those encoders, so the output is
+    /// theirs: compared against Draco 1.0.0, 1.1.0 and 1.2.5 in the C++ bridge.
+    #[cfg(feature = "legacy_bitstream_encode")]
+    pub fn encode_pre_2_3(
+        &self,
+        point_cloud: &PointCloud,
+        options: &EncoderOptions,
+        out_buffer: &mut EncoderBuffer,
+    ) -> Status {
+        let att_id = match self.attribute_ids.as_slice() {
+            &[att_id] => att_id,
+            ids => {
+                return Err(DracoError::unsupported_feature(format!(
+                    "A pre-2.3 KD-tree carries one attribute, not {}",
+                    ids.len()
+                )))
+            }
+        };
+        let att = point_cloud.attribute(att_id);
+        if att.num_components() != 3 {
+            return Err(DracoError::unsupported_feature(format!(
+                "A pre-2.3 KD-tree carries three components, not {}",
+                att.num_components()
+            )));
+        }
+        let compression_level = 10i32.saturating_sub(options.get_speed()).clamp(0, 6) as u8;
+        let num_points = point_cloud.num_points();
+        let read = |p: usize| -> [u32; 3] {
+            let base =
+                att.mapped_index(PointIndex(p as u32)).0 as usize * att.byte_stride() as usize;
+            let mut bytes = [0u8; 12];
+            att.buffer().read(base, &mut bytes);
+            std::array::from_fn(|c| u32::from_le_bytes(bytes[c * 4..][..4].try_into().unwrap()))
+        };
+        let mut points = PointDVector::new(num_points, 3);
+
+        let bit_length = match att.data_type() {
+            DataType::Float32 => {
+                let bits = options.get_attribute_int(att_id, "quantization_bits", -1);
+                if !(1..=30).contains(&bits) {
+                    return Err(DracoError::invalid_parameter(format!(
+                        "A pre-2.3 KD-tree quantizes positions to 1..=30 bits, not {bits}"
+                    )));
+                }
+                let bits = bits as u32;
+                let coordinates: Vec<[f32; 3]> = (0..num_points)
+                    .map(|p| read(p).map(f32::from_bits))
+                    .collect();
+                // `std::max(std::fabs(c), max_range)`, argument order kept: a
+                // NaN coordinate becomes the range, as it does upstream.
+                let range = coordinates.iter().flatten().fold(0f32, |max, c| {
+                    if c.abs() < max {
+                        max
+                    } else {
+                        c.abs()
+                    }
+                });
+                let max_quantized_value = (1u32 << bits) - 1;
+
+                out_buffer.encode_u8(0); // kKdTreeQuantizationEncoding
+                out_buffer.encode_u8(compression_level);
+                out_buffer.encode_u32(num_points as u32);
+                out_buffer.encode_u32(3); // FloatPointsTreeEncoder::version_
+                out_buffer.encode_u8(1); // KDTREE
+                out_buffer.encode_u32(bits);
+                out_buffer.encode_u32(range.to_bits());
+                out_buffer.encode_u32(num_points as u32);
+                out_buffer.encode_u32(compression_level as u32);
+                if num_points == 0 {
+                    return Ok(());
+                }
+                for (p, point) in coordinates.iter().enumerate() {
+                    let dst = points.point_mut(p);
+                    for (c, &value) in point.iter().enumerate() {
+                        dst[c] = (quantize_pre_2_3(value, range, max_quantized_value) as u32)
+                            .wrapping_add(max_quantized_value);
+                    }
+                }
+                bits + 1
+            }
+            DataType::Uint32 => {
+                out_buffer.encode_u8(1); // kKdTreeIntegerEncoding
+                out_buffer.encode_u8(compression_level);
+                out_buffer.encode_u32(num_points as u32);
+                for p in 0..num_points {
+                    points.point_mut(p).copy_from_slice(&read(p));
+                }
+                32
+            }
+            other => {
+                return Err(DracoError::unsupported_feature(format!(
+                    "A pre-2.3 KD-tree carries Float32 or Uint32, not {other:?}"
+                )))
+            }
+        };
+        DynamicIntegerPointsKdTreeEncoder::new(compression_level, 3).encode_points(
+            &mut points,
+            bit_length,
+            out_buffer,
+        );
+        Ok(())
+    }
+
     pub fn encode_data_needed_by_portable_transforms(
         &self,
         out_buffer: &mut EncoderBuffer,
@@ -316,6 +428,31 @@ impl KdTreeAttributesEncoder {
         }
 
         Ok(())
+    }
+}
+
+/// The `Quantizer::QuantizeFloat` of Draco 1.0 to 1.2: the magnitude divided by
+/// the range, scaled, rounded half up, and the sign put back.
+///
+/// The float-to-integer conversion is `static_cast<int32_t>` as an x86 build
+/// performs it, which gives `i32::MIN` for a NaN or a value out of range -- the
+/// case for every coordinate of a cloud whose range is zero, where the
+/// division is `0 / 0`. Rust's `as` saturates instead, and would write other
+/// bytes for the same cloud.
+#[cfg(feature = "legacy_bitstream_encode")]
+fn quantize_pre_2_3(value: f32, range: f32, max_quantized_value: u32) -> i32 {
+    let negative = value < 0.0;
+    let magnitude = if negative { -value } else { value } / range;
+    let rounded = (magnitude * max_quantized_value as f32 + 0.5).floor();
+    let truncated = if rounded.is_nan() || !(-2_147_483_648.0..2_147_483_648.0).contains(&rounded) {
+        i32::MIN
+    } else {
+        rounded as i32
+    };
+    if negative {
+        truncated.wrapping_neg()
+    } else {
+        truncated
     }
 }
 

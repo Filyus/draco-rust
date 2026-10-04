@@ -277,8 +277,8 @@ fn a_sequential_mesh_without_faces_matches_cpp_both_ways() {
     }
 }
 
-/// The pre-2.3 integer KD-tree layout, which no command-line encoder of that
-/// era writes, built from this crate's 2.3 stream: version 2.2, a method byte
+/// The pre-2.3 integer KD-tree layout with two attributes, which no encoder of
+/// that layout writes -- they take one -- built from this crate's 2.3 stream: version 2.2, a method byte
 /// of 1 ahead of the compression level, the point count again behind it, and
 /// the same tree. C++ Draco 1.5.7 reading it to the same fingerprint as this
 /// decoder is what says the layout was read the way upstream reads it.
@@ -340,4 +340,66 @@ fn cpp_reads_a_pre_2_3_integer_kd_tree_as_rust_does() {
     assert_eq!(rust.num_attributes, cpp.num_attributes);
     assert_eq!(rust.attribute_hash, cpp.attribute_hash);
     assert_eq!(rust, rust_decode_point_cloud_fingerprint(&modern));
+}
+
+/// What this crate's pre-2.3 KD-tree encoder writes, read by C++ Draco 1.5.7:
+/// both encodings, every pre-2.3 version, to the fingerprint this decoder
+/// reads. The float encoding is also held byte for byte to Draco 1.0 to 1.2's
+/// own output in draco-core's tests; the integer one, which their command
+/// line never wrote, has only this.
+#[test]
+fn cpp_reads_what_the_pre_2_3_kd_tree_encoder_writes() {
+    if !draco_cpp_test_bridge::is_available() {
+        eprintln!("SKIPPING: C++ test bridge not available");
+        return;
+    }
+    let cloud = |data_type: DataType| {
+        let values: Vec<[u32; 3]> = (0..150u32)
+            .map(|i| match data_type {
+                DataType::Float32 => {
+                    [i as f32 * 0.5, -(i as f32), (i % 7) as f32].map(f32::to_bits)
+                }
+                _ => [i * 7919 % 100_000, i * 31, u32::MAX - i],
+            })
+            .collect();
+        let mut cloud = draco_core::point_cloud::PointCloud::new();
+        cloud.set_num_points(values.len());
+        let mut position = PointAttribute::new();
+        position.init(
+            GeometryAttributeType::Position,
+            3,
+            data_type,
+            false,
+            values.len(),
+        );
+        for (p, value) in values.iter().enumerate() {
+            let bytes: Vec<u8> = value.iter().flat_map(|c| c.to_le_bytes()).collect();
+            position.buffer_mut().update(&bytes, Some(p * 12));
+        }
+        cloud.add_attribute(position);
+        cloud
+    };
+    for data_type in [DataType::Float32, DataType::Uint32] {
+        for minor in 0..=2u8 {
+            for speed in [3, 6, 9] {
+                let mut options = EncoderOptions::new();
+                options.set_version(2, minor);
+                options.set_global_int("encoding_speed", speed);
+                options.set_global_int("decoding_speed", speed);
+                options.set_attribute_int(0, "quantization_bits", 12);
+                let mut encoder = draco_core::point_cloud_encoder::PointCloudEncoder::new();
+                encoder.set_point_cloud(cloud(data_type));
+                let mut written = EncoderBuffer::new();
+                encoder.encode(&options, &mut written).unwrap();
+                let bytes = written.data();
+                let context = format!("{data_type:?} at 2.{minor}, speed {speed}");
+                assert_eq!((bytes[6], bytes[8]), (minor, 1), "{context}");
+                let rust = rust_decode_point_cloud_fingerprint(bytes);
+                let cpp = draco_cpp_test_bridge::decode_cpp_point_cloud_fingerprint(bytes)
+                    .unwrap_or_else(|| panic!("{context}: C++ decode failed"));
+                assert_eq!(rust.num_points, cpp.num_points, "{context}");
+                assert_eq!(rust.attribute_hash, cpp.attribute_hash, "{context}");
+            }
+        }
+    }
 }

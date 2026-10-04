@@ -151,10 +151,12 @@ impl EncodeTarget {
             EncodeTarget::MeshEdgebreaker => &[(2, 2), (2, 1), (2, 0), (1, 2), (1, 1)],
             EncodeTarget::MeshSequential => &[(2, 2), (1, 3)],
             EncodeTarget::PointCloudSequential => &[(2, 3), (1, 3)],
-            // C++ splits the KD-tree layout at 2.3. The decoder reads both
-            // sides of the split; the encoder writes only the newer one, so
-            // anything older would put a header in front of a payload it does
-            // not describe.
+            // C++ splits the KD-tree layout at 2.3. The older side is written
+            // only with `legacy_bitstream_encode`, which carries the encoder for
+            // it; without it a 2.2 header would front a 2.3 payload.
+            #[cfg(feature = "legacy_bitstream_encode")]
+            EncodeTarget::PointCloudKdTree => &[(2, 3), (2, 2), (2, 1), (2, 0)],
+            #[cfg(not(feature = "legacy_bitstream_encode"))]
             EncodeTarget::PointCloudKdTree => &[(2, 3)],
         }
     }
