@@ -268,21 +268,21 @@ impl PointCloudDecoder {
     /// taken past sixteen. One by default because a library cannot see what
     /// its caller already runs: a server decoding on a pool of its own would
     /// have every decode multiply its threads by up to sixteen, and a hostile
-    /// stream would have the machine's cores by default. A thread the system refuses to start is one
-    /// fewer rather than an error. [`MeshDecoder::set_threads`] passes the
-    /// same cap to the point-cloud streams a mesh decoder reads.
+    /// stream would have the machine's cores by default. A thread the system
+    /// refuses to start is one fewer rather than an error.
+    /// [`MeshDecoder::set_threads`] passes the same cap to the point-cloud
+    /// streams a mesh decoder reads.
     ///
     /// [`MeshDecoder::set_threads`]: crate::MeshDecoder::set_threads
     ///
     /// A sequential point cloud with many attributes decodes them side by side
     /// once the stream is large enough to repay it, and the decoded cloud is the
-    /// one a single thread produces, value for value. On sixteen threads, against
-    /// one: a Gaussian splat of 742 thousand points and 58 attributes decodes in
-    /// 0.058 s instead of 0.204 s, one of 3.2 million in 0.217 s instead of
-    /// 0.860 s, an airborne lidar capture of 10.7 million and seven attributes in
-    /// 0.41 s instead of 0.67 s. A cloud of two attributes, a scan's position and
-    /// colour, gains next to nothing: its decode is the position's one chain.
-    /// On one thread the attributes are decoded in order. On WebAssembly there are no threads and the value is ignored.
+    /// one a single thread produces, value for value. A large cloud of many
+    /// attributes, a Gaussian splat for one, decodes several times faster on
+    /// many threads. A cloud of two attributes, a scan's position and colour,
+    /// gains next to nothing: its decode is the position's one chain. On one
+    /// thread the attributes are decoded in order. On WebAssembly there are no
+    /// threads and the value is ignored.
     #[cfg(feature = "point_cloud_decode")]
     pub fn set_threads(&mut self, threads: i32) {
         self.threads = threads;

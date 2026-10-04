@@ -277,31 +277,22 @@ impl EncoderOptions {
     /// differences are. A spatial order makes neighbours in space neighbours
     /// in the stream; this strings the points along a Hilbert curve and then
     /// repairs it where the other attributes disagree with the positions,
-    /// which they do in a Gaussian splat, whose positions are 5% of the bytes
-    /// and whose other 56 numbers a point are the rest.
+    /// which they do in a Gaussian splat, where the position is a small part
+    /// of each point's bytes.
     ///
-    /// What it buys over [`set_spatial_point_order`](Self::set_spatial_point_order)
-    /// at the same encoding speed, with the prediction search on, at the web
-    /// converter's budget: on a Gaussian splat of 742 thousand points and 58
-    /// attributes, 6.8% fewer bytes at speed 8, 11.9% at 5, 16.5% at 3 and
-    /// 19.8% at 0; 4.2% to 4.5% on two splats of two and three million points;
-    /// 8.4% to 8.9% on three photogrammetry scans and on an airborne lidar
-    /// capture of 10.7 million points. The stream is an ordinary one; only the
-    /// order of the points in it differs.
+    /// Against [`set_spatial_point_order`](Self::set_spatial_point_order) at
+    /// the same encoding speed it gains the most on clouds like that, and more
+    /// the lower the speed. Photogrammetry scans and lidar captures gain less.
+    /// The stream is an ordinary one. Only the order of the points in it
+    /// differs.
     ///
-    /// **It costs encode time**: on one thread that splat encodes in 0.5 s in
-    /// file order and in 1.2, 1.4, 2.4 and 4.9 s with the search at speed 8,
-    /// 5, 3 and 0, and at the default speed the clouds above took three to six
-    /// times as long as in file order. The search runs on as many threads as
+    /// **It costs encode time**, several times the encode in file order, and
+    /// more the lower the speed. The search runs on as many threads as
     /// [`set_threads`](Self::set_threads) allows, writing the same order on any
-    /// number: on sixteen that splat's searched encode takes 0.42 s against
-    /// 0.25 s in the spatial order, and the others 1.8 to 2.4 times their
-    /// spatial encode. **And some decode
-    /// time**: in the order it finds, neighbours agree well enough that the
-    /// encoder picks the more compact schemes, differences over values as they
-    /// are and the raw coder over the tagged one, and those take longer to
-    /// undo -- the two larger splats decode 6% and 2% slower than in the
-    /// spatial order, the lidar capture 4%, the rest within 2%.
+    /// number. **And some decode time**: in the order it finds, neighbours
+    /// agree well enough that the encoder picks the more compact schemes,
+    /// differences over values as they are and the raw coder over the tagged
+    /// one, and those take a little longer to undo.
     ///
     /// **It can decline.** Each order it could write -- the one it was handed,
     /// the curve, and the curve repaired -- is priced by the symbol coder's own
@@ -311,7 +302,7 @@ impl EncoderOptions {
     /// finished only if the trial pays. A scan or a rotating-lidar capture
     /// written along its scan lines is already in an order no curve improves
     /// on, and comes out exactly as it would without this, where a spatial
-    /// order would have made it 8% to 28% larger.
+    /// order would have made it larger.
     ///
     /// **The effort follows `encoding_speed`**, the way it does elsewhere:
     /// speed 9 and 10 write the curve and nothing more, 7 and 8 count the 8
@@ -356,13 +347,9 @@ impl EncoderOptions {
     /// a million values or more also cuts its own passes -- quantization, the
     /// gather, the prediction, the symbol plan -- into pieces; only the rANS
     /// write stays one chain. The point order search and the spatial curve run
-    /// on the same threads. Encoding the spatial order at the web converter's
-    /// budget on sixteen threads, against one: a Gaussian splat of 742
-    /// thousand points 0.56 -> 0.25 s, splats of 1.9 and 3.2 million points
-    /// 2.28 -> 0.58 s and 4.35 -> 1.00 s, a scan of eight million 0.79 ->
-    /// 0.31 s, an airborne lidar capture of 10.7 million 1.72 -> 0.60 s; with
-    /// the order search, 3.5 to 4.6 times faster. Below 2^17 values in all,
-    /// counted as points times attributes, no thread is started.
+    /// on the same threads. A large cloud of many attributes, a Gaussian splat
+    /// for one, encodes several times faster on many threads. Below 2^17 values
+    /// in all, counted as points times attributes, no thread is started.
     ///
     /// Only work that splits into pieces independent of one another is run on
     /// threads, and each piece's result is the same whichever thread works it,
