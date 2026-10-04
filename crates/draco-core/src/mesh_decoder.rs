@@ -448,6 +448,9 @@ impl MeshDecoder {
                         ));
                     }
                     let index_value = last_index_value + index_diff;
+                    // Not negative: the underflow check above keeps it at zero
+                    // or more.
+                    ensure_index_names_a_point(index_value as u64, num_points)?;
                     *dst = index_value as u32;
                     last_index_value = index_value;
                 }
@@ -460,6 +463,9 @@ impl MeshDecoder {
                     let bytes = buffer.decode_slice(bytes_needed).map_err(|_| {
                         DracoError::general("Not enough data for u8 indices".to_string())
                     })?;
+                    if let Some(&max) = bytes.iter().max() {
+                        ensure_index_names_a_point(max.into(), num_points)?;
+                    }
                     set_num_faces_within_limits(mesh, buffer, num_faces)?;
                     mesh.set_faces_from_u8_indices(bytes);
                 } else if num_points < 65536 {
@@ -469,6 +475,15 @@ impl MeshDecoder {
                     let bytes = buffer.decode_slice(bytes_needed).map_err(|_| {
                         DracoError::general("Not enough data for u16 indices".to_string())
                     })?;
+                    if let Some(max) = bytes
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|b| u16::from_le_bytes(*b))
+                        .max()
+                    {
+                        ensure_index_names_a_point(max.into(), num_points)?;
+                    }
                     set_num_faces_within_limits(mesh, buffer, num_faces)?;
                     mesh.set_faces_from_le_u16_indices(bytes);
                 } else if num_points < (1 << 21) && seq_uses_varint {
@@ -490,15 +505,14 @@ impl MeshDecoder {
                             )));
                     }
                     set_num_faces_within_limits(mesh, buffer, num_faces)?;
+                    let mut read_index = || {
+                        let index = buffer.decode_varint()?;
+                        ensure_index_names_a_point(index, num_points)?;
+                        Ok::<_, DracoError>(index as u32)
+                    };
                     for face_id in 0..num_faces {
-                        mesh.set_face_from_indices(
-                            face_id,
-                            [
-                                buffer.decode_varint()? as u32,
-                                buffer.decode_varint()? as u32,
-                                buffer.decode_varint()? as u32,
-                            ],
-                        );
+                        let face = [read_index()?, read_index()?, read_index()?];
+                        mesh.set_face_from_indices(face_id, face);
                     }
                 } else {
                     let bytes_needed = num_indices.checked_mul(4).ok_or_else(|| {
@@ -507,6 +521,15 @@ impl MeshDecoder {
                     let bytes = buffer.decode_slice(bytes_needed).map_err(|_| {
                         DracoError::general("Not enough data for u32 indices".to_string())
                     })?;
+                    if let Some(max) = bytes
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|b| u32::from_le_bytes(*b))
+                        .max()
+                    {
+                        ensure_index_names_a_point(max.into(), num_points)?;
+                    }
                     set_num_faces_within_limits(mesh, buffer, num_faces)?;
                     mesh.set_faces_from_le_u32_indices(bytes);
                 }
@@ -1794,6 +1817,20 @@ fn validate_mesh_index_count(num_faces: usize) -> Result<usize, DracoError> {
     num_faces
         .checked_mul(3)
         .ok_or_else(|| DracoError::general("Mesh face index count overflow".to_string()))
+}
+
+/// Refuses a sequential face index that names no point, as upstream does on
+/// every connectivity path. Accepted, it leaves the mesh with faces past its
+/// points, and whatever follows them by point -- an index buffer written out,
+/// an attribute looked up per corner -- reads past the end. Takes the widest
+/// value a path can read, so a varint is checked before it is narrowed.
+fn ensure_index_names_a_point(index: u64, num_points: usize) -> Status {
+    if index >= num_points as u64 {
+        return Err(DracoError::general(format!(
+            "Sequential connectivity names point {index} of a mesh with {num_points}"
+        )));
+    }
+    Ok(())
 }
 
 /// The index array, sized from a count that already has an array behind it.

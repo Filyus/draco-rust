@@ -135,6 +135,13 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   without its attributes. The stream is one byte longer and now identical to
   C++ Draco's. A faceless stream written by an earlier version no longer
   decodes correctly here, just as it never did in C++ Draco.
+- The decoder refuses a sequentially encoded mesh whose faces name a point
+  past its point count, on every connectivity path, as C++ Draco's main
+  branch now does (1.5.7 does not). It accepted such a stream and returned faces past the end of the
+  points, and a caller following them -- writing an index buffer, looking up
+  an attribute per corner -- read out of bounds. A varint index is checked
+  before it is narrowed to 32 bits, so one past `u32` cannot pass as a small
+  index. No encoder writes such a stream.
 
 ## [2.2.1](https://github.com/Filyus/draco-rust/compare/draco-core-v2.2.0...draco-core-v2.2.1) - 2026-09-29
 

@@ -892,6 +892,105 @@ fn a_sequential_mesh_without_faces_carries_its_connectivity_method() {
     assert_eq!(decode(0), raw);
 }
 
+/// A sequential face index must name a point, on each of the five paths the
+/// connectivity can take: entropy-coded, and raw as u8, u16, varint or u32 by
+/// the point count. Each stream has one face whose last index is `num_points`,
+/// beside a control one short of it that decodes, so the refusal is the index
+/// and not something else about the stream. The varint path also gets an index
+/// past `u32`, which narrowed to 32 bits would name point 1.
+#[test]
+fn a_sequential_face_index_past_the_points_is_refused() {
+    fn decode(num_points: u64, method: u8, connectivity: &[u8]) -> Result<(), String> {
+        let mut stream = draco_header(2, 2, 1, 0);
+        append_varint(&mut stream, 1); // one face
+        append_varint(&mut stream, num_points);
+        stream.push(method);
+        stream.extend_from_slice(connectivity);
+        stream.push(0); // no attribute decoders
+        decode_malformed_without_panic(DecoderKind::Mesh, &stream)
+    }
+    fn varints(indices: [u64; 3]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for index in indices {
+            append_varint(&mut bytes, index);
+        }
+        bytes
+    }
+    fn compressed(indices: [u32; 3]) -> Vec<u8> {
+        // Each index as its difference from the one before, sign in bit 0.
+        let mut symbols = Vec::new();
+        let mut last = 0i64;
+        for index in indices {
+            let diff = i64::from(index) - last;
+            symbols.push(if diff < 0 {
+                ((-diff as u32) << 1) | 1
+            } else {
+                (diff as u32) << 1
+            });
+            last = i64::from(index);
+        }
+        let mut buffer = EncoderBuffer::new();
+        draco_core::symbol_encoding::encode_symbols(
+            &symbols,
+            1,
+            &draco_core::symbol_encoding::SymbolEncodingOptions::default(),
+            &mut buffer,
+        )
+        .unwrap();
+        buffer.data().to_vec()
+    }
+
+    let le = |values: [u32; 3], width: usize| -> Vec<u8> {
+        values
+            .iter()
+            .flat_map(|v| v.to_le_bytes()[..width].to_vec())
+            .collect()
+    };
+    let cases = [
+        (
+            "compressed",
+            2,
+            0,
+            compressed([0, 1, 1]),
+            compressed([0, 1, 2]),
+        ),
+        ("u8", 2, 1, vec![0, 1, 1], vec![0, 1, 2]),
+        ("u16", 300, 1, le([0, 1, 299], 2), le([0, 1, 300], 2)),
+        (
+            "varint",
+            70_000,
+            1,
+            varints([0, 1, 69_999]),
+            varints([0, 1, 70_000]),
+        ),
+        (
+            "varint past u32",
+            70_000,
+            1,
+            varints([0, 1, 69_999]),
+            varints([0, 1, (1 << 32) + 1]),
+        ),
+        (
+            "u32",
+            1 << 21,
+            1,
+            le([0, 1, (1 << 21) - 1], 4),
+            le([0, 1, 1 << 21], 4),
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (path, num_points, method, within, past) in cases {
+        if let Err(e) = decode(num_points, method, &within) {
+            failures.push(format!("{path}: the control was refused: {e}"));
+        }
+        match decode(num_points, method, &past) {
+            Err(e) if e.contains("names point") => {}
+            other => failures.push(format!("{path}: {other:?}")),
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
 #[test]
 fn encode_decode_empty_point_cloud() {
     let pc = PointCloud::new();
