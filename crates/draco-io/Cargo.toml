@@ -1,6 +1,6 @@
 [package]
 name = "draco-io"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2021"
 rust-version = "1.88.0"
 description = "OBJ, PLY, STL and FBX mesh readers and writers for the Draco geometry model"

@@ -9,33 +9,41 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.2](https://github.com/Filyus/draco-rust/compare/draco-io-v0.5.1...draco-io-v0.5.2) - 2026-10-04
+
 ### Changed
 
-- Reading a PLY no longer allocates for every point, and keeps carried
-  properties in their declared type rather than in `f64`: a scan of eight
-  million points reads in 0.17 s instead of 0.33 s, a 58-property splat of 742
-  thousand in 0.19 s instead of 0.30 s. OBJ and STL share the position and
-  normal builders and gain the same way. A `float` property no longer passes
-  through `f64` on its way in, which could quiet a signalling NaN. Reading
-  also needs about a third less memory at its peak where properties are carried:
-  the splat's read peaks at 368 MB over its input instead of 534 MB, a lidar
-  capture of 29 million points at 1.8 GB instead of 2.8 GB.
-- Writing a PLY no longer allocates for every value or writes one component at
-  a time: the splat above writes in 0.24 s instead of 1.98 s. The files are
-  byte for byte the same.
+- **PLY reads faster and with less memory.** Reading no longer allocates for
+  every point, and carried properties stay in their declared type instead of
+  passing through `f64`.
+  - A scan of eight million points reads in 0.17 s instead of 0.33 s, a
+    Gaussian splat of 742 thousand points and 58 properties in 0.19 s instead
+    of 0.30 s.
+  - Where properties are carried, the peak memory over the input is about a
+    third lower: 368 MB instead of 534 MB for that splat, 1.8 GB instead of
+    2.8 GB for a lidar capture of 29 million points.
+  - OBJ and STL share the position and normal builders and gain the same way.
+  - A `float` property no longer passes through `f64`, which could quiet a
+    signalling NaN.
+- **PLY writes faster, with the same bytes.** Writing no longer allocates for
+  every value or writes one component at a time. The splat above writes in
+  0.24 s instead of 1.98 s, and the files are byte for byte the same.
 
 ### Fixed
 
-- A truncated ASCII PLY is refused, as upstream Draco refuses it, instead of
-  being read as the smaller file it happens to hold. An element block with
-  fewer lines than its header declares, a vertex line with fewer values than
-  its properties -- which read as a vertex whose missing coordinates were
-  zero -- and a face line that ends inside its index list or before a
-  property after it, which dropped the face, are all errors now. A face of
-  fewer than three corners is complete and is still skipped.
-- An STL too short for a binary header and not beginning with `solid` is
-  refused as a truncated binary file. An empty file or 83 zero bytes read as
-  an ASCII file with no facets and returned an empty mesh.
+- **A truncated ASCII PLY is refused**, as upstream Draco refuses it, instead
+  of being read as the smaller file it happens to hold. These are errors now:
+  - An element block with fewer lines than its header declares.
+  - A vertex line with fewer values than its properties. It read as a vertex
+    whose missing coordinates were zero.
+  - A face line that ends inside its index list, or before a property after
+    it. The face was dropped.
+
+  A face of fewer than three corners is complete and is still skipped.
+- **A short file that is not text is refused as a truncated binary STL.** A
+  file too short for a binary header and not beginning with `solid`, an empty
+  file or 83 zero bytes for example, read as an ASCII file with no facets and
+  returned an empty mesh.
 
 ## [0.5.1](https://github.com/Filyus/draco-rust/compare/draco-io-v0.5.0...draco-io-v0.5.1) - 2026-09-25
 
