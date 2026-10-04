@@ -160,6 +160,14 @@ jobs:
             echo "Dependency $name $ver is published."
           done < <(printf '%s\n' "$deps")
 
+      # The dry run below builds against the newest compatible draco-core, and
+      # the CI packaging test against the one in this tree, so neither notices
+      # a pin left below the API the code calls. This builds the package with
+      # each internal dependency held at the version its pin names.
+      - name: Check the package builds at the floor of its internal pins
+        if: ${{ steps.release.outputs.should_publish == 'true' }}
+        run: bash .github/scripts/check-pin-floors.sh "$CRATE"
+
       - name: Check semver compatibility
         if: ${{ steps.release.outputs.should_publish == 'true' }}
         run: |

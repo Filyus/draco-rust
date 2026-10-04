@@ -87,7 +87,7 @@ Prepare the bump and changelog by hand, following
   demo-only commits);
 - keep feature/code changes out of the release commit.
 
-Run the two checks that can fail on code rather than on the release itself
+Run the three checks that can fail on code rather than on the release itself
 **before** committing — the preflight runs them too, but by then the release
 commit is pushed and has to be HEAD, so a failure costs a history rewrite:
 
@@ -96,7 +96,13 @@ rustup update nightly
 $env:RUSTDOCFLAGS = "--cfg docsrs -D warnings"
 cargo +nightly doc --manifest-path crates/<crate>/Cargo.toml --no-deps --all-features
 cargo semver-checks --manifest-path crates/<crate>/Cargo.toml
+$env:PIN_CHECK_ALLOW_DIRTY = "1"
+bash .github/scripts/check-pin-floors.sh <crate>
 ```
+
+The last one matters for `draco-io` and `draco-gltf`: it builds the package
+with `draco-core` held at the version the pin names, which is the only build
+that notices a pin left below the API the code calls.
 
 Update nightly first: the docs build fails on rustdoc lints, and which lints
 fire changes with the toolchain, so a stale local nightly passes what the
@@ -147,6 +153,7 @@ Preflight checks, for crate `<crate>`:
 - the commit subject is exactly `release: prepare <crate> vX.Y.Z`;
 - `X.Y.Z` matches `crates/<crate>/Cargo.toml`;
 - every internal dependency `<crate>` pins is already published at the pinned version;
+- the package builds with every internal dependency held at its pinned version;
 - `crates/<crate>/CHANGELOG.md` has a `## [X.Y.Z]` section;
 - `web/CHANGELOG.md`'s `Unreleased` section is copied into the GitHub
   release's notes and renamed here to the shipping date;

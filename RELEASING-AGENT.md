@@ -123,7 +123,14 @@ bumps `draco-core`, releasing the dependents that should pick it up is a
    cargo semver-checks --manifest-path crates/<crate>/Cargo.toml
    cargo metadata --manifest-path crates/Cargo.toml >/dev/null  # the new version still resolves
    cargo publish --dry-run --manifest-path crates/<crate>/Cargo.toml
+   PIN_CHECK_ALLOW_DIRTY=1 bash .github/scripts/check-pin-floors.sh <crate>
    ```
+
+   The last one builds the package with each internal dependency held at the
+   version its pin names. The dry run builds against the newest compatible
+   `draco-core` and the packaging test against the one in this tree, so only
+   this notices a pin left below the API the code calls: draco-gltf 0.6.0 was
+   prepared with `draco-core = "2.2.1"` while calling a method 2.3.0 added.
 
    **And the ones `Rust CI` runs, which are not release-specific and are what
    actually fails.** Preparing v0.3.1 pushed a red `main` twice: first a
