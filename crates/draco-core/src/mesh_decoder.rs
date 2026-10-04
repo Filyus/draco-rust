@@ -400,130 +400,131 @@ impl MeshDecoder {
             let num_indices = validate_mesh_index_count(num_faces)?;
             mesh.set_num_points(num_points);
 
-            if num_faces > 0 && num_points > 0 {
-                let connectivity_method = buffer.decode_u8()?;
-                if connectivity_method == 0 {
-                    // Compressed. The symbol count is bounded before the buffer
-                    // it fills is sized: the ratio alone lets a 26 KB stream
-                    // declare 1,095,910,464 faces and reserve 13 GB for them,
-                    // because a ratio scales with the input an attacker
-                    // supplies. See `decode_budget::ensure_symbols_are_backed`.
-                    crate::decode_budget::ensure_symbols_are_backed(num_indices, buffer.size())?;
-                    // Empty on purpose: `decode_symbols` grows it as symbols
-                    // arrive, so a count the stream cannot deliver costs one
-                    // small reservation instead of the whole array.
-                    let mut encoded_indices = Vec::new();
-                    let options = crate::symbol_encoding::SymbolEncodingOptions::default();
-                    crate::symbol_encoding::decode_symbols(
-                        num_indices,
-                        1,
-                        &options,
-                        buffer,
-                        &mut encoded_indices,
-                    )
-                    .map_err(|err| {
-                        DracoError::general(format!(
-                            "Failed to decode compressed sequential connectivity: {err}"
-                        ))
-                    })?;
-                    // Sized from what the decode produced rather than from what
-                    // the header claimed: on success the two are equal, and on
-                    // failure this line is not reached.
-                    let mut indices = make_zeroed_indices(encoded_indices.len())?;
-                    let mut last_index_value = 0i32;
-                    for (dst, encoded_val) in indices.iter_mut().zip(encoded_indices) {
-                        let mut index_diff = (encoded_val >> 1) as i32;
-                        if (encoded_val & 1) != 0 {
-                            if index_diff > last_index_value {
-                                return Err(DracoError::general(
-                                    "Sequential connectivity index underflow".to_string(),
-                                ));
-                            }
-                            index_diff = -index_diff;
-                        } else if index_diff > i32::MAX - last_index_value {
+            // The method byte is there whatever the counts say: upstream
+            // writes and reads it unconditionally, so a mesh with no faces
+            // or no points still carries it.
+            let connectivity_method = buffer.decode_u8()?;
+            if connectivity_method == 0 {
+                // Compressed. The symbol count is bounded before the buffer
+                // it fills is sized: the ratio alone lets a 26 KB stream
+                // declare 1,095,910,464 faces and reserve 13 GB for them,
+                // because a ratio scales with the input an attacker
+                // supplies. See `decode_budget::ensure_symbols_are_backed`.
+                crate::decode_budget::ensure_symbols_are_backed(num_indices, buffer.size())?;
+                // Empty on purpose: `decode_symbols` grows it as symbols
+                // arrive, so a count the stream cannot deliver costs one
+                // small reservation instead of the whole array.
+                let mut encoded_indices = Vec::new();
+                let options = crate::symbol_encoding::SymbolEncodingOptions::default();
+                crate::symbol_encoding::decode_symbols(
+                    num_indices,
+                    1,
+                    &options,
+                    buffer,
+                    &mut encoded_indices,
+                )
+                .map_err(|err| {
+                    DracoError::general(format!(
+                        "Failed to decode compressed sequential connectivity: {err}"
+                    ))
+                })?;
+                // Sized from what the decode produced rather than from what
+                // the header claimed: on success the two are equal, and on
+                // failure this line is not reached.
+                let mut indices = make_zeroed_indices(encoded_indices.len())?;
+                let mut last_index_value = 0i32;
+                for (dst, encoded_val) in indices.iter_mut().zip(encoded_indices) {
+                    let mut index_diff = (encoded_val >> 1) as i32;
+                    if (encoded_val & 1) != 0 {
+                        if index_diff > last_index_value {
                             return Err(DracoError::general(
-                                "Sequential connectivity index overflow".to_string(),
+                                "Sequential connectivity index underflow".to_string(),
                             ));
                         }
-                        let index_value = last_index_value + index_diff;
-                        *dst = index_value as u32;
-                        last_index_value = index_value;
+                        index_diff = -index_diff;
+                    } else if index_diff > i32::MAX - last_index_value {
+                        return Err(DracoError::general(
+                            "Sequential connectivity index overflow".to_string(),
+                        ));
                     }
+                    let index_value = last_index_value + index_diff;
+                    *dst = index_value as u32;
+                    last_index_value = index_value;
+                }
+                set_num_faces_within_limits(mesh, buffer, num_faces)?;
+                mesh.set_faces_from_flat_indices(&indices);
+            } else if connectivity_method == 1 {
+                // Raw - bulk read indices from buffer
+                if num_points < 256 {
+                    let bytes_needed = num_indices;
+                    let bytes = buffer.decode_slice(bytes_needed).map_err(|_| {
+                        DracoError::general("Not enough data for u8 indices".to_string())
+                    })?;
                     set_num_faces_within_limits(mesh, buffer, num_faces)?;
-                    mesh.set_faces_from_flat_indices(&indices);
-                } else if connectivity_method == 1 {
-                    // Raw - bulk read indices from buffer
-                    if num_points < 256 {
-                        let bytes_needed = num_indices;
-                        let bytes = buffer.decode_slice(bytes_needed).map_err(|_| {
-                            DracoError::general("Not enough data for u8 indices".to_string())
-                        })?;
-                        set_num_faces_within_limits(mesh, buffer, num_faces)?;
-                        mesh.set_faces_from_u8_indices(bytes);
-                    } else if num_points < 65536 {
-                        let bytes_needed = num_indices.checked_mul(2).ok_or_else(|| {
-                            DracoError::general("Mesh u16 index byte count overflow".to_string())
-                        })?;
-                        let bytes = buffer.decode_slice(bytes_needed).map_err(|_| {
-                            DracoError::general("Not enough data for u16 indices".to_string())
-                        })?;
-                        set_num_faces_within_limits(mesh, buffer, num_faces)?;
-                        mesh.set_faces_from_le_u16_indices(bytes);
-                    } else if num_points < (1 << 21) && seq_uses_varint {
-                        // Three varints a face, and a varint is at least one
-                        // byte, so a face count past the bytes that remain is
-                        // one this stream cannot deliver. The three branches
-                        // around this one are bounded by the exact byte count
-                        // they read before sizing anything; this one reads
-                        // variable-length indices, so the per-face floor is
-                        // what it can check instead. Without it the count went
-                        // straight into the face array: a 22-byte stream sized
-                        // it for twenty trillion faces and asked for 240 TB,
-                        // which the campaign's AddressSanitizer refused before
-                        // the fallible reservation could report anything.
-                        if num_indices > buffer.remaining_size() {
-                            return Err(DracoError::general(format!(
+                    mesh.set_faces_from_u8_indices(bytes);
+                } else if num_points < 65536 {
+                    let bytes_needed = num_indices.checked_mul(2).ok_or_else(|| {
+                        DracoError::general("Mesh u16 index byte count overflow".to_string())
+                    })?;
+                    let bytes = buffer.decode_slice(bytes_needed).map_err(|_| {
+                        DracoError::general("Not enough data for u16 indices".to_string())
+                    })?;
+                    set_num_faces_within_limits(mesh, buffer, num_faces)?;
+                    mesh.set_faces_from_le_u16_indices(bytes);
+                } else if num_points < (1 << 21) && seq_uses_varint {
+                    // Three varints a face, and a varint is at least one
+                    // byte, so a face count past the bytes that remain is
+                    // one this stream cannot deliver. The three branches
+                    // around this one are bounded by the exact byte count
+                    // they read before sizing anything; this one reads
+                    // variable-length indices, so the per-face floor is
+                    // what it can check instead. Without it the count went
+                    // straight into the face array: a 22-byte stream sized
+                    // it for twenty trillion faces and asked for 240 TB,
+                    // which the campaign's AddressSanitizer refused before
+                    // the fallible reservation could report anything.
+                    if num_indices > buffer.remaining_size() {
+                        return Err(DracoError::general(format!(
                                 "Sequential connectivity declares {num_faces} faces, more than the {} bytes left can encode",
                                 buffer.remaining_size()
                             )));
-                        }
-                        set_num_faces_within_limits(mesh, buffer, num_faces)?;
-                        for face_id in 0..num_faces {
-                            mesh.set_face_from_indices(
-                                face_id,
-                                [
-                                    buffer.decode_varint()? as u32,
-                                    buffer.decode_varint()? as u32,
-                                    buffer.decode_varint()? as u32,
-                                ],
-                            );
-                        }
-                    } else {
-                        let bytes_needed = num_indices.checked_mul(4).ok_or_else(|| {
-                            DracoError::general("Mesh u32 index byte count overflow".to_string())
-                        })?;
-                        let bytes = buffer.decode_slice(bytes_needed).map_err(|_| {
-                            DracoError::general("Not enough data for u32 indices".to_string())
-                        })?;
-                        set_num_faces_within_limits(mesh, buffer, num_faces)?;
-                        mesh.set_faces_from_le_u32_indices(bytes);
+                    }
+                    set_num_faces_within_limits(mesh, buffer, num_faces)?;
+                    for face_id in 0..num_faces {
+                        mesh.set_face_from_indices(
+                            face_id,
+                            [
+                                buffer.decode_varint()? as u32,
+                                buffer.decode_varint()? as u32,
+                                buffer.decode_varint()? as u32,
+                            ],
+                        );
                     }
                 } else {
-                    return Err(DracoError::general(format!(
-                        "Unsupported sequential connectivity method: {}",
-                        connectivity_method
-                    )));
+                    let bytes_needed = num_indices.checked_mul(4).ok_or_else(|| {
+                        DracoError::general("Mesh u32 index byte count overflow".to_string())
+                    })?;
+                    let bytes = buffer.decode_slice(bytes_needed).map_err(|_| {
+                        DracoError::general("Not enough data for u32 indices".to_string())
+                    })?;
+                    set_num_faces_within_limits(mesh, buffer, num_faces)?;
+                    mesh.set_faces_from_le_u32_indices(bytes);
                 }
-                // If sequential mode uses compressed connectivity, we may need
-                // to remap indices for deduplication. For raw mode above,
-                // face indices match the flat array.
-
-                // Note: Sequential encoding does NOT use a CornerTable.
-                // C++ MeshSequentialDecoder::DecodeConnectivity() just calls mesh->AddFace()
-                // and uses LinearSequencer for attribute decoding (identity mapping).
-                // Corner tables are only needed for Edgebreaker's mesh prediction schemes.
-                // self.corner_table remains None for sequential decoding.
+            } else {
+                return Err(DracoError::general(format!(
+                    "Unsupported sequential connectivity method: {}",
+                    connectivity_method
+                )));
             }
+            // If sequential mode uses compressed connectivity, we may need
+            // to remap indices for deduplication. For raw mode above,
+            // face indices match the flat array.
+
+            // Note: Sequential encoding does NOT use a CornerTable.
+            // C++ MeshSequentialDecoder::DecodeConnectivity() just calls mesh->AddFace()
+            // and uses LinearSequencer for attribute decoding (identity mapping).
+            // Corner tables are only needed for Edgebreaker's mesh prediction schemes.
+            // self.corner_table remains None for sequential decoding.
         }
 
         Ok(())

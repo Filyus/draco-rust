@@ -32,6 +32,12 @@ only anchor a shipping without a version of its own has.
   it by point number, and it can make a file bigger when an attribute varies
   along the order it came in rather than through space.
 
+- `create_drc` given no indices writes a file C++ Draco can read. The mesh of
+  points and no faces it makes lacked the byte that names how the faces are
+  coded, which C++ Draco expects even when there are none, so C++ Draco --
+  the decoder most viewers and engines use -- refused it, while this module
+  read its own files back and hid that.
+
 - `parse_ply_bytes` reports the vertex properties, face properties and whole
   elements the reader could not carry, through the `warnings` array it already
   returned. A Gaussian-splat PLY keeps everything but the position in

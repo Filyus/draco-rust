@@ -2,8 +2,11 @@ use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
 
 use draco_core::decoder_buffer::DecoderBuffer;
+use draco_core::draco_types::DataType;
 use draco_core::encoder_buffer::EncoderBuffer;
 use draco_core::encoder_options::EncoderOptions;
+use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
+use draco_core::geometry_indices::PointIndex;
 use draco_core::mesh::Mesh;
 use draco_core::mesh_decoder::MeshDecoder;
 use draco_core::mesh_encoder::MeshEncoder;
@@ -434,12 +437,14 @@ fn oversized_edgebreaker_counts_fail_before_large_allocation() {
 #[test]
 fn oversized_sequential_mesh_point_count_fails_before_large_allocation() {
     // libFuzzer reproducer (fuzz target `decode_drc`): an 18-byte v2.2 sequential
-    // mesh with num_faces = 0 but a ~billion-point num_points varint. Connectivity
-    // is skipped, but attribute decode then sized per-attribute buffers by
-    // num_points and accumulated multiple gigabytes. The point count must be
+    // mesh with num_faces = 0 but a ~billion-point num_points varint. There are
+    // no indices to read, but attribute decode then sized per-attribute buffers
+    // by num_points and accumulated multiple gigabytes. The point count must be
     // rejected against the remaining input before those buffers are allocated.
-    let seq_mesh_point_count_oom: [u8; 18] = [
-        68, 82, 65, 67, 79, 2, 2, 1, 0, 0, 1, 0, 255, 255, 255, 255, 68, 11,
+    // The 1 after the counts is the connectivity method, which a sequential
+    // mesh carries even with no faces.
+    let seq_mesh_point_count_oom: [u8; 19] = [
+        68, 82, 65, 67, 79, 2, 2, 1, 0, 0, 1, 0, 255, 255, 255, 255, 68, 1, 11,
     ];
     assert!(
         decode_malformed_without_panic(DecoderKind::Mesh, &seq_mesh_point_count_oom).is_err(),
@@ -455,8 +460,9 @@ fn sequential_mesh_identity_mapping_does_not_materialize_huge_point_count() {
     // input-relative allocation threshold; the decoder must still do no large
     // allocation because the identity is now represented symbolically.
     let mut stream = draco_header(2, 2, 1, 0);
-    append_varint(&mut stream, 0); // zero faces, so connectivity is skipped
+    append_varint(&mut stream, 0); // zero faces, so no indices
     append_varint(&mut stream, 1 << 30); // a hostile but representable point count
+    stream.push(1); // raw connectivity
     stream.push(0); // no attribute decoders
     stream.resize(4096, 0); // 4 GiB / 2^20: inclusive budget boundary
 
@@ -474,8 +480,9 @@ fn sequential_mesh_attribute_buffer_does_not_materialize_huge_point_count() {
     // reserve one value per claimed point before checking whether the input
     // can back that allocation.
     let mut stream = draco_header(2, 2, 1, 0);
-    append_varint(&mut stream, 0); // zero faces, so connectivity is skipped
+    append_varint(&mut stream, 0); // zero faces, so no indices
     append_varint(&mut stream, 1 << 30); // a hostile but representable point count
+    stream.push(1); // raw connectivity
     append_varint(&mut stream, 1); // one attribute decoder
     append_varint(&mut stream, 1); // one attribute in the decoder
     stream.extend_from_slice(&[0, 9, 1, 0]); // position, float32, one component, unnormalized
@@ -818,6 +825,71 @@ fn encode_decode_empty_mesh() {
     assert_eq!(decoded.num_faces(), 0);
     assert_eq!(decoded.num_points(), 0);
     assert_eq!(decoded.num_attributes(), 0);
+}
+
+/// Points and no faces -- what a converter writes for geometry handed over
+/// without indices -- still carry the sequential connectivity method byte,
+/// because upstream writes and reads it whatever the counts are. Both methods
+/// must decode: 1 is what this encoder writes, and 0 is what upstream writes
+/// with `compress_connectivity`, followed by nothing since zero symbols code to
+/// zero bytes. A decoder that skips the byte takes that 0 for the attribute
+/// decoder count and returns the mesh without its positions.
+#[test]
+fn a_sequential_mesh_without_faces_carries_its_connectivity_method() {
+    let positions = [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+    let mut mesh = Mesh::new();
+    mesh.set_num_points(3);
+    let mut position = PointAttribute::new();
+    position.init(
+        GeometryAttributeType::Position,
+        3,
+        DataType::Float32,
+        false,
+        3,
+    );
+    position.buffer_mut().update_f32s_le(0, &positions);
+    mesh.add_attribute(position);
+
+    let mut options = EncoderOptions::new();
+    options.set_global_int("encoding_speed", 10);
+    options.set_global_int("decoding_speed", 10);
+    options.set_attribute_int(0, "quantization_bits", 11);
+    let mut encoder = MeshEncoder::new();
+    encoder.set_mesh(mesh);
+    let mut enc = EncoderBuffer::new();
+    encoder.encode(&options, &mut enc).expect("encode");
+    let written = enc.data();
+    // Sequential, then the varint counts: no faces, three points.
+    assert_eq!(written[8], 0);
+    assert_eq!(&written[11..13], &[0, 3]);
+
+    let decode = |method: u8| {
+        let mut stream = written.to_vec();
+        stream[13] = method;
+        let mut decoded = Mesh::new();
+        MeshDecoder::new()
+            .decode(&mut DecoderBuffer::new(&stream), &mut decoded)
+            .unwrap_or_else(|e| panic!("method {method}: {e:?}"));
+        assert_eq!(decoded.num_faces(), 0, "method {method}");
+        assert_eq!(decoded.num_attributes(), 1, "method {method}");
+        let att = decoded.attribute(0);
+        (0..3)
+            .flat_map(|point| {
+                let offset = att.mapped_index(PointIndex(point)).0 as usize * 12;
+                att.buffer().data()[offset..offset + 12]
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|b| f32::from_le_bytes(*b))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    };
+    let raw = decode(1);
+    for (got, want) in raw.iter().zip(positions) {
+        assert!((got - want).abs() < 1e-3, "{raw:?}");
+    }
+    assert_eq!(decode(0), raw);
 }
 
 #[test]

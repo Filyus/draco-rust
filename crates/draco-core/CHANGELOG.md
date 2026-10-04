@@ -126,6 +126,15 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   than the limits allow is still refused at its header, before anything is
   decoded. With `DecodeLimits::permissive()` nothing bounds that count, as the
   name says.
+- A sequentially encoded mesh with no faces, or no points, now carries the
+  connectivity method byte, as C++ Draco writes and reads it in every version.
+  The encoder left it out, so C++ Draco could not decode such a stream -- a
+  mesh of points and no indices, which the web converter writes for input
+  without them -- and the decoder read C++ Draco's one byte early: without
+  compressed connectivity it refused the stream, and with it returned the mesh
+  without its attributes. The stream is one byte longer and now identical to
+  C++ Draco's. A faceless stream written by an earlier version no longer
+  decodes correctly here, just as it never did in C++ Draco.
 
 ## [2.2.1](https://github.com/Filyus/draco-rust/compare/draco-core-v2.2.0...draco-core-v2.2.1) - 2026-09-29
 

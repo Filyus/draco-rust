@@ -1118,42 +1118,42 @@ impl MeshEncoder {
             out_buffer.encode_varint(mesh.num_points() as u64);
         }
 
-        if mesh.num_faces() > 0 && mesh.num_points() > 0 {
-            out_buffer.encode_u8(1); // Raw connectivity
-            if mesh.num_points() < 256 {
-                for face_id in 0..mesh.num_faces() {
-                    let face = mesh.face(FaceIndex(face_id as u32));
-                    for i in 0..3 {
-                        out_buffer.encode_u8(face[i].0 as u8);
-                    }
+        // Raw connectivity. The method byte goes out even with no faces or no
+        // points, as upstream writes it, since its decoder reads it regardless.
+        out_buffer.encode_u8(1);
+        if mesh.num_points() < 256 {
+            for face_id in 0..mesh.num_faces() {
+                let face = mesh.face(FaceIndex(face_id as u32));
+                for i in 0..3 {
+                    out_buffer.encode_u8(face[i].0 as u8);
                 }
-            } else if mesh.num_points() < 65536 {
-                for face_id in 0..mesh.num_faces() {
-                    let face = mesh.face(FaceIndex(face_id as u32));
-                    for i in 0..3 {
-                        out_buffer.encode_u16(face[i].0 as u16);
-                    }
+            }
+        } else if mesh.num_points() < 65536 {
+            for face_id in 0..mesh.num_faces() {
+                let face = mesh.face(FaceIndex(face_id as u32));
+                for i in 0..3 {
+                    out_buffer.encode_u16(face[i].0 as u16);
                 }
-            } else if counts_are_varint && mesh.num_points() < (1 << 21) {
-                // Varint indices when the points fit in 21 bits, as upstream
-                // does - but only from 2.2, which is where the decoder starts
-                // reading them that way. This branch had no version gate at
-                // all, so every sequential mesh below 2.2 with 65536 or more
-                // points was written unreadable; 1.3 is a claimed version, so
-                // this one is a live fix, not just parity.
-                for face_id in 0..mesh.num_faces() {
-                    let face = mesh.face(FaceIndex(face_id as u32));
-                    for i in 0..3 {
-                        out_buffer.encode_varint(face[i].0 as u64);
-                    }
+            }
+        } else if counts_are_varint && mesh.num_points() < (1 << 21) {
+            // Varint indices when the points fit in 21 bits, as upstream
+            // does - but only from 2.2, which is where the decoder starts
+            // reading them that way. This branch had no version gate at
+            // all, so every sequential mesh below 2.2 with 65536 or more
+            // points was written unreadable; 1.3 is a claimed version, so
+            // this one is a live fix, not just parity.
+            for face_id in 0..mesh.num_faces() {
+                let face = mesh.face(FaceIndex(face_id as u32));
+                for i in 0..3 {
+                    out_buffer.encode_varint(face[i].0 as u64);
                 }
-            } else {
-                // Default: use u32 for very large meshes
-                for face_id in 0..mesh.num_faces() {
-                    let face = mesh.face(FaceIndex(face_id as u32));
-                    for i in 0..3 {
-                        out_buffer.encode_u32(face[i].0);
-                    }
+            }
+        } else {
+            // Default: use u32 for very large meshes
+            for face_id in 0..mesh.num_faces() {
+                let face = mesh.face(FaceIndex(face_id as u32));
+                for i in 0..3 {
+                    out_buffer.encode_u32(face[i].0);
                 }
             }
         }

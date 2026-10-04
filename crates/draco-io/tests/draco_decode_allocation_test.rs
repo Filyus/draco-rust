@@ -190,8 +190,9 @@ fn a_generic_attribute_does_not_reserve_more_than_the_stream_can_carry() {
     }
 
     let mut stream = draco_header(2, 2, 1, 0); // mesh, sequential
-    append_varint(&mut stream, 0); // zero faces, so connectivity is skipped
+    append_varint(&mut stream, 0); // zero faces, so no indices
     append_varint(&mut stream, 200_000_000); // 2.4 GB of claimed values
+    stream.push(1); // raw connectivity
     append_varint(&mut stream, 1); // one attribute decoder
     append_varint(&mut stream, 1); // one attribute in it
     stream.extend_from_slice(&[4, 9, 3, 0]); // generic, float32, three components
@@ -308,19 +309,21 @@ fn a_declared_kd_tree_dimension_does_not_size_the_walk_stacks() {
 /// stream -- it uses an identity map holding only the count, precisely so that
 /// a claim of a billion points does not cost four bytes each. The portable
 /// attribute was then sized from that map's `len()`, which is the claim again:
-/// this 62-byte artifact declares about 7e16 points and asked for a single
+/// this artifact declares about 7e16 points and asked for a single
 /// 558,446,353,793,941,488-byte buffer, which the campaign's AddressSanitizer
 /// refused outright. The same decode now reserves 702 bytes.
 ///
-/// The `decode_drc` reproducer verbatim rather than a stream built here: what
-/// makes it reach the value pass is a header this file has no helper for, and
-/// a hand-built approximation decoded successfully without ever allocating,
-/// which would have pinned nothing.
+/// The `decode_drc` reproducer rather than a stream built here: what makes it
+/// reach the value pass is a header this file has no helper for, and a
+/// hand-built approximation decoded successfully without ever allocating,
+/// which would have pinned nothing. It is verbatim but for the connectivity
+/// method byte after the two counts, which a sequential mesh carries even with
+/// no faces.
 #[test]
 fn a_sequential_mesh_does_not_reserve_one_portable_value_per_claimed_point() {
-    let claimed_points: [u8; 62] = [
-        68, 82, 65, 67, 79, 2, 2, 1, 0, 9, 3, 0, 254, 255, 255, 255, 255, 255, 255, 251, 0, 2, 1,
-        3, 9, 2, 0, 3, 2, 1, 1, 9, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0, 239, 239, 239, 239, 1, 0, 0, 0,
+    let claimed_points: [u8; 63] = [
+        68, 82, 65, 67, 79, 2, 2, 1, 0, 9, 3, 0, 254, 255, 255, 255, 255, 255, 255, 251, 0, 1, 2,
+        1, 3, 9, 2, 0, 3, 2, 1, 1, 9, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0, 239, 239, 239, 239, 1, 0, 0, 0,
         239, 239, 239, 239, 239, 239, 239, 239, 239, 161, 65, 8,
     ];
 

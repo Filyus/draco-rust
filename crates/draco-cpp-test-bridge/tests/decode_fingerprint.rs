@@ -1,5 +1,12 @@
 use std::path::PathBuf;
 
+use draco_core::draco_types::DataType;
+use draco_core::encoder_buffer::EncoderBuffer;
+use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
+use draco_core::mesh::Mesh;
+use draco_core::mesh_encoder::MeshEncoder;
+use draco_core::EncoderOptions;
+
 mod fingerprint;
 use fingerprint::*;
 
@@ -195,4 +202,74 @@ fn cpp_compressed_sequential_connectivity_matches_rust_decode() {
     assert_eq!(rust.face_hash, cpp.face_hash);
     assert_eq!(rust.attribute_hash, cpp.attribute_hash);
     assert_eq!(rust.canonical_corner_hash, cpp.canonical_corner_hash);
+}
+
+/// Points and no faces: C++ writes the connectivity method byte anyway, raw or
+/// compressed, and reads it back. This encoder must write the raw stream byte
+/// for byte, and this decoder must read both to what C++ reads.
+#[test]
+fn a_sequential_mesh_without_faces_matches_cpp_both_ways() {
+    if !draco_cpp_test_bridge::is_available() {
+        eprintln!("SKIPPING: C++ test bridge not available");
+        return;
+    }
+
+    let positions = [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+    let raw = draco_cpp_test_bridge::encode_cpp_mesh_sequential(&positions, &[], 10, 10, 11, false)
+        .expect("C++ sequential encode failed");
+    let compressed =
+        draco_cpp_test_bridge::encode_cpp_mesh_sequential(&positions, &[], 10, 10, 11, true)
+            .expect("C++ sequential compressed encode failed");
+    assert_eq!(sequential_connectivity_method(&raw), Some(1));
+    assert_eq!(sequential_connectivity_method(&compressed), Some(0));
+
+    let mut mesh = Mesh::new();
+    mesh.set_num_points(3);
+    let mut position = PointAttribute::new();
+    position.init(
+        GeometryAttributeType::Position,
+        3,
+        DataType::Float32,
+        false,
+        3,
+    );
+    position.buffer_mut().update_f32s_le(0, &positions);
+    mesh.add_attribute(position);
+    let mut options = EncoderOptions::new();
+    options.set_global_int("encoding_speed", 10);
+    options.set_global_int("decoding_speed", 10);
+    options.set_attribute_int(0, "quantization_bits", 11);
+    let mut encoder = MeshEncoder::new();
+    encoder.set_mesh(mesh);
+    let mut written = EncoderBuffer::new();
+    encoder
+        .encode(&options, &mut written)
+        .expect("Rust encode failed");
+    assert_eq!(written.data(), &raw[..], "Rust and C++ raw streams differ");
+
+    for (name, data) in [("raw", &raw), ("compressed", &compressed)] {
+        let rust = rust_decode_fingerprint(data);
+        let cpp =
+            draco_cpp_test_bridge::decode_cpp_mesh_fingerprint(data).expect("C++ decode failed");
+        assert_eq!(
+            (
+                rust.num_points,
+                rust.num_faces,
+                rust.num_attributes,
+                rust.face_hash,
+                rust.attribute_hash,
+                rust.canonical_corner_hash
+            ),
+            (
+                cpp.num_points,
+                cpp.num_faces,
+                cpp.num_attributes,
+                cpp.face_hash,
+                cpp.attribute_hash,
+                cpp.canonical_corner_hash
+            ),
+            "{name}"
+        );
+        assert_eq!(rust.num_attributes, 1, "{name}");
+    }
 }
