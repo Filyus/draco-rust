@@ -9,49 +9,62 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.5.0...draco-gltf-v0.6.0) - 2026-10-04
+
 ### Added
 
-- `ImportOptions::draco_decode_threads`: the threads one Draco decode of a
-  point-cloud primitive may take. `1`, the default, keeps it on the calling
-  thread, as before; `0` takes as many as the machine has, up to sixteen,
-  which decodes a large cloud of many attributes three to four times faster.
-  Mesh primitives decode on the calling thread whatever it says, and the
-  decoded geometry is the same on any count. `DracoPrimitiveContract::with_threads`
-  does the same for a primitive decoded on its own. Needs the `draco-core`
-  release that adds `MeshDecoder::set_threads`.
-- `DracoDecodeOptions`, the ceilings and the threads of a Draco decode in one
-  value, built from `Default` with `with_limits` and `with_threads`.
-- `Import::accessor_source`, an accessor source held to the `ResourceLimits`
-  the import was read with, and `DocumentAccessorSource::with_limits` for one
-  built by hand. `read_primitive` and the geometry readers use the former.
+- **Draco point-cloud primitives can decode on several threads. Off by
+  default.** `ImportOptions::draco_decode_threads` takes the thread count for
+  one Draco decode:
+  - `1` (default): the calling thread only, as before.
+  - `0`: as many threads as the machine has, up to 16.
+  - Any other count: that many threads, up to 16.
+
+  A large cloud of many attributes decodes three to four times faster on 16
+  threads. Mesh primitives decode on the calling thread whatever the count,
+  and the decoded geometry is the same on any count.
+  `DracoPrimitiveContract::with_threads` does the same for a primitive decoded
+  on its own.
+- **`DracoDecodeOptions` holds the ceilings and the threads of a Draco decode
+  in one value**, built from `Default` with `with_limits` and `with_threads`.
+- **Accessor sources can be held to the import's resource limits.**
+  `Import::accessor_source` returns an accessor source held to the
+  `ResourceLimits` the import was read with, and
+  `DocumentAccessorSource::with_limits` does the same for one built by hand.
+  `read_primitive` and the geometry readers use the former.
 
 ### Changed
 
-- `ExtensionHandler::decode_primitive`, `ExtensionRegistry::decode_primitive`
-  and `parse_with_options` take `&DracoDecodeOptions` where they took
-  `&DecodeLimits`; pass `&DracoDecodeOptions::default().with_limits(limits)`
-  for what they did before. It is one value so that what a decode is told can
-  grow again without these changing shape. `ImportOptions` has a field more,
-  so a struct literal of it needs `..ImportOptions::default()`.
+- **Breaking: decoding a Draco primitive takes `&DracoDecodeOptions` instead of
+  `&DecodeLimits`.** This affects `ExtensionHandler::decode_primitive`,
+  `ExtensionRegistry::decode_primitive` and `parse_with_options`. For the old
+  behaviour pass `&DracoDecodeOptions::default().with_limits(limits)`. It is
+  one value so that what a decode is told can grow again without these
+  changing shape.
+- **Breaking: `ImportOptions` has a new field**, so a struct literal of it
+  needs `..ImportOptions::default()`.
+- **Requires draco-core 2.3.0**, which adds the threaded decode.
 
 ### Fixed
 
-- An accessor reads its own buffer view and nothing past it. Only the end of
-  the buffer was checked, so an accessor whose `count` ran past its view's
-  `byteLength` returned the next view's bytes as its data; it is refused now,
+- **An accessor reads its own buffer view and nothing past it.** Only the end
+  of the buffer was checked, so an accessor whose `count` ran past its view's
+  `byteLength` returned the next view's bytes as its data. It is refused now,
   and so is a sparse accessor's index or value that runs past its view.
-- A sparse accessor with no buffer view, whose zeros nothing in the file backs,
-  reports a failed allocation instead of aborting the process when its
-  `count` asks for more memory than there is. An accessor with a view has its
-  last element checked against the view before anything is reserved for it.
-  That alone does not hold on Linux, which grants a reservation up to its RAM
-  and swap and kills the process when the zeros are written if a container
-  allows less -- measured: 14 GiB reserved under a 13.4 GiB cgroup, then
-  SIGKILL. So those zeros are also held to `ResourceLimits::max_resource_bytes`
-  when the import sets it, and refused past it before anything is reserved.
-- A Draco extension's buffer view with a `byteOffset` past 4 GiB is refused on
-  a 32-bit target, WebAssembly included, rather than truncated to an offset
-  that happened to fit.
+- **A sparse accessor with no buffer view no longer aborts the process.** Its
+  zeros are backed by nothing in the file, and a `count` asking for more memory
+  than there is aborted the process. It now reports a failed allocation. An
+  accessor with a view has its last element checked against the view before
+  anything is reserved for it.
+  - On Linux that alone is not enough. The system grants a reservation up to
+    its RAM and swap, and kills the process when the zeros are written if a
+    container allows less: 14 GiB reserved under a 13.4 GiB cgroup, then
+    SIGKILL. So those zeros are also held to
+    `ResourceLimits::max_resource_bytes` when the import sets it, and refused
+    past it before anything is reserved.
+- **A Draco extension's buffer view with a `byteOffset` past 4 GiB is refused
+  on a 32-bit target**, WebAssembly included, instead of being truncated to an
+  offset that happened to fit.
 
 ## [0.5.0](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.4.2...draco-gltf-v0.5.0) - 2026-09-29
 

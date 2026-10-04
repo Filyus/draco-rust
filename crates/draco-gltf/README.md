@@ -19,6 +19,13 @@ provenance. Typed views cover complete scenes, while unknown properties,
 `to_minified_json_bytes` explicitly emits whitespace-free JSON while retaining
 object order and number lexemes.
 
+A Draco-compressed point-cloud primitive can decode on several threads:
+[`ImportOptions::draco_decode_threads`] is `1` by default, and `0` takes as
+many as the machine has, up to 16. Mesh primitives decode on the calling
+thread, and the decoded geometry is the same on any count.
+
+[`ImportOptions::draco_decode_threads`]: https://docs.rs/draco-gltf/latest/draco_gltf/struct.ImportOptions.html#structfield.draco_decode_threads
+
 `PackedGeometry` is the shared primitive boundary for read and write APIs.
 `Import::read_primitive` reads ordinary accessors or decodes Draco. With
 feature `write`, `write_primitive`, `push_primitive`, and `from_geometry` write

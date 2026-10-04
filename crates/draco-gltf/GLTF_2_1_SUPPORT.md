@@ -96,10 +96,10 @@ capabilities. Smaller builds can select the same model without a second parser:
 
 ```toml
 # Ordinary accessor reader
-draco-gltf = { version = "0.2", default-features = false, features = ["read"] }
+draco-gltf = { version = "0.6", default-features = false, features = ["read"] }
 
 # Ordinary + Draco reader
-draco-gltf = { version = "0.2", default-features = false, features = ["read", "draco-decode"] }
+draco-gltf = { version = "0.6", default-features = false, features = ["read", "draco-decode"] }
 ```
 
 The browser release uses `gltf-wasm` with `read` and `draco-decode` enabled by

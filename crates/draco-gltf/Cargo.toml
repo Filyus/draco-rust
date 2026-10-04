@@ -1,6 +1,6 @@
 [package]
 name = "draco-gltf"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 rust-version = "1.88.0"
 description = "Load and save full glTF 2.0 and 2.1 draft scenes with Draco geometry"
@@ -38,7 +38,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs)'] }
 undocumented_unsafe_blocks = "warn"
 
 [dependencies]
-draco-core = { version = "2.2.1", path = "../draco-core", default-features = false }
+draco-core = { version = "2.3.0", path = "../draco-core", default-features = false }
 thiserror = "2.0"
 
 [features]
