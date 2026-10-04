@@ -649,27 +649,9 @@ impl ExtensionHandler for DracoExtension {
         Some((|| {
             let parsed = parse_draco_extension(Some(extension))?
                 .ok_or_else(|| Error::Extension("missing Draco extension".into()))?;
-            let view = document.as_value()["bufferViews"]
-                .as_array()
-                .and_then(|views| views.get(parsed.buffer_view))
-                .ok_or_else(|| Error::Extension("Draco bufferView out of range".into()))?;
-            let buffer = view
-                .get("buffer")
-                .and_then(Value::as_u64)
-                .and_then(|value| usize::try_from(value).ok())
-                .and_then(|index| resources.buffers.get(index))
-                .ok_or_else(|| Error::Extension("Draco buffer is not resolved".into()))?;
-            let start = view.get("byteOffset").and_then(Value::as_u64).unwrap_or(0) as usize;
-            let length = view
-                .get("byteLength")
-                .and_then(Value::as_u64)
-                .and_then(|value| usize::try_from(value).ok())
-                .ok_or_else(|| Error::Extension("Draco bufferView length is invalid".into()))?;
-            let end = start
-                .checked_add(length)
-                .filter(|end| *end <= buffer.len())
-                .ok_or_else(|| Error::Extension("Draco bufferView out of bounds".into()))?;
-            crate::draco_primitive::decode_payload(&buffer[start..end], options)
+            let payload =
+                crate::accessor::buffer_view_bytes(document, resources, parsed.buffer_view)?;
+            crate::draco_primitive::decode_payload(payload, options)
         })())
     }
 }

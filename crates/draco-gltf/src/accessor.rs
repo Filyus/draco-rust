@@ -54,38 +54,7 @@ impl<'a> DocumentAccessorSource<'a> {
     /// accessor stride or padding. Use [`Self::read_accessor`] when a tightly
     /// packed, sparse-materialized accessor payload is needed.
     pub fn read_buffer_view(&self, index: usize) -> Result<Vec<u8>> {
-        let view = self
-            .document
-            .as_value()
-            .get("bufferViews")
-            .and_then(|value| value.as_array())
-            .and_then(|values| values.get(index))
-            .ok_or_else(|| Error::Extension("bufferView out of range".into()))?;
-        let buffer = view
-            .get("buffer")
-            .and_then(|value| value.as_u64())
-            .and_then(|value| usize::try_from(value).ok())
-            .and_then(|index| self.resources.buffers.get(index))
-            .ok_or_else(|| Error::Extension("buffer is not resolved".into()))?;
-        let start = view
-            .get("byteOffset")
-            .and_then(|value| value.as_u64())
-            .unwrap_or(0);
-        let length = view
-            .get("byteLength")
-            .and_then(|value| value.as_u64())
-            .ok_or_else(|| Error::Extension("bufferView byteLength is invalid".into()))?;
-        let end = start
-            .checked_add(length)
-            .ok_or_else(|| Error::ResourceLimit("bufferView range overflow".into()))?;
-        let start = usize::try_from(start).map_err(|_| {
-            Error::ResourceLimit("bufferView offset exceeds platform limits".into())
-        })?;
-        let end = usize::try_from(end)
-            .map_err(|_| Error::ResourceLimit("bufferView end exceeds platform limits".into()))?;
-        let bytes = buffer
-            .get(start..end)
-            .ok_or_else(|| Error::Extension("bufferView range is out of bounds".into()))?;
+        let bytes = buffer_view_bytes(self.document, self.resources, index)?;
         let mut output = Vec::new();
         output.try_reserve_exact(bytes.len()).map_err(|_| {
             Error::ResourceLimit("bufferView materialization allocation failed".into())
@@ -164,6 +133,19 @@ impl<'a> DocumentAccessorSource<'a> {
                 .unwrap_or(0);
             let (buffer, offset, stride) =
                 self.buffer_view_layout(view, accessor_offset, layout.source_width)?;
+            // The last element has to end inside the view before anything is
+            // reserved for `count` of them: `count` is a number in the JSON,
+            // and only the view's bytes stand behind it.
+            if let Some(last) = count.checked_sub(1) {
+                let element = (layout.columns - 1) * layout.column_stride + layout.column_width;
+                let end = last
+                    .checked_mul(stride)
+                    .and_then(|start| start.checked_add(offset))
+                    .and_then(|start| start.checked_add(element));
+                if end.is_none_or(|end| end > buffer.len()) {
+                    return Err(Error::Extension("accessor range is out of bounds".into()));
+                }
+            }
             let mut dense = Vec::new();
             dense.try_reserve_exact(byte_len).map_err(|_| {
                 Error::ResourceLimit("accessor materialization allocation failed".into())
@@ -179,7 +161,15 @@ impl<'a> DocumentAccessorSource<'a> {
             }
             dense
         } else if accessor.get("sparse").is_some() {
-            vec![0; byte_len]
+            // Nothing in the file backs these zeros, so the reservation is
+            // fallible: a count in the billions has to come back as an error,
+            // not abort the process.
+            let mut zeros = Vec::new();
+            zeros.try_reserve_exact(byte_len).map_err(|_| {
+                Error::ResourceLimit("accessor materialization allocation failed".into())
+            })?;
+            zeros.resize(byte_len, 0);
+            zeros
         } else {
             return Err(Error::Extension(
                 "accessor has neither bufferView nor sparse values".into(),
@@ -207,32 +197,20 @@ impl<'a> DocumentAccessorSource<'a> {
         ))
     }
 
+    /// The bytes of a view, an offset into them and the stride between
+    /// elements. The slice ends where the view does, so a read past the view
+    /// fails like a read past the buffer instead of landing in a neighbouring
+    /// view's bytes.
     fn buffer_view_layout(
         &self,
         view_index: usize,
-        additional_offset: u64,
+        offset: u64,
         default_stride: usize,
     ) -> Result<(&[u8], usize, usize)> {
-        let view = self
-            .document
-            .as_value()
-            .get("bufferViews")
-            .and_then(|value| value.as_array())
-            .and_then(|values| values.get(view_index))
-            .ok_or_else(|| Error::Extension("bufferView out of range".into()))?;
-        let buffer = view
-            .get("buffer")
-            .and_then(|value| value.as_u64())
-            .and_then(|value| usize::try_from(value).ok())
-            .and_then(|index| self.resources.buffers.get(index))
-            .ok_or_else(|| Error::Extension("buffer is not resolved".into()))?;
-        let offset = view
-            .get("byteOffset")
-            .and_then(|value| value.as_u64())
-            .unwrap_or(0)
-            .checked_add(additional_offset)
-            .and_then(|value| usize::try_from(value).ok())
-            .ok_or_else(|| Error::ResourceLimit("bufferView offset is invalid".into()))?;
+        let bytes = buffer_view_bytes(self.document, self.resources, view_index)?;
+        let view = &self.document.as_value()["bufferViews"][view_index];
+        let offset = usize::try_from(offset)
+            .map_err(|_| Error::ResourceLimit("accessor byteOffset is invalid".into()))?;
         let stride = view
             .get("byteStride")
             .and_then(|value| value.as_u64())
@@ -243,7 +221,7 @@ impl<'a> DocumentAccessorSource<'a> {
                 "bufferView byteStride is too small".into(),
             ));
         }
-        Ok((buffer, offset, stride))
+        Ok((bytes, offset, stride))
     }
 
     fn apply_sparse(
@@ -386,6 +364,47 @@ impl<'a> DocumentAccessorSource<'a> {
             bytes,
         })
     }
+}
+
+/// The bytes of buffer view `index`, where its `byteOffset` and `byteLength`
+/// put them in its buffer. Every read through a view starts here, so a view
+/// past its buffer is refused in one place, and with the same arithmetic on a
+/// 32-bit target as on a 64-bit one.
+pub(crate) fn buffer_view_bytes<'r>(
+    document: &Document,
+    resources: &'r ResourceStore,
+    index: usize,
+) -> Result<&'r [u8]> {
+    let view = document
+        .as_value()
+        .get("bufferViews")
+        .and_then(|value| value.as_array())
+        .and_then(|values| values.get(index))
+        .ok_or_else(|| Error::Extension("bufferView out of range".into()))?;
+    let buffer = view
+        .get("buffer")
+        .and_then(|value| value.as_u64())
+        .and_then(|value| usize::try_from(value).ok())
+        .and_then(|index| resources.buffers.get(index))
+        .ok_or_else(|| Error::Extension("buffer is not resolved".into()))?;
+    let start = view
+        .get("byteOffset")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    let length = view
+        .get("byteLength")
+        .and_then(|value| value.as_u64())
+        .ok_or_else(|| Error::Extension("bufferView byteLength is invalid".into()))?;
+    let end = start
+        .checked_add(length)
+        .ok_or_else(|| Error::ResourceLimit("bufferView range overflow".into()))?;
+    let start = usize::try_from(start)
+        .map_err(|_| Error::ResourceLimit("bufferView offset exceeds platform limits".into()))?;
+    let end = usize::try_from(end)
+        .map_err(|_| Error::ResourceLimit("bufferView end exceeds platform limits".into()))?;
+    buffer
+        .get(start..end)
+        .ok_or_else(|| Error::Extension("bufferView range is out of bounds".into()))
 }
 
 fn accessor_layout<const MATRICES: bool>(

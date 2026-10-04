@@ -31,6 +31,20 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   grow again without these changing shape. `ImportOptions` has a field more,
   so a struct literal of it needs `..ImportOptions::default()`.
 
+### Fixed
+
+- An accessor reads its own buffer view and nothing past it. Only the end of
+  the buffer was checked, so an accessor whose `count` ran past its view's
+  `byteLength` returned the next view's bytes as its data; it is refused now,
+  and so is a sparse accessor's index or value that runs past its view.
+- A sparse accessor with no buffer view, whose zeros nothing in the file backs,
+  reports a failed allocation instead of aborting the process when its
+  `count` asks for more memory than there is. An accessor with a view has its
+  last element checked against the view before anything is reserved for it.
+- A Draco extension's buffer view with a `byteOffset` past 4 GiB is refused on
+  a 32-bit target, WebAssembly included, rather than truncated to an offset
+  that happened to fit.
+
 ## [0.5.0](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.4.2...draco-gltf-v0.5.0) - 2026-09-29
 
 Follows the glTF 2.1 draft as it stands on Khronos's `draft-2.1` branch. GLB

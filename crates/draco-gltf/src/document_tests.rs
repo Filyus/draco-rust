@@ -1695,6 +1695,48 @@ fn accessor_materialization_removes_matrix_column_padding() {
     );
 }
 
+/// An accessor reads its own view and nothing past it. The buffer holds two
+/// twelve-byte views; one VEC3 fits the first, and a second runs into the
+/// other view's bytes, which are there to read but are not the accessor's.
+#[cfg(feature = "accessors")]
+#[test]
+fn an_accessor_does_not_read_past_its_buffer_view() {
+    let accessor = |count: usize| {
+        let input = format!(
+            r#"{{"asset":{{"version":"2.0"}},"buffers":[{{"byteLength":24,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}}],"bufferViews":[{{"buffer":0,"byteLength":12}},{{"buffer":0,"byteOffset":12,"byteLength":12}}],"accessors":[{{"bufferView":0,"componentType":5126,"count":{count},"type":"VEC3"}}]}}"#
+        );
+        let import = parse(input.as_bytes(), ValidationProfile::Gltf20).unwrap();
+        let source = crate::DocumentAccessorSource::new(&import.document, &import.resources);
+        source.read_accessor(0).map(|accessor| accessor.bytes.len())
+    };
+    assert_eq!(accessor(1).unwrap(), 12);
+    let past = accessor(2);
+    assert!(
+        past.as_ref()
+            .is_err_and(|e| e.to_string().contains("out of bounds")),
+        "{past:?}"
+    );
+}
+
+/// A sparse accessor with no view is zeros the file does not carry, so its
+/// count is backed by nothing. A count of 2^50 VEC3 floats is 12 PiB, more
+/// than a 64-bit address space maps, so no overcommit policy lets the
+/// reservation succeed; it has to fail as an error rather than abort.
+#[cfg(all(feature = "accessors", target_pointer_width = "64"))]
+#[test]
+fn a_sparse_accessor_without_a_view_fails_to_reserve_rather_than_aborts() {
+    let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":16,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAAAAAA=="}],"bufferViews":[{"buffer":0,"byteLength":4},{"buffer":0,"byteOffset":4,"byteLength":12}],"accessors":[{"componentType":5126,"count":1125899906842624,"type":"VEC3","sparse":{"count":1,"indices":{"bufferView":0,"componentType":5125},"values":{"bufferView":1}}}]}"#;
+    let import = parse(input, ValidationProfile::Gltf20).unwrap();
+    let source = crate::DocumentAccessorSource::new(&import.document, &import.resources);
+    let result = source.read_accessor(0).map(|accessor| accessor.count);
+    assert!(
+        result
+            .as_ref()
+            .is_err_and(|e| e.to_string().contains("allocation failed")),
+        "{result:?}"
+    );
+}
+
 #[cfg(feature = "geometry")]
 #[test]
 fn import_preserves_draft_half_float_accessors() {
