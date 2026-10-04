@@ -11,14 +11,12 @@
 #![deny(missing_docs)]
 
 #[cfg(feature = "fbx-reader")]
-/// FBX ASCII container reader.
 pub mod fbx_ascii;
 #[cfg(any(feature = "fbx-reader", feature = "fbx-writer"))]
 mod fbx_ascii_syntax;
 #[cfg(feature = "fbx-writer")]
 mod fbx_ascii_writer;
 #[cfg(feature = "fbx-reader")]
-/// FBX binary container decoder.
 pub mod fbx_container;
 #[cfg(feature = "fbx-writer")]
 mod fbx_encoder;
@@ -28,7 +26,6 @@ pub mod fbx_node;
 /// Byte order, resource limits, and read options for the FBX reader.
 pub mod fbx_options;
 #[cfg(feature = "fbx-reader")]
-/// FBX binary reader.
 pub mod fbx_reader;
 #[cfg(any(feature = "fbx-reader", feature = "fbx-writer"))]
 /// Polygon-corner-domain expansion of FBX geometry.

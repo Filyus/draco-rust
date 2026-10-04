@@ -1,4 +1,4 @@
-//! FBX scene reader: a tree of [`FbxNode`](crate::fbx_container::FbxNode) in,
+//! FBX scene reader: a tree of [`FbxNode`] in,
 //! an [`FbxScene`] out.
 //!
 //! Supports reading:
