@@ -127,6 +127,12 @@ fn main() {
                 best_ref[codec][i],
                 best_ours[codec][i].as_secs_f64() / best_ref[codec][i].as_secs_f64()
             );
+            record(&format!(
+                "{{\"table\":\"ktx2_transcode\",\"codec\":\"{name}\",\"target\":\"{mine:?}\",\
+                 \"ours_us\":{},\"reference_us\":{}}}",
+                best_ours[codec][i].as_secs_f64() * 1e6,
+                best_ref[codec][i].as_secs_f64() * 1e6
+            ));
         }
         println!(
             "{:<14} {:>12.3?} {:>12.3?} {:>7.2}",
@@ -146,4 +152,22 @@ fn main() {
         all_ref,
         all_ours.as_secs_f64() / all_ref.as_secs_f64()
     );
+}
+
+/// Appends one JSON line to the file `PERF_JSONL` names, for `tools/perf-suite`.
+/// The names written are plain ASCII, codec and target names, so the line is
+/// formatted directly.
+fn record(line: &str) {
+    use std::io::Write as _;
+    let Some(path) = std::env::var_os("PERF_JSONL") else {
+        return;
+    };
+    let written = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut file| writeln!(file, "{line}"));
+    if let Err(error) = written {
+        eprintln!("could not append to {path:?}: {error}");
+    }
 }

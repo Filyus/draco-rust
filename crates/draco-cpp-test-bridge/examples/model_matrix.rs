@@ -182,5 +182,28 @@ fn main() {
             rust_dec[0], rust_dec[rust_dec.len() - 1],
             cpp_bytes, rust_bytes.len()
         );
+        draco_cpp_test_bridge::perf_record::record(
+            "model_matrix",
+            vec![
+                ("model", name.into()),
+                ("faces", mesh.num_faces().into()),
+                ("speed", speed.into()),
+                ("qp", qp.into()),
+                ("cpp_enc_us", ce.into()),
+                ("cpp_enc_min", cpp_enc[0].into()),
+                ("cpp_enc_max", cpp_enc[cpp_enc.len() - 1].into()),
+                ("rust_enc_us", re.into()),
+                ("rust_enc_min", rust_enc[0].into()),
+                ("rust_enc_max", rust_enc[rust_enc.len() - 1].into()),
+                ("cpp_dec_us", cd.into()),
+                ("cpp_dec_min", cpp_dec[0].into()),
+                ("cpp_dec_max", cpp_dec[cpp_dec.len() - 1].into()),
+                ("rust_dec_us", rd.into()),
+                ("rust_dec_min", rust_dec[0].into()),
+                ("rust_dec_max", rust_dec[rust_dec.len() - 1].into()),
+                ("cpp_bytes", cpp_bytes.into()),
+                ("rust_bytes", rust_bytes.len().into()),
+            ],
+        );
     }
 }

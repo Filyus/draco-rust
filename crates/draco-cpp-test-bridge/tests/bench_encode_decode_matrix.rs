@@ -301,6 +301,17 @@ fn bench_encode_decode_matrix() {
             winner,
             match_str
         );
+        draco_cpp_test_bridge::perf_record::record(
+            "encode_decode_matrix",
+            vec![
+                ("mesh", "grid 100x100".into()),
+                ("operation", "encode".into()),
+                ("speed", speed.into()),
+                ("cpp_us", cpp_avg_us.into()),
+                ("rust_us", rust_avg_us.into()),
+                ("bytes_match", size_match.into()),
+            ],
+        );
 
         encode_results.push((speed, rust_data, speedup, size_match));
     }
@@ -389,6 +400,17 @@ fn bench_encode_decode_matrix() {
             speedup,
             winner,
             correct_str
+        );
+        draco_cpp_test_bridge::perf_record::record(
+            "encode_decode_matrix",
+            vec![
+                ("mesh", "grid 100x100".into()),
+                ("operation", "decode".into()),
+                ("speed", speed.into()),
+                ("cpp_us", cpp_avg_us.into()),
+                ("rust_us", rust_avg_us.into()),
+                ("shapes_match", correct.into()),
+            ],
         );
     }
 
@@ -540,6 +562,23 @@ fn bench_generated_encode_decode_matrix() {
                 decode_speedup,
                 ok
             );
+            for (operation, cpp_us, rust_us) in [
+                ("encode", cpp_encode.avg_time_us as f64, rust_encode_us),
+                ("decode", cpp_decode.decode_time_us as f64, rust_decode_us),
+            ] {
+                draco_cpp_test_bridge::perf_record::record(
+                    "encode_decode_matrix",
+                    vec![
+                        ("mesh", label.into()),
+                        ("operation", operation.into()),
+                        ("speed", speed.into()),
+                        ("cpp_us", cpp_us.into()),
+                        ("rust_us", rust_us.into()),
+                        ("bytes_match", size_match.into()),
+                        ("shapes_match", decode_match.into()),
+                    ],
+                );
+            }
         }
     }
 

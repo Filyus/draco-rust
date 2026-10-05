@@ -4,6 +4,7 @@
 //! the original C++ Draco encoder/decoder for Rust parity and performance tests.
 
 pub mod counting;
+pub mod perf_record;
 
 #[cfg(not(cpp_test_bridge_disabled))]
 mod ffi {

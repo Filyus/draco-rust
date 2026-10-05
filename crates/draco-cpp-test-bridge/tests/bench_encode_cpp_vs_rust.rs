@@ -207,6 +207,18 @@ fn bench_encode_cpp_vs_rust() {
                 grid_size, speed, cpp_time, rust_ms, speedup, cpp_size, rust_size, status
             )
             .unwrap();
+            draco_cpp_test_bridge::perf_record::record(
+                "grid_encode",
+                vec![
+                    ("grid", grid_size.into()),
+                    ("faces", num_faces.into()),
+                    ("speed", speed.into()),
+                    ("cpp_us", (cpp_time * 1000.0).into()),
+                    ("rust_us", (rust_ms * 1000.0).into()),
+                    ("cpp_bytes", cpp_size.into()),
+                    ("rust_bytes", rust_size.into()),
+                ],
+            );
         }
     }
 

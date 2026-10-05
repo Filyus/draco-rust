@@ -1874,7 +1874,7 @@ fn profile_seeded_mesh_sweep() {
         let mut speedups = Vec::with_capacity(samples);
         let mut bytes_matches = 0;
 
-        for (mesh, positions, faces, _) in &cases {
+        for (mesh, positions, faces, stats) in &cases {
             let num_faces = faces.len() / 3;
             let cpp_profile = draco_cpp_test_bridge::profile_cpp_encode(
                 positions,
@@ -1888,6 +1888,22 @@ fn profile_seeded_mesh_sweep() {
             let (rust_encode_us, rust_output_size) =
                 profile_rust_encode_only(mesh, speed, iterations as u32);
             let cpp_encode_us = cpp_profile.encode_time_us as f64;
+            draco_cpp_test_bridge::perf_record::record(
+                "seeded_sweep",
+                vec![
+                    ("family", stats.family.name().into()),
+                    ("seed", format!("{:#018x}", stats.seed).into()),
+                    ("faces", num_faces.into()),
+                    ("operation", "encode".into()),
+                    ("speed", speed.into()),
+                    ("cpp_us", cpp_encode_us.into()),
+                    ("rust_us", rust_encode_us.into()),
+                    (
+                        "bytes_match",
+                        (rust_output_size == cpp_profile.output_size).into(),
+                    ),
+                ],
+            );
 
             cpp_times.push(cpp_encode_us);
             cpp_us_per_k_faces.push(cpp_encode_us / num_faces as f64 * 1000.0);
@@ -1938,7 +1954,7 @@ fn profile_seeded_mesh_sweep() {
         let mut speedups = Vec::with_capacity(samples);
         let mut decoded_matches = 0;
 
-        for (mesh, _, faces, _) in &cases {
+        for (mesh, _, faces, stats) in &cases {
             let num_faces = faces.len() / 3;
             let encoded_data = encode_mesh_once(mesh, speed);
             let cpp_result =
@@ -1947,6 +1963,24 @@ fn profile_seeded_mesh_sweep() {
             let (rust_decode_us, rust_num_points, rust_num_faces) =
                 profile_rust_decode_only(&encoded_data, iterations as u32);
             let cpp_decode_us = cpp_result.decode_time_us as f64;
+            draco_cpp_test_bridge::perf_record::record(
+                "seeded_sweep",
+                vec![
+                    ("family", stats.family.name().into()),
+                    ("seed", format!("{:#018x}", stats.seed).into()),
+                    ("faces", num_faces.into()),
+                    ("operation", "decode".into()),
+                    ("speed", speed.into()),
+                    ("cpp_us", cpp_decode_us.into()),
+                    ("rust_us", rust_decode_us.into()),
+                    (
+                        "shapes_match",
+                        (cpp_result.num_points as usize == rust_num_points
+                            && cpp_result.num_faces as usize == rust_num_faces)
+                            .into(),
+                    ),
+                ],
+            );
 
             cpp_times.push(cpp_decode_us);
             cpp_us_per_k_faces.push(cpp_decode_us / num_faces as f64 * 1000.0);

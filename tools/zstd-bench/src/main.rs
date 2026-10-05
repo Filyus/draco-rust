@@ -117,6 +117,12 @@ fn main() {
                 "{name:<24} {bytes:>10} {ours:>11.1?} {theirs:>11.1?} {:>6.2}x",
                 ours.as_secs_f64() / theirs.as_secs_f64()
             );
+            record(&format!(
+                "{{\"table\":\"zstd\",\"fixture\":\"{name}\",\"bytes\":{bytes},\
+                 \"ours_us\":{},\"c_us\":{}}}",
+                ours.as_secs_f64() * 1e6,
+                theirs.as_secs_f64() * 1e6
+            ));
         }
         #[cfg(not(c_zstd))]
         println!(
@@ -139,5 +145,23 @@ fn main() {
     } else {
         println!("{:<24} {bytes_total:>10} {ours_total:>11.1?}", "all");
         println!("ours {:.0} MB/s", rate(ours_total));
+    }
+}
+
+/// Appends one JSON line to the file `PERF_JSONL` names, for `tools/perf-suite`.
+/// Fixture names are plain ASCII file names, so the line is formatted directly.
+#[cfg(c_zstd)]
+fn record(line: &str) {
+    use std::io::Write as _;
+    let Some(path) = std::env::var_os("PERF_JSONL") else {
+        return;
+    };
+    let written = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut file| writeln!(file, "{line}"));
+    if let Err(error) = written {
+        eprintln!("could not append to {path:?}: {error}");
     }
 }

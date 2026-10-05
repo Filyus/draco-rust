@@ -260,6 +260,19 @@ fn bench_real_models() {
                 stream.len(),
                 mark,
             );
+            draco_cpp_test_bridge::perf_record::record(
+                "real_models",
+                vec![
+                    ("model", model.label.into()),
+                    ("faces", faces.into()),
+                    ("speed", speed.into()),
+                    ("enc_cpp_us", enc_cpp.into()),
+                    ("enc_rust_us", enc_rust.into()),
+                    ("dec_cpp_us", dec_cpp.into()),
+                    ("dec_rust_us", dec_rust.into()),
+                    ("bytes", stream.len().into()),
+                ],
+            );
             measured += 1;
         }
         println!();

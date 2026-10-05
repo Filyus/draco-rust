@@ -182,7 +182,26 @@ fn bench_decode_cpp_vs_rust() {
                 speedup,
                 winner(rust_ns, cpp_ns)
             );
+            draco_cpp_test_bridge::perf_record::record(
+                "grid_decode",
+                vec![
+                    ("grid", grid_size.into()),
+                    ("faces", num_faces.into()),
+                    ("speed", speed.into()),
+                    ("cpp_us", ns_to_us(cpp_ns).into()),
+                    ("rust_us", ns_to_us(rust_ns).into()),
+                ],
+            );
         }
+        draco_cpp_test_bridge::perf_record::record(
+            "grid_decode_total",
+            vec![
+                ("grid", grid_size.into()),
+                ("faces", num_faces.into()),
+                ("cpp_us", ns_to_us(grid_cpp_ns).into()),
+                ("rust_us", ns_to_us(grid_rust_ns).into()),
+            ],
+        );
 
         let grid_speedup = grid_cpp_ns as f64 / grid_rust_ns as f64;
         println!(
