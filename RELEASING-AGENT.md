@@ -92,6 +92,13 @@ bumps `draco-core`, releasing the dependents that should pick it up is a
      public types/formats/features and a one-line "why it matters".
    - Drop internal-only groups, and commits touching only test infra, the local
      C++ bridge, debug output, CI wiring, or benchmarks.
+   - A Performance bullet quotes figures from a `tools/perf-suite` run at the
+     commit being released, not from the `PERFORMANCE-LOG.md` rounds along the
+     way: each round measured its own change against its parent, and only the
+     suite measures the release against C++. The run takes the machine for its
+     whole length, so it starts when the maintainer says so. Its `report.md`
+     also replaces the dated tables in `PERFORMANCE.md`, in a `docs:` commit
+     ahead of the release commit.
 
 4. **Version-facing docs.** The changelog is the one the pipeline checks, so it
    is the one that never gets forgotten. These are the ones that do — nothing

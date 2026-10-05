@@ -1,0 +1,11 @@
+[package]
+name = "perf-suite"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Every comparison PERFORMANCE.md quotes, taken in one run against a pinned C++ Draco"
+license = "Apache-2.0"
+
+# Its own workspace, like the other tools: it drives cargo in the workspaces it
+# measures, and building it must not take their build lock or their profile.
+[workspace]

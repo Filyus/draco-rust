@@ -40,6 +40,37 @@ So: set `DRACO_CPP_BUILD_DIR`/`DRACO_CPP_SOURCE_DIR` explicitly for every
 comparison, and say in the write-up which build a figure is against. Every
 number in this document is against pristine upstream 1.5.7.
 
+## Re-Taking Every Figure
+
+File: `tools/perf-suite`, its own workspace
+
+Every comparison this document quotes, in one run: the seeded sweep (three
+runs, their median), `model_matrix` at speeds 4 and 10, the real models, the
+grid encode and decode, the encode/decode matrix, KTX2 transcoding and Zstd.
+Before a release that claims a speed change, and whenever a table here is
+re-taken, take it from this rather than from one harness by hand.
+
+```sh
+DRACO_CPP_BUILD_DIR=... DRACO_CPP_SOURCE_DIR=... ZSTD_SOURCE_DIR=... \
+  cargo run --release --manifest-path tools/perf-suite/Cargo.toml
+```
+
+It refuses to start when the reference is unpinned, a Debug build, or carries
+the `DRACO_VERBOSE` patch (looked for in the linked library and in the
+headers the bridge compiles), and when the tree has uncommitted changes. It
+builds every harness before timing any, with `DRACO_REQUIRE_CPP_BRIDGE=1`, so a
+missing bridge fails the build instead of skipping the comparisons. The
+harnesses then run one at a time. Each appends its rows to the
+file `PERF_JSONL` names, and a step that writes no rows counts as failed,
+whatever its exit status.
+
+Everything lands in `.scratch/perf-suite/<date>-<commit>/`: each step's output
+and rows, the machine and the reference, and `report.md` with this document's
+tables and a list of every cell whose two sides wrote different output.
+`--dry-run` checks the preconditions and prints the plan, `--only` runs a
+subset, and `--report <dir>` rewrites a report from an earlier run's rows.
+Without `ZSTD_SOURCE_DIR` the Zstd step is skipped and the report says so.
+
 ## Speed Snapshot
 
 Seeded synthetic sweep, position-only -- `3` runs, medians, `us/1k faces`:
@@ -350,12 +381,13 @@ File: `crates/draco-cpp-test-bridge/tests/bench_encode_decode_matrix.rs`
 Package: `draco-cpp-test-bridge`
 
 Purpose: encode/decode performance and correctness across multiple speeds and
-mesh sizes. Two tests: `bench_generated_encode_decode_matrix` covers a sphere,
-a subdivided cube and a 100x100 grid; `bench_encode_decode_matrix` is the
-100x100 grid alone, full encode-then-decode, every speed.
+mesh sizes. Two tests: `bench_generated_encode_decode_matrix` covers a UV
+sphere and a subdivided cube; `bench_encode_decode_matrix` is a 100x100 grid,
+full encode-then-decode, every speed. Run them with `--test-threads=1`, or the
+two time side by side.
 
 ```sh
-cargo test --manifest-path crates/Cargo.toml -p draco-cpp-test-bridge --test bench_encode_decode_matrix --release -- --nocapture
+cargo test --manifest-path crates/Cargo.toml -p draco-cpp-test-bridge --test bench_encode_decode_matrix --release -- --nocapture --test-threads=1
 ```
 
 Same machine and reference build. Measured 2026-09-04 at `0667cfe1`, byte
