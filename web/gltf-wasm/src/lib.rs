@@ -305,6 +305,36 @@ impl GltfAsset {
             .map_err(wasm_error)
     }
 
+    /// Reads several primitives at once, in the order given. `pairs` holds a
+    /// mesh index and a primitive index for each, one after the other.
+    ///
+    /// The document is validated once for the call, where `readPrimitive`
+    /// validates it on every call, so a scene of many primitives reads much
+    /// faster in batches. On a failure this throws the error of the first
+    /// primitive that fails, as a `readPrimitive` loop would. Every primitive
+    /// returned is held in WASM memory until freed, which is the reason to read
+    /// a large scene in batches rather than in one call.
+    #[cfg(feature = "read")]
+    #[wasm_bindgen(js_name = readPrimitives)]
+    pub fn read_primitives(&self, pairs: &[u32]) -> Result<Vec<PackedGeometry>, JsValue> {
+        let (pairs, rest) = pairs.as_chunks::<2>();
+        if !rest.is_empty() {
+            return Err(JsValue::from_str(
+                "readPrimitives takes a mesh index and a primitive index for each primitive",
+            ));
+        }
+        let primitives: Vec<_> = pairs
+            .iter()
+            .map(|&[mesh, primitive]| {
+                PrimitiveIndex::new(draco_gltf::MeshIndex(mesh as usize), primitive as usize)
+            })
+            .collect();
+        self.import
+            .read_primitives(&primitives)
+            .map(|all| all.into_iter().map(PackedGeometry::from_inner).collect())
+            .map_err(wasm_error)
+    }
+
     /// Materializes any accessor into tightly packed little-endian bytes.
     ///
     /// Sparse values are applied and interleaved input is deinterleaved. The

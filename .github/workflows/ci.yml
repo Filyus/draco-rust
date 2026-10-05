@@ -396,6 +396,7 @@ jobs:
           npm run test:gltf-corpus
           npm run test:gltf-draco-corpus
           npm run test:gltf-draco-feature-ids
+          npm run test:gltf-primitive-reader
           npm run test:gltf-draco-references
           npm run test:gltf-draco-decode-failure
           npm run test:gltf-build-profile

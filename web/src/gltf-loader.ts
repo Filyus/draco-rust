@@ -41,6 +41,7 @@ import {
 } from './fbx-scene-adapter.ts';
 import { DEFAULT_FBX_EXPORT_SPACE, FBX_EXPORT_SPACES, fbxSpace } from './fbx-space.ts';
 import type { FbxExportSpaceName, FbxSpace } from './fbx-space.ts';
+import { PrimitiveReader, documentPrimitiveOrder } from './gltf-primitive-reader.ts';
 import { invertMat4, multiplyMat4 } from './mat4.ts';
 import { MATERIAL_EXTENSION_SLOTS, materialExtensionFactors } from './material-extensions.ts';
 import { assertConverterProfile } from './wasm-modules.ts';
@@ -148,15 +149,20 @@ export function buildFlatMeshesFromGltf(
   gltfModule: GltfModule,
 ): GltfJson[] {
   const asset = gltfModule.GltfAsset.withResources(sourceData, resources, '2.1');
+  const primitiveCounts = Array.from(
+    { length: asset.meshCount() },
+    (_, meshIndex) => asset.primitiveCount(meshIndex),
+  );
+  const reader = new PrimitiveReader(asset, documentPrimitiveOrder(primitiveCounts));
   try {
     const document = JSON.parse(new TextDecoder().decode(asset.json()));
     const definitions = document.meshes || [];
     const meshes = [];
 
-    for (let meshIndex = 0; meshIndex < asset.meshCount(); meshIndex += 1) {
-      const primitiveCount = asset.primitiveCount(meshIndex);
+    for (let meshIndex = 0; meshIndex < primitiveCounts.length; meshIndex += 1) {
+      const primitiveCount = primitiveCounts[meshIndex];
       for (let primitiveIndex = 0; primitiveIndex < primitiveCount; primitiveIndex += 1) {
-        const packed = asset.readPrimitive(meshIndex, primitiveIndex);
+        const packed = reader.read(meshIndex, primitiveIndex);
         try {
           const attributes = new Map();
           for (let index = 0; index < packed.attributeCount(); index += 1) {
@@ -219,6 +225,7 @@ export function buildFlatMeshesFromGltf(
     }
     return meshes;
   } finally {
+    reader.dispose();
     asset.free();
   }
 }
@@ -726,86 +733,102 @@ export function buildNodes(defs: GltfJson[]): ViewerNode[] {
 }
 
 function buildMeshes(asset: GltfAsset, defs: GltfJson[], warnings: string[]): ViewerMesh[] {
-  return defs.map((def, meshIndex) => {
-    const primitives: GltfJson[] = [];
-    for (let p = 0; p < def.primitives.length; p++) {
-      const packed = asset.readPrimitive(meshIndex, p);
-      try {
-        const attributes: Record<string, RuntimeAccessor> = {};
-        for (let i = 0; i < packed.attributeCount(); i++) {
-          const semantic = packed.attributeSemantic(i);
-          attributes[semantic] = {
-            bytes: new Uint8Array(packed.attributeBytes(i)),
-            componentType: packed.attributeComponentType(i),
-            components: packed.attributeComponents(i),
-            normalized: packed.attributeNormalized(i),
-            count: packed.attributeElementCount(i),
-          };
-        }
-        const primitive: GltfJson = {
-          attributes,
-          mode: packed.mode(),
-          materialIndex: typeof def.primitives[p].material === 'number'
-            ? def.primitives[p].material
-            : -1,
-          morphPositions: [],
-          morphNormals: [],
+  const reader = new PrimitiveReader(
+    asset,
+    documentPrimitiveOrder(defs.map((def) => def.primitives.length)),
+  );
+  try {
+    return defs.map((def, meshIndex) => buildMesh(asset, reader, def, meshIndex, warnings));
+  } finally {
+    reader.dispose();
+  }
+}
+
+function buildMesh(
+  asset: GltfAsset,
+  reader: PrimitiveReader,
+  def: GltfJson,
+  meshIndex: number,
+  warnings: string[],
+): ViewerMesh {
+  const primitives: GltfJson[] = [];
+  for (let p = 0; p < def.primitives.length; p++) {
+    const packed = reader.read(meshIndex, p);
+    try {
+      const attributes: Record<string, RuntimeAccessor> = {};
+      for (let i = 0; i < packed.attributeCount(); i++) {
+        const semantic = packed.attributeSemantic(i);
+        attributes[semantic] = {
+          bytes: new Uint8Array(packed.attributeBytes(i)),
+          componentType: packed.attributeComponentType(i),
+          components: packed.attributeComponents(i),
+          normalized: packed.attributeNormalized(i),
+          count: packed.attributeElementCount(i),
         };
-        const targets = def.primitives[p].targets || [];
-        for (let targetIndex = 0; targetIndex < targets.length; targetIndex++) {
-          const accessorIndex = targets[targetIndex].POSITION;
-          if (typeof accessorIndex !== 'number') {
-            primitive.morphPositions.push(null);
-            continue;
-          }
-          const target = morphDeltaAccessor(
-            readAccessorAsTyped(asset, accessorIndex), attributes.POSITION.count,
-          );
-          if (!target) {
-            warnings.push(VIEWER_LIMIT_WARNINGS.morphTarget(targetIndex, meshIndex, p));
-            primitive.morphPositions.push(null);
-            continue;
-          }
-          primitive.morphPositions.push(target);
-        }
-        for (let targetIndex = 0; targetIndex < targets.length; targetIndex++) {
-          const accessorIndex = targets[targetIndex].NORMAL;
-          if (typeof accessorIndex !== 'number') {
-            primitive.morphNormals.push(null);
-            continue;
-          }
-          const target = morphDeltaAccessor(
-            readAccessorAsTyped(asset, accessorIndex), attributes.POSITION.count,
-          );
-          if (!target) {
-            warnings.push(VIEWER_LIMIT_WARNINGS.morphNormal(targetIndex, meshIndex, p));
-            primitive.morphNormals.push(null);
-            continue;
-          }
-          primitive.morphNormals.push(target);
-        }
-        if (targets.some((target: GltfJson) => typeof target.TANGENT === 'number')) {
-          warnings.push(VIEWER_LIMIT_WARNINGS.morphTangents(meshIndex, p));
-        }
-        if (packed.hasIndices()) {
-          primitive.indices = {
-            bytes: new Uint8Array(packed.indexBytes()),
-            componentType: packed.indexComponentType(),
-            count: packed.indexCount(),
-          };
-        }
-        primitives.push(primitive);
-      } finally {
-        packed.free();
       }
+      const primitive: GltfJson = {
+        attributes,
+        mode: packed.mode(),
+        materialIndex: typeof def.primitives[p].material === 'number'
+          ? def.primitives[p].material
+          : -1,
+        morphPositions: [],
+        morphNormals: [],
+      };
+      const targets = def.primitives[p].targets || [];
+      for (let targetIndex = 0; targetIndex < targets.length; targetIndex++) {
+        const accessorIndex = targets[targetIndex].POSITION;
+        if (typeof accessorIndex !== 'number') {
+          primitive.morphPositions.push(null);
+          continue;
+        }
+        const target = morphDeltaAccessor(
+          readAccessorAsTyped(asset, accessorIndex), attributes.POSITION.count,
+        );
+        if (!target) {
+          warnings.push(VIEWER_LIMIT_WARNINGS.morphTarget(targetIndex, meshIndex, p));
+          primitive.morphPositions.push(null);
+          continue;
+        }
+        primitive.morphPositions.push(target);
+      }
+      for (let targetIndex = 0; targetIndex < targets.length; targetIndex++) {
+        const accessorIndex = targets[targetIndex].NORMAL;
+        if (typeof accessorIndex !== 'number') {
+          primitive.morphNormals.push(null);
+          continue;
+        }
+        const target = morphDeltaAccessor(
+          readAccessorAsTyped(asset, accessorIndex), attributes.POSITION.count,
+        );
+        if (!target) {
+          warnings.push(VIEWER_LIMIT_WARNINGS.morphNormal(targetIndex, meshIndex, p));
+          primitive.morphNormals.push(null);
+          continue;
+        }
+        primitive.morphNormals.push(target);
+      }
+      if (targets.some((target: GltfJson) => typeof target.TANGENT === 'number')) {
+        warnings.push(VIEWER_LIMIT_WARNINGS.morphTangents(meshIndex, p));
+      }
+      if (packed.hasIndices()) {
+        primitive.indices = {
+          bytes: new Uint8Array(packed.indexBytes()),
+          componentType: packed.indexComponentType(),
+          count: packed.indexCount(),
+        };
+      }
+      primitives.push(primitive);
+    } finally {
+      packed.free();
     }
-    return {
-      name: def.name || `mesh_${meshIndex}`,
-      primitives,
-      weights: Array.isArray(def.weights) ? def.weights.slice() : [],
-      aabb: meshAabb(primitives),
-    };
-  });
+  }
+  return {
+    name: def.name || `mesh_${meshIndex}`,
+    primitives,
+    weights: Array.isArray(def.weights) ? def.weights.slice() : [],
+    aabb: meshAabb(primitives),
+  };
 }
 
 function initializeMorphWeights(nodes: ViewerNode[], meshes: ViewerMesh[], warnings: string[]) {

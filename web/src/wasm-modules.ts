@@ -62,6 +62,12 @@ export interface GltfAsset {
    */
   readAccessor(index: number): PackedAccessor;
   readPrimitive(mesh: number, primitive: number): PackedGeometry;
+  /**
+   * Several primitives in one call, `pairs` holding a mesh index and a
+   * primitive index for each. The document is validated once a call rather
+   * than once a primitive; see `PrimitiveReader`.
+   */
+  readPrimitives(pairs: Uint32Array): PackedGeometry[];
 }
 
 /**

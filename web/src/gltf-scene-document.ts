@@ -28,6 +28,7 @@ import {
   appendAccessor, basename, bytesFromF32, mimeFromUri, resolveResource, sniffMime,
 } from './scene-resources.ts';
 import type { ResourceMap } from './scene-resources.ts';
+import { PrimitiveReader, documentPrimitiveOrder } from './gltf-primitive-reader.ts';
 import { createGltfSceneProvenance } from './gltf-scene-provenance.ts';
 import type { GltfSceneProvenance } from './gltf-scene-provenance.ts';
 import { assertConverterProfile } from './wasm-modules.ts';
@@ -209,11 +210,29 @@ function collectMeshes(
   document: SceneDocument,
   accessorBySource: Map<string, number>,
 ) {
+  const reader = new PrimitiveReader(
+    asset,
+    documentPrimitiveOrder(meshes.map((mesh) => (mesh.primitives || []).length)),
+  );
+  try {
+    collectMeshesWith(asset, reader, meshes, document, accessorBySource);
+  } finally {
+    reader.dispose();
+  }
+}
+
+function collectMeshesWith(
+  asset: GltfAsset,
+  reader: PrimitiveReader,
+  meshes: GltfJson[],
+  document: SceneDocument,
+  accessorBySource: Map<string, number>,
+) {
   document.meshes.push(...meshes.map((mesh, meshIndex) => ({
     name: mesh.name || `mesh_${meshIndex}`,
     weights: Array.from<number>(mesh.weights || []),
     primitives: (mesh.primitives || []).map((primitive: GltfJson, primitiveIndex: number) => {
-      const packed = asset.readPrimitive(meshIndex, primitiveIndex);
+      const packed = reader.read(meshIndex, primitiveIndex);
       try {
         const attributes: AttributeMap = {};
         for (let index = 0; index < packed.attributeCount(); index += 1) {

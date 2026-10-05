@@ -62,6 +62,7 @@
     "test:gltf-corpus": "node tests/gltf-corpus-parity.ts",
     "test:gltf-draco-corpus": "node tests/gltf-draco-corpus.ts",
     "test:gltf-draco-feature-ids": "node tests/gltf-draco-feature-ids.ts",
+    "test:gltf-primitive-reader": "node tests/gltf-primitive-reader.ts",
     "test:gltf-draco-references": "node tests/gltf-draco-extension-references.ts",
     "test:gltf-draco-decode-failure": "node tests/gltf-draco-decode-failure.ts",
     "test:gltf-build-profile": "node tests/gltf-build-profile.ts",

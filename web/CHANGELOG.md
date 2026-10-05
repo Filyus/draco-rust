@@ -11,6 +11,15 @@ only anchor a shipping without a version of its own has.
 
 ## Unreleased
 
+- **glTF scenes of many primitives load faster.** `GltfAsset.readPrimitives`
+  reads several primitives in one call, and the converter reads a scene's
+  primitives through it, 32 at a time. The document is validated once a call
+  instead of once a primitive, which was most of the time on scenes of many
+  small primitives: on one of 167, reading its geometry takes 6.4 ms instead
+  of 58 ms in the browser. A scene of a few large primitives reads as before,
+  since its time is the Draco decode itself. The geometry is the same, and a
+  primitive that fails still fails the load with its own error.
+
 - `create_drc` takes a `point_cloud` option, which writes the input through
   Draco's point-cloud coder instead of the mesh one. Off by default, since a
   caller passing no indices today gets a mesh with no faces and switching that
