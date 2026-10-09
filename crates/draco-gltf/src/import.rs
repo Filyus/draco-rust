@@ -1,8 +1,8 @@
 use std::path::Path;
 
-use crate::json::{JsonRef, Value};
+use crate::json::{JsonRef, Patches, Value};
 
-use crate::extensions::{meshopt_extension, meshopt_extension_mut};
+use crate::extensions::meshopt_extension;
 #[cfg(feature = "draco-decode")]
 use crate::PrimitiveRef;
 use crate::{
@@ -701,27 +701,10 @@ impl Import {
                 .map_err(|_| Error::ResourceLimit("GLB consolidation allocation failed".into()))?;
             bin.extend_from_slice(resource);
         }
-        let mut document = self.document().clone();
-        let root = document.as_value_mut();
-        if let Some(views) = root.get_mut("bufferViews").and_then(Value::as_array_mut) {
-            for (index, view) in views.iter_mut().enumerate() {
-                // The compressed range of a meshopt view names its own buffer,
-                // so it has to follow the view onto the consolidated buffer.
-                if let Some((name, extension)) = meshopt_extension_mut(view.get_mut("extensions")) {
-                    rebase_buffer_reference(
-                        extension,
-                        &offsets,
-                        &format!("bufferViews[{index}].extensions.{name}"),
-                    )?;
-                }
-                rebase_buffer_reference(view, &offsets, &format!("bufferViews[{index}]"))?;
-            }
-        }
-        root["buffers"] = Value::Array(vec![Value::object([(
-            "byteLength",
-            Value::from(bin.len()),
-        )])]);
-        Ok((document.to_json_bytes()?, bin))
+        Ok((
+            consolidated_glb_json(self.document(), &offsets, bin.len())?,
+            bin,
+        ))
     }
 
     /// Materializes all Draco primitives as ordinary indexed triangle geometry.
@@ -922,14 +905,73 @@ impl Import {
     }
 }
 
-/// Rebases one `{buffer, byteOffset}` pair onto the consolidated GLB buffer.
+/// The JSON of a GLB whose buffers are consolidated into one binary chunk:
+/// every buffer view, and the range inside a meshopt view's extension, points
+/// into buffer 0 at `offsets[buffer]` past where it pointed, and `buffers` is
+/// that one buffer of `bin_len` bytes.
+///
+/// It is written from the parsed document with the references patched on the
+/// way, rather than through an edited copy of the document.
+fn consolidated_glb_json(
+    document: &Document,
+    offsets: &[usize],
+    bin_len: usize,
+) -> Result<Vec<u8>> {
+    let root = document.as_json();
+    let mut patches = Patches::default();
+    if let Some(views) = root.get("bufferViews").and_then(JsonRef::as_array) {
+        for (index, view) in views.iter().enumerate() {
+            // The compressed range of a meshopt view names its own buffer,
+            // so it has to follow the view onto the consolidated buffer.
+            if let Some((name, extension)) = meshopt_extension(view.get("extensions")) {
+                rebase_buffer_reference(
+                    extension,
+                    offsets,
+                    &format!("bufferViews[{index}].extensions.{name}"),
+                    &mut patches,
+                )?;
+            }
+            rebase_buffer_reference(
+                view,
+                offsets,
+                &format!("bufferViews[{index}]"),
+                &mut patches,
+            )?;
+        }
+    }
+    let buffers = format!(r#"[{{"byteLength":{}}}]"#, bin_len);
+    match root.get("buffers") {
+        Some(value) => patches
+            .replace
+            .push((value.node_index(), buffers.into_bytes())),
+        None => patches.append.push((
+            root.node_index(),
+            format!(r#""buffers":{buffers}"#).into_bytes(),
+        )),
+    }
+    patches.replace.sort_unstable_by_key(|(node, _)| *node);
+    patches.append.sort_unstable_by_key(|(node, _)| *node);
+    let mut json = Vec::new();
+    root.write_patched(&mut json, &patches);
+    Ok(json)
+}
+
+/// Rebases one `{buffer, byteOffset}` pair onto the consolidated GLB buffer,
+/// as patches to the document's JSON.
 ///
 /// `offsets` holds where each declared buffer starts in the merged binary
-/// chunk, indexed the way the document declared them.
-fn rebase_buffer_reference(value: &mut Value, offsets: &[usize], label: &str) -> Result<()> {
-    let buffer = value
-        .get("buffer")
-        .and_then(Value::as_u64)
+/// chunk, indexed the way the document declared them. Each field is replaced
+/// where it is, and a missing `byteOffset` is added at the end of the object,
+/// which is where assigning it on a tree would put it.
+fn rebase_buffer_reference(
+    value: JsonRef<'_>,
+    offsets: &[usize],
+    label: &str,
+    patches: &mut Patches,
+) -> Result<()> {
+    let field = value.get("buffer");
+    let buffer = field
+        .and_then(JsonRef::as_u64)
         .and_then(|value| usize::try_from(value).ok())
         .ok_or_else(|| Error::Validation(vec![format!("{label}.buffer is not a valid index")]))?;
     let prefix = *offsets.get(buffer).ok_or_else(|| {
@@ -937,13 +979,24 @@ fn rebase_buffer_reference(value: &mut Value, offsets: &[usize], label: &str) ->
             "{label}.buffer references missing buffer {buffer}"
         )])
     })?;
-    let offset = value.get("byteOffset").and_then(Value::as_u64).unwrap_or(0);
+    let declared = value.get("byteOffset");
+    let offset = declared.and_then(JsonRef::as_u64).unwrap_or(0);
     let offset = usize::try_from(offset)
         .ok()
         .and_then(|offset| prefix.checked_add(offset))
         .ok_or_else(|| Error::ResourceLimit(format!("{label} byteOffset overflow")))?;
-    value["buffer"] = Value::from(0usize);
-    value["byteOffset"] = Value::from(offset);
+    if let Some(field) = field {
+        patches.replace.push((field.node_index(), b"0".to_vec()));
+    }
+    match declared {
+        Some(declared) => patches
+            .replace
+            .push((declared.node_index(), offset.to_string().into_bytes())),
+        None => patches.append.push((
+            value.node_index(),
+            format!(r#""byteOffset":{offset}"#).into_bytes(),
+        )),
+    }
     Ok(())
 }
 
@@ -1169,6 +1222,68 @@ fn read_packed_attribute(
 mod tests {
     use super::*;
     use crate::container::build_glb_from_json;
+
+    /// What the GLB JSON is by definition: the document as a tree, with each
+    /// reference assigned its new value and `buffers` replaced.
+    fn consolidated_glb_json_on_a_tree(
+        document: &Document,
+        offsets: &[usize],
+        bin_len: usize,
+    ) -> Result<Vec<u8>> {
+        fn rebase(value: &mut Value, offsets: &[usize]) -> Result<()> {
+            let buffer = value
+                .get("buffer")
+                .and_then(Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok())
+                .ok_or_else(|| Error::Validation(vec!["buffer".into()]))?;
+            let prefix = *offsets
+                .get(buffer)
+                .ok_or_else(|| Error::Validation(vec!["missing".into()]))?;
+            let offset = value.get("byteOffset").and_then(Value::as_u64).unwrap_or(0);
+            value["buffer"] = Value::from(0usize);
+            value["byteOffset"] = Value::from(prefix + offset as usize);
+            Ok(())
+        }
+        let mut document = document.clone();
+        let root = document.as_value_mut();
+        if let Some(views) = root.get_mut("bufferViews").and_then(Value::as_array_mut) {
+            for view in views {
+                if let Some((_, extension)) =
+                    crate::extensions::meshopt_extension_mut(view.get_mut("extensions"))
+                {
+                    rebase(extension, offsets)?;
+                }
+                rebase(view, offsets)?;
+            }
+        }
+        root["buffers"] = Value::Array(vec![Value::object([("byteLength", Value::from(bin_len))])]);
+        Ok(document.to_minified_json_bytes())
+    }
+
+    #[test]
+    fn glb_json_patched_on_the_tape_matches_the_tree_edit() {
+        let offsets = [0, 64, 4096];
+        let documents = [
+            // Offsets present and missing, three buffers, a view not first.
+            r#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":3},{"byteLength":5,"uri":"a.bin"},{"byteLength":7}],"bufferViews":[{"buffer":1,"byteLength":2},{"byteOffset":4,"buffer":2,"byteLength":1,"target":34962},{"byteLength":1,"buffer":0,"byteOffset":0,"extras":{"buffer":9}}]}"#,
+            // Meshopt views under both names, and one with no offset at all.
+            r#"{"asset":{"version":"2.0"},"bufferViews":[{"buffer":0,"byteLength":4,"extensions":{"EXT_meshopt_compression":{"buffer":2,"byteOffset":8,"byteLength":4}}},{"buffer":1,"byteLength":4,"extensions":{"KHR_meshopt_compression":{"buffer":1,"byteLength":4,"count":1}}}],"buffers":[{"byteLength":4},{"byteLength":4},{"byteLength":12}]}"#,
+            // No `buffers` at all, and duplicate keys: the first is the one.
+            r#"{"asset":{"version":"2.0"},"bufferViews":[{"buffer":2,"buffer":0,"byteOffset":1,"byteOffset":3,"byteLength":1},{"buffer":1,"byteLength":0}],"extras":[]}"#,
+            // No views, escaped text kept as written.
+            r#"{"asset":{"version":"2.0","generator":"ab\"c"},"buffers":[]}"#,
+        ];
+        for source in documents {
+            let document = Document::from_json_bytes(source.as_bytes()).unwrap();
+            let tree = consolidated_glb_json_on_a_tree(&document, &offsets, 5000).unwrap();
+            let tape = consolidated_glb_json(&document, &offsets, 5000).unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&tape),
+                String::from_utf8_lossy(&tree),
+                "{source}"
+            );
+        }
+    }
 
     /// One vertex of four zero deltas, so the decoded value is the tail
     /// baseline `[1, 2, 3, 4]`. Every byte group uses the literal encoding.

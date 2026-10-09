@@ -408,27 +408,52 @@ impl<'a> JsonRef<'a> {
         self.write(&mut out);
         out
     }
+    /// The position of this value in its document's node table, which is
+    /// how a [`Patches`] entry names it.
+    pub(crate) fn node_index(self) -> u32 {
+        self.index
+    }
     /// Writes the subtree in one pass over its nodes, which are already in
     /// document order; the only state is the stack of open containers.
     pub(crate) fn write(self, out: &mut Vec<u8>) {
-        // An open container: the index its subtree ends at, whether it is an
-        // object, whether its next node is a key, and whether a separator is
-        // owed before its next entry.
+        self.write_patched(out, &Patches::default());
+    }
+    /// Writes the subtree with `patches` applied on the way, which edits the
+    /// output without building a tree to edit.
+    pub(crate) fn write_patched(self, out: &mut Vec<u8>, patches: &Patches) {
+        // An open container: its node, the index its subtree ends at, whether
+        // it is an object, whether its next node is a key, and whether a
+        // separator is owed before its next entry.
         struct Open {
+            node: u32,
             end: u32,
             object: bool,
             key_next: bool,
             separate: bool,
         }
-        let nodes = &self.tape.nodes;
-        let mut open: Vec<Open> = Vec::new();
-        for index in self.index..self.end() {
-            while let Some(container) = open.last() {
-                if container.end != index {
-                    break;
+        let close = |container: Open, out: &mut Vec<u8>| {
+            if !container.object {
+                out.push(b']');
+                return;
+            }
+            if let Ok(at) = patches
+                .append
+                .binary_search_by_key(&container.node, |(node, _)| *node)
+            {
+                if container.separate {
+                    out.push(b',');
                 }
-                out.push(if container.object { b'}' } else { b']' });
-                open.pop();
+                out.extend_from_slice(&patches.append[at].1);
+            }
+            out.push(b'}');
+        };
+        let nodes = &self.tape.nodes;
+        let mut replace = patches.replace.iter().peekable();
+        let mut open: Vec<Open> = Vec::new();
+        let mut index = self.index;
+        while index < self.end() {
+            while open.last().is_some_and(|container| container.end == index) {
+                close(open.pop().expect("a container was just observed"), out);
             }
             let mut key = false;
             if let Some(container) = open.last_mut() {
@@ -441,6 +466,18 @@ impl<'a> JsonRef<'a> {
                     key = container.key_next;
                     container.key_next = !key;
                 }
+            }
+            // A patch inside a subtree that an earlier one replaced is never
+            // reached; it is passed over here.
+            while replace.next_if(|(node, _)| *node < index).is_some() {}
+            let here = JsonRef {
+                tape: self.tape,
+                index,
+            };
+            if let Some((_, text)) = replace.next_if(|(node, _)| *node == index) {
+                out.extend_from_slice(text);
+                index = here.end();
+                continue;
             }
             let node = nodes[index as usize];
             match node.kind {
@@ -458,6 +495,7 @@ impl<'a> JsonRef<'a> {
                     let object = node.kind == Kind::Object;
                     out.push(if object { b'{' } else { b'[' });
                     open.push(Open {
+                        node: index,
                         end: node.b,
                         object,
                         key_next: true,
@@ -468,11 +506,23 @@ impl<'a> JsonRef<'a> {
             if key {
                 out.push(b':');
             }
+            index += 1;
         }
         while let Some(container) = open.pop() {
-            out.push(if container.object { b'}' } else { b']' });
+            close(container, out);
         }
     }
+}
+
+/// Edits for [`JsonRef::write_patched`]. `replace` writes the given JSON in
+/// place of the value at a node, subtree and all. `append` adds members,
+/// spelled `"key":value` and joined by commas, at the end of the object at a
+/// node. Each list is sorted by node index and names a node at most once, and
+/// only values are replaced, never keys.
+#[derive(Default)]
+pub(crate) struct Patches {
+    pub replace: Vec<(u32, Vec<u8>)>,
+    pub append: Vec<(u32, Vec<u8>)>,
 }
 
 impl PartialEq for JsonRef<'_> {

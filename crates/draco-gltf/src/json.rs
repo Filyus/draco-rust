@@ -7,8 +7,8 @@ use std::slice;
 
 mod tape;
 
-pub(crate) use tape::Tape;
 pub use tape::{JsonArray, JsonItems, JsonMembers, JsonObject, JsonRef};
+pub(crate) use tape::{Patches, Tape};
 
 /// Dependency-free JSON value that preserves number lexemes and object order.
 ///

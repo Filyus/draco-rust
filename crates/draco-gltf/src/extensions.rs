@@ -512,15 +512,22 @@ impl ExtensionRegistry {
 }
 
 /// Default decoder for `KHR_draco_mesh_compression`.
+///
+/// It opts into binary transforms, and keeps and remaps its buffer view
+/// through them, in builds with the `write` feature, which are the builds
+/// that can make one. Without it the handler declines them like any other,
+/// which keeps the document editing they need out of a reader.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DracoExtension;
 impl ExtensionHandler for DracoExtension {
     fn name(&self) -> &'static str {
         KHR_DRACO_MESH_COMPRESSION
     }
+    #[cfg(feature = "write")]
     fn allows_binary_transform(&self) -> bool {
         true
     }
+    #[cfg(feature = "write")]
     fn collect_binary_references(
         &self,
         document: &Document,
@@ -554,6 +561,7 @@ impl ExtensionHandler for DracoExtension {
         }
         Ok(())
     }
+    #[cfg(feature = "write")]
     fn remap_binary_references(
         &self,
         document: &mut Document,
