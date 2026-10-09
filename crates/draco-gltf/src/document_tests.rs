@@ -405,29 +405,53 @@ fn draft_validation_enforces_file_wide_uids() {
     .unwrap();
     valid.validate(ValidationProfile::Gltf21Draft).unwrap();
 
-    let duplicate = Document::from_json_bytes(
-        br#"{"asset":{"version":"2.1"},"nodes":[{"uid":"node-a"}],"meshes":[{"uid":"node-a"}]}"#,
-    )
-    .unwrap();
-    assert!(duplicate.validate(ValidationProfile::Gltf21Draft).is_err());
-
-    let name_conflict = Document::from_json_bytes(
-        br#"{"asset":{"version":"2.1"},"nodes":[{"name":"part-a"}],"meshes":[{"uid":"part-a"}]}"#,
-    )
-    .unwrap();
-    assert!(name_conflict
+    // The message names both places, which is what makes a refusal fixable;
+    // pinned whole, so a faster check cannot quietly name different ones.
+    let refusal = |json: &[u8]| match Document::from_json_bytes(json)
+        .unwrap()
         .validate(ValidationProfile::Gltf21Draft)
-        .is_err());
+    {
+        Err(crate::Error::Validation(messages)) => messages,
+        other => panic!("expected a validation refusal, got {other:?}"),
+    };
+
+    // Kinds are walked in a fixed order with meshes before nodes, so the
+    // node's UID is the one reported as the duplicate.
+    assert_eq!(
+        refusal(
+            br#"{"asset":{"version":"2.1"},"nodes":[{"uid":"node-a"}],"meshes":[{"uid":"node-a"}]}"#
+        ),
+        ["nodes[0].uid duplicates meshes[0].uid"]
+    );
+
+    assert_eq!(
+        refusal(
+            br#"{"asset":{"version":"2.1"},"nodes":[{"name":"part-a"}],"meshes":[{"uid":"part-a"}]}"#
+        ),
+        ["meshes[0].uid conflicts with nodes[0].name"]
+    );
 
     // Two objects may share a name, but a UID equal to that name is a
     // conflict with the one that is not its holder, whichever comes last.
-    let shared_name = Document::from_json_bytes(
-        br#"{"asset":{"version":"2.1"},"nodes":[{"name":"part-a"},{"name":"part-a","uid":"part-a"}]}"#,
-    )
-    .unwrap();
-    assert!(shared_name
-        .validate(ValidationProfile::Gltf21Draft)
-        .is_err());
+    assert_eq!(
+        refusal(
+            br#"{"asset":{"version":"2.1"},"nodes":[{"name":"part-a"},{"name":"part-a","uid":"part-a"}]}"#
+        ),
+        ["nodes[1].uid conflicts with nodes[0].name"]
+    );
+
+    assert_eq!(
+        refusal(br#"{"asset":{"version":"2.1"},"nodes":[{"name":"n"},{"uid":7}]}"#),
+        ["nodes[1].uid is not a string"]
+    );
+
+    // With several conflicts, the first by UID order is the one reported.
+    assert_eq!(
+        refusal(
+            br#"{"asset":{"version":"2.1"},"nodes":[{"name":"b"},{"name":"a"},{"uid":"b"},{"uid":"a"}]}"#
+        ),
+        ["nodes[3].uid conflicts with nodes[1].name"]
+    );
 }
 
 #[test]

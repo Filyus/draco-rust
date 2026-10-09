@@ -1196,11 +1196,7 @@ fn validate_bounding_volume_transform(node: usize, volume: &Value) -> Result<()>
 fn validate_uids(root: &Value) -> Result<()> {
     use std::collections::BTreeMap;
 
-    // Several objects may share a name, so every holder is kept: a UID that
-    // equals the name of any other object is a conflict, not only of the last.
-    let mut names: BTreeMap<&str, Vec<String>> = BTreeMap::new();
-    let mut uids = BTreeMap::new();
-    for kind in [
+    const KINDS: [&str; 16] = [
         "accessors",
         "animations",
         "buffers",
@@ -1217,27 +1213,50 @@ fn validate_uids(root: &Value) -> Result<()> {
         "shapes",
         "skins",
         "textures",
-    ] {
-        for (index, value) in root
-            .get(kind)
-            .and_then(Value::as_array)
-            .unwrap_or(&[])
-            .iter()
-            .enumerate()
-        {
-            let location = format!("{kind}[{index}]");
-            if let Some(name) = value.get("name").and_then(Value::as_str) {
-                names.entry(name).or_default().push(location.clone());
+    ];
+    // Every object of every kind, in the order the checks report them.
+    let objects = || {
+        KINDS.into_iter().flat_map(|kind| {
+            root.get(kind)
+                .and_then(Value::as_array)
+                .unwrap_or(&[])
+                .iter()
+                .enumerate()
+                .map(move |(index, value)| ((kind, index), value))
+        })
+    };
+    // A place is kept as kind and index and spelled out only for a refusal:
+    // this runs on every read of a draft document, over every object it has,
+    // and almost none of them carry a UID.
+    let place = |(kind, index): (&str, usize)| format!("{kind}[{index}]");
+
+    let mut uids = BTreeMap::new();
+    for (location, value) in objects() {
+        if let Some(uid) = value.get("uid") {
+            let uid = uid.as_str().ok_or_else(|| {
+                Error::Validation(vec![format!("{}.uid is not a string", place(location))])
+            })?;
+            if let Some(previous) = uids.insert(uid, location) {
+                return Err(Error::Validation(vec![format!(
+                    "{}.uid duplicates {}.uid",
+                    place(location),
+                    place(previous)
+                )]));
             }
-            if let Some(uid) = value.get("uid") {
-                let uid = uid.as_str().ok_or_else(|| {
-                    Error::Validation(vec![format!("{location}.uid is not a string")])
-                })?;
-                if let Some(previous) = uids.insert(uid, location.clone()) {
-                    return Err(Error::Validation(vec![format!(
-                        "{location}.uid duplicates {previous}.uid"
-                    )]));
-                }
+        }
+    }
+    if uids.is_empty() {
+        return Ok(());
+    }
+
+    // Several objects may share a name, so every holder is kept: a UID that
+    // equals the name of any other object is a conflict, not only of the last.
+    // Only names some UID equals can conflict, so only those are collected.
+    let mut names: BTreeMap<&str, Vec<(&str, usize)>> = BTreeMap::new();
+    for (location, value) in objects() {
+        if let Some(name) = value.get("name").and_then(Value::as_str) {
+            if uids.contains_key(name) {
+                names.entry(name).or_default().push(location);
             }
         }
     }
@@ -1247,7 +1266,9 @@ fn validate_uids(root: &Value) -> Result<()> {
             .and_then(|holders| holders.iter().find(|holder| *holder != location))
         {
             return Err(Error::Validation(vec![format!(
-                "{location}.uid conflicts with {named}.name"
+                "{}.uid conflicts with {}.name",
+                place(*location),
+                place(*named)
             )]));
         }
     }
