@@ -148,6 +148,22 @@ impl<'a> PredictionParent<'a> {
     }
 
     /// Three components at once, for the position parents.
+    /// The bytes and the stride of a parent whose first three components are
+    /// `int32` as the portable copy stores them, or `None` for any other
+    /// layout. A reader that takes three components at a time can then skip
+    /// [`Self::read_component_as_i64`]'s per-component match: the answer is
+    /// the same three numbers, and the same nothing when they do not fit.
+    #[cfg(feature = "decoder")]
+    pub(crate) fn int32_vector3_layout(&self) -> Option<(&'a [u8], usize)> {
+        if !matches!(self.att.data_type(), DataType::Int32 | DataType::Uint32)
+            || self.att.num_components() < 3
+        {
+            return None;
+        }
+        let stride = usize::try_from(self.att.byte_stride()).ok()?;
+        Some((self.att.buffer().data(), stride))
+    }
+
     pub fn read_vector3_as_i64(&self, entry: usize, out: &mut [i64; 3]) -> bool {
         for (c, slot) in out.iter_mut().enumerate() {
             let Some(value) = self.read_component_as_i64(entry, c) else {

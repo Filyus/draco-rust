@@ -159,23 +159,28 @@ fn position_for_vertex(
     [clamp_i32(pos[0]), clamp_i32(pos[1]), clamp_i32(pos[2])]
 }
 
-/// The position lookup above, memoised per vertex.
+/// The position lookup above, resolved for every vertex up front.
 ///
 /// The predictor walks every corner around a vertex and reads both neighbours'
 /// positions, so a given vertex's position is asked for once per incident
 /// corner — six times over on a regular mesh, and again for each of its
 /// neighbours' own predictions. The lookup is pure in the vertex: the parent
 /// position attribute is fully decoded before the normals that predict from it,
-/// and neither map changes during the pass. So decode each position once.
+/// and neither map changes during the pass. So resolve each position once, in
+/// one pass, and let the walk index a table.
+///
+/// The whole table rather than a lazily filled one: a mesh's predicted normals
+/// reach essentially every vertex, so filling on demand did the same work plus
+/// a filled-yet test on every read, and the pass can hoist the attribute's
+/// layout out of the loop where a per-read lookup could not.
 #[cfg(feature = "decoder")]
 struct CornerPositions<'b> {
     corner_table: &'b CornerTable,
     vertex_to_data_map: &'b [i32],
     entry_to_point_id_map: crate::prediction_scheme::EntryToPointIdMap<'b>,
     pos_parent: PredictionParent<'b>,
-    /// Indexed by vertex id; `cached[v]` says whether `cache[v]` was filled.
+    /// Indexed by vertex id: what [`position_for_vertex`] answers for it.
     cache: Vec<[i32; 3]>,
-    cached: Vec<bool>,
 }
 
 #[cfg(feature = "decoder")]
@@ -186,16 +191,54 @@ impl<'b> CornerPositions<'b> {
         entry_to_point_id_map: crate::prediction_scheme::EntryToPointIdMap<'b>,
         pos_parent: PredictionParent<'b>,
     ) -> Self {
-        // A vertex outside the map has no position anyway, so sizing the cache
+        // A vertex outside the map has no position anyway, so sizing the table
         // by the map covers every vertex that can produce one.
-        let num_vertices = vertex_to_data_map.len();
+        let cache = match pos_parent.int32_vector3_layout() {
+            Some((bytes, stride)) => vertex_to_data_map
+                .iter()
+                .map(|&data_id| {
+                    // `position_for_vertex`, with the three reads it would do
+                    // through the generic reader taken as one: the components
+                    // are adjacent, so they fit exactly when the twelve bytes
+                    // do, and `int32` needs no clamp.
+                    let read = || {
+                        let point_id = entry_to_point_id_map.get(usize::try_from(data_id).ok()?)?;
+                        let entry = pos_parent.mapped_index(PointIndex(point_id));
+                        if entry == INVALID_ATTRIBUTE_VALUE_INDEX {
+                            return None;
+                        }
+                        let start = (entry.0 as usize).checked_mul(stride)?;
+                        let raw = bytes.get(start..start.checked_add(12)?)?;
+                        let component = |c: usize| {
+                            i32::from_le_bytes([
+                                raw[4 * c],
+                                raw[4 * c + 1],
+                                raw[4 * c + 2],
+                                raw[4 * c + 3],
+                            ])
+                        };
+                        Some([component(0), component(1), component(2)])
+                    };
+                    read().unwrap_or([0, 0, 0])
+                })
+                .collect(),
+            None => (0..vertex_to_data_map.len())
+                .map(|v| {
+                    position_for_vertex(
+                        vertex_to_data_map,
+                        entry_to_point_id_map,
+                        &pos_parent,
+                        VertexIndex(v as u32),
+                    )
+                })
+                .collect(),
+        };
         Self {
             corner_table,
             vertex_to_data_map,
             entry_to_point_id_map,
             pos_parent,
-            cache: vec![[0i32; 3]; num_vertices],
-            cached: vec![false; num_vertices],
+            cache,
         }
     }
 
@@ -215,28 +258,16 @@ impl<'b> CornerPositions<'b> {
     /// with `next`/`previous` and handing it here to be turned back into a
     /// vertex a second time.
     fn get_by_vertex(&mut self, v: VertexIndex) -> [i32; 3] {
-        let vi = v.0 as usize;
-        if vi >= self.cache.len() {
+        match self.cache.get(v.0 as usize) {
+            Some(&pos) => pos,
             // Off the end of the map: the uncached path returns the origin.
-            return position_for_vertex(
+            None => position_for_vertex(
                 self.vertex_to_data_map,
                 self.entry_to_point_id_map,
                 &self.pos_parent,
                 v,
-            );
+            ),
         }
-        if self.cached[vi] {
-            return self.cache[vi];
-        }
-        let pos = position_for_vertex(
-            self.vertex_to_data_map,
-            self.entry_to_point_id_map,
-            &self.pos_parent,
-            v,
-        );
-        self.cache[vi] = pos;
-        self.cached[vi] = true;
-        pos
     }
 }
 
@@ -1115,67 +1146,87 @@ mod tests {
         assert_eq!(positions.get(CornerIndex(0)), [0, 0, 0]);
     }
 
-    /// The memoised lookup must answer exactly what the uncached one does, for
-    /// every corner and on the second visit as well as the first. Without this,
-    /// a wrong cache is caught only by the C++ fingerprint parity suite, which
-    /// needs the reference build to be present.
+    /// The resolved table must answer exactly what the uncached lookup does,
+    /// for every corner. Without this, a wrong table is caught only by the C++
+    /// fingerprint parity suite, which needs the reference build to be present.
+    ///
+    /// Run on `int32`, `uint32` -- the two layouts the table reads directly --
+    /// and `int16`, which it reads through the generic reader, with one vertex
+    /// whose data id is missing and one whose entry lies past the buffer, so
+    /// both of the lookup's "no position" answers are in the comparison.
     #[test]
     fn mesh_geometric_normal_position_cache_matches_the_uncached_lookup() {
         // Two triangles sharing an edge, so vertices 1 and 2 each carry two
-        // corners and the second visit has to come out of the cache.
+        // corners and are read more than once.
         let mut corner_table = CornerTable::new(2);
         corner_table.set_face_vertices(FaceIndex(0), PointIndex(0), PointIndex(1), PointIndex(2));
         corner_table.set_face_vertices(FaceIndex(1), PointIndex(2), PointIndex(1), PointIndex(3));
 
         let data_to_corner_map = [0u32, 1, 2, 3];
-        let vertex_to_data_map = [0, 1, 2, 3];
+        // Vertex 2 has no data id; vertex 3's point names entry 7 of four.
+        let vertex_to_data_map = [0, 1, -1, 3];
+        let entry_to_point_id_map = [0u32, 1, 2, 7];
         let mut mesh_data = MeshPredictionSchemeData::new();
         mesh_data.set(&corner_table, &data_to_corner_map, &vertex_to_data_map);
 
         let num_points = 4;
-        let mut position_attribute = PointAttribute::new();
-        position_attribute.init(
-            GeometryAttributeType::Position,
-            3,
-            DataType::Int32,
-            false,
-            num_points,
-        );
-        // Distinct per point, so mixing two vertices up cannot go unnoticed.
-        for p in 0..num_points {
-            for c in 0..3 {
-                let value = (10 * p + c) as i32;
-                position_attribute
-                    .buffer_mut()
-                    .update(&value.to_le_bytes(), Some((p * 3 + c) * 4));
-            }
-        }
-
-        let mut decoder = MeshPredictionSchemeGeometricNormalDecoder::new(
-            PredictionSchemeNormalOctahedronCanonicalizedDecodingTransform::new(),
-        );
-        decoder.init(&mesh_data);
-        assert!(decoder
-            .set_parent_attribute(
-                PredictionParent::portable(&position_attribute).expect("portable")
-            )
-            .is_ok());
-
-        let entry_to_point_id_map = [0u32, 1, 2, 3];
-        decoder
-            .set_entry_to_point_id_map(EntryToPointIdMap::from_u32_slice(&entry_to_point_id_map));
-
-        let mut positions = decoder.corner_positions().expect("lookup resolves");
-        for corner in 0..6u32 {
-            let corner = CornerIndex(corner);
-            let expected = position_for_vertex(
-                &vertex_to_data_map,
-                EntryToPointIdMap::from_u32_slice(&entry_to_point_id_map),
-                &PredictionParent::portable(&position_attribute).expect("portable"),
-                corner_table.vertex(corner),
+        for data_type in [DataType::Int32, DataType::Uint32, DataType::Int16] {
+            let mut position_attribute = PointAttribute::new();
+            position_attribute.init(
+                GeometryAttributeType::Position,
+                3,
+                data_type,
+                false,
+                num_points,
             );
-            assert_eq!(positions.get(corner), expected, "first visit, {corner:?}");
-            assert_eq!(positions.get(corner), expected, "cached visit, {corner:?}");
+            // Distinct per point and signed, so mixing two vertices up or
+            // reading a sign wrong cannot go unnoticed.
+            for p in 0..num_points {
+                for c in 0..3 {
+                    let value = (10 * p + c) as i32 - 17;
+                    let at = p * 3 + c;
+                    if data_type == DataType::Int16 {
+                        position_attribute
+                            .buffer_mut()
+                            .update(&(value as i16).to_le_bytes(), Some(at * 2));
+                    } else {
+                        position_attribute
+                            .buffer_mut()
+                            .update(&value.to_le_bytes(), Some(at * 4));
+                    }
+                }
+            }
+
+            let mut decoder = MeshPredictionSchemeGeometricNormalDecoder::new(
+                PredictionSchemeNormalOctahedronCanonicalizedDecodingTransform::new(),
+            );
+            decoder.init(&mesh_data);
+            assert!(decoder
+                .set_parent_attribute(
+                    PredictionParent::portable(&position_attribute).expect("portable")
+                )
+                .is_ok());
+            decoder.set_entry_to_point_id_map(EntryToPointIdMap::from_u32_slice(
+                &entry_to_point_id_map,
+            ));
+
+            let mut positions = decoder.corner_positions().expect("lookup resolves");
+            let mut answers = std::collections::BTreeSet::new();
+            for corner in 0..6u32 {
+                let corner = CornerIndex(corner);
+                let expected = position_for_vertex(
+                    &vertex_to_data_map,
+                    EntryToPointIdMap::from_u32_slice(&entry_to_point_id_map),
+                    &PredictionParent::portable(&position_attribute).expect("portable"),
+                    corner_table.vertex(corner),
+                );
+                assert_eq!(positions.get(corner), expected, "{data_type:?} {corner:?}");
+                answers.insert(expected);
+            }
+            // Two real positions and the origin, or the fixture is not
+            // reaching the cases it claims to.
+            assert_eq!(answers.len(), 3, "{data_type:?} {answers:?}");
+            assert!(answers.contains(&[0, 0, 0]), "{data_type:?}");
         }
 
         // The fixture is only meaningful if it really shares vertices between
