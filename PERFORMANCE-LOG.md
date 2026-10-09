@@ -36,7 +36,7 @@ figure at all.
 `rejected` -- tried, deliberately not kept. `retracted` -- an earlier claim
 here was withdrawn. `diagnostic` -- measured only, no change proposed.
 
-88 rounds: 55 landed, 12 diagnostic, 11 null, 8 retracted, 2 rejected.
+89 rounds: 56 landed, 12 diagnostic, 11 null, 8 retracted, 2 rejected.
 
 | Round | Verdict | Headline |
 | --- | --- | ---: |
@@ -128,6 +128,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [The Same Lookups, On The Encoder And In The UV Predictor](#the-same-lookups-on-the-encoder-and-in-the-uv-predictor) | landed | `-6.5% encode, -6.3% UV decode` |
 | [glTF Scenes Against three.js: Validation, JSON, Allocator](#gltf-scenes-against-threejs-validation-json-allocator) | landed | `64 -> 5.6 ms one-at-a-time reads` |
 | [glTF JSON As A Flat Tape](#gltf-json-as-a-flat-tape) | landed | `1.86 -> 1.20 ms WASM open` |
+| [Lazy Subtrees, Priced Before Built](#lazy-subtrees-priced-before-built) | landed | `1.20 -> 1.10 ms WASM open` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -5077,6 +5078,37 @@ flat tape.
   how a document is edited, so both forms ship along with the conversion
   between them. Reads through `JsonRef` also compile to more code than slice
   iteration. Serializing only through the tape took back 0.25 kB.
+
+### Lazy Subtrees, Priced Before Built
+
+2026-10-09. The next step after the tape was to leave subtrees nobody reads
+unbuilt, scanned for validity only. Opening and reading VirtualCity touches
+`accessors`, `bufferViews`, `meshes` and `buffers`. The rest is `nodes`,
+`materials`, `animations`, `cameras`, `textures` and `images`, which is 37% of
+its minified JSON (24% of BrainStem's). Before building that, the ceiling was
+measured on a scratch crate that compiles the shipped `tape.rs` in place
+beside a scanner checking the same grammar and recording nothing
+(`probe/json-tape-skim`).
+
+- **Lazy subtrees** (`rejected`, not built). In WASM at gltf-wasm's profile,
+  medians of 41 on VirtualCity: the tape 0.63 ms, the scan alone 0.51-0.54.
+  Building nodes is ~20% of the parse and the scan is the rest, so skipping
+  nodes for 37% of the text saves ~0.05 ms of a 1.2 ms open. The converter
+  reads `nodes` and `materials` anyway, so it would scan them twice.
+- **SWAR scanning** (`null`, `probe/json-tape-skim`). Skipping whitespace runs
+  and string bodies eight bytes at a time made the scan slower, 0.67-0.70 ms
+  against 0.51-0.54. glTF's indentation runs and keys are a few bytes long,
+  shorter than a word costs to load and test at `opt-level = "z"`.
+- **The optimization level was the lever** (`landed`, `3cf02cd9`). The same
+  tape parse at `opt-level` z / s / 2 / 3: 0.63 / 0.44 / 0.42 / 0.42 ms. At
+  `z` the per-byte steps stay calls. `#[inline(always)]` on `space`, `take`,
+  `digits` and `Tape::push` recovers most of it while the crate stays at `z`
+  (0.46-0.48 ms on the scratch crate). The same on `string`, `key` and
+  `number` added nothing. In gltf-wasm (`gltfsplit2.mjs`, 3 rounds,
+  alternating order) VirtualCity opens in 1.09-1.11 ms instead of 1.19-1.23,
+  and BrainStem in 0.65-0.68 instead of 0.69-0.73. The module grows by 235
+  bytes of gzip. Raising the whole crate to `s` was not taken: the hot path
+  is these four functions, and the rest of the crate is written for size.
 
 ## Unexplored
 

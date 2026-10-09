@@ -54,7 +54,7 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     and numbers left in the source text, rather than into a tree with a heap
     block for every key, string, number and container. A tree is built only
     when the document is edited (`as_value_mut`) or asked for (`as_value`).
-  - Opening VirtualCity, a scene with 490 kB of JSON, takes 1.2 ms in
+  - Opening VirtualCity, a scene with 490 kB of JSON, takes 1.1 ms in
     WebAssembly instead of 1.86, and the JSON parse takes 0.44 ms natively
     instead of 2.3. Strict validation is about 1.4x slower natively than on
     the tree, which leaves parse plus validation 3.5x faster.
