@@ -5173,7 +5173,7 @@ it error messages.
   the symbol count. Indexed instead: -1.27 kB. `decode_all_drc_files` fails
   when the stored corner is dropped, so the splits are covered.
 - **Build paths** (`landed`, `84b308fe`). 56 panic locations named their files
-  by absolute path, `C:\Users\...\.rustup\...` and the repository's own,
+  by absolute path, the toolchain's under the builder's home directory and the repository's own,
   4.5 kB raw. With `--remap-path-prefix` from the build tool they read
   `/rustc/<commit>/...`, `/cargo/...` and `./crates/...`: only 0.13 kB of gzip,
   since gzip had already folded the repeated prefixes, but the modules no
