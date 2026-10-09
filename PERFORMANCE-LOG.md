@@ -5236,7 +5236,20 @@ So `opt-level = 2` stays, and on these reads it buys 7-18% over `s` (the
   state. At `s`: 111.8 kB and still 7-19% slower. Not taken: 1.8% of size for
   a module that no longer loads anywhere SIMD is missing.
 
-Untried: a newer wasm-opt than the cached 117.
+- **A newer wasm-opt** (Binaryen `version_133` from its GitHub release, SHA-256
+  checked, against the `version_117` wasm-pack had cached). Same flags, same
+  unoptimized input, all seven modules: -0.5% gzip on each with code to
+  optimize (`drc-wasm` -1.38 kB, `fbx-wasm` -1.26, `gltf-wasm` -0.61,
+  `ply-wasm` -0.30, `obj-wasm` -0.10, `stl-wasm` -0.08), `ktx2-wasm` level,
+  -3.7 kB in all. glTF reads within noise of 117's. Passes `-Oz` leaves out
+  (`--merge-similar-functions`, `--dae-optimizing`, `--precompute-propagate`)
+  change nothing after `--converge`; stripping the producers and
+  target-features sections saves 55 bytes.
+- **What the published modules are optimized with.** CI, `pages.yml` and
+  `release.yml` install wasm-opt with `apt-get install binaryen` on
+  `ubuntu-24.04`, which is `108-1`, older than either. The sizes in
+  `web/wasm-sizes.md` come from local builds with 117, so the shipped modules
+  are not the recorded ones; how far apart was not measured.
 
 ## Unexplored
 
