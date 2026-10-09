@@ -36,7 +36,7 @@ figure at all.
 `rejected` -- tried, deliberately not kept. `retracted` -- an earlier claim
 here was withdrawn. `diagnostic` -- measured only, no change proposed.
 
-86 rounds: 53 landed, 12 diagnostic, 11 null, 8 retracted, 2 rejected.
+87 rounds: 54 landed, 12 diagnostic, 11 null, 8 retracted, 2 rejected.
 
 | Round | Verdict | Headline |
 | --- | --- | ---: |
@@ -126,6 +126,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [WASM Decode, Second Pass: The Position Table, And A Fairer Cold Start](#wasm-decode-second-pass-the-position-table-and-a-fairer-cold-start) | landed | `-10 to -14% WASM decode` |
 | [The WASM Gap, Read Against Instruction Counts](#the-wasm-gap-read-against-instruction-counts) | diagnostic | `0.90x / 0.80x C++ instructions` |
 | [The Same Lookups, On The Encoder And In The UV Predictor](#the-same-lookups-on-the-encoder-and-in-the-uv-predictor) | landed | `-6.5% encode, -6.3% UV decode` |
+| [glTF Scenes Against three.js: Validation, JSON, Allocator](#gltf-scenes-against-threejs-validation-json-allocator) | landed | `64 -> 5.6 ms one-at-a-time reads` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -4952,6 +4953,52 @@ The encoder's output was compared byte for byte before and after at speeds 0,
 (upstream's: 30.5). Nothing else of the pattern is left on the encode path: at
 speed 5 the largest attribute cost is `mapped_index`, once per corner per
 attribute, which upstream pays the same way.
+
+### glTF Scenes Against three.js: Validation, JSON, Allocator
+
+2026-10-09. A scene read whole -- gltf-wasm as the converter calls it, against
+three.js r170's GLTFLoader + DRACOLoader driving upstream's
+`draco_decoder_gltf.wasm` -- on seven Khronos sample models and
+`bun_zipper.glb`, every attribute and index compared before timing. Ours was
+ahead on all but VirtualCity, 167 Draco primitives averaging 566 bytes, where
+it read 1.34-1.43x slower. What followed, by verdict:
+
+- **The rANS slot table, filled a run per symbol** (`fcdfd249`, `landed`).
+  `Vec::resize` per symbol became one allocation and `fill`; VirtualCity's
+  payloads decoded back to back 7.31 -> 6.95 ms in WASM, native flat.
+- **One copy of a primitive's bytes into JavaScript** (`0626a314`, `landed`).
+  `attributeBytes`/`indexBytes` returned a `Vec<u8>` (a copy, then the glue's
+  copy) and the app wrapped each in `new Uint8Array` (a third). 3-5% on all
+  five models.
+- **Draft UID validation without formatting** (`4c57614a`, `landed`). Every
+  validation formatted `kind[index]` for every object; the document checks
+  fell 3.27M -> 1.64M instructions on VirtualCity.
+- **The document validated once per state of it** (`0f7524da`, `landed`,
+  breaking). With `strict-validation` a validation still cost ~0.36 ms in
+  WASM, paid per `readPrimitives` batch and per `readPrimitive`.
+  `Import::document` became private, behind a mark `document_mut` drops.
+  VirtualCity in the converter build: one primitive per call 64 -> 5.6 ms,
+  batches of 32 7.9 -> 5.7 ms.
+- **JSON strings copied a run at a time** (`null`, `probe/json-string-runs`).
+  26.99M against 26.92M instructions, open time unchanged. The parse is
+  dominated by allocation -- ~62,000 `malloc`s for 490 kB, one per key, string
+  and number plus every object and array growing -- ~11M of its 27M with the
+  frees; the character loop was not the cost.
+- **talc as the WASM allocator** (`rejected`, `probe/wasm-talc`). talc 5.1.1's
+  `WasmDynamicTalc` read no faster than dlmalloc (VirtualCity open 1.87-2.16
+  against 1.78-1.94 ms) and grew the module 143.0 -> 154.5 kB gzip.
+- **mimalloc** (`diagnostic`, not built). `libmimalloc-sys` 0.1.49 compiles
+  mimalloc's C with system layers for Windows, macOS, Unix, WASI and
+  Emscripten, none for `wasm32-unknown-unknown`; it would need clang with a
+  WASM target, libc headers and a `memory.grow` layer of our own.
+
+After them, against upstream (11 rounds, a loaded machine, ratios only):
+`bun_zipper.glb` 0.66, Corset 0.85, CesiumMilkTruck 0.87, Lantern 0.93,
+BrainStem 0.94, BoomBox 0.95, VirtualCity 1.17 -- the last now opening its
+490 kB of JSON in ~1.9 ms against `JSON.parse`'s ~1.0, decoding small Draco
+streams ~10% slower per stream, and copying out. Size is upstream's: 149.5
+kB gzip for gltf-wasm and its glue against 91.8 kB for the decoder, its glue
+and both three.js loaders.
 
 ## Unexplored
 
