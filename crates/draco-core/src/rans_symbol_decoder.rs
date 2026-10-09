@@ -51,14 +51,28 @@ impl Slots {
 /// The id of the symbol that owns each slot, for a table whose probabilities
 /// add up to `precision`. `T` holds every id below `table.len()`, which is what
 /// the caller chose it by.
+///
+/// The table is allocated whole and each symbol's run written with `fill`,
+/// rather than grown a symbol at a time with `resize`: the same writes, but
+/// one tight loop per run instead of a capacity check and an element-wise
+/// extend per symbol, which is most of the cost on the small streams a glTF
+/// scene is full of, where the table is built for a few hundred symbols.
 fn fill_slots<T: Copy + Default + TryFrom<usize>>(
     table: &[RAnsSymbol],
     precision: usize,
 ) -> Vec<T> {
-    let mut slots = Vec::with_capacity(precision);
+    let mut slots = vec![T::default(); precision];
+    let mut start = 0usize;
     for (id, sym) in table.iter().enumerate() {
         let id = T::try_from(id).unwrap_or_default();
-        slots.resize(slots.len() + sym.prob as usize, id);
+        let end = start + sym.prob as usize;
+        // The caller checked that the probabilities sum to `precision`, so
+        // every run lies inside the table; `get_mut` keeps a table that broke
+        // that promise short rather than out of bounds.
+        if let Some(run) = slots.get_mut(start..end) {
+            run.fill(id);
+        }
+        start = end;
     }
     slots
 }
