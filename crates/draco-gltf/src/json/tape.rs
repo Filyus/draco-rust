@@ -183,6 +183,7 @@ impl Tape {
         }
     }
 
+    #[inline(always)]
     fn push(&mut self, kind: Kind, a: usize, b: usize) {
         self.nodes.push(Node {
             kind,
@@ -720,7 +721,12 @@ struct Parser<'a> {
     tape: Tape,
 }
 
+// The WASM modules build this crate at `opt-level = "z"`, which leaves the
+// small steps below as calls, once per byte or value. Forced inline, together
+// with `Tape::push`, they parse a large document about a quarter faster there,
+// for a few hundred bytes of module.
 impl Parser<'_> {
+    #[inline(always)]
     fn space(&mut self) {
         while self
             .input
@@ -730,6 +736,7 @@ impl Parser<'_> {
             self.pos += 1;
         }
     }
+    #[inline(always)]
     fn take(&mut self, c: u8) -> bool {
         self.space();
         if self.input.get(self.pos) == Some(&c) {
@@ -941,6 +948,7 @@ impl Parser<'_> {
         let text = std::str::from_utf8(hex).map_err(|_| "invalid unicode escape")?;
         u16::from_str_radix(text, 16).map_err(|_| "invalid unicode escape".into())
     }
+    #[inline(always)]
     fn digits(&mut self) {
         while self.input.get(self.pos).is_some_and(u8::is_ascii_digit) {
             self.pos += 1;
