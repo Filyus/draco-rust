@@ -36,7 +36,7 @@ figure at all.
 `rejected` -- tried, deliberately not kept. `retracted` -- an earlier claim
 here was withdrawn. `diagnostic` -- measured only, no change proposed.
 
-92 rounds: 58 landed, 13 diagnostic, 11 null, 8 retracted, 2 rejected.
+93 rounds: 59 landed, 13 diagnostic, 11 null, 8 retracted, 2 rejected.
 
 | Round | Verdict | Headline |
 | --- | --- | ---: |
@@ -131,6 +131,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [Lazy Subtrees, Priced Before Built](#lazy-subtrees-priced-before-built) | landed | `1.20 -> 1.10 ms WASM open` |
 | [The Tape's Size, Taken Back](#the-tapes-size-taken-back) | landed | `147.2 -> 142.4 kB gzip` |
 | [The glTF Reader Against Upstream's, By Size](#the-gltf-reader-against-upstreams-by-size) | landed | `142.4 -> 125.2 kB gzip` |
+| [Writing glTF JSON After An Edit](#writing-gltf-json-after-an-edit) | landed | `0.34 -> 0.17 ms` |
 | [draco-core's Optimization Level, Re-Measured On glTF Reads](#draco-cores-optimization-level-re-measured-on-gltf-reads) | diagnostic | `opt 2 stays: s is -13.3 kB for +7-18%` |
 
 
@@ -5189,6 +5190,32 @@ CesiumMilkTruck 0.93, BoomBox 0.94, Lantern 0.94, VirtualCity 1.03, each
 within noise of the build before these changes. Size with glue: 132.6 kB gzip
 against 92.1, 1.44x (brotli 110.3 against 73.9). Every other module shrank a
 little from the remapped paths, `drc-wasm` the most at 0.5 kB.
+
+### Writing glTF JSON After An Edit
+
+2026-10-10. Reading moved to the tape; writing had not been measured since.
+Native, VirtualCity's 490 kB of JSON, 260 kB written, medians of 41:
+
+| path | before | after |
+|---|---:|---:|
+| untouched document (`to_json_bytes`, the source bytes) | 0.01 ms | 0.01 ms |
+| parsed document written from its tape | 0.15 ms | 0.15 ms |
+| tree written directly (`JsonValue::to_vec`) | 0.34 ms | **0.17 ms** |
+| tree laid out as a tape, then written | ~0.85 ms | 0.43 + 0.16 ms |
+
+- **The regression was mine.** "The Tape's Size, Taken Back" routed an edited
+  document's write through the tape to drop the tree writer (0.25 kB of
+  gzip): a layout of ~0.43 ms, then a write of 0.42 ms, because every string
+  laid out from a tree was marked as needing escapes and written a character
+  at a time. An edited document wrote 2.5x slower than before the tape.
+- **`write_string` copies runs** between the bytes that need an escape, which
+  are all ASCII and so never split a UTF-8 sequence: the tree writer 0.34 ->
+  0.17 ms. A test writes every control character and checks the `\u00xx`
+  spelling, and fails with upper-case hex.
+- **Strings laid out from a tree with nothing to escape are `Raw`**, written by
+  copying: a laid-out tape writes in 0.16 ms rather than 0.42.
+- **An edited document is written from its tree again**, without the layout.
+  gltf-wasm: release 124.6 -> 124.9 kB gzip, converter 283.0 kB.
 
 ### draco-core's Optimization Level, Re-Measured On glTF Reads
 

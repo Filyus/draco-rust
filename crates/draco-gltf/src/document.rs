@@ -256,9 +256,13 @@ impl Document {
     /// # Ok::<(), draco_gltf::Error>(())
     /// ```
     pub fn to_minified_json_bytes(&self) -> Vec<u8> {
-        // An edited document is written through the tape too: the next read
-        // needs that tape anyway, and one writer is less code to ship.
-        self.as_json().to_vec()
+        // An edited document is written from its tree, not laid out as a tape
+        // first: that layout costs more than the write, and a document written
+        // after an edit is usually not read again.
+        match (self.tape.get(), self.tree.get()) {
+            (None, Some(tree)) => tree.to_vec(),
+            _ => self.as_json().to_vec(),
+        }
     }
 
     /// Performs basic structural checks, plus strict graph checks when enabled.

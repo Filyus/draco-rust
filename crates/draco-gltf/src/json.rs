@@ -407,24 +407,35 @@ impl IndexMut<usize> for Value {
     }
 }
 
+/// Writes `value` as a JSON string, copying the runs between the bytes that
+/// need an escape. Those are all ASCII, and no byte of a multi-byte UTF-8
+/// sequence is, so the runs are whole characters.
 fn write_string(out: &mut Vec<u8>, value: &str) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
     out.push(b'"');
-    for ch in value.chars() {
-        match ch {
-            '"' => out.extend_from_slice(b"\\\""),
-            '\\' => out.extend_from_slice(b"\\\\"),
-            '\n' => out.extend_from_slice(b"\\n"),
-            '\r' => out.extend_from_slice(b"\\r"),
-            '\t' => out.extend_from_slice(b"\\t"),
-            c if c < ' ' => {
-                out.extend_from_slice(format!("\\u{:04x}", c as u32).as_bytes());
-            }
-            c => {
-                let mut b = [0; 4];
-                out.extend_from_slice(c.encode_utf8(&mut b).as_bytes());
-            }
+    let bytes = value.as_bytes();
+    let mut run = 0;
+    for (index, &byte) in bytes.iter().enumerate() {
+        let short: &[u8] = match byte {
+            b'"' => b"\\\"",
+            b'\\' => b"\\\\",
+            b'\n' => b"\\n",
+            b'\r' => b"\\r",
+            b'\t' => b"\\t",
+            0..=0x1f => b"",
+            _ => continue,
+        };
+        out.extend_from_slice(&bytes[run..index]);
+        if short.is_empty() {
+            out.extend_from_slice(b"\\u00");
+            out.push(HEX[usize::from(byte >> 4)]);
+            out.push(HEX[usize::from(byte & 0xf)]);
+        } else {
+            out.extend_from_slice(short);
         }
+        run = index + 1;
     }
+    out.extend_from_slice(&bytes[run..]);
     out.push(b'"');
 }
 #[cfg(test)]
@@ -659,6 +670,33 @@ mod tests {
         for (a, b, equal) in pairs {
             assert_eq!(parse(a).root() == parse(b).root(), equal, "{a} against {b}");
         }
+    }
+
+    #[test]
+    fn strings_write_every_control_character_escaped() {
+        let text: String = (0u8..0x20)
+            .map(char::from)
+            .chain("a\"\\é/".chars())
+            .collect();
+        let mut expected = String::from("\"");
+        for byte in 0u8..0x20 {
+            expected.push_str(match byte {
+                b'\n' => "\\n",
+                b'\r' => "\\r",
+                b'\t' => "\\t",
+                _ => "",
+            });
+            if !matches!(byte, b'\n' | b'\r' | b'\t') {
+                expected.push_str(&format!("\\u{byte:04x}"));
+            }
+        }
+        expected.push_str("a\\\"\\\\é/\"");
+        let value = Value::String(text.clone());
+        assert_eq!(String::from_utf8(value.to_vec()).unwrap(), expected);
+        // The tape writes the same, and reads the text back.
+        let tape = Tape::from_value(&value);
+        assert_eq!(tape.root().to_vec(), value.to_vec());
+        assert_eq!(Value::parse(expected.as_bytes()).unwrap(), value);
     }
 
     #[test]

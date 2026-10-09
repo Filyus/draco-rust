@@ -12,7 +12,7 @@ Each entry is a separate module. A bundler includes only the one you import.
 
 | import | what it adds | gzip |
 |---|---|---|
-| `@draco-rust/gltf` | read glTF and GLB, decode Draco, read any accessor (animations, skins, morph targets), raw buffers | ~123 KiB |
+| `@draco-rust/gltf` | read glTF and GLB, decode Draco, read any accessor (animations, skins, morph targets), raw buffers | ~124 KiB |
 | `@draco-rust/gltf/validate` | as above, plus strict validation of references, the node tree and `POSITION` bounds, for files you do not trust | ~152 KiB |
 | `@draco-rust/gltf/writer` | as above, plus writing geometry, GLB output and Draco compression | ~261 KiB |
 

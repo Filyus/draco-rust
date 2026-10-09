@@ -21,8 +21,9 @@ enum Kind {
     False,
     True,
     Number,
-    /// A string copied from the source with no escape in it, so its lexeme is
-    /// both its value and its serialization.
+    /// A string with nothing in it to escape -- copied from the source with no
+    /// escape there, or laid out from a tree without a quote, a backslash or a
+    /// control character -- so its text is also its serialization.
     Raw,
     /// A string held decoded, which has to be escaped again to be written.
     Text,
@@ -65,6 +66,19 @@ static EMPTY: Tape = Tape {
     slots: Vec::new(),
     source: 0,
 };
+
+/// How a string laid out from a tree is stored: one with nothing to escape is
+/// written by copying it.
+fn string_kind(text: &str) -> Kind {
+    if text
+        .bytes()
+        .any(|byte| byte == b'"' || byte == b'\\' || byte < 0x20)
+    {
+        Kind::Text
+    } else {
+        Kind::Raw
+    }
+}
 
 fn offset(value: usize) -> u32 {
     u32::try_from(value).expect("a JSON tape addresses at most 4 GiB")
@@ -123,7 +137,7 @@ impl Tape {
                     Value::Bool(false) => tape.push(Kind::False, 0, 0),
                     Value::Bool(true) => tape.push(Kind::True, 0, 0),
                     Value::Number(lexeme) => tape.push_text(Kind::Number, lexeme),
-                    Value::String(text) => tape.push_text(Kind::Text, text),
+                    Value::String(text) => tape.push_text(string_kind(text), text),
                     Value::Array(items) => {
                         let slot = tape.slots.len();
                         tape.slots.push(offset(items.len()));
@@ -157,7 +171,7 @@ impl Tape {
                     match rest.next() {
                         Some((name, value)) => {
                             *key = Some(item);
-                            tape.push_text(Kind::Text, name);
+                            tape.push_text(string_kind(name), name);
                             pending = Some(value);
                             continue;
                         }
