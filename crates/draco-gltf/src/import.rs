@@ -939,18 +939,11 @@ fn consolidated_glb_json(
             )?;
         }
     }
-    let buffers = format!(r#"[{{"byteLength":{}}}]"#, bin_len);
+    let buffers = format!(r#"[{{"byteLength":{bin_len}}}]"#);
     match root.get("buffers") {
-        Some(value) => patches
-            .replace
-            .push((value.node_index(), buffers.into_bytes())),
-        None => patches.append.push((
-            root.node_index(),
-            format!(r#""buffers":{buffers}"#).into_bytes(),
-        )),
+        Some(value) => patches.replace(value, buffers.into_bytes()),
+        None => patches.append(root, format!(r#""buffers":{buffers}"#).into_bytes()),
     }
-    patches.replace.sort_unstable_by_key(|(node, _)| *node);
-    patches.append.sort_unstable_by_key(|(node, _)| *node);
     let mut json = Vec::new();
     root.write_patched(&mut json, &patches);
     Ok(json)
@@ -986,16 +979,11 @@ fn rebase_buffer_reference(
         .and_then(|offset| prefix.checked_add(offset))
         .ok_or_else(|| Error::ResourceLimit(format!("{label} byteOffset overflow")))?;
     if let Some(field) = field {
-        patches.replace.push((field.node_index(), b"0".to_vec()));
+        patches.replace(field, b"0".to_vec());
     }
     match declared {
-        Some(declared) => patches
-            .replace
-            .push((declared.node_index(), offset.to_string().into_bytes())),
-        None => patches.append.push((
-            value.node_index(),
-            format!(r#""byteOffset":{offset}"#).into_bytes(),
-        )),
+        Some(declared) => patches.replace(declared, offset.to_string().into_bytes()),
+        None => patches.append(value, format!(r#""byteOffset":{offset}"#).into_bytes()),
     }
     Ok(())
 }

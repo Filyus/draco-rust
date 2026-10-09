@@ -481,7 +481,7 @@ impl PackedGeometry {
     pub(crate) fn from_draco_mesh(
         mesh: &Mesh,
         attributes: &[(String, u32)],
-        normalized: impl Fn(&str) -> Option<bool>,
+        normalized: &dyn Fn(&str) -> Option<bool>,
     ) -> Result<Self> {
         let attributes = attributes
             .iter()

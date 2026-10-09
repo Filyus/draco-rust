@@ -203,15 +203,21 @@ pub(crate) fn decode_encoded(
     bytes: &[u8],
     mapping: &[(String, u32)],
     reported: (usize, usize),
-    normalized: &std::collections::BTreeMap<String, bool>,
+    normalized: &[(String, bool)],
 ) -> Result<crate::PackedGeometry> {
     // Our own stream: the limits for hostile input do not apply.
     let mesh = crate::draco_primitive::decode_payload(
         bytes,
         &crate::DracoDecodeOptions::default().with_limits(draco_core::DecodeLimits::permissive()),
     )?;
-    let decoded = crate::PackedGeometry::from_draco_mesh(&mesh, mapping, |semantic| {
-        normalized.get(semantic).copied()
+    let decoded = crate::PackedGeometry::from_draco_mesh(&mesh, mapping, &|semantic| {
+        // The last entry for a semantic wins, as it would in a map built
+        // from the same list.
+        normalized
+            .iter()
+            .rev()
+            .find(|(name, _)| name == semantic)
+            .map(|(_, normalized)| *normalized)
     })?;
     let index_count = decoded.indices().map_or(0, crate::PackedIndices::count);
     if (decoded.vertex_count(), index_count) != reported {
@@ -1113,7 +1119,7 @@ impl Import {
             }
             options.encoding_method = 1;
         }
-        let normalized = reference
+        let normalized: Vec<(String, bool)> = reference
             .attribute_indices()
             .map(|(semantic, index)| {
                 let normalized = self

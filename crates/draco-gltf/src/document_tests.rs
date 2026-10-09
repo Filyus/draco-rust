@@ -831,7 +831,7 @@ mod compression_tests {
         let normalized = |semantic: &str| (semantic == "COLOR_0").then_some(true);
 
         let geometry =
-            crate::PackedGeometry::from_draco_mesh(&mesh, &contract, normalized).unwrap();
+            crate::PackedGeometry::from_draco_mesh(&mesh, &contract, &normalized).unwrap();
 
         let flag = |semantic: &str| {
             geometry

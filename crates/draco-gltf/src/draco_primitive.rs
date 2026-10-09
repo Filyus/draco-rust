@@ -122,7 +122,7 @@ impl DracoPrimitiveExtension {
                 .get(semantic)
                 .map(|declared| declared.normalized)
         };
-        let geometry = PackedGeometry::from_draco_mesh(mesh, &self.attributes, normalized)?;
+        let geometry = PackedGeometry::from_draco_mesh(mesh, &self.attributes, &normalized)?;
         geometry.validate(contract.profile)?;
         Ok(geometry)
     }
@@ -291,7 +291,6 @@ mod encode {
     use draco_core::draco_types::DataType;
 
     use super::DracoPrimitiveExtension;
-    use std::collections::BTreeMap;
     use std::sync::OnceLock;
 
     use crate::compression::{decode_encoded, encode_primitive, keeps_vertex_order};
@@ -332,7 +331,7 @@ mod encode {
         attributes: Vec<(String, u32)>,
         accessors: Vec<DracoAccessor>,
         index_count: usize,
-        normalized: BTreeMap<String, bool>,
+        normalized: Vec<(String, bool)>,
         position_bits: Option<u8>,
         decoded: OnceLock<PackedGeometry>,
     }
@@ -419,7 +418,7 @@ mod encode {
             let indices = geometry.indices().map(|_| source.index_accessor());
             let (mesh, mapping) =
                 crate::decode_geometry(&source, mode.to_gltf(), &attributes, indices)?;
-            let normalized: BTreeMap<String, bool> = geometry
+            let normalized: Vec<(String, bool)> = geometry
                 .attributes()
                 .iter()
                 .map(|attribute| (attribute.semantic().to_owned(), attribute.normalized()))
@@ -443,7 +442,11 @@ mod encode {
                     count: encoded.layout.points,
                     components: layout.components,
                     component_type: layout.component_type,
-                    normalized: normalized.get(semantic).copied().unwrap_or(false),
+                    normalized: normalized
+                        .iter()
+                        .rev()
+                        .find(|(name, _)| name == semantic)
+                        .is_some_and(|(_, normalized)| *normalized),
                     bounds: layout.position_bounds.clone(),
                 })
                 .collect();

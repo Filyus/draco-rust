@@ -408,11 +408,6 @@ impl<'a> JsonRef<'a> {
         self.write(&mut out);
         out
     }
-    /// The position of this value in its document's node table, which is
-    /// how a [`Patches`] entry names it.
-    pub(crate) fn node_index(self) -> u32 {
-        self.index
-    }
     /// Writes the subtree in one pass over its nodes, which are already in
     /// document order; the only state is the stack of open containers.
     pub(crate) fn write(self, out: &mut Vec<u8>) {
@@ -517,12 +512,29 @@ impl<'a> JsonRef<'a> {
 /// Edits for [`JsonRef::write_patched`]. `replace` writes the given JSON in
 /// place of the value at a node, subtree and all. `append` adds members,
 /// spelled `"key":value` and joined by commas, at the end of the object at a
-/// node. Each list is sorted by node index and names a node at most once, and
-/// only values are replaced, never keys.
+/// node. Each list is kept sorted by node index and names a node at most
+/// once, and only values are replaced, never keys.
 #[derive(Default)]
 pub(crate) struct Patches {
-    pub replace: Vec<(u32, Vec<u8>)>,
-    pub append: Vec<(u32, Vec<u8>)>,
+    replace: Vec<(u32, Vec<u8>)>,
+    append: Vec<(u32, Vec<u8>)>,
+}
+
+impl Patches {
+    /// Writes `json` in place of `value`.
+    pub(crate) fn replace(&mut self, value: JsonRef<'_>, json: Vec<u8>) {
+        Self::insert(&mut self.replace, value.index, json);
+    }
+    /// Adds `members` at the end of `object`.
+    pub(crate) fn append(&mut self, object: JsonRef<'_>, members: Vec<u8>) {
+        Self::insert(&mut self.append, object.index, members);
+    }
+    /// Inserts in order. Patches arrive close to document order and are few,
+    /// so this costs less, in time and in code, than sorting them afterwards.
+    fn insert(list: &mut Vec<(u32, Vec<u8>)>, node: u32, text: Vec<u8>) {
+        let at = list.partition_point(|(other, _)| *other < node);
+        list.insert(at, (node, text));
+    }
 }
 
 impl PartialEq for JsonRef<'_> {
