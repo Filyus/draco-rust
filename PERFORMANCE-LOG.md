@@ -5245,11 +5245,15 @@ So `opt-level = 2` stays, and on these reads it buys 7-18% over `s` (the
   (`--merge-similar-functions`, `--dae-optimizing`, `--precompute-propagate`)
   change nothing after `--converge`; stripping the producers and
   target-features sections saves 55 bytes.
-- **What the published modules are optimized with.** CI, `pages.yml` and
-  `release.yml` install wasm-opt with `apt-get install binaryen` on
-  `ubuntu-24.04`, which is `108-1`, older than either. The sizes in
-  `web/wasm-sizes.md` come from local builds with 117, so the shipped modules
-  are not the recorded ones; how far apart was not measured.
+- **What the published modules are optimized with** (`landed`). CI,
+  `pages.yml` and `release.yml` installed wasm-opt with `apt-get install
+  binaryen` on `ubuntu-24.04`, which is `108-1`, while `web/wasm-sizes.md` was
+  recorded with the 117 wasm-pack had cached. Measured the same way, 108 and
+  117 come to the same total (948.7 kB gzip over all seven modules), so the
+  published modules were the recorded size; 133 is 944.9. The workflows now
+  download Binaryen 133 from its release, checksum checked, and the build
+  tool refuses `--record-sizes` with any other version, so the record and the
+  shipped modules come from one wasm-opt.
 
 ## Unexplored
 

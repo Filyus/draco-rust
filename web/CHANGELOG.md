@@ -27,6 +27,10 @@ only anchor a shipping without a version of its own has.
   decoder, its glue and three.js's two loaders, with every model read as fast
   as before.
 
+- Every module is optimized with wasm-opt from Binaryen 133, pinned in the
+  workflows, instead of whatever Ubuntu packages (108): 0.5% smaller on each
+  module with code in it, 3.8 kB across all seven, with the same speed.
+
 - The modules no longer embed the paths of the machine that built them: every
   panic location used to name its source file by absolute path, the builder's
   user directory included. Each module is a little smaller for it.
