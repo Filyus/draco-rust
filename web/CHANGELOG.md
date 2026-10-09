@@ -8,6 +8,20 @@ them; the `Unreleased` section becomes the first packages' notes.
 
 ## Unreleased
 
+- **The modules are packaged for npm as `@draco-rust/*`.**
+  - `@draco-rust/decoder` decodes Draco: `.` reads meshes and point clouds
+    (87 KiB gzip), `./mesh` meshes only (72 KiB, all glTF allows),
+    `./point-cloud` point clouds only (58 KiB), and `./legacy` adds bitstreams
+    older than 2.2 (97 KiB).
+  - `@draco-rust/encoder` writes Draco (133 KiB).
+  - `@draco-rust/gltf` reads glTF with any accessor (123 KiB), `./validate`
+    adds strict validation (152 KiB), and `./writer` adds writing and Draco
+    compression (261 KiB).
+  - `@draco-rust/fbx` reads and writes FBX (234 KiB).
+
+  Every entry works from a bundler, from a CDN such as jsDelivr, and in Node.
+  `drc-wasm` gained the `point-cloud-only` feature for the point-cloud entry.
+
 - **The modules no longer ship as zips on crate releases.** The 148 zipped
   modules attached to 21 crate releases were removed, and releases attach none
   from now on; the modules are to be published as `@draco-rust/*` npm packages,

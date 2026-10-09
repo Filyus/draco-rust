@@ -11,6 +11,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use miniz_oxide::deflate::compress_to_vec;
 
+mod npm;
+
 const MODULES: &[&str] = &[
     "obj-wasm",
     "ply-wasm",
@@ -104,6 +106,8 @@ struct Config {
     web_dir: PathBuf,
     output_dir: PathBuf,
     rustflags: OsString,
+    npm: bool,
+    npm_packages: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -128,6 +132,9 @@ fn run() -> Result<(), String> {
     config.web_dir = executable_web_dir()?;
     config.output_dir = config.web_dir.join("www").join("pkg");
     config.rustflags = remapped_rustflags(&config.web_dir);
+    if config.npm {
+        return npm::build_packages(&config, &config.npm_packages);
+    }
     fs::create_dir_all(&config.output_dir)
         .map_err(|error| format!("failed to create {}: {error}", config.output_dir.display()))?;
     remove_orphaned_module_files(&config.output_dir)
@@ -382,6 +389,8 @@ fn parse_args() -> Result<Config, String> {
         web_dir: PathBuf::new(),
         output_dir: PathBuf::new(),
         rustflags: OsString::new(),
+        npm: false,
+        npm_packages: Vec::new(),
     };
 
     let mut args = env::args().skip(1);
@@ -428,6 +437,11 @@ fn parse_args() -> Result<Config, String> {
                 let value = args.next().ok_or("--module requires a value")?;
                 config.modules.push(value);
             }
+            "--npm" => config.npm = true,
+            "--package" => {
+                let value = args.next().ok_or("--package requires a value")?;
+                config.npm_packages.push(value);
+            }
             unknown => return Err(format!("unknown argument: {unknown}")),
         }
     }
@@ -458,6 +472,8 @@ fn print_help() {
     println!("  --verbose-build          Print wasm-pack and wasm-opt output");
     println!("  --force                  Rebuild even when stamps are up to date");
     println!("  --record-sizes           Merge the measured sizes into web/wasm-sizes.md");
+    println!("  --npm                    Build the @draco-rust/* packages into web/npm/dist");
+    println!("  --package <name>         With --npm, build one package; may be repeated");
 }
 
 /// The caller's rustflags plus a `--remap-path-prefix` for the toolchain, the

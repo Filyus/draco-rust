@@ -1,0 +1,44 @@
+{
+  "name": "@draco-rust/encoder",
+  "version": "0.1.0",
+  "description": "Draco geometry encoder in WebAssembly, a safe Rust port of Google Draco: compresses meshes and point clouds to .drc.",
+  "keywords": [
+    "draco",
+    "encoder",
+    "mesh",
+    "point-cloud",
+    "compression",
+    "wasm",
+    "webassembly",
+    "3d"
+  ],
+  "license": "Apache-2.0",
+  "author": "Filyus",
+  "homepage": "https://filyus.github.io/draco-rust/",
+  "bugs": {
+    "url": "https://github.com/Filyus/draco-rust/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Filyus/draco-rust.git",
+    "directory": "web/npm/encoder"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./*.wasm": "./*.wasm",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "**/*.js",
+    "**/*.d.ts",
+    "**/*.wasm"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

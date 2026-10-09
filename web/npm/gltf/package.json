@@ -1,0 +1,51 @@
+{
+  "name": "@draco-rust/gltf",
+  "version": "0.1.0",
+  "description": "glTF and GLB reading, validation, writing and Draco compression in WebAssembly, with a lossless document model.",
+  "keywords": [
+    "gltf",
+    "glb",
+    "draco",
+    "KHR_draco_mesh_compression",
+    "wasm",
+    "webassembly",
+    "3d"
+  ],
+  "license": "Apache-2.0",
+  "author": "Filyus",
+  "homepage": "https://filyus.github.io/draco-rust/",
+  "bugs": {
+    "url": "https://github.com/Filyus/draco-rust/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Filyus/draco-rust.git",
+    "directory": "web/npm/gltf"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./validate": {
+      "types": "./validate/index.d.ts",
+      "default": "./validate/index.js"
+    },
+    "./writer": {
+      "types": "./writer/index.d.ts",
+      "default": "./writer/index.js"
+    },
+    "./*.wasm": "./*.wasm",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "**/*.js",
+    "**/*.d.ts",
+    "**/*.wasm"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

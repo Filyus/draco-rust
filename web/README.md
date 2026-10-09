@@ -3,6 +3,33 @@
 The WebAssembly workspace exposes independently loaded helpers for OBJ, PLY,
 STL, standalone Draco (`.drc`), FBX and glTF assets.
 
+## npm packages
+
+The modules ship to npm as `@draco-rust/*`, split by what a consumer needs
+rather than by file format. Each subpath is a module of its own, so a bundler
+takes only the wasm an application imports:
+
+| package | entries | built from |
+|---|---|---|
+| `@draco-rust/decoder` | `.` meshes and point clouds; `./mesh`; `./point-cloud`; `./legacy` adds bitstreams before 2.2 | `drc-wasm`, `read` and its decode features |
+| `@draco-rust/encoder` | `.` | `drc-wasm`, `write` |
+| `@draco-rust/gltf` | `.` reader; `./validate` adds strict validation; `./writer` adds writing and Draco compression | `gltf-wasm` |
+| `@draco-rust/fbx` | `.` | `fbx-wasm` |
+
+OBJ, PLY, STL and KTX2 stay with the converter. The manifests and READMEs are
+tracked in [`npm/`](npm/), and which features build which entry is the
+`PACKAGES` table in [`build-tool/src/npm.rs`](build-tool/src/npm.rs). Building
+needs the pinned wasm-opt, as `--record-sizes` does:
+
+```sh
+cargo run --manifest-path web/build-tool/Cargo.toml -- --npm   # into web/npm/dist
+npm run --prefix web test:npm-packages                         # pack, install, import every entry
+```
+
+The first version of a package is published by hand from its directory in
+`web/npm/dist` (`npm publish`), because npm attaches a trusted publisher only to
+a package that exists.
+
 ## glTF module
 
 `gltf-wasm` is the single browser entry point for glTF. Its default artifact

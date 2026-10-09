@@ -1,0 +1,111 @@
+/**
+ * The `@draco-rust/*` packages as a consumer gets them.
+ *
+ * Packs what `build-tool --npm` left in `web/npm/dist`, installs the tarballs
+ * into a scratch project, and imports every entry through the package's own
+ * `exports` map: each decoder entry decodes what it claims and refuses what it
+ * leaves out, the encoder's output decodes back, each glTF entry reads a Draco
+ * GLB and writes it out again, and FBX round-trips a mesh.
+ *
+ *   cargo run --manifest-path build-tool/Cargo.toml -- --npm
+ *   npm run test:npm-packages
+ */
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const dist = fileURLToPath(new URL('../npm/dist/', import.meta.url));
+const testdata = fileURLToPath(new URL('../../testdata/', import.meta.url));
+const packages = ['decoder', 'encoder', 'gltf', 'fbx'];
+for (const name of packages) {
+  assert.ok(existsSync(join(dist, name, 'package.json')), `web/npm/dist/${name} is missing; build it with build-tool --npm`);
+}
+
+const project = mkdtempSync(join(tmpdir(), 'draco-npm-'));
+// Under `npm run`, npm names its own entry point, which runs without a shell.
+const npmCli = process.env.npm_execpath;
+const run = (args: string[], cwd: string) =>
+  (npmCli
+    ? execFileSync(process.execPath, [npmCli, ...args], { cwd, stdio: ['ignore', 'pipe', 'inherit'] })
+    : execFileSync('npm', args, { cwd, stdio: ['ignore', 'pipe', 'inherit'], shell: process.platform === 'win32' })
+  ).toString();
+try {
+  for (const name of packages) run(['pack', '--silent', '--pack-destination', project], join(dist, name));
+  writeFileSync(join(project, 'package.json'), JSON.stringify({ name: 'consumer', private: true, type: 'module' }));
+  const tarballs = readdirSync(project).filter((file) => file.endsWith('.tgz'));
+  assert.equal(tarballs.length, packages.length);
+  run(['install', '--silent', '--no-audit', '--no-fund', '--offline', ...tarballs.map((file) => `./${file}`)], project);
+
+  writeFileSync(join(project, 'consumer.mjs'), `
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+const testdata = ${JSON.stringify(testdata)};
+const fixture = async (name) => new Uint8Array(await readFile(testdata + name));
+const load = async (spec) => {
+  const module = await import(spec);
+  const wasm = spec.replace(/^(@draco-rust\\/[a-z]+)(\\/.*)?$/, (_, pkg, sub) => pkg + (sub ?? '') + '/index_bg.wasm');
+  await module.default({ module_or_path: await readFile(new URL(import.meta.resolve(wasm))) });
+  return module;
+};
+
+const streams = {
+  mesh: await fixture('bunny_cpp_standard.drc'),
+  cloud: await fixture('pc_color.drc'),
+  legacy: await fixture('test_nm.obj.edgebreaker.1.0.0.drc'),
+};
+const decoders = {
+  '@draco-rust/decoder': { mesh: true, cloud: true, legacy: false },
+  '@draco-rust/decoder/mesh': { mesh: true, cloud: false, legacy: false },
+  '@draco-rust/decoder/point-cloud': { mesh: false, cloud: true, legacy: false },
+  '@draco-rust/decoder/legacy': { mesh: true, cloud: true, legacy: true },
+};
+for (const [spec, decodes] of Object.entries(decoders)) {
+  const { parse_drc_bytes } = await load(spec);
+  for (const [kind, bytes] of Object.entries(streams)) {
+    const result = parse_drc_bytes(bytes);
+    assert.equal(result.success, decodes[kind], spec + ' on a ' + kind + ' stream: ' + result.error);
+    if (!result.success) {
+      assert.ok(result.error, spec + ' refused a ' + kind + ' stream without saying why');
+      continue;
+    }
+    const { positions, indices } = result.meshes[0];
+    assert.ok(positions instanceof Float32Array && positions.length > 0);
+    assert.ok(indices instanceof Uint32Array);
+    assert.equal(indices.length > 0, kind !== 'cloud', spec + ' ' + kind + ' faces');
+  }
+}
+
+const { create_drc } = await load('@draco-rust/encoder');
+const quad = { positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0]), indices: new Uint32Array([0, 1, 2, 2, 1, 3]) };
+const encoded = create_drc(quad, { position_bits: 14 });
+assert.ok(encoded.success, encoded.error);
+const { parse_drc_bytes } = await import('@draco-rust/decoder/mesh');
+const decoded = parse_drc_bytes(encoded.binary_data);
+assert.ok(decoded.success, decoded.error);
+assert.equal(decoded.meshes[0].indices.length, 6);
+
+const glb = await fixture('bun_zipper.glb');
+for (const spec of ['@draco-rust/gltf', '@draco-rust/gltf/validate', '@draco-rust/gltf/writer']) {
+  const { GltfAsset } = await load(spec);
+  const asset = new GltfAsset(glb, '2.0');
+  assert.equal(asset.meshCount(), 1);
+  const geometry = asset.readPrimitive(0, 0);
+  assert.ok(geometry.attributeCount() > 0 && geometry.indexBytes().length > 0, spec);
+  assert.ok(asset.glb(2).length > 0, spec);
+}
+
+const fbx = await load('@draco-rust/fbx');
+const written = fbx.create_fbx([quad], {});
+assert.ok(written.success, written.error);
+const read = fbx.parse_fbx(written.binary_data);
+assert.ok(read.success, read.error);
+assert.equal(read.meshes.length, 1);
+console.log('npm-packages: OK (4 decoder entries, encoder, 3 glTF entries, FBX)');
+`);
+  process.stdout.write(execFileSync(process.execPath, ['consumer.mjs'], { cwd: project }).toString());
+} finally {
+  rmSync(project, { recursive: true, force: true });
+}

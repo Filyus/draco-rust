@@ -134,3 +134,4 @@ test-results/
 # reference-oracle locations). Never commit real paths; web/.env.example
 # documents the variables each gated test reads.
 web/.env
+web/npm/dist/

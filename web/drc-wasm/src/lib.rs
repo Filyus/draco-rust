@@ -243,10 +243,14 @@ fn parse_result_to_js(result: &ParseResult) -> JsValue {
 #[cfg(feature = "read")]
 fn parse_drc_internal(data: &[u8]) -> ParseResult {
     use draco_core::decoder_buffer::DecoderBuffer;
-    use draco_core::mesh_decoder::MeshDecoder;
 
     let mut mesh = Mesh::new();
-    let mut decoder = MeshDecoder::new();
+    // Only what the build decodes is reachable, which is what keeps the mesh
+    // decoder out of a point-cloud-only module.
+    #[cfg(feature = "point-cloud-only")]
+    let mut decoder = draco_core::PointCloudDecoder::new();
+    #[cfg(not(feature = "point-cloud-only"))]
+    let mut decoder = draco_core::mesh_decoder::MeshDecoder::new();
     let mut buffer = DecoderBuffer::new(data);
     // Nothing catches a panic here. The decoder returns errors for every
     // malformed payload tried against it -- truncation at each of a payload's
@@ -257,7 +261,7 @@ fn parse_drc_internal(data: &[u8]) -> ParseResult {
     match decoder.decode(&mut buffer, &mut mesh) {
         Ok(()) => {
             let mut warnings = Vec::new();
-            if mesh.num_faces() == 0 {
+            if mesh.num_faces() == 0 && cfg!(not(feature = "point-cloud-only")) {
                 warnings.push(
                     "Draco payload decoded to a point cloud: it carries no faces".to_string(),
                 );

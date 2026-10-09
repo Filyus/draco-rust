@@ -1,0 +1,42 @@
+{
+  "name": "@draco-rust/fbx",
+  "version": "0.1.0",
+  "description": "Binary FBX reading and writing in WebAssembly: meshes, the model tree, materials, skins and morphs.",
+  "keywords": [
+    "fbx",
+    "mesh",
+    "3d",
+    "wasm",
+    "webassembly",
+    "converter"
+  ],
+  "license": "Apache-2.0",
+  "author": "Filyus",
+  "homepage": "https://filyus.github.io/draco-rust/",
+  "bugs": {
+    "url": "https://github.com/Filyus/draco-rust/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Filyus/draco-rust.git",
+    "directory": "web/npm/fbx"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./*.wasm": "./*.wasm",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "**/*.js",
+    "**/*.d.ts",
+    "**/*.wasm"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

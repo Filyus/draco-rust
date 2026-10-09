@@ -27,6 +27,11 @@ console_error_panic_hook = ["dep:console_error_panic_hook"]
 read = ["draco-core/decoder", "draco-core/edgebreaker_valence_decode"]
 # Point clouds, splats among them.
 point-cloud-decode = ["read", "draco-core/point_cloud_decode"]
+# Point clouds and nothing else: a mesh stream is refused, and the mesh
+# decoder -- edgebreaker, the corner table, the mesh predictors -- is never
+# reached, so it is left out of the module (88.8 -> 59.1 kB gzip against
+# `point-cloud-decode`). For viewers of scans and splats.
+point-cloud-only = ["point-cloud-decode"]
 # Bitstreams older than the current version.
 legacy-bitstream-decode = ["read", "draco-core/legacy_bitstream_decode"]
 # Draco encoding (`create_drc`).

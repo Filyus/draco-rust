@@ -8,6 +8,7 @@
     "build:ts": "tsc",
     "watch:ts": "tsc --watch",
     "test:node": "node tests/node-smoke.ts",
+    "test:npm-packages": "node tests/npm-packages.ts",
     "test:model-intake": "node tests/model-intake.ts",
     "test:scene-document": "node tests/scene-document-contract.ts",
     "test:scene-document-viewer": "node tests/scene-document-viewer-parity.ts",

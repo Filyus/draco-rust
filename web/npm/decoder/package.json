@@ -1,0 +1,56 @@
+{
+  "name": "@draco-rust/decoder",
+  "version": "0.1.0",
+  "description": "Draco geometry decoder in WebAssembly, a safe Rust port of Google Draco: meshes, point clouds and older bitstreams, each as its own small entry.",
+  "keywords": [
+    "draco",
+    "decoder",
+    "mesh",
+    "point-cloud",
+    "compression",
+    "wasm",
+    "webassembly",
+    "3d"
+  ],
+  "license": "Apache-2.0",
+  "author": "Filyus",
+  "homepage": "https://filyus.github.io/draco-rust/",
+  "bugs": {
+    "url": "https://github.com/Filyus/draco-rust/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Filyus/draco-rust.git",
+    "directory": "web/npm/decoder"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./mesh": {
+      "types": "./mesh/index.d.ts",
+      "default": "./mesh/index.js"
+    },
+    "./point-cloud": {
+      "types": "./point-cloud/index.d.ts",
+      "default": "./point-cloud/index.js"
+    },
+    "./legacy": {
+      "types": "./legacy/index.d.ts",
+      "default": "./legacy/index.js"
+    },
+    "./*.wasm": "./*.wasm",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "**/*.js",
+    "**/*.d.ts",
+    "**/*.wasm"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}
