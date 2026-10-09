@@ -7,7 +7,7 @@ Sizes are toolchain- and platform-dependent. Two builds of one commit on the sam
 | module | profile | raw | gzip |
 | --- | --- | ---: | ---: |
 | drc-wasm | release | 623120 | 222846 |
-| fbx-wasm | release | 584478 | 239762 |
+| fbx-wasm | release | 588569 | 241061 |
 | gltf-wasm | accessors,draco-encode,raw-resources,strict-validation | 730280 | 280711 |
 | gltf-wasm | release | 358004 | 142837 |
 | ktx2-wasm | release | 366749 | 175075 |
