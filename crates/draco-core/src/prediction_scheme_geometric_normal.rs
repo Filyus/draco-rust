@@ -262,7 +262,7 @@ fn compute_predicted_value(
     let corner_table = positions.corner_table;
     let pos_cent = positions.get(corner_id);
 
-    let mut normal = [0i128; 3];
+    let mut normal = [0i64; 3];
 
     let mut cit = VertexCornersIterator::new(corner_table, corner_id);
     while !cit.end() {
@@ -296,14 +296,14 @@ fn compute_predicted_value(
             pos_prev[2] as i64 - pos_cent[2] as i64,
         ];
 
-        let cross = [
-            v_next[1] as i128 * v_prev[2] as i128 - v_next[2] as i128 * v_prev[1] as i128,
-            v_next[2] as i128 * v_prev[0] as i128 - v_next[0] as i128 * v_prev[2] as i128,
-            v_next[0] as i128 * v_prev[1] as i128 - v_next[1] as i128 * v_prev[0] as i128,
-        ];
-        normal[0] += cross[0];
-        normal[1] += cross[1];
-        normal[2] += cross[2];
+        // The deltas of two `i32` positions fit `i64`; the cross product and
+        // the sum need not, and wrap exactly as the encoder's do -- the
+        // prediction both sides form has to be the same number, overflow
+        // included.
+        let cross = cross_product(&v_next, &v_prev);
+        normal[0] = normal[0].wrapping_add(cross[0]);
+        normal[1] = normal[1].wrapping_add(cross[1]);
+        normal[2] = normal[2].wrapping_add(cross[2]);
 
         if prediction_mode == NormalPredictionMode::OneTriangle {
             break;
@@ -319,8 +319,11 @@ fn compute_predicted_value(
         return;
     }
 
-    let upper_bound = 1i128 << 29;
-    let abs_sum = normal[0].abs() + normal[1].abs() + normal[2].abs();
+    let upper_bound = 1i64 << 29;
+    let abs_sum = normal[0]
+        .wrapping_abs()
+        .wrapping_add(normal[1].wrapping_abs())
+        .wrapping_add(normal[2].wrapping_abs());
     if abs_sum > upper_bound {
         let quotient = abs_sum / upper_bound;
         normal[0] /= quotient;
@@ -1021,7 +1024,7 @@ impl<'a> PredictionSchemeEncoder<'a, i32, i32> for MeshPredictionSchemeGeometric
     }
 }
 
-#[cfg(feature = "encoder")]
+#[cfg(any(feature = "encoder", feature = "decoder"))]
 /// Cross product of two 64-bit integer vectors, wrapping on overflow.
 ///
 /// Its inputs are position deltas that can span the whole `i64` range, so the
@@ -1194,6 +1197,78 @@ mod tests {
             unique.len() < vertices.len(),
             "shared vertices: {vertices:?}"
         );
+    }
+
+    /// The normal both sides predict has to be the same number, or a stream
+    /// does not decode to what was encoded. Positions at the ends of the `i32`
+    /// range put the cross product and the fan's sum outside `i64`, where the
+    /// only agreement is wrapping the same way.
+    #[cfg(feature = "encoder")]
+    #[test]
+    fn mesh_geometric_normal_decoder_predicts_what_the_encoder_did_past_i64() {
+        let ring = 6u32;
+        let faces: Vec<[u32; 3]> = (1..=ring).map(|i| [0, i, i % ring + 1]).collect();
+        let corner_table = corner_table_from(&faces);
+        let num_points = (ring + 1) as usize;
+        let identity: Vec<i32> = (0..num_points as i32).collect();
+        let data_to_corner_map: Vec<u32> = (0..num_points as u32).collect();
+        let mut mesh_data = MeshPredictionSchemeData::new();
+        mesh_data.set(&corner_table, &data_to_corner_map, &identity);
+
+        let mut position_attribute = PointAttribute::new();
+        position_attribute.init(
+            GeometryAttributeType::Position,
+            3,
+            DataType::Int32,
+            false,
+            num_points,
+        );
+        let (lo, hi) = (i32::MIN + 7, i32::MAX - 3);
+        let points: [[i32; 3]; 7] = [
+            [lo, hi, lo],
+            [hi, lo, hi],
+            [hi, hi, lo],
+            [lo, lo, hi],
+            [hi, lo, lo],
+            [lo, hi, hi],
+            [hi, hi, hi],
+        ];
+        for (p, point) in points.iter().enumerate() {
+            for (c, value) in point.iter().enumerate() {
+                position_attribute
+                    .buffer_mut()
+                    .update(&value.to_le_bytes(), Some((p * 3 + c) * 4));
+            }
+        }
+        let parent = PredictionParent::portable(&position_attribute).expect("portable");
+        let entry_to_point_id_map: Vec<u32> = (0..num_points as u32).collect();
+        let map = EntryToPointIdMap::from_u32_slice(&entry_to_point_id_map);
+
+        let mut overflowed = false;
+        for mode in [
+            NormalPredictionMode::TriangleArea,
+            NormalPredictionMode::OneTriangle,
+        ] {
+            let mut decoded = CornerPositions::new(&corner_table, &identity, map, parent);
+            let mut encoded = EncoderCornerPositions::new(&corner_table, &identity, map, parent);
+            for corner in 0..corner_table.num_corners() as u32 {
+                let corner = CornerIndex(corner);
+                let mut from_decoder = [0i32; 3];
+                let mut from_encoder = [0i32; 3];
+                compute_predicted_value(&mut decoded, mode, corner, &mut from_decoder);
+                compute_encoder_predicted_value(&mut encoded, mode, corner, &mut from_encoder);
+                assert_eq!(from_decoder, from_encoder, "{mode:?} {corner:?}");
+
+                let cent = encoded.get(corner);
+                let next = encoded.get(corner_table.next(corner));
+                let prev = encoded.get(corner_table.previous(corner));
+                let d = |a: [i64; 3]| [a[0] - cent[0], a[1] - cent[1], a[2] - cent[2]];
+                let (n, p) = (d(next), d(prev));
+                overflowed |= n[1].checked_mul(p[2]).is_none() || n[2].checked_mul(p[1]).is_none();
+            }
+        }
+        // Without an overflow the fixture checks nothing the plain sums do not.
+        assert!(overflowed, "fixture must leave i64");
     }
 
     /// Builds a corner table from faces given as vertex triples.
