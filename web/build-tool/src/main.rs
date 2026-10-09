@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 use std::env;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -97,6 +97,7 @@ struct Config {
     record_sizes: bool,
     web_dir: PathBuf,
     output_dir: PathBuf,
+    rustflags: OsString,
 }
 
 #[derive(Debug)]
@@ -120,6 +121,7 @@ fn run() -> Result<(), String> {
     let mut config = parse_args()?;
     config.web_dir = executable_web_dir()?;
     config.output_dir = config.web_dir.join("www").join("pkg");
+    config.rustflags = remapped_rustflags(&config.web_dir);
     fs::create_dir_all(&config.output_dir)
         .map_err(|error| format!("failed to create {}: {error}", config.output_dir.display()))?;
     remove_orphaned_module_files(&config.output_dir)
@@ -361,6 +363,7 @@ fn parse_args() -> Result<Config, String> {
         record_sizes: false,
         web_dir: PathBuf::new(),
         output_dir: PathBuf::new(),
+        rustflags: OsString::new(),
     };
 
     let mut args = env::args().skip(1);
@@ -439,6 +442,63 @@ fn print_help() {
     println!("  --record-sizes           Merge the measured sizes into web/wasm-sizes.md");
 }
 
+/// The caller's rustflags plus a `--remap-path-prefix` for the toolchain, the
+/// cargo registry and this repository, encoded for `CARGO_ENCODED_RUSTFLAGS`
+/// so that a path with a space in it survives.
+///
+/// Every panic location in a module names the source file it points into, so
+/// without this a module carries the build machine's own directories, its
+/// user name among them, and differs from a build on another machine by their
+/// lengths. Remapped, the toolchain's files read as `/rustc/<commit>/...`,
+/// the registry's as `/cargo/...` and the repository's relative to its root.
+fn remapped_rustflags(web_dir: &Path) -> OsString {
+    let mut flags: Vec<OsString> = match env::var_os("CARGO_ENCODED_RUSTFLAGS") {
+        Some(encoded) if !encoded.is_empty() => encoded
+            .to_string_lossy()
+            .split('\u{1f}')
+            .map(OsString::from)
+            .collect(),
+        _ => env::var("RUSTFLAGS")
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(OsString::from)
+            .collect(),
+    };
+    let mut remap = |from: &Path, to: &str| {
+        let mut flag = OsString::from("--remap-path-prefix=");
+        flag.push(from.as_os_str());
+        flag.push("=");
+        flag.push(to);
+        flags.push(flag);
+    };
+    let cargo_home = env::var_os("CARGO_HOME").map(PathBuf::from).or_else(|| {
+        env::var_os("USERPROFILE")
+            .or_else(|| env::var_os("HOME"))
+            .map(|home| PathBuf::from(home).join(".cargo"))
+    });
+    if let Some(cargo_home) = cargo_home {
+        remap(&cargo_home.join("registry").join("src"), "/cargo");
+    }
+    if let Some(repository) = web_dir.parent() {
+        remap(repository, ".");
+    }
+    let sysroot = Command::new("rustc").args(["--print", "sysroot"]).output();
+    if let Some(output) = sysroot.ok().filter(|output| output.status.success()) {
+        let sysroot = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if !sysroot.is_empty() {
+            remap(Path::new(&sysroot), "/rustc");
+        }
+    }
+    let mut encoded = OsString::new();
+    for (index, flag) in flags.iter().enumerate() {
+        if index > 0 {
+            encoded.push("\u{1f}");
+        }
+        encoded.push(flag);
+    }
+    encoded
+}
+
 fn executable_web_dir() -> Result<PathBuf, String> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     manifest_dir
@@ -509,7 +569,13 @@ fn build_module(config: &Config, module: &str) -> BuildResult {
             .join(" ")
     ));
 
-    let build_status = run_command("wasm-pack", &wasm_pack_args, &module_path, &mut log);
+    let build_status = run_command_with_env(
+        "wasm-pack",
+        &wasm_pack_args,
+        &module_path,
+        &[("CARGO_ENCODED_RUSTFLAGS", &config.rustflags)],
+        &mut log,
+    );
     if let Err(error) = build_status {
         log.push(format!("Error: {error}"));
         let _ = fs::remove_dir_all(&module_output_dir);
@@ -630,8 +696,19 @@ fn run_command<P: AsRef<Path>>(
     cwd: &Path,
     log: &mut Vec<String>,
 ) -> Result<(), String> {
+    run_command_with_env(program, args, cwd, &[], log)
+}
+
+fn run_command_with_env<P: AsRef<Path>>(
+    program: P,
+    args: &[OsString],
+    cwd: &Path,
+    env: &[(&str, &OsStr)],
+    log: &mut Vec<String>,
+) -> Result<(), String> {
     let output = Command::new(program.as_ref())
         .args(args)
+        .envs(env.iter().copied())
         .current_dir(cwd)
         .env("NO_COLOR", "1")
         .env("CARGO_TERM_COLOR", "never")
