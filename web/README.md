@@ -565,6 +565,31 @@ machine: Windows and Linux differ by about 875 bytes on the same commit.
 
 Optimized packages are written to `web/www/pkg/`.
 
+### Comparing with the upstream decoder
+
+Upstream Draco ships two prebuilt decoders, in `javascript/` of its repository
+and on gstatic, and they decode different things. A size or speed figure means
+something only beside the build that carries the same set:
+
+| upstream | carries | `drc-wasm` build |
+| --- | --- | --- |
+| `draco_decoder_gltf.wasm` + `draco_wasm_wrapper_gltf.js` | current-version meshes only (`DRACO_GLTF_BITSTREAM`) | `--module drc-wasm --no-default-features --features read` |
+| `draco_decoder.wasm` + `draco_wasm_wrapper.js` | also point clouds and older bitstreams | `--module drc-wasm --no-default-features --features point-cloud-decode,legacy-bitstream-decode` |
+
+`gltf-wasm` has no counterpart in either: it also parses the glTF and
+materialises accessors, which a three.js page does in JavaScript around the
+decoder. Its `draco-decode` keeps point clouds, since a POINTS primitive and a
+splat are glTF, so it is one feature wider than the upstream glTF build.
+
+Compress both sides with one command (`gzip -9c`), not a CDN response against a
+local file, and count the JavaScript glue as well as the module: Emscripten's
+is 11.6 kB gzip, ours 2.7-3.9 kB. Measured with 1.5.7-100 on Windows:
+
+| set | upstream wasm, raw / gzip | ours, raw / gzip | with glue, gzip: upstream / ours |
+| --- | ---: | ---: | ---: |
+| glTF | 192 593 / 63 290 | 198 584 / 75 937 | 74 892 / 78 667 |
+| full | 285 948 / 88 249 | 279 251 / 102 120 | 99 985 / 106 005 |
+
 ### Paths that name a disk
 
 They live in `web/.env`, which is gitignored, and are documented — without real
