@@ -153,7 +153,7 @@ impl<'a> PredictionParent<'a> {
     /// layout. A reader that takes three components at a time can then skip
     /// [`Self::read_component_as_i64`]'s per-component match: the answer is
     /// the same three numbers, and the same nothing when they do not fit.
-    #[cfg(feature = "decoder")]
+    #[cfg(any(feature = "decoder", feature = "encoder"))]
     pub(crate) fn int32_vector3_layout(&self) -> Option<(&'a [u8], usize)> {
         if !matches!(self.att.data_type(), DataType::Int32 | DataType::Uint32)
             || self.att.num_components() < 3

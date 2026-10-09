@@ -65,6 +65,9 @@ struct MeshPredictionSchemeTexCoordsPortablePredictor<'a> {
     /// predicted entry, the decoder pops one; the encoder walks its entries in
     /// reverse and the decoder forward, so a stack is the order both agree on.
     orientations: Vec<bool>,
+    /// [`Self::get_position_for_entry_id`]'s answer for every entry of the map
+    /// the current pass runs on, once [`Self::resolve_positions`] has built it.
+    positions: Option<Vec<Option<[i64; 3]>>>,
 }
 
 #[cfg(any(feature = "decoder", feature = "encoder"))]
@@ -74,6 +77,7 @@ impl<'a> MeshPredictionSchemeTexCoordsPortablePredictor<'a> {
             pos_parent: None,
             mesh_data: None,
             orientations: Vec::new(),
+            positions: None,
         }
     }
 
@@ -112,8 +116,66 @@ impl<'a> MeshPredictionSchemeTexCoordsPortablePredictor<'a> {
         entry_to_point_id_map: crate::prediction_scheme::EntryToPointIdMap<'_>,
     ) -> Option<[i64; 3]> {
         let entry_id = usize::try_from(entry_id).ok()?;
+        if let Some(positions) = &self.positions {
+            // Built over exactly this map, so an entry past its end is one the
+            // map has no point for, which is `None` below as well.
+            return positions.get(entry_id).copied().flatten();
+        }
+        Self::lookup_position(self.pos_parent?, entry_id, entry_to_point_id_map)
+    }
+
+    /// Resolves every entry of `entry_to_point_id_map` to its position, for
+    /// the pass about to run over that map.
+    ///
+    /// Each prediction reads three positions -- its own entry's and both
+    /// neighbours' -- so each entry is resolved about three times over a pass,
+    /// every time through the point map, the attribute's mapping and a
+    /// data-type match per component. One pass instead, reading three adjacent
+    /// `int32` components directly when the portable parent is laid out that
+    /// way, which every 2.x stream's is.
+    fn resolve_positions(
+        &mut self,
+        entry_to_point_id_map: crate::prediction_scheme::EntryToPointIdMap<'_>,
+    ) {
+        let Some(parent) = self.pos_parent else {
+            self.positions = None;
+            return;
+        };
+        let entries = 0..entry_to_point_id_map.len();
+        self.positions = Some(match parent.int32_vector3_layout() {
+            Some((bytes, stride)) => entries
+                .map(|entry_id| {
+                    let point_id = entry_to_point_id_map.get(entry_id)?;
+                    let entry = parent.mapped_index(PointIndex(point_id));
+                    if entry == INVALID_ATTRIBUTE_VALUE_INDEX {
+                        return None;
+                    }
+                    let start = (entry.0 as usize).checked_mul(stride)?;
+                    let raw = bytes.get(start..start.checked_add(12)?)?;
+                    let component = |c: usize| {
+                        i64::from(i32::from_le_bytes([
+                            raw[4 * c],
+                            raw[4 * c + 1],
+                            raw[4 * c + 2],
+                            raw[4 * c + 3],
+                        ]))
+                    };
+                    Some([component(0), component(1), component(2)])
+                })
+                .collect(),
+            None => entries
+                .map(|entry_id| Self::lookup_position(parent, entry_id, entry_to_point_id_map))
+                .collect(),
+        });
+    }
+
+    /// The position of one entry, read through the generic reader.
+    fn lookup_position(
+        parent: PredictionParent<'_>,
+        entry_id: usize,
+        entry_to_point_id_map: crate::prediction_scheme::EntryToPointIdMap<'_>,
+    ) -> Option<[i64; 3]> {
         let point_id = entry_to_point_id_map.get(entry_id)?;
-        let parent = self.pos_parent?;
         let mut pos = [0i64; 3];
         let val_index = parent.mapped_index(PointIndex(point_id));
         if val_index == INVALID_ATTRIBUTE_VALUE_INDEX {
@@ -664,6 +726,7 @@ impl<'a> PredictionSchemeDecoder<'a, i32> for MeshPredictionSchemeTexCoordsPorta
             )));
         }
 
+        self.predictor.resolve_positions(entry_map);
         let mut predicted_value = [0i32; 2];
         for p in 0..corner_map_size {
             let corner_id = CornerIndex(data_to_corner_map[p]);
@@ -867,6 +930,7 @@ impl<'a> PredictionSchemeEncoder<'a, i32, i32>
         };
         let corner_map_size = data_to_corner_map.len();
 
+        self.predictor.resolve_positions(entry_map);
         let mut predicted_value = [0i32; 2];
 
         // Iterate in reverse order
@@ -924,9 +988,69 @@ mod tests {
     #[cfg(feature = "decoder")]
     use crate::geometry_attribute::PointAttribute;
     #[cfg(feature = "decoder")]
-    use crate::geometry_indices::VertexIndex;
+    use crate::geometry_indices::{AttributeValueIndex, VertexIndex};
     #[cfg(feature = "decoder")]
     use crate::portable_attribute::PredictionParent;
+
+    /// The resolved table answers what the per-call lookup does for every
+    /// entry: on `int32` and `uint32` parents, which it reads directly, on an
+    /// `int16` one, which it reads through the generic reader, for an entry
+    /// whose point the attribute maps nowhere, one whose point is past the
+    /// buffer, and one past the end of the map.
+    #[cfg(feature = "decoder")]
+    #[test]
+    fn resolved_positions_match_the_per_call_lookup() {
+        let num_points = 4;
+        // Entry 2 names a point mapped nowhere; entry 3 a point past the end.
+        let entry_to_point_id_map = [0u32, 1, 2, 3];
+        for data_type in [DataType::Int32, DataType::Uint32, DataType::Int16] {
+            let mut att = PointAttribute::new();
+            att.init(
+                GeometryAttributeType::Position,
+                3,
+                data_type,
+                false,
+                num_points,
+            );
+            att.set_explicit_mapping(num_points);
+            for (point, value) in [(0u32, 0u32), (1, 1), (2, u32::MAX), (3, 9)] {
+                att.set_point_map_entry(PointIndex(point), AttributeValueIndex(value));
+            }
+            for p in 0..num_points {
+                for c in 0..3 {
+                    let value = (10 * p + c) as i32 - 17;
+                    let at = p * 3 + c;
+                    if data_type == DataType::Int16 {
+                        att.buffer_mut()
+                            .write(at * 2, &(value as i16).to_le_bytes());
+                    } else {
+                        att.buffer_mut().write(at * 4, &value.to_le_bytes());
+                    }
+                }
+            }
+            let parent = PredictionParent::portable(&att).expect("portable");
+            let map =
+                crate::prediction_scheme::EntryToPointIdMap::from_u32_slice(&entry_to_point_id_map);
+
+            let mut predictor = MeshPredictionSchemeTexCoordsPortablePredictor::new();
+            predictor.pos_parent = Some(parent);
+            let per_call: Vec<_> = (-1..=4)
+                .map(|entry| predictor.get_position_for_entry_id(entry, map))
+                .collect();
+            predictor.resolve_positions(map);
+            let resolved: Vec<_> = (-1..=4)
+                .map(|entry| predictor.get_position_for_entry_id(entry, map))
+                .collect();
+            assert_eq!(resolved, per_call, "{data_type:?}");
+            // Two real positions and four without one, or the fixture is not
+            // reaching the cases it claims to.
+            assert_eq!(
+                per_call.iter().flatten().count(),
+                2,
+                "{data_type:?} {per_call:?}"
+            );
+        }
+    }
 
     #[cfg(feature = "decoder")]
     fn make_triangle_corner_table() -> CornerTable {
