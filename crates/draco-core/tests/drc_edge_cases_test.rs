@@ -1655,6 +1655,73 @@ fn legacy_091_octahedron_normals_match_historical_decoder() {
     );
 }
 
+/// Decodes `fixture` and compares every point's normal, sorted, bit for bit
+/// with `<fixture stem>.normals_golden.bin`, which the Draco 1.5.7 decoder
+/// wrote. `testdata/geometric_normal_overflow/README.md` says what each
+/// fixture reaches and how it was built.
+fn assert_overflow_normals_match_cpp(fixture: &str) {
+    let dir = repo_testdata_dir().join("geometric_normal_overflow");
+    let bytes = std::fs::read(dir.join(fixture)).unwrap_or_else(|e| panic!("read {fixture}: {e}"));
+    let mut buffer = DecoderBuffer::new(&bytes);
+    let mut mesh = Mesh::new();
+    MeshDecoder::new()
+        .decode(&mut buffer, &mut mesh)
+        .unwrap_or_else(|e| panic!("{fixture} decode: {e:?}"));
+
+    let att = mesh.attribute(mesh.named_attribute_id(GeometryAttributeType::Normal));
+    let stride = att.byte_stride() as usize;
+    let mut got: Vec<[u32; 3]> = (0..mesh.num_points() as u32)
+        .map(|p| {
+            let off = att.mapped_index(PointIndex(p)).0 as usize * stride;
+            std::array::from_fn(|k| {
+                let mut b = [0u8; 4];
+                att.buffer().read(off + k * 4, &mut b);
+                u32::from_le_bytes(b)
+            })
+        })
+        .collect();
+    got.sort();
+
+    let golden = fixture.strip_suffix(".drc").unwrap().to_string() + ".normals_golden.bin";
+    let golden = std::fs::read(dir.join(&golden)).unwrap_or_else(|e| panic!("read {golden}: {e}"));
+    let expected: Vec<[u32; 3]> = golden
+        .as_chunks::<12>()
+        .0
+        .iter()
+        .map(|c| {
+            std::array::from_fn(|k| u32::from_le_bytes(c[k * 4..k * 4 + 4].try_into().unwrap()))
+        })
+        .collect();
+
+    assert_eq!(
+        got, expected,
+        "{fixture}: normals differ from the C++ decoder"
+    );
+}
+
+/// `ONE_TRIANGLE` streams come only from Draco 1.0.0, and upstream predicts
+/// them with the abs sum truncated to `int32` -- which 20-bit positions pass.
+#[cfg(feature = "legacy_bitstream_decode")]
+#[test]
+fn one_triangle_normals_truncate_the_abs_sum_to_int32() {
+    assert_overflow_normals_match_cpp("icosphere.one_triangle_int32.1.0.0.drc");
+}
+
+/// Upstream's `ONE_TRIANGLE` adds the corner's triangle once per face around
+/// the vertex; below the `int32` limit only that multiple moves the quotient.
+#[cfg(feature = "legacy_bitstream_decode")]
+#[test]
+fn one_triangle_normals_count_the_triangle_once_per_face() {
+    assert_overflow_normals_match_cpp("ellipsoid.one_triangle_count.1.0.0.drc");
+}
+
+/// Apexes whose summed cross products have an abs sum past `i64::MAX`, which
+/// upstream saturates rather than wraps.
+#[test]
+fn triangle_area_normals_saturate_the_abs_sum() {
+    assert_overflow_normals_match_cpp("wound_fan.saturated_abs_sum.2.2.drc");
+}
+
 #[test]
 fn fuzz_timeout_edgebreaker_attribute_swing_reproducer_returns_quickly() {
     let bytes = std::fs::read(

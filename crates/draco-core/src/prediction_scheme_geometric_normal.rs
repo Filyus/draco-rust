@@ -305,35 +305,10 @@ fn compute_predicted_value(
         normal[1] = normal[1].wrapping_add(cross[1]);
         normal[2] = normal[2].wrapping_add(cross[2]);
 
-        if prediction_mode == NormalPredictionMode::OneTriangle {
-            break;
-        }
-
         cit.next(corner_table);
     }
 
-    if normal[0] == 0 && normal[1] == 0 && normal[2] == 0 {
-        prediction[0] = 0;
-        prediction[1] = 0;
-        prediction[2] = 0;
-        return;
-    }
-
-    let upper_bound = 1i64 << 29;
-    let abs_sum = normal[0]
-        .wrapping_abs()
-        .wrapping_add(normal[1].wrapping_abs())
-        .wrapping_add(normal[2].wrapping_abs());
-    if abs_sum > upper_bound {
-        let quotient = abs_sum / upper_bound;
-        normal[0] /= quotient;
-        normal[1] /= quotient;
-        normal[2] /= quotient;
-    }
-
-    prediction[0] = normal[0] as i32;
-    prediction[1] = normal[1] as i32;
-    prediction[2] = normal[2] as i32;
+    *prediction = scale_normal_to_prediction(normal, prediction_mode);
 }
 
 #[cfg(feature = "decoder")]
@@ -810,32 +785,9 @@ fn compute_encoder_predicted_value(
         normal[2] = normal[2].wrapping_add(cross[2]);
 
         cit.next(corner_table);
-
-        if prediction_mode == NormalPredictionMode::OneTriangle {
-            break;
-        }
     }
 
-    let upper_bound = 1 << 29;
-    // Wrapping for the same reason the accumulation above is: a wrapped normal
-    // can sit at `i64::MIN`, where `abs` has no representable answer.
-    let abs_sum = normal[0]
-        .wrapping_abs()
-        .wrapping_add(normal[1].wrapping_abs())
-        .wrapping_add(normal[2].wrapping_abs());
-
-    if abs_sum > upper_bound {
-        let quotient = abs_sum / upper_bound;
-        if quotient > 0 {
-            normal[0] /= quotient;
-            normal[1] /= quotient;
-            normal[2] /= quotient;
-        }
-    }
-
-    prediction[0] = normal[0] as i32;
-    prediction[1] = normal[1] as i32;
-    prediction[2] = normal[2] as i32;
+    *prediction = scale_normal_to_prediction(normal, prediction_mode);
 }
 
 #[cfg(feature = "encoder")]
@@ -1041,6 +993,45 @@ fn cross_product(a: &[i64; 3], b: &[i64; 3]) -> [i64; 3] {
     ]
 }
 
+#[cfg(any(feature = "encoder", feature = "decoder"))]
+/// Brings a summed normal into the `i32` prediction, as both sides form it.
+///
+/// Upstream's `VectorD::AbsSum` saturates at `i64::MAX` rather than wrapping,
+/// and a component at `i64::MIN` saturates it too: `std::abs` of it is
+/// undefined, the release build answers `i64::MIN`, and the overflow test
+/// `result > MAX - next` then compares against `-1` and returns `MAX`.
+/// `checked_abs` and `checked_add` reach that answer without the undefined
+/// step.
+///
+/// `OneTriangle` truncates the sum to `int32` before comparing and dividing,
+/// as upstream does to agree with what the Draco 1.0.0 encoder computed: a
+/// sum whose low 32 bits read as at most `1 << 29` is left undivided, and the
+/// final casts truncate whatever it holds. The normal it is handed is the
+/// corner's own triangle added once per face around the vertex, again as
+/// upstream's loop adds it; the multiple changes which quotient is taken.
+fn scale_normal_to_prediction(
+    mut normal: [i64; 3],
+    prediction_mode: NormalPredictionMode,
+) -> [i32; 3] {
+    const UPPER_BOUND: i64 = 1 << 29;
+    let abs_sum = normal
+        .iter()
+        .try_fold(0i64, |sum, c| sum.checked_add(c.checked_abs()?))
+        .unwrap_or(i64::MAX);
+    let abs_sum = if prediction_mode == NormalPredictionMode::OneTriangle {
+        i64::from(abs_sum as i32)
+    } else {
+        abs_sum
+    };
+    if abs_sum > UPPER_BOUND {
+        let quotient = abs_sum / UPPER_BOUND;
+        for c in &mut normal {
+            *c /= quotient;
+        }
+    }
+    normal.map(|c| c as i32)
+}
+
 #[cfg(all(test, feature = "decoder"))]
 mod tests {
     use super::*;
@@ -1197,6 +1188,46 @@ mod tests {
             unique.len() < vertices.len(),
             "shared vertices: {vertices:?}"
         );
+    }
+
+    /// Upstream's release build on the sums the fixtures in
+    /// `testdata/geometric_normal_overflow` cannot reach: a component at
+    /// `i64::MIN`, whose undefined `std::abs` still ends in a saturated sum.
+    #[test]
+    fn normal_scaling_saturates_and_truncates_as_upstream_does() {
+        use NormalPredictionMode::{OneTriangle, TriangleArea};
+        let cases: [([i64; 3], NormalPredictionMode, [i32; 3]); 6] = [
+            // Saturated: divided by `i64::MAX >> 29`, truncating toward zero.
+            ([i64::MIN, 0, 0], TriangleArea, [-536_870_912, 0, 0]),
+            // Saturated, then `int32` reads `i64::MAX` as -1: not divided.
+            ([i64::MIN, 0, 0], OneTriangle, [0, 0, 0]),
+            // The apex of the wound-fan fixture, past `i64::MAX` by a third.
+            (
+                [
+                    3_074_410_431_869_452_288,
+                    4_611_615_649_951_645_696,
+                    4_611_615_649_951_645_696,
+                ],
+                TriangleArea,
+                [178_954_239, 268_431_360, 268_431_360],
+            ),
+            // 3 << 30 is divided by 6 as a 64-bit sum, but reads as negative
+            // in `int32` and is left undivided.
+            ([3 << 30, 0, 0], TriangleArea, [1 << 29, 0, 0]),
+            ([3 << 30, 0, 0], OneTriangle, [-(1 << 30), 0, 0]),
+            (
+                [-(3 << 28), 1 << 28, 0],
+                OneTriangle,
+                [-(3 << 27), 1 << 27, 0],
+            ),
+        ];
+        for (normal, mode, expected) in cases {
+            assert_eq!(
+                scale_normal_to_prediction(normal, mode),
+                expected,
+                "{normal:?} {mode:?}"
+            );
+        }
     }
 
     /// The normal both sides predict has to be the same number, or a stream
