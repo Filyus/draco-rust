@@ -358,6 +358,36 @@ impl PointAttribute {
         }
 
         let available = (self.num_components() as usize).min(components);
+        if self.data_type() == DataType::Float32 {
+            // The general loop below, with the type's match and the per-component
+            // bounds test taken once per point: a value whose components all
+            // fit reads them as one run, which is every value of a well-formed
+            // attribute, and one that does not falls back to that loop's
+            // component-at-a-time reading.
+            for (point, out) in values.chunks_exact_mut(components).enumerate() {
+                let value_index = self.mapped_index(PointIndex(point as u32)).0 as usize;
+                if value_index >= self.num_unique_entries {
+                    continue;
+                }
+                let base = value_index * stride;
+                match data.get(base..base + available * 4) {
+                    Some(run) => {
+                        for (slot, bytes) in out.iter_mut().zip(run.as_chunks::<4>().0) {
+                            *slot = f32::from_le_bytes(*bytes);
+                        }
+                    }
+                    None => {
+                        for (component, slot) in out[..available].iter_mut().enumerate() {
+                            let offset = base + component * 4;
+                            if let Some(bytes) = data.get(offset..offset + 4) {
+                                *slot = scalar_as_f32(DataType::Float32, bytes);
+                            }
+                        }
+                    }
+                }
+            }
+            return values;
+        }
         for point in 0..num_points {
             let value_index = self.mapped_index(PointIndex(point as u32)).0 as usize;
             // Also catches INVALID_ATTRIBUTE_VALUE_INDEX, whose `usize` product
@@ -808,6 +838,19 @@ mod tests {
         assert_eq!(
             attribute.read_f32s(2, 3),
             vec![1.0, 2.0, 3.0, 0.0, 0.0, 0.0]
+        );
+    }
+
+    /// A buffer that ends inside a value still yields the components before the
+    /// end and zeros after it, which is the component-at-a-time reading the
+    /// one-run float path falls back to.
+    #[test]
+    fn read_f32s_reads_a_cut_value_component_by_component() {
+        let mut attribute = float_attribute(3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        attribute.buffer_mut().resize(5 * 4);
+        assert_eq!(
+            attribute.read_f32s(2, 3),
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 0.0]
         );
     }
 
