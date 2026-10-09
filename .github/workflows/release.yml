@@ -60,10 +60,23 @@ jobs:
         with:
           tool: wasm-pack
 
+      # A pinned Binaryen release rather than the distribution's package:
+      # ubuntu-24.04 ships version 108, and the sizes web/wasm-sizes.md
+      # records are only the shipped ones when both use the same wasm-opt. The
+      # build tool refuses to record sizes with any other version; bump the
+      # two together. 133 is 0.5% smaller than 108 on every module with code.
       - name: Install wasm-opt
+        env:
+          BINARYEN_VERSION: "133"
+          BINARYEN_SHA256: 2dc9c7813f5375db93d96ead4b78222fcc3e2677bbb832297af4797782a37489
         run: |
-          sudo apt-get update
-          sudo apt-get install -y binaryen
+          archive="binaryen-version_${BINARYEN_VERSION}-x86_64-linux.tar.gz"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/WebAssembly/binaryen/releases/download/version_${BINARYEN_VERSION}/$archive"
+          echo "$BINARYEN_SHA256  $RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/binaryen-version_${BINARYEN_VERSION}/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/binaryen-version_${BINARYEN_VERSION}/bin/wasm-opt" --version
 
       - name: Build web WASM modules
         run: bash ./build.sh

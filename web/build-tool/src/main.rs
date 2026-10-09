@@ -21,6 +21,12 @@ const MODULES: &[&str] = &[
     "ktx2-wasm",
 ];
 
+/// The Binaryen release the workflows install, and so the wasm-opt that every
+/// published module is optimized with. Sizes are recorded only with this one:
+/// a record taken with another describes a module nobody ships. Bump it here
+/// and in the three workflows together.
+const WASM_OPT_VERSION: &str = "version_133";
+
 const WASM_OPT_ARGS: &[&str] = &[
     "-Oz",
     "--converge",
@@ -127,11 +133,23 @@ fn run() -> Result<(), String> {
     remove_orphaned_module_files(&config.output_dir)
         .map_err(|error| format!("failed to clean {}: {error}", config.output_dir.display()))?;
     let modules = selected_modules(&config.modules)?;
+    let wasm_opt_version = find_wasm_opt().and_then(|path| wasm_opt_version(&path));
+    if config.record_sizes && wasm_opt_version.as_deref() != Some(WASM_OPT_VERSION) {
+        return Err(format!(
+            "--record-sizes needs wasm-opt {WASM_OPT_VERSION}, the one the workflows ship with, \
+             and found {}; point WASM_OPT at a Binaryen {WASM_OPT_VERSION} wasm-opt",
+            wasm_opt_version.as_deref().unwrap_or("none")
+        ));
+    }
 
     println!("Building Draco Web WASM Modules");
     println!("================================");
     println!();
     println!("Output directory: {}", config.output_dir.display());
+    println!(
+        "wasm-opt: {} (published modules use {WASM_OPT_VERSION})",
+        wasm_opt_version.as_deref().unwrap_or("not found")
+    );
 
     let default_jobs = thread::available_parallelism()
         .map(|count| count.get())
@@ -1001,7 +1019,21 @@ fn remove_orphaned_module_files(output_dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// The release a wasm-opt reports, such as `version_133`.
+fn wasm_opt_version(path: &Path) -> Option<String> {
+    let output = Command::new(path).arg("--version").output().ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.split(|c: char| c == '(' || c == ')' || c.is_whitespace())
+        .find(|word| word.starts_with("version_"))
+        .map(str::to_owned)
+}
+
+/// `WASM_OPT` if set, else the first wasm-opt on `PATH`, in cargo's bin
+/// directory, or in wasm-pack's cache.
 fn find_wasm_opt() -> Option<PathBuf> {
+    if let Some(path) = env::var_os("WASM_OPT") {
+        return Some(PathBuf::from(path));
+    }
     find_on_path("wasm-opt").or_else(|| {
         let mut candidates = Vec::new();
         if let Some(home) = env::var_os("USERPROFILE").or_else(|| env::var_os("HOME")) {
