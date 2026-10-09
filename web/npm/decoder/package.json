@@ -1,6 +1,6 @@
 {
   "name": "@draco-rust/decoder",
-  "version": "0.1.0",
+  "version": "set from web/npm/VERSION by build-tool --npm",
   "description": "Draco geometry decoder in WebAssembly, a safe Rust port of Google Draco: meshes, point clouds and older bitstreams, each as its own small entry.",
   "keywords": [
     "draco",
@@ -23,6 +23,7 @@
     "url": "git+https://github.com/Filyus/draco-rust.git",
     "directory": "web/npm/decoder"
   },
+  "draco-rust": "set by build-tool --npm",
   "type": "module",
   "sideEffects": false,
   "exports": {

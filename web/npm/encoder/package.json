@@ -1,6 +1,6 @@
 {
   "name": "@draco-rust/encoder",
-  "version": "0.1.0",
+  "version": "set from web/npm/VERSION by build-tool --npm",
   "description": "Draco geometry encoder in WebAssembly, a safe Rust port of Google Draco: compresses meshes and point clouds to .drc.",
   "keywords": [
     "draco",
@@ -23,6 +23,7 @@
     "url": "git+https://github.com/Filyus/draco-rust.git",
     "directory": "web/npm/encoder"
   },
+  "draco-rust": "set by build-tool --npm",
   "type": "module",
   "sideEffects": false,
   "exports": {

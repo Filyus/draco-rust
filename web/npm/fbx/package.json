@@ -1,6 +1,6 @@
 {
   "name": "@draco-rust/fbx",
-  "version": "0.1.0",
+  "version": "set from web/npm/VERSION by build-tool --npm",
   "description": "Binary FBX reading and writing in WebAssembly: meshes, the model tree, materials, skins and morphs.",
   "keywords": [
     "fbx",
@@ -21,6 +21,7 @@
     "url": "git+https://github.com/Filyus/draco-rust.git",
     "directory": "web/npm/fbx"
   },
+  "draco-rust": "set by build-tool --npm",
   "type": "module",
   "sideEffects": false,
   "exports": {

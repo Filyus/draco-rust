@@ -12,7 +12,7 @@
  */
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,8 +20,15 @@ import { fileURLToPath } from 'node:url';
 const dist = fileURLToPath(new URL('../npm/dist/', import.meta.url));
 const testdata = fileURLToPath(new URL('../../testdata/', import.meta.url));
 const packages = ['decoder', 'encoder', 'gltf', 'fbx'];
+const version = readFileSync(fileURLToPath(new URL('../npm/VERSION', import.meta.url)), 'utf8').trim();
 for (const name of packages) {
-  assert.ok(existsSync(join(dist, name, 'package.json')), `web/npm/dist/${name} is missing; build it with build-tool --npm`);
+  const manifest = join(dist, name, 'package.json');
+  assert.ok(existsSync(manifest), `web/npm/dist/${name} is missing; build it with build-tool --npm`);
+  // One version across the packages, and each says what it was built from.
+  const { version: built, 'draco-rust': from } = JSON.parse(readFileSync(manifest, 'utf8'));
+  assert.equal(built, version, `@draco-rust/${name} is ${built}, web/npm/VERSION says ${version}`);
+  assert.match(from.commit, /^[0-9a-f]{8}(-dirty)?$/);
+  for (const crate of ['draco-core', 'draco-io', 'draco-gltf']) assert.match(from[crate], /^\d+\.\d+\.\d+/);
 }
 
 const project = mkdtempSync(join(tmpdir(), 'draco-npm-'));

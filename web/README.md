@@ -26,6 +26,13 @@ cargo run --manifest-path web/build-tool/Cargo.toml -- --npm   # into web/npm/di
 npm run --prefix web test:npm-packages                         # pack, install, import every entry
 ```
 
+All four carry one version, `web/npm/VERSION`, and are released together: they
+are built from one tree, so the number says which were tested with each other.
+The manifests' `version` and `draco-rust` fields are placeholders that the build
+fills in, the second with the commit and crate versions a package was built
+from; the same line ends each README. Under `0.x`, a minor version breaks the
+JavaScript API and a patch does not.
+
 The first version of a package is published by hand from its directory in
 `web/npm/dist` (`npm publish`), because npm attaches a trusted publisher only to
 a package that exists.

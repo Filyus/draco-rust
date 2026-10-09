@@ -122,11 +122,18 @@ pub(crate) fn build_packages(config: &Config, only: &[String]) -> Result<(), Str
     }
 
     let npm_dir = config.web_dir.join("npm");
-    let license = config
+    let repository = config
         .web_dir
         .parent()
-        .ok_or("web/ has no parent directory")?
-        .join("LICENSE");
+        .ok_or("web/ has no parent directory")?;
+    let license = repository.join("LICENSE");
+    let version = read_version(&npm_dir.join("VERSION"))?;
+    let provenance = Provenance::of(repository)?;
+    println!(
+        "Version {version}, from draco-rust {} ({})",
+        provenance.commit,
+        provenance.crates_text()
+    );
     println!(
         "Building npm packages into {}",
         npm_dir.join("dist").display()
@@ -151,9 +158,24 @@ pub(crate) fn build_packages(config: &Config, only: &[String]) -> Result<(), Str
         }
         fs::create_dir_all(&dist)
             .map_err(|error| format!("failed to create {}: {error}", dist.display()))?;
-        for file in ["package.json", "README.md"] {
-            copy(&template.join(file), &dist.join(file))?;
-        }
+        write(
+            &dist.join("package.json"),
+            &stamp_manifest(&manifest, &version, &provenance)
+                .map_err(|error| format!("@draco-rust/{}: {error}", package.name))?,
+        )?;
+        let readme = fs::read_to_string(template.join("README.md"))
+            .map_err(|error| format!("{}: {error}", template.join("README.md").display()))?;
+        write(
+            &dist.join("README.md"),
+            &format!(
+                "{}\n## This build\n\n`@draco-rust/{}@{version}` was built from draco-rust \
+                 commit `{}`, with {}.\n",
+                readme.trim_end(),
+                package.name,
+                provenance.commit,
+                provenance.crates_text()
+            ),
+        )?;
         copy(&license, &dist.join("LICENSE"))?;
 
         for entry in package.entries {
@@ -239,6 +261,110 @@ fn build_entry(
             entry.features.join(",")
         )
     })
+}
+
+/// Every `@draco-rust/*` package carries this one version: they are built from
+/// one tree and released together, so the number says which ones were tested
+/// with each other.
+fn read_version(path: &Path) -> Result<String, String> {
+    let text = fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let version = text.trim();
+    let core = version.split(['-', '+']).next().unwrap_or_default();
+    let parts: Vec<_> = core.split('.').collect();
+    if parts.len() != 3
+        || parts
+            .iter()
+            .any(|part| part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return Err(format!(
+            "{}: {version:?} is not a semver version",
+            path.display()
+        ));
+    }
+    Ok(version.to_string())
+}
+
+/// What a package was built from: the commit, marked when the tree had
+/// uncommitted changes to tracked files, and the version of each crate.
+struct Provenance {
+    commit: String,
+    crates: Vec<(&'static str, String)>,
+}
+
+impl Provenance {
+    fn of(repository: &Path) -> Result<Self, String> {
+        let git = |args: &[&str]| -> Result<String, String> {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(repository)
+                .args(args)
+                .output()
+                .map_err(|error| format!("failed to run git: {error}"))?;
+            if !output.status.success() {
+                return Err(format!("git {} failed", args.join(" ")));
+            }
+            Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        };
+        let mut commit = git(&["rev-parse", "--short=8", "HEAD"])?;
+        if !git(&["status", "--porcelain", "--untracked-files=no"])?.is_empty() {
+            commit.push_str("-dirty");
+        }
+        let mut crates = Vec::new();
+        for name in ["draco-core", "draco-io", "draco-gltf"] {
+            let manifest = repository.join("crates").join(name).join("Cargo.toml");
+            let text = fs::read_to_string(&manifest)
+                .map_err(|error| format!("{}: {error}", manifest.display()))?;
+            let version = text
+                .lines()
+                .find_map(|line| line.strip_prefix("version = \""))
+                .and_then(|rest| rest.strip_suffix('"'))
+                .ok_or_else(|| format!("{}: no version line", manifest.display()))?;
+            crates.push((name, version.to_string()));
+        }
+        Ok(Self { commit, crates })
+    }
+
+    fn crates_text(&self) -> String {
+        self.crates
+            .iter()
+            .map(|(name, version)| format!("{name} {version}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// Fills the two placeholders a tracked manifest carries. The placeholder
+/// version is not valid semver, so a template published by mistake is refused
+/// by npm rather than released.
+fn stamp_manifest(
+    manifest: &str,
+    version: &str,
+    provenance: &Provenance,
+) -> Result<String, String> {
+    const VERSION: &str = r#""version": "set from web/npm/VERSION by build-tool --npm""#;
+    const BUILT: &str = r#""draco-rust": "set by build-tool --npm""#;
+    for placeholder in [VERSION, BUILT] {
+        if manifest.matches(placeholder).count() != 1 {
+            return Err(format!(
+                "package.json must carry {placeholder} exactly once"
+            ));
+        }
+    }
+    let mut built = format!(
+        "\"draco-rust\": {{\n    \"commit\": \"{}\"",
+        provenance.commit
+    );
+    for (name, crate_version) in &provenance.crates {
+        built.push_str(&format!(",\n    \"{name}\": \"{crate_version}\""));
+    }
+    built.push_str("\n  }");
+    Ok(manifest
+        .replace(VERSION, &format!("\"version\": \"{version}\""))
+        .replace(BUILT, &built))
+}
+
+fn write(path: &Path, text: &str) -> Result<(), String> {
+    fs::write(path, text).map_err(|error| format!("failed to write {}: {error}", path.display()))
 }
 
 fn copy(from: &Path, to: &Path) -> Result<(), String> {
