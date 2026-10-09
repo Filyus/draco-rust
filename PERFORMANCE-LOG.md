@@ -4984,6 +4984,13 @@ it read 1.34-1.43x slower. What followed, by verdict:
   dominated by allocation -- ~62,000 `malloc`s for 490 kB, one per key, string
   and number plus every object and array growing -- ~11M of its 27M with the
   frees; the character loop was not the cost.
+- **JSON arrays and objects sized exactly** (`0bbe70e1`, `landed`). Open
+  containers' entries wait on two shared stacks and a closing one takes its
+  own with `split_off`, one exact allocation, instead of each growing a
+  vector by doubling. VirtualCity: 37,547 -> 36,008 allocations, peak heap
+  4.3 -> 3.4 bytes per input byte, the parse 17.5M -> 16.5M instructions,
+  WASM open 1.96 -> 1.88 ms. Few glTF objects outgrow the first allocation,
+  which is why the count barely moves.
 - **talc as the WASM allocator** (`rejected`, `probe/wasm-talc`). talc 5.1.1's
   `WasmDynamicTalc` read no faster than dlmalloc (VirtualCity open 1.87-2.16
   against 1.78-1.94 ms) and grew the module 143.0 -> 154.5 kB gzip.
