@@ -36,7 +36,7 @@ figure at all.
 `rejected` -- tried, deliberately not kept. `retracted` -- an earlier claim
 here was withdrawn. `diagnostic` -- measured only, no change proposed.
 
-85 rounds: 52 landed, 12 diagnostic, 11 null, 8 retracted, 2 rejected.
+86 rounds: 53 landed, 12 diagnostic, 11 null, 8 retracted, 2 rejected.
 
 | Round | Verdict | Headline |
 | --- | --- | ---: |
@@ -125,6 +125,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [WASM Decode Against Upstream's: An i128 Nobody Priced](#wasm-decode-against-upstreams-an-i128-nobody-priced) | landed | `-19 to -27% WASM decode` |
 | [WASM Decode, Second Pass: The Position Table, And A Fairer Cold Start](#wasm-decode-second-pass-the-position-table-and-a-fairer-cold-start) | landed | `-10 to -14% WASM decode` |
 | [The WASM Gap, Read Against Instruction Counts](#the-wasm-gap-read-against-instruction-counts) | diagnostic | `0.90x / 0.80x C++ instructions` |
+| [The Same Lookups, On The Encoder And In The UV Predictor](#the-same-lookups-on-the-encoder-and-in-the-uv-predictor) | landed | `-6.5% encode, -6.3% UV decode` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -4922,6 +4923,35 @@ while bounding `read_f32s`, was checked for reach: every decoder path sizes an
 attribute through `try_init` or `init_deferred`, both checked, and the
 unchecked `init` is called only from tests and from `KeyframeAnimation`, whose
 counts come from slices the caller already holds.
+
+### The Same Lookups, On The Encoder And In The UV Predictor
+
+2026-10-09. The decoder's three findings searched for on the encoder side:
+no `i128`/`u128` arithmetic anywhere outside `point_order.rs`'s byte masks;
+the lazy filled-yet position cache the decoder dropped in `bd3ff814` still in
+the normal encoder; and the portable texture-coordinate predictor, shared by
+both sides, reading three positions per prediction through the point map, the
+attribute mapping and a per-component type match. Both now resolve their
+positions once per pass (`ebf832bc`, `c9771b5d`, `landed`).
+
+Callgrind in the WSL stand, one operation. A 257^2 grid with positions,
+normals and UVs; decoded from upstream's `-cl 7` encoding, and encoded by a
+driver that quantizes every attribute (11/10/8 bits) -- `encode_drc` quantizes
+only attributes 0 and 1, which leaves the UVs unquantized and the predictor
+unselected:
+
+| operation | before | UV table | + normal table |
+| --- | ---: | ---: | ---: |
+| decode cl7 | `354.4M` | `332.2M` | -- |
+| encode speed 3 | `552.4M` | `529.6M` | `516.7M` (-6.5%) |
+| encode speed 0 | `933.8M` | `911.1M` | `898.1M` (-3.8%) |
+| encode speed 5 | `381.6M` | `381.6M` | -- (neither predictor) |
+
+The encoder's output was compared byte for byte before and after at speeds 0,
+3, 5, 7 and 10. In `drc-wasm` the cl7 decode went from 25.7 to 23.7 ms
+(upstream's: 30.5). Nothing else of the pattern is left on the encode path: at
+speed 5 the largest attribute cost is `mapped_index`, once per corner per
+attribute, which upstream pays the same way.
 
 ## Unexplored
 
