@@ -1,15 +1,17 @@
 # Web converter changelog
 
-The converter and its WASM wrappers are not published to crates.io: every
-wrapper ships as a zipped release asset on whatever crate release builds them
-(stamped with that crate's version, since the set travels together), and the
-converter itself deploys to GitHub Pages from `main`. This file records what
-has changed between those shippings. When a release is prepared, the
-`Unreleased` section is copied into that release's notes — the release page is
-what the public reads — and renamed here to the shipping date, which is the
-only anchor a shipping without a version of its own has.
+The converter and its WASM wrappers are not published to crates.io. The
+converter deploys to GitHub Pages from `main`; the wrappers shipped as zipped
+assets on crate releases until 2026-10-10 and are to ship as `@draco-rust/*` npm
+packages, each with a version of its own. This file records what has changed in
+them; the `Unreleased` section becomes the first packages' notes.
 
 ## Unreleased
+
+- **The modules no longer ship as zips on crate releases.** The 148 zipped
+  modules attached to 21 crate releases were removed, and releases attach none
+  from now on; the modules are to be published as `@draco-rust/*` npm packages,
+  split by task rather than by file format.
 
 - **glTF scenes open faster.** gltf-wasm parses a scene's JSON into one flat
   table instead of a tree of separately allocated values: VirtualCity, whose

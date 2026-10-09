@@ -24,7 +24,7 @@ const MODULES: &[&str] = &[
 /// The Binaryen release the workflows install, and so the wasm-opt that every
 /// published module is optimized with. Sizes are recorded only with this one:
 /// a record taken with another describes a module nobody ships. Bump it here
-/// and in the three workflows together.
+/// and in the workflows that install it (`ci.yml`, `pages.yml`) together.
 const WASM_OPT_VERSION: &str = "version_133";
 
 const WASM_OPT_ARGS: &[&str] = &[

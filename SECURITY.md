@@ -81,7 +81,7 @@ result, so the door is shut and the compiler holds it.
 
 **`draco-texture` is strict for the same reason**, and it is in the table
 despite `publish = false`. That flag says where the crate is distributed, not
-what it is exposed to: it ships inside `ktx2-wasm` in the WASM release assets
+what it is exposed to: it ships inside `ktx2-wasm` in the converter
 and transcodes whatever KTX2 the converter is handed. Its work is the same
 shape as `draco-core`'s — table-driven block decoding on indices that come out
 of the stream — so it belongs on the same side, and since it contains no

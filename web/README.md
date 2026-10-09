@@ -54,7 +54,7 @@ custom profile rather than a separate public package.
 What each profile weighs is recorded in [wasm-sizes.md](wasm-sizes.md), which a
 build updates with `--record-sizes`. The released reader is the `release` row;
 the converter app carries `accessors`, `strict-validation`, `draco-encode` and
-`raw-resources`, none of which ships in the release asset.
+`raw-resources`, none of which is in the release profile.
 
 ## STL and standalone Draco
 
@@ -633,19 +633,9 @@ and `style.css` relatively, and [`src/app/modules.ts`](src/app/modules.ts)
 resolves every WASM package against `document.baseURI`, so the site works
 unchanged at a repository path.
 
-The deploy is deliberately not tied to a crate tag. It shows what `main` does,
-while [`Release: WASM assets`](../.github/workflows/release.yml) is what carries
-a version: it builds the release profile from a crate's tag and attaches a zip
-per module to that GitHub Release.
-
-Every module goes on every release, and the list comes from what the build
-produced rather than from a list in the workflow. Both halves of that are
-deliberate. A module's bytes are a function of the whole tree — obj, ply, stl and
-fbx each compile `draco-core` and `draco-io`, gltf compiles `draco-core` and
-`draco-gltf` — so shipping one module per crate left the rest describing an older
-tree, and `drc` shipped nowhere at all. And a hand-written list is a second place
-to update: `stl` and `drc` were built on every release and named in no list, so
-they were built seven times and shipped zero.
+The deploy is deliberately not tied to a crate tag: it shows what `main` does.
+Versioned modules are to ship as `@draco-rust/*` npm packages, each with a
+version of its own; until 2026-10-10 they were zips attached to crate releases.
 
 The front-end is TypeScript in `web/src/`, compiled by `tsc` into `web/www/`
 as plain ES modules — no bundler, and `index.html` still loads a single

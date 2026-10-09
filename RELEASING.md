@@ -11,13 +11,11 @@ In the steps below, **`<crate>` is the crate being released** — substitute
 
 ### The web assets ride along
 
-The `web/` WASM wrappers and converter are not published to crates.io. Every
-wrapper ships as a zipped release asset on every crate release, built from that
-tag by `Release: WASM assets` and stamped with its version. The set travels
-together because it is built together: a module compiles several crates, so
-shipping a subset per crate leaves the rest describing an older tree. The
-converter itself is deployed to GitHub Pages by `Pages: deploy converter`, from
-`main` rather than from a tag — it demonstrates the current code, and pinning it
+The `web/` WASM wrappers and converter are not published to crates.io, and a
+crate release no longer carries them: the zipped modules it used to attach were
+removed on 2026-10-10, and the modules are to ship as `@draco-rust/*` npm
+packages instead. The converter is deployed to GitHub Pages by `Pages: deploy
+converter`, from `main` rather than from a tag — it demonstrates the current code, and pinning it
 to a crate release would show neither crate's version honestly.
 
 Converter changes are recorded in [`web/CHANGELOG.md`](web/CHANGELOG.md).
@@ -172,16 +170,10 @@ are intended, and the changelog section is the one reviewed.
 
 After approval, the workflow: authenticates to crates.io through Trusted
 Publishing; publishes `<crate>`; creates annotated tag `<crate>-vX.Y.Z`; extracts the
-`crates/<crate>/CHANGELOG.md` section for `X.Y.Z`; creates the GitHub Release; and
-starts `Release: WASM assets` for the tag.
-
-That last step is a dispatch rather than the tag's own push event, and has to be:
-GitHub raises no workflow events for a ref pushed with `GITHUB_TOKEN`, so the
-push trigger on `Release: WASM assets` never sees a tag this workflow created.
-It went unnoticed until draco-io v0.3.0 and draco-gltf v0.2.0 were both published
-with no browser assets attached at all. So the release is not finished when the
-publish workflow is: watch that the asset run goes green too, and check the zips
-are on the Release.
+`crates/<crate>/CHANGELOG.md` section for `X.Y.Z`; and creates the GitHub
+Release. Nothing else listens for the tag: GitHub raises no workflow events for
+a ref pushed with `GITHUB_TOKEN`, so anything that must follow a release has to
+be a step of this workflow.
 
 Each crate ships the modules that wrap it, stamped with its own version —
 `draco-io` carries obj, ply, stl and fbx; `draco-gltf` carries gltf;
@@ -214,10 +206,9 @@ tag with the one-off workflow.
    is published, then tags): run `First release only: create tag`
    (`tag-first-release.yml`) with the crate, the version, and the confirmation
    string — e.g. for `draco-gltf`: `crate=draco-gltf`, `version=0.1.0`,
-   `confirm=tag draco-gltf`. That workflow also starts `Release: WASM assets`,
-   which creates the GitHub Release and attaches the crate's module zips — it
-   has to ask, because a tag pushed with `GITHUB_TOKEN` raises no workflow
-   events and so triggers nothing by itself.
+   `confirm=tag draco-gltf`. That workflow also creates the GitHub Release
+   itself, because a tag pushed with `GITHUB_TOKEN` raises no workflow events
+   and so triggers nothing by itself.
 6. Configure Trusted Publishing for `<crate>` before its next release.
 
 ## One-Time Setup

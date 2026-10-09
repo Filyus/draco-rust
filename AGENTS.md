@@ -38,8 +38,9 @@ To format the workspaces, run the same commands without `-- --check`.
   target, so the decisions already taken are not retaken.
 - `crates/draco-cpp-test-bridge` is internal C++ parity infrastructure and has
   `publish = false`.
-- `web/` contains WASM wrapper crates and demo tooling; it is released as GitHub
-  release assets, not as crates.io packages.
+- `web/` contains WASM wrapper crates and demo tooling. It is not published to
+  crates.io; the converter deploys to GitHub Pages, and the modules are to ship
+  as `@draco-rust/*` npm packages.
 
 The three publishable crates are versioned and **released independently** (see
 [Releases](#releases)).

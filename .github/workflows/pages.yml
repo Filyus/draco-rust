@@ -9,8 +9,8 @@ run-name: "pages: ${{ github.event.workflow_run.head_sha || github.sha }} (after
 
 # The converter is the only place the web modules are shown working together --
 # import, inspect, compress, view, export -- and until now it existed solely as
-# a local build. `Release: WASM assets` publishes the modules for consumers;
-# this publishes the app that uses them.
+# a local build. This publishes the app; the modules themselves are to ship
+# as npm packages.
 #
 # Deploying is gated on the checks rather than on the push, so the site is only
 # ever built from a commit `Rust CI` and `Fuzz` have both accepted.

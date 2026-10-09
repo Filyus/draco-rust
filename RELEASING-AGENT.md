@@ -16,8 +16,8 @@ and GitHub release.
 - **Agent**: prepares the bump + changelog for one crate and shows the diff.
   **That is the one stop.** After the maintainer OKs the wording it runs the rest
   without asking again: commit, push, wait for `Rust CI` and `Fuzz`, start the
-  publish workflow, and then watch `Release: WASM assets` through to the attached
-  zips. Asking again before the gate buys nothing — the gate is a button, and it
+  publish workflow, and then watch it through to the published crate and its
+  GitHub release. Asking again before the gate buys nothing — the gate is a button, and it
   cannot be pressed early by anyone but the maintainer.
 - **Maintainer**: reviews the changelog wording before the push — the wording is
   what ships, as the GitHub Release body — and presses approve on the `release`
@@ -216,21 +216,14 @@ bumps `draco-core`, releasing the dependents that should pick it up is a
     first three itself once the maintainer presses approve, and the approval is
     theirs alone.
 
-    After it publishes, the release is still not done: `publish.yml` asks
-    `Release: WASM assets` for a run, because the tag it pushed raises no events
-    of its own. Skipping this is how draco-io v0.3.0 and draco-gltf v0.2.0 came
-    to be published with no assets at all.
-
-    So check all four things exist, from outside the repository:
+    After it publishes, check from outside the repository that the crate, the
+    tag and the release all exist:
     ```sh
     curl -s https://crates.io/api/v1/crates/<crate> | grep -o '"max_version":"[^"]*"'
     git ls-remote --tags origin | grep "<crate>-v"
-    gh release view <crate>-vX.Y.Z --json assets --jq '.assets[].name'
+    gh release view <crate>-vX.Y.Z --json name,publishedAt
     ```
-    Expect one zip per built module — currently seven: obj, ply, stl, fbx, gltf,
-    drc, ktx2 — all stamped with this release's version. The whole set goes on
-    every release, and the list comes from the build rather than from the
-    workflow, so a new module needs nothing added anywhere.
+    A crate release carries no WASM assets; those are to ship as npm packages.
 
     Watch the run by **id**, and prove the watcher prints before trusting its
     silence: two attempts at this release reported nothing for half an hour
@@ -254,7 +247,7 @@ whichever crate the commit actually touched (`git show --stat`).
 | 05 | glTF | draco-gltf | `gltf`, `glb`, `scene`, `draco-gltf`, `bridge` | keep |
 | 06 | Compatibility | the touched crate | `compat`, `interop`, `legacy`, `cpp`, `parity` | keep if user-facing |
 | 07 | Performance | the touched crate | `perf`, `speed`, `memory` | keep if measured and user-facing |
-| 08 | WASM and release assets | web / the touched crate | `wasm`, `web`, `demo` | depends |
+| 08 | WASM | web / the touched crate | `wasm`, `web`, `demo` | depends |
 | 09 | Texture codecs | draco-texture | `texture`, `ktx2`, `basis` | drop (crate is unpublished) |
 | 20 | Documentation | the touched crate | `docs`, `readme`, `rustdoc`, `examples` | case-by-case |
 | 90 | Tests | — | `test`, `tests`, `fixture` | drop unless a compatibility guarantee changed |
@@ -267,7 +260,7 @@ Rules of thumb:
 - `gltf:`, `glb:` and `scene:` are all `draco-gltf`, which owns the format from
   the container up to the document. No glTF commit belongs to `draco-io`.
 - "keep" groups are crate-user-facing; write a clear bullet per change.
-- Mention WASM only when published release assets or a crate's WASM API change;
+- Mention WASM only when a crate's WASM API changes;
   omit browser-demo-only polish.
 - Mention C++ bridge work only when it changes a documented compatibility claim.
 - Never include `release:` commits in release notes.
