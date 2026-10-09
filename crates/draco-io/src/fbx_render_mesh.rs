@@ -336,6 +336,32 @@ pub fn build_draco_mesh(render: &FbxRenderMesh) -> Mesh {
 /// merge-bit-identical-values-then-merge-points pass the OBJ, PLY and glTF
 /// readers all end construction with. One fewer bespoke weld in the crate.
 pub fn build_draco_mesh_with_corner_map(render: &FbxRenderMesh) -> DracoMeshWithCornerMap {
+    weld(render, None)
+}
+
+/// [`build_draco_mesh_with_corner_map`], never welding two corners whose
+/// `keep_apart` entries differ. `keep_apart` is indexed by corner.
+///
+/// The weld compares only what the Draco mesh stores -- position and the
+/// first normal, UV and colour set. A caller that carries more per point than
+/// that, and reads it from the point's representative corner, has to keep
+/// apart the corners that disagree on it: two control points at one position
+/// with one normal and one UV are still two sets of skin weights, and welding
+/// them leaves one set driving both. The mesh comes back with the same
+/// attributes, in the same order, as the unkeyed weld builds.
+pub fn build_draco_mesh_with_corner_map_kept_apart(
+    render: &FbxRenderMesh,
+    keep_apart: &[u32],
+) -> DracoMeshWithCornerMap {
+    assert_eq!(
+        keep_apart.len(),
+        render.corner_count(),
+        "one keep-apart key per render corner"
+    );
+    weld(render, Some(keep_apart))
+}
+
+fn weld(render: &FbxRenderMesh, keep_apart: Option<&[u32]>) -> DracoMeshWithCornerMap {
     let normals = render.normals.first();
     let uvs = render.uvs.first();
     let colors = render.colors.first();
@@ -406,6 +432,24 @@ pub fn build_draco_mesh_with_corner_map(render: &FbxRenderMesh) -> DracoMeshWith
         mesh.add_attribute(color);
     }
 
+    // The keys ride as one more attribute, last, so the deduplication that
+    // compares every attribute compares them too; the mesh is rebuilt without
+    // it below.
+    let stored_attributes = mesh.num_attributes();
+    if let Some(keys) = keep_apart {
+        let mut key = PointAttribute::new();
+        key.init(
+            GeometryAttributeType::Generic,
+            1,
+            DataType::Uint32,
+            false,
+            corner_count,
+        );
+        let bytes: Vec<u8> = keys.iter().flat_map(|k| k.to_le_bytes()).collect();
+        key.buffer_mut().write(0, &bytes);
+        mesh.add_attribute(key);
+    }
+
     mesh.set_num_faces(corner_count / 3);
     for face in 0..corner_count / 3 {
         let base = (face * 3) as u32;
@@ -418,6 +462,20 @@ pub fn build_draco_mesh_with_corner_map(render: &FbxRenderMesh) -> DracoMeshWith
     let corner_to_point = mesh
         .finalize_returning_corner_map()
         .expect("deduplicating an in-memory mesh cannot fail on I/O");
+
+    if keep_apart.is_some() {
+        let mut stripped = Mesh::new();
+        stripped.set_num_points(mesh.num_points());
+        for id in 0..stored_attributes {
+            stripped.add_attribute(mesh.attribute(id).clone());
+        }
+        stripped.set_num_faces(mesh.num_faces());
+        for face in 0..mesh.num_faces() {
+            let face = FaceIndex(face as u32);
+            stripped.set_face(face, mesh.face(face));
+        }
+        mesh = stripped;
+    }
 
     // The first corner to reach each point, matching what the point's
     // attribute values were themselves read from -- one representative per
@@ -481,6 +539,48 @@ impl FbxMeshInstance {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two triangles over the same three positions, one corner per position
+    /// each: the plain weld makes them three points.
+    fn doubled_triangle() -> FbxRenderMesh {
+        let corners = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        FbxRenderMesh {
+            positions: corners.iter().chain(corners.iter()).copied().collect(),
+            indices: (0..6).collect(),
+            polygon_sizes: vec![3, 3],
+            corner_to_control_point: vec![0, 1, 2, 3, 4, 5],
+            corner_to_polygon: vec![0, 0, 0, 1, 1, 1],
+            ..Default::default()
+        }
+    }
+
+    /// Keys that differ keep coincident corners apart -- two control points at
+    /// one position stay two points, each carrying its own weights -- and keys
+    /// that agree weld exactly as the plain weld does. Either way the mesh
+    /// keeps the plain weld's attributes and nothing else: the keys are not
+    /// left behind on it.
+    #[test]
+    fn keep_apart_keys_split_coincident_corners_and_leave_no_attribute() {
+        let render = doubled_triangle();
+        let plain = build_draco_mesh_with_corner_map(&render);
+        assert_eq!(plain.mesh.num_points(), 3);
+
+        let apart = build_draco_mesh_with_corner_map_kept_apart(&render, &[0, 1, 2, 3, 4, 5]);
+        assert_eq!(apart.mesh.num_points(), 6);
+        assert_ne!(apart.corner_to_point[0], apart.corner_to_point[3]);
+        for (corner, &point) in apart.corner_to_point.iter().enumerate() {
+            assert_eq!(apart.point_to_corner[point as usize], corner as u32);
+        }
+
+        let together = build_draco_mesh_with_corner_map_kept_apart(&render, &[7, 8, 9, 7, 8, 9]);
+        assert_eq!(together.mesh.num_points(), 3);
+        assert_eq!(together.corner_to_point, plain.corner_to_point);
+
+        for welded in [&apart.mesh, &together.mesh] {
+            assert_eq!(welded.num_attributes(), plain.mesh.num_attributes());
+            assert_eq!(welded.num_faces(), plain.mesh.num_faces());
+        }
+    }
     use crate::fbx_scene::FbxMeshInstance;
 
     /// Two triangles sharing an edge, with per-corner UVs that disagree across
