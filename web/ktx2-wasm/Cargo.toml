@@ -10,7 +10,7 @@ license = "Apache-2.0"
 wasm-opt = false
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib"]
 
 [dependencies]
 wasm-bindgen = { workspace = true }

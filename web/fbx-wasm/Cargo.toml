@@ -7,7 +7,7 @@ repository = "https://github.com/Filyus/draco-rust"
 license = "Apache-2.0"
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib"]
 
 [dependencies]
 wasm-bindgen = { workspace = true }

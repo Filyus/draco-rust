@@ -23,6 +23,10 @@ console_error_panic_hook = "0.1.7"
 [profile.release]
 opt-level = "z"          # Optimize for size (smallest binary)
 lto = true               # Enable Link-Time Optimization
+# Cargo passes LTO only to a crate every one of whose crate types can take it,
+# and an rlib cannot: a `*-wasm` crate declared `["cdylib", "rlib"]` builds
+# with no `-C lto` and no warning. That is why each is a bare cdylib -- the
+# rlib had no user, and it cost 2-10% of every module's gzip.
 codegen-units = 1        # Reduce parallelism for better optimization
 panic = "abort"          # Smaller panic handling
 strip = true             # Strip symbols from binary
