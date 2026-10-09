@@ -25,6 +25,9 @@ read = ["draco-gltf/read"]
 # Full document graph validation for applications opening untrusted assets.
 strict-validation = ["draco-gltf/strict-validation"]
 draco-decode = ["read", "draco-gltf/draco-decode"]
+# Draco point clouds under KHR_draco_mesh_compression, which the extension does
+# not allow; the converter reads them, the release module leaves them out.
+point-cloud-decode = ["draco-decode", "draco-gltf/draco-point-cloud-decode"]
 # Generic non-primitive accessor materialization for animation, skins, and morphs.
 accessors = ["read", "draco-gltf/accessors"]
 raw-resources = ["read"]

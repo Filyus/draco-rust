@@ -616,6 +616,7 @@ fn effective_features(config: &Config, module: &str) -> Vec<String> {
         features.insert("strict-validation".to_string());
         features.insert("draco-encode".to_string());
         features.insert("raw-resources".to_string());
+        features.insert("point-cloud-decode".to_string());
     }
     if config.debug {
         features.insert("console_error_panic_hook".to_string());
