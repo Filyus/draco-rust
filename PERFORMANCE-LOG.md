@@ -36,7 +36,7 @@ figure at all.
 `rejected` -- tried, deliberately not kept. `retracted` -- an earlier claim
 here was withdrawn. `diagnostic` -- measured only, no change proposed.
 
-83 rounds: 51 landed, 11 diagnostic, 11 null, 8 retracted, 2 rejected.
+84 rounds: 52 landed, 11 diagnostic, 11 null, 8 retracted, 2 rejected.
 
 | Round | Verdict | Headline |
 | --- | --- | ---: |
@@ -123,6 +123,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [Threads, Re-Measured For 2.3.0](#threads-re-measured-for-230) | diagnostic | `2.1x to 4.0x on 16 threads` |
 | [glTF Primitives Side By Side](#gltf-primitives-side-by-side) | landed | `2.9x to 3.5x on 8 threads, 14x from validating once` |
 | [WASM Decode Against Upstream's: An i128 Nobody Priced](#wasm-decode-against-upstreams-an-i128-nobody-priced) | landed | `-19 to -27% WASM decode` |
+| [WASM Decode, Second Pass: The Position Table, And A Fairer Cold Start](#wasm-decode-second-pass-the-position-table-and-a-fairer-cold-start) | landed | `-10 to -14% WASM decode` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -4836,6 +4837,59 @@ Milliseconds, medians. Also measured, and not kept:
 
 The harness (`arms.mjs`, `bench.mjs`, `cold.mjs`, `memtest.mjs`) lived in the
 session scratchpad and is not committed.
+
+### WASM Decode, Second Pass: The Position Table, And A Fairer Cold Start
+
+2026-10-09, same harness and machine as the round above, continuing from
+`7ea61d30`. Medians, milliseconds, every arm's output compared bit for bit.
+
+- **The normal predictor's positions, resolved up front** (`bd3ff814`,
+  `landed`). The per-vertex cache was filled on demand, with a filled-yet test
+  on every read and, on a miss, the data-id/point-id/entry chain plus a
+  data-type match per component. Filling it in one pass, reading three
+  adjacent `int32` directly: bunny 11.9 -> 10.2, bunny_gltf 12.0 -> 10.8,
+  grid 367 -> 325, valence grid 497 -> 452. Lamp, which has no geometric
+  normals, did not move.
+- **A mapped `Float32` attribute read a value at a time** (`39f11d2d`,
+  `landed`). `read_f32s`'s packed path needed an identity mapping, which an
+  EdgeBreaker mesh's attributes never have. 1-3% on five files, each inside the
+  per-file floor and all in the same direction; the profile put the function
+  at ~3%.
+- **`+simd128`** (`null`). Same build with SIMD enabled and `wasm-opt
+  --enable-simd`: within 1% everywhere. Nothing on the decode path
+  auto-vectorises; it would only narrow the browsers served.
+- **Constrained multi-parallelogram with the component count fixed at 3**
+  (`null`, `probe/cmp-const-components`). The per-entry pass moved into a
+  `const N` function called with 3 for positions: valence grid 449 against
+  451. The scheme's time is the fan walk over the corner table, not the
+  per-component arithmetic.
+
+The first-call comparison in the round above was not like for like.
+`--no-wasm-lazy-compilation` with a synchronous compile moves ~4.7 ms of
+car's 5.4 ms first decode into the compile: ours is compiled lazily on first
+call, while upstream's module pays most of its compile inside instantiation
+(its "load" was 4.7 ms to our ~2). Counting load and first decode together,
+and touching Node's `Response` before the clock for both:
+
+| file | upstream | ours |
+| --- | ---: | ---: |
+| car | `7.0` | `7.3` |
+| lamp | `14.5` | `15.8` |
+| bunny_gltf | `32.7` | `34.7` |
+| grid 1025^2 | `538` | `549` |
+
+So a cold page pays 2-9% more than upstream's, and every later decode
+25-40% less. What is left of the cold gap is baseline-tier compile and
+execution of more code than upstream touches; shrinking it is a trade against
+the warm figures, not a free change. `diagnostic`.
+
+Measured beside the above and not followed: the profile of the valence grid
+with `MeshDecoder`'s helpers kept out of line puts `make_attribute_corner_table`
+at 6.9%, `assign_edgebreaker_points_to_corners` at 6.1% and the
+prediction-degree traversal at 14.5% with its priority closure. All three are
+line-for-line ports of upstream's passes; V8 reports no positions inside a
+wasm function, so finding what within them costs more than upstream's needs a
+native line-level profile.
 
 ## Unexplored
 
