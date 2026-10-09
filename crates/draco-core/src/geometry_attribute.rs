@@ -358,6 +358,15 @@ impl PointAttribute {
         }
 
         let available = (self.num_components() as usize).min(components);
+        // Value indices below this bound have a byte offset, `index * stride`,
+        // that fits a `usize`; everything past the offset is read through a
+        // slice of what remains, so no sum can wrap either. Taken once here,
+        // it costs a point the one comparison it already paid for the
+        // unique-entry count. It also catches INVALID_ATTRIBUTE_VALUE_INDEX.
+        let readable = match stride {
+            0 => self.num_unique_entries,
+            stride => self.num_unique_entries.min(usize::MAX / stride),
+        };
         if self.data_type() == DataType::Float32 {
             // The general loop below, with the type's match and the per-component
             // bounds test taken once per point: a value whose components all
@@ -366,11 +375,13 @@ impl PointAttribute {
             // component-at-a-time reading.
             for (point, out) in values.chunks_exact_mut(components).enumerate() {
                 let value_index = self.mapped_index(PointIndex(point as u32)).0 as usize;
-                if value_index >= self.num_unique_entries {
+                if value_index >= readable {
                     continue;
                 }
-                let base = value_index * stride;
-                match data.get(base..base + available * 4) {
+                let Some(rest) = data.get(value_index * stride..) else {
+                    continue;
+                };
+                match rest.get(..available * 4) {
                     Some(run) => {
                         for (slot, bytes) in out.iter_mut().zip(run.as_chunks::<4>().0) {
                             *slot = f32::from_le_bytes(*bytes);
@@ -378,8 +389,8 @@ impl PointAttribute {
                     }
                     None => {
                         for (component, slot) in out[..available].iter_mut().enumerate() {
-                            let offset = base + component * 4;
-                            if let Some(bytes) = data.get(offset..offset + 4) {
+                            let offset = component * 4;
+                            if let Some(bytes) = rest.get(offset..offset + 4) {
                                 *slot = scalar_as_f32(DataType::Float32, bytes);
                             }
                         }
@@ -390,19 +401,17 @@ impl PointAttribute {
         }
         for point in 0..num_points {
             let value_index = self.mapped_index(PointIndex(point as u32)).0 as usize;
-            // Also catches INVALID_ATTRIBUTE_VALUE_INDEX, whose `usize` product
-            // with the stride would overflow on a 32-bit target.
-            if value_index >= self.num_unique_entries {
+            if value_index >= readable {
                 continue;
             }
-            let base = value_index * stride;
+            let Some(rest) = data.get(value_index * stride..) else {
+                continue;
+            };
             for component in 0..available {
-                let offset = base + component * width;
-                if offset + width > data.len() {
-                    continue;
+                let offset = component * width;
+                if let Some(bytes) = rest.get(offset..offset + width) {
+                    values[point * components + component] = scalar_as_f32(self.data_type(), bytes);
                 }
-                values[point * components + component] =
-                    scalar_as_f32(self.data_type(), &data[offset..offset + width]);
             }
         }
         values
