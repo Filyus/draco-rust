@@ -167,7 +167,7 @@ export function buildFlatMeshesFromGltf(
           const attributes = new Map();
           for (let index = 0; index < packed.attributeCount(); index += 1) {
             attributes.set(packed.attributeSemantic(index), {
-              bytes: new Uint8Array(packed.attributeBytes(index)),
+              bytes: packed.attributeBytes(index),
               componentType: packed.attributeComponentType(index),
               components: packed.attributeComponents(index),
               normalized: packed.attributeNormalized(index),
@@ -648,7 +648,7 @@ function packedAttributeNumbers(attribute: GltfJson): number[] {
 }
 
 function packedIndices(packed: PackedGeometry): number[] {
-  const bytes = new Uint8Array(packed.indexBytes());
+  const bytes = packed.indexBytes();
   const componentType = packed.indexComponentType();
   const componentSize = componentByteSize(componentType);
   if (bytes.byteLength !== packed.indexCount() * componentSize) {
@@ -759,7 +759,7 @@ function buildMesh(
       for (let i = 0; i < packed.attributeCount(); i++) {
         const semantic = packed.attributeSemantic(i);
         attributes[semantic] = {
-          bytes: new Uint8Array(packed.attributeBytes(i)),
+          bytes: packed.attributeBytes(i),
           componentType: packed.attributeComponentType(i),
           components: packed.attributeComponents(i),
           normalized: packed.attributeNormalized(i),
@@ -813,7 +813,7 @@ function buildMesh(
       }
       if (packed.hasIndices()) {
         primitive.indices = {
-          bytes: new Uint8Array(packed.indexBytes()),
+          bytes: packed.indexBytes(),
           componentType: packed.indexComponentType(),
           count: packed.indexCount(),
         };

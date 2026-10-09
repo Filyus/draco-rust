@@ -761,10 +761,16 @@ impl PackedGeometry {
         self.attribute(index).map(PackedAttribute::normalized)
     }
 
+    /// The attribute's bytes, copied once, straight out of module memory.
+    ///
+    /// A `Uint8Array` rather than a `Vec<u8>`: returning a vector meant a copy
+    /// into a new Rust allocation, then the glue's copy of that into
+    /// JavaScript and its free -- two copies and an allocation where the view
+    /// needs one copy.
     #[wasm_bindgen(js_name = attributeBytes)]
-    pub fn attribute_bytes(&self, index: usize) -> Result<Vec<u8>, JsValue> {
+    pub fn attribute_bytes(&self, index: usize) -> Result<Uint8Array, JsValue> {
         self.attribute(index)
-            .map(|attribute| attribute.bytes().to_vec())
+            .map(|attribute| Uint8Array::from(attribute.bytes()))
     }
 
     /// Which document accessor this attribute was materialized from, or -1.
@@ -797,9 +803,11 @@ impl PackedGeometry {
             .map(|indices| indices.component_type().to_gltf())
     }
 
+    /// The index bytes, copied once, as [`Self::attribute_bytes`] is.
     #[wasm_bindgen(js_name = indexBytes)]
-    pub fn index_bytes(&self) -> Result<Vec<u8>, JsValue> {
-        self.indices().map(|indices| indices.bytes().to_vec())
+    pub fn index_bytes(&self) -> Result<Uint8Array, JsValue> {
+        self.indices()
+            .map(|indices| Uint8Array::from(indices.bytes()))
     }
 
     /// Which document accessor the index stream came from, or -1.

@@ -242,7 +242,7 @@ function collectMeshesWith(
             'attribute',
             packed.attributeSourceAccessor(index),
             () => ({
-              bytes: new Uint8Array(packed.attributeBytes(index)),
+              bytes: packed.attributeBytes(index),
               componentType: componentType(packed.attributeComponentType(index)),
               components: packed.attributeComponents(index),
               count: packed.attributeElementCount(index),
@@ -274,7 +274,7 @@ function collectMeshesWith(
             'indices',
             packed.indexSourceAccessor(),
             () => ({
-              bytes: new Uint8Array(packed.indexBytes()),
+              bytes: packed.indexBytes(),
               componentType: componentType(packed.indexComponentType()),
               components: 1,
               count: packed.indexCount(),
