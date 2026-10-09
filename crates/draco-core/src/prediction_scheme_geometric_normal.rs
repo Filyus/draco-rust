@@ -694,14 +694,15 @@ impl<'a> MeshPredictionSchemeGeometricNormalEncoder<'a> {
 /// again while predicting each of its neighbours. The two differ in what they
 /// return -- the encoder works in unclamped `i64` -- so they share the shape
 /// rather than the code.
+///
+/// Resolved for every vertex up front, as the decoder's is: a predicted normal
+/// reaches essentially every vertex, so filling on demand did the same lookups
+/// plus a filled-yet test on every read.
 #[cfg(feature = "encoder")]
 struct EncoderCornerPositions<'b> {
     corner_table: &'b CornerTable,
-    vertex_to_data_map: &'b [i32],
-    map: crate::prediction_scheme::EntryToPointIdMap<'b>,
-    pos_parent: PredictionParent<'b>,
+    /// Indexed by vertex id: what [`Self::lookup`] answers for it.
     cache: Vec<[i64; 3]>,
-    cached: Vec<bool>,
 }
 
 #[cfg(feature = "encoder")]
@@ -712,44 +713,63 @@ impl<'b> EncoderCornerPositions<'b> {
         map: crate::prediction_scheme::EntryToPointIdMap<'b>,
         pos_parent: PredictionParent<'b>,
     ) -> Self {
-        let num_vertices = vertex_to_data_map.len();
+        let cache = match pos_parent.int32_vector3_layout() {
+            Some((bytes, stride)) => vertex_to_data_map
+                .iter()
+                .map(|&data_id| {
+                    // `lookup`, with its three generic reads taken as one: the
+                    // components are adjacent, so they fit exactly when the
+                    // twelve bytes do.
+                    let read = || {
+                        let point_id = map.get(data_id as usize)?;
+                        let entry = pos_parent.mapped_index(PointIndex(point_id));
+                        let start = (entry.0 as usize).checked_mul(stride)?;
+                        let raw = bytes.get(start..start.checked_add(12)?)?;
+                        let component = |c: usize| {
+                            i64::from(i32::from_le_bytes([
+                                raw[4 * c],
+                                raw[4 * c + 1],
+                                raw[4 * c + 2],
+                                raw[4 * c + 3],
+                            ]))
+                        };
+                        Some([component(0), component(1), component(2)])
+                    };
+                    read().unwrap_or([0, 0, 0])
+                })
+                .collect(),
+            None => vertex_to_data_map
+                .iter()
+                .map(|&data_id| Self::lookup(map, pos_parent, data_id))
+                .collect(),
+        };
         Self {
             corner_table,
-            vertex_to_data_map,
-            map,
-            pos_parent,
-            cache: vec![[0i64; 3]; num_vertices],
-            cached: vec![false; num_vertices],
+            cache,
         }
     }
 
+    /// A vertex outside the table -- which a corner table built for this
+    /// mesh does not name -- has no position, the decoder's answer too.
     fn get(&mut self, ci: CornerIndex) -> [i64; 3] {
         let vertex = self.corner_table.vertex(ci).0 as usize;
-        if vertex >= self.cache.len() {
-            return self.lookup(vertex);
-        }
-        if self.cached[vertex] {
-            return self.cache[vertex];
-        }
-        let pos = self.lookup(vertex);
-        self.cache[vertex] = pos;
-        self.cached[vertex] = true;
-        pos
+        self.cache.get(vertex).copied().unwrap_or([0, 0, 0])
     }
 
-    fn lookup(&self, vertex: usize) -> [i64; 3] {
-        let data_id = self.vertex_to_data_map[vertex];
-
-        let Some(point_id) = self.map.get(data_id as usize) else {
+    /// The position of the vertex holding `data_id`, through the generic
+    /// reader; the origin for a data id or a point that names nothing.
+    fn lookup(
+        map: crate::prediction_scheme::EntryToPointIdMap<'_>,
+        pos_parent: PredictionParent<'_>,
+        data_id: i32,
+    ) -> [i64; 3] {
+        let Some(point_id) = map.get(data_id as usize) else {
             return [0, 0, 0];
         };
-        let pos_val_id = self.pos_parent.mapped_index(PointIndex(point_id));
+        let pos_val_id = pos_parent.mapped_index(PointIndex(point_id));
 
         let mut pos = [0i64; 3];
-        if !self
-            .pos_parent
-            .read_vector3_as_i64(pos_val_id.0 as usize, &mut pos)
-        {
+        if !pos_parent.read_vector3_as_i64(pos_val_id.0 as usize, &mut pos) {
             return [0, 0, 0];
         }
         pos
@@ -1278,6 +1298,54 @@ mod tests {
                 expected,
                 "{normal:?} {mode:?}"
             );
+        }
+    }
+
+    /// The encoder's resolved table answers what its generic lookup does for
+    /// every vertex, on the two layouts it reads directly and on `int16`, with
+    /// a vertex whose data id is missing and one whose point is past the buffer.
+    #[cfg(feature = "encoder")]
+    #[test]
+    fn encoder_position_table_matches_the_generic_lookup() {
+        let corner_table = corner_table_from(&[[0, 1, 2], [2, 1, 3]]);
+        let vertex_to_data_map = [0, 1, -1, 3];
+        let entry_to_point_id_map = [0u32, 1, 2, 7];
+        let map = EntryToPointIdMap::from_u32_slice(&entry_to_point_id_map);
+        let num_points = 4;
+        for data_type in [DataType::Int32, DataType::Uint32, DataType::Int16] {
+            let mut position_attribute = PointAttribute::new();
+            position_attribute.init(
+                GeometryAttributeType::Position,
+                3,
+                data_type,
+                false,
+                num_points,
+            );
+            for p in 0..num_points {
+                for c in 0..3 {
+                    let value = (10 * p + c) as i32 - 17;
+                    let at = p * 3 + c;
+                    if data_type == DataType::Int16 {
+                        position_attribute
+                            .buffer_mut()
+                            .update(&(value as i16).to_le_bytes(), Some(at * 2));
+                    } else {
+                        position_attribute
+                            .buffer_mut()
+                            .update(&value.to_le_bytes(), Some(at * 4));
+                    }
+                }
+            }
+            let parent = PredictionParent::portable(&position_attribute).expect("portable");
+            let table =
+                EncoderCornerPositions::new(&corner_table, &vertex_to_data_map, map, parent);
+            let expected: Vec<_> = vertex_to_data_map
+                .iter()
+                .map(|&data_id| EncoderCornerPositions::lookup(map, parent, data_id))
+                .collect();
+            assert_eq!(table.cache, expected, "{data_type:?}");
+            let real = expected.iter().filter(|&&p| p != [0, 0, 0]).count();
+            assert_eq!(real, 2, "{data_type:?} {expected:?}");
         }
     }
 
