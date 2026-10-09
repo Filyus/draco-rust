@@ -36,7 +36,7 @@ figure at all.
 `rejected` -- tried, deliberately not kept. `retracted` -- an earlier claim
 here was withdrawn. `diagnostic` -- measured only, no change proposed.
 
-84 rounds: 52 landed, 11 diagnostic, 11 null, 8 retracted, 2 rejected.
+85 rounds: 52 landed, 12 diagnostic, 11 null, 8 retracted, 2 rejected.
 
 | Round | Verdict | Headline |
 | --- | --- | ---: |
@@ -124,6 +124,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [glTF Primitives Side By Side](#gltf-primitives-side-by-side) | landed | `2.9x to 3.5x on 8 threads, 14x from validating once` |
 | [WASM Decode Against Upstream's: An i128 Nobody Priced](#wasm-decode-against-upstreams-an-i128-nobody-priced) | landed | `-19 to -27% WASM decode` |
 | [WASM Decode, Second Pass: The Position Table, And A Fairer Cold Start](#wasm-decode-second-pass-the-position-table-and-a-fairer-cold-start) | landed | `-10 to -14% WASM decode` |
+| [The WASM Gap, Read Against Instruction Counts](#the-wasm-gap-read-against-instruction-counts) | diagnostic | `0.90x / 0.80x C++ instructions` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -4890,6 +4891,37 @@ prediction-degree traversal at 14.5% with its priority closure. All three are
 line-for-line ports of upstream's passes; V8 reports no positions inside a
 wasm function, so finding what within them costs more than upstream's needs a
 native line-level profile.
+
+### The WASM Gap, Read Against Instruction Counts
+
+2026-10-09, after `63f79ead`. The native line-level profile the round above
+asked for: callgrind in the WSL stand, `decode_drc` built from this tree with
+line tables against `decode_drc_cpp_g` (pristine 1.5.7, `-O3 -g`), one decode
+as the difference of a 1- and a 0-iteration run. A 257^2 displaced grid with
+normals, encoded by upstream's encoder at `-cl 10` (valence) and `-cl 7`:
+
+| file | Rust | C++ | Rust / C++ | WASM time, ours / upstream's |
+| --- | ---: | ---: | ---: | ---: |
+| valence | `320.0M` | `357.2M` | `0.90` | `0.89` (1025^2 grid) |
+| standard | `233.7M` | `291.8M` | `0.80` | `0.77` (1025^2 grid) |
+
+The WASM ratios now track the instruction ratios, so after the two rounds above
+there is no WASM-specific cost left in the decode: what remains is work, and
+the same work natively. By stage the Rust side is at or under C++ everywhere --
+normals ~70M against ~106M (54M of upstream's is `ConvertValue`), the
+prediction-degree traversal 37.2M against 37.9M. That traversal is the stage
+with no margin, and its lines are flat: ~7M in `Vec` push/pop of the priority
+stacks and the output arrays, 1-4M each in slice and `Option` checks, nothing
+else over 1M across 131K faces. It is a line-for-line port of
+`MaxPredictionDegreeTraverser`, which pays the same `std::vector` costs, so
+moving it needs a different structure for the traversal rather than a cheaper
+line. `diagnostic`.
+
+`PointAttribute::init`'s unchecked `num_attribute_values * byte_stride`, raised
+while bounding `read_f32s`, was checked for reach: every decoder path sizes an
+attribute through `try_init` or `init_deferred`, both checked, and the
+unchecked `init` is called only from tests and from `KeyframeAnimation`, whose
+counts come from slices the caller already holds.
 
 ## Unexplored
 
