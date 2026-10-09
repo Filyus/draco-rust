@@ -16,8 +16,8 @@ only anchor a shipping without a version of its own has.
   JSON is 490 kB, opens in 1.1 ms instead of 1.86 (`JSON.parse` takes ~0.9 on
   the same text), and BrainStem in 0.67 instead of 0.95. Against upstream's
   glTF Draco decoder driven the way three.js drives it, VirtualCity now reads
-  1.07x as long instead of 1.21x. The module grew by 4.0 kB gzip in the reader
-  build and by 5.8 kB in the converter's.
+  1.07x as long instead of 1.21x. The reader module is 0.8 kB of gzip smaller
+  than before, and the converter's 3.0 kB larger.
 
 - **glTF scenes of many primitives load faster.** `GltfAsset.readPrimitives`
   reads several primitives in one call, and the converter reads a scene's

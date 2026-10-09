@@ -60,6 +60,11 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     the tree, which leaves parse plus validation 3.5x faster.
   - Output is unchanged: an untouched document still writes its source bytes,
     and an edited one writes the same minified JSON as before.
+- **`DracoExtension` opts into binary transforms only with the `write`
+  feature.** Without it, the builds that cannot run a binary transform, its
+  `allows_binary_transform` is false and it keeps and remaps no references,
+  like any handler that does not opt in. A reader therefore carries no code
+  for editing a document as a tree.
 - **Breaking: `Import::document` is no longer a public field.** Read the
   document with `Import::document()`, change it with `Import::document_mut()`,
   and take it out with `Import::into_document()`.

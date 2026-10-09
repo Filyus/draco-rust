@@ -36,7 +36,7 @@ figure at all.
 `rejected` -- tried, deliberately not kept. `retracted` -- an earlier claim
 here was withdrawn. `diagnostic` -- measured only, no change proposed.
 
-89 rounds: 56 landed, 12 diagnostic, 11 null, 8 retracted, 2 rejected.
+90 rounds: 57 landed, 12 diagnostic, 11 null, 8 retracted, 2 rejected.
 
 | Round | Verdict | Headline |
 | --- | --- | ---: |
@@ -129,6 +129,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [glTF Scenes Against three.js: Validation, JSON, Allocator](#gltf-scenes-against-threejs-validation-json-allocator) | landed | `64 -> 5.6 ms one-at-a-time reads` |
 | [glTF JSON As A Flat Tape](#gltf-json-as-a-flat-tape) | landed | `1.86 -> 1.20 ms WASM open` |
 | [Lazy Subtrees, Priced Before Built](#lazy-subtrees-priced-before-built) | landed | `1.20 -> 1.10 ms WASM open` |
+| [The Tape's Size, Taken Back](#the-tapes-size-taken-back) | landed | `147.2 -> 142.4 kB gzip` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -5109,6 +5110,37 @@ beside a scanner checking the same grammar and recording nothing
   and BrainStem in 0.65-0.68 instead of 0.69-0.73. The module grows by 235
   bytes of gzip. Raising the whole crate to `s` was not taken: the hot path
   is these four functions, and the rest of the crate is written for size.
+
+### The Tape's Size, Taken Back
+
+2026-10-09. The tape left gltf-wasm's release module at 147.2 kB gzip, 4.0
+over the tree's 143.2, and the converter build at 287.4 against 281.6.
+`twiggy` on builds that keep their names (`CARGO_PROFILE_RELEASE_STRIP=false`
+and `wasm-bindgen --keep-debug`, compared with the crate hashes stripped from
+the names) said where it went.
+
+- **The tree was still in the reader.** It was there for two callers.
+  `Import::to_bytes` to a GLB cloned the document, edited it as a tree and
+  serialized it. `DracoExtension::remap_binary_references`, which no reader
+  calls, was kept alive by the handler table. The GLB's JSON is now written
+  from the tape with patches, each one replacing a value or appending members
+  to an object, and a test holds it to the tree edit byte for byte. The
+  handler opts into binary transforms only with `write`. That dropped
+  `as_value_mut`, the tree copy and the second serializer from the reader.
+- **A sort nobody needed** (3.7 kB of code). Packing a Draco primitive
+  collected the accessors' `normalized` flags into a `BTreeMap<String, bool>`,
+  and building a map from an iterator sorts it. The flags now come from a
+  lookup into the contract, which already holds them per semantic.
+- **What the first cut added to the converter.** Sorting the patches brought
+  a 3 kB unstable sort, and `from_draco_mesh` taking `impl Fn` compiled
+  twice. Patches are now inserted in order, being few and nearly sorted, the
+  lookup is a `&dyn Fn`, and the encoder's own two maps became `Vec`s.
+
+Release module 147.2 -> 142.4 kB gzip, 0.8 under the tree's. Converter 287.4
+-> 284.6 kB, 3.0 over it. What the reader still carries for edits is the tree
+laid out as a tape inside `Document::as_json` (~0.8 kB raw) and the tree's
+drop (~0.6 kB). Removing those would take an indirect call in place of a
+direct one. VirtualCity's open and read times are unchanged within noise.
 
 ## Unexplored
 
