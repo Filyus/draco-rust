@@ -428,13 +428,14 @@ fn write_string(out: &mut Vec<u8>, value: &str) {
     }
     out.push(b'"');
 }
-/// A container the parser has opened but not yet closed.
+/// A container the parser has opened but not yet closed: where its entries
+/// start on the parser's shared stack of array items or object members.
 ///
 /// Object frames also hold the key whose value is being parsed, so that the key
 /// and its value only become a pair once the value is complete.
 enum Frame {
-    Array(Vec<Value>),
-    Object(Vec<(String, Value)>, String),
+    Array(usize),
+    Object(usize, String),
 }
 
 struct Parser<'a> {
@@ -466,10 +467,20 @@ impl<'a> Parser<'a> {
     /// bound on depth is the memory the document itself pays for: a level
     /// cannot be opened without spending an input byte on its bracket. The
     /// worst shape for this, an input that is nothing but brackets, peaks near
-    /// 90 bytes of heap per input byte, against roughly 17 for a document that
-    /// carries actual content.
+    /// 37 bytes of heap per input byte; VirtualCity's 490 kB of glTF JSON, a
+    /// document that carries actual content, peaks near 3.4.
+    ///
+    /// The entries of every open container wait on two shared stacks, one for
+    /// array items and one for object members, and a container that closes
+    /// takes its own off the top in one allocation of exactly its length,
+    /// rather than each growing a vector of its own a doubling at a time -- an
+    /// allocation and a copy at every power of two, for each of the thousands
+    /// of small objects a glTF document is made of, and capacity left over in
+    /// every one of them.
     fn value(&mut self) -> Result<Value, String> {
         let mut stack: Vec<Frame> = Vec::new();
+        let mut items: Vec<Value> = Vec::new();
+        let mut members: Vec<(String, Value)> = Vec::new();
         // The value finished most recently, waiting to be stored in the
         // container that encloses it.
         let mut done;
@@ -482,7 +493,7 @@ impl<'a> Parser<'a> {
                         done = Value::Object(Vec::new());
                     } else {
                         let key = self.object_key()?;
-                        stack.push(Frame::Object(Vec::new(), key));
+                        stack.push(Frame::Object(members.len(), key));
                         continue 'value;
                     }
                 }
@@ -491,7 +502,7 @@ impl<'a> Parser<'a> {
                     if self.take(b']') {
                         done = Value::Array(Vec::new());
                     } else {
-                        stack.push(Frame::Array(Vec::new()));
+                        stack.push(Frame::Array(items.len()));
                         continue 'value;
                     }
                 }
@@ -507,8 +518,8 @@ impl<'a> Parser<'a> {
             loop {
                 let closed = match stack.last_mut() {
                     None => return Ok(done),
-                    Some(Frame::Array(values)) => {
-                        values.push(done);
+                    Some(Frame::Array(_)) => {
+                        items.push(done);
                         if self.take(b']') {
                             true
                         } else if self.take(b',') {
@@ -517,8 +528,8 @@ impl<'a> Parser<'a> {
                             return Err("missing array comma".into());
                         }
                     }
-                    Some(Frame::Object(values, key)) => {
-                        values.push((mem::take(key), done));
+                    Some(Frame::Object(_, key)) => {
+                        members.push((mem::take(key), done));
                         if self.take(b'}') {
                             true
                         } else if self.take(b',') {
@@ -534,9 +545,11 @@ impl<'a> Parser<'a> {
                     }
                     continue 'value;
                 }
+                // Every container opened after this one has closed already, so
+                // its entries are the top of the stack, from `start` up.
                 done = match stack.pop().expect("a frame was just observed on the stack") {
-                    Frame::Array(values) => Value::Array(values),
-                    Frame::Object(values, _) => Value::Object(values),
+                    Frame::Array(start) => Value::Array(items.split_off(start)),
+                    Frame::Object(start, _) => Value::Object(members.split_off(start)),
                 };
             }
         }
