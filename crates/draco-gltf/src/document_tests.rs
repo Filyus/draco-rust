@@ -663,7 +663,7 @@ fn explicit_asset_loading_accepts_embedded_file_buffer_view() {
         )
         .unwrap();
     assert_eq!(
-        child.document.as_value()["asset"]["version"].as_str(),
+        child.document().as_value()["asset"]["version"].as_str(),
         Some("2.1")
     );
 }
@@ -738,7 +738,7 @@ fn import_reads_json() {
     )
     .unwrap();
     assert_eq!(
-        import.document.to_json_bytes().unwrap(),
+        import.document().to_json_bytes().unwrap(),
         br#"{"asset":{"version":"2.1"},"buffers":[]}"#
     );
 }
@@ -833,14 +833,17 @@ mod compression_tests {
                 .num_faces(),
             1
         );
-        import.document.validate(ValidationProfile::Gltf20).unwrap();
-        assert!(import.document.as_value()["extensionsRequired"]
+        import
+            .document()
+            .validate(ValidationProfile::Gltf20)
+            .unwrap();
+        assert!(import.document().as_value()["extensionsRequired"]
             .as_array()
             .unwrap()
             .iter()
             .any(|value| value.as_str() == Some(crate::KHR_DRACO_MESH_COMPRESSION)));
         let accessor = import
-            .document
+            .document()
             .primitive(crate::MeshIndex(0), 0)
             .unwrap()
             .attributes()
@@ -849,7 +852,7 @@ mod compression_tests {
             .as_u64()
             .unwrap() as usize;
         let accessor = import
-            .document
+            .document()
             .accessor(crate::AccessorIndex(accessor))
             .unwrap();
         assert!(accessor.buffer_view().is_none());
@@ -872,7 +875,7 @@ mod compression_tests {
             .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
             .unwrap();
 
-        let primitive = import.document.primitive(crate::MeshIndex(0), 0).unwrap();
+        let primitive = import.document().primitive(crate::MeshIndex(0), 0).unwrap();
         assert_eq!(
             primitive.mode(),
             4,
@@ -905,7 +908,7 @@ mod compression_tests {
             .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
             .unwrap();
 
-        let primitive = import.document.primitive(crate::MeshIndex(0), 0).unwrap();
+        let primitive = import.document().primitive(crate::MeshIndex(0), 0).unwrap();
         assert_eq!(primitive.mode(), 4);
 
         let triangles = decode_triangle_vertex_sets(
@@ -1275,7 +1278,7 @@ mod compression_tests {
             .expect("a splat elsewhere in the document must not block compression");
         assert_eq!(report.compressed_primitives, 1);
 
-        let splat = &import.document.as_value()["meshes"][0]["primitives"][1];
+        let splat = &import.document().as_value()["meshes"][0]["primitives"][1];
         assert_eq!(splat["mode"].as_u64(), Some(0));
         assert_eq!(
             splat["extensions"]["KHR_gaussian_splatting"]["kernel"].as_str(),
@@ -1353,6 +1356,56 @@ mod compression_tests {
     }
 
     #[cfg(feature = "draco-encode")]
+    /// The import validates its document once per state of it: a document
+    /// changed through `document_mut` is validated again by the next read, and
+    /// a change that breaks it is refused there rather than skipped on the
+    /// strength of the earlier pass.
+    #[test]
+    fn a_changed_document_is_validated_again_before_a_draco_read() {
+        let positions = [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        let geometry = crate::PackedGeometry::new(
+            crate::PrimitiveMode::Triangles,
+            vec![crate::PackedAttribute::new(
+                "POSITION",
+                3,
+                3,
+                crate::ComponentType::F32,
+                false,
+                positions,
+            )
+            .unwrap()],
+            None,
+        )
+        .unwrap();
+        let mut import = crate::Import::from_geometry(
+            &geometry,
+            ValidationProfile::Gltf20,
+            crate::GeometryWriteOptions::default(),
+        )
+        .unwrap();
+        import
+            .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
+            .unwrap();
+        let read = |import: &crate::Import| {
+            let primitive = import.document().primitive(crate::MeshIndex(0), 0).unwrap();
+            import.decode_draco_primitive(primitive).map(|_| ())
+        };
+        read(&import).unwrap();
+        read(&import).unwrap();
+
+        import.document_mut().as_value_mut()["asset"]["version"] = "1.0".into();
+        assert!(
+            matches!(read(&import), Err(crate::Error::Validation(_))),
+            "a document changed since it was validated is checked again"
+        );
+
+        import.document_mut().as_value_mut()["asset"]["version"] = "2.0".into();
+        read(&import).unwrap();
+    }
+
     #[test]
     fn compression_uses_the_encoded_topology_for_accessor_metadata() {
         let positions = [
@@ -1396,18 +1449,21 @@ mod compression_tests {
             .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
             .unwrap();
 
-        let primitive = import.document.primitive(crate::MeshIndex(0), 0).unwrap();
+        let primitive = import.document().primitive(crate::MeshIndex(0), 0).unwrap();
         let position = primitive
             .attribute_indices()
             .find_map(|(semantic, index)| (semantic == "POSITION").then_some(index))
             .unwrap();
-        assert_eq!(import.document.accessor(position).unwrap().count(), Some(3));
+        assert_eq!(
+            import.document().accessor(position).unwrap().count(),
+            Some(3)
+        );
         let decoded = import.decode_draco_primitive(primitive).unwrap();
         assert_eq!(decoded.num_points(), 3);
         assert_eq!(decoded.num_faces(), 1);
 
-        import.document.as_value_mut()["accessors"][position.0]["count"] = 4u64.into();
-        let primitive = import.document.primitive(crate::MeshIndex(0), 0).unwrap();
+        import.document_mut().as_value_mut()["accessors"][position.0]["count"] = 4u64.into();
+        let primitive = import.document().primitive(crate::MeshIndex(0), 0).unwrap();
         assert!(matches!(
             import.decode_draco_primitive(primitive),
             Err(crate::Error::Geometry(
@@ -1422,8 +1478,8 @@ mod compression_tests {
         // An accessor that undercounts is what real encoders emit for a mesh
         // with attribute seams, and the decoded stream is self-consistent, so
         // the read must go through with the decoded count.
-        import.document.as_value_mut()["accessors"][position.0]["count"] = 2u64.into();
-        let primitive = import.document.primitive(crate::MeshIndex(0), 0).unwrap();
+        import.document_mut().as_value_mut()["accessors"][position.0]["count"] = 2u64.into();
+        let primitive = import.document().primitive(crate::MeshIndex(0), 0).unwrap();
         let decoded = import.decode_draco_primitive(primitive).unwrap();
         assert_eq!(decoded.num_points(), 3);
         let geometry = import
@@ -1449,15 +1505,18 @@ mod compression_tests {
                 },
             )
             .unwrap();
-        import.document.validate(ValidationProfile::Gltf20).unwrap();
+        import
+            .document()
+            .validate(ValidationProfile::Gltf20)
+            .unwrap();
         assert!(import
-            .document
+            .document()
             .as_value()
             .get("extensionsRequired")
             .is_none());
         assert_eq!(
             import
-                .document
+                .document()
                 .accessor(crate::AccessorIndex(0))
                 .unwrap()
                 .buffer_view(),
@@ -1472,10 +1531,13 @@ mod compression_tests {
         import
             .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
             .unwrap();
-        import.document.validate(ValidationProfile::Gltf20).unwrap();
+        import
+            .document()
+            .validate(ValidationProfile::Gltf20)
+            .unwrap();
         assert_eq!(
             import
-                .document
+                .document()
                 .primitive(crate::MeshIndex(1), 0)
                 .unwrap()
                 .attributes()
@@ -1485,13 +1547,13 @@ mod compression_tests {
             Some(0)
         );
         assert!(import
-            .document
+            .document()
             .accessor(crate::AccessorIndex(0))
             .unwrap()
             .buffer_view()
             .is_some());
         assert_eq!(import.resources.buffers.len(), 1);
-        assert_eq!(import.document.buffer_views().len(), 2);
+        assert_eq!(import.document().buffer_views().len(), 2);
     }
 
     #[test]
@@ -1502,11 +1564,11 @@ mod compression_tests {
             .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
             .unwrap();
         assert_eq!(
-            import.document.as_value()["custom"]["bufferView"].as_u64(),
+            import.document().as_value()["custom"]["bufferView"].as_u64(),
             Some(987)
         );
         assert_eq!(
-            import.document.as_value()["custom"]["attributes"]["POSITION"].as_u64(),
+            import.document().as_value()["custom"]["attributes"]["POSITION"].as_u64(),
             Some(123)
         );
     }
@@ -1538,7 +1600,7 @@ mod compression_tests {
         // compression_unwinds_a_triangle_strip_before_encoding), but the
         // extension's own spec text permits it on a file this crate merely
         // reads, and decode must not be fooled by it either.
-        import.document.as_value_mut()["meshes"][0]["primitives"][0]["mode"] = 5u64.into();
+        import.document_mut().as_value_mut()["meshes"][0]["primitives"][0]["mode"] = 5u64.into();
 
         let geometry = import
             .read_primitive(crate::PrimitiveIndex::new(crate::MeshIndex(0), 0))
@@ -1580,13 +1642,13 @@ mod compression_tests {
         import
             .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
             .unwrap();
-        let view = import.document.as_value()["extensions"]["VENDOR_binary_layout"]["bufferView"]
+        let view = import.document().as_value()["extensions"]["VENDOR_binary_layout"]["bufferView"]
             .as_u64()
             .unwrap() as usize;
-        assert!(view < import.document.buffer_views().len());
+        assert!(view < import.document().buffer_views().len());
         assert_eq!(
             import
-                .document
+                .document()
                 .buffer_view(crate::BufferViewIndex(view))
                 .unwrap()
                 .buffer(),
@@ -1602,7 +1664,7 @@ mod compression_tests {
             .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
             .unwrap();
         import.decompress_in_place().unwrap();
-        let primitive = import.document.primitive(crate::MeshIndex(0), 0).unwrap();
+        let primitive = import.document().primitive(crate::MeshIndex(0), 0).unwrap();
         assert!(primitive
             .extension(crate::KHR_DRACO_MESH_COMPRESSION)
             .is_none());
@@ -1626,7 +1688,7 @@ mod compression_tests {
         import.decompress_in_place().unwrap();
 
         let decoded_accessor = import
-            .document
+            .document()
             .primitive(crate::MeshIndex(0), 0)
             .unwrap()
             .attributes()
@@ -1640,7 +1702,7 @@ mod compression_tests {
         assert_ne!(decoded_accessor, 0);
         assert_eq!(
             import
-                .document
+                .document()
                 .primitive(crate::MeshIndex(1), 0)
                 .unwrap()
                 .attributes()
@@ -1651,7 +1713,7 @@ mod compression_tests {
         );
         assert_eq!(
             import
-                .document
+                .document()
                 .accessor(crate::AccessorIndex(0))
                 .unwrap()
                 .buffer_view(),
@@ -1726,7 +1788,7 @@ mod compression_tests {
     fn compression_output_limit_is_atomic() {
         let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
         let mut import = parse(input, ValidationProfile::Gltf20).unwrap();
-        let before = import.document.to_json_bytes().unwrap();
+        let before = import.document().to_json_bytes().unwrap();
         let error = import
             .compress_primitive(
                 crate::MeshIndex(0),
@@ -1738,7 +1800,7 @@ mod compression_tests {
             )
             .unwrap_err();
         assert!(error.to_string().contains("limit"));
-        assert_eq!(import.document.to_json_bytes().unwrap(), before);
+        assert_eq!(import.document().to_json_bytes().unwrap(), before);
     }
 
     /// Forcing overrides what speed alone would have picked, in both
@@ -1810,7 +1872,7 @@ mod compression_tests {
             .unwrap();
         assert!(report.output_bytes <= report.encoded_bytes + 39);
         assert_eq!(import.resources.buffers.len(), 1);
-        assert_eq!(import.document.buffer_views().len(), 3);
+        assert_eq!(import.document().buffer_views().len(), 3);
     }
 
     #[test]
@@ -1820,10 +1882,10 @@ mod compression_tests {
         import
             .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
             .unwrap();
-        let before = import.document.to_json_bytes().unwrap();
+        let before = import.document().to_json_bytes().unwrap();
         import.resources.buffers[0][0] ^= 0xff;
         assert!(import.decompress_in_place().is_err());
-        assert_eq!(import.document.to_json_bytes().unwrap(), before);
+        assert_eq!(import.document().to_json_bytes().unwrap(), before);
         assert_eq!(import.draco_primitives().count(), 1);
     }
 }
@@ -1850,7 +1912,7 @@ fn import_packs_accessor_geometry() {
 
     #[cfg(feature = "accessors")]
     {
-        let source = crate::DocumentAccessorSource::new(&import.document, &import.resources);
+        let source = crate::DocumentAccessorSource::new(import.document(), &import.resources);
         let accessor = source.read_accessor(0).unwrap();
         assert_eq!(accessor.count, 3);
         assert_eq!(accessor.accessor_type, "VEC3");
@@ -1867,7 +1929,7 @@ fn import_packs_accessor_geometry() {
 fn accessor_materialization_removes_matrix_column_padding() {
     let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":12,"uri":"data:application/octet-stream;base64,AQIDAAQFBgAHCAkA"}],"bufferViews":[{"buffer":0,"byteLength":12}],"accessors":[{"bufferView":0,"componentType":5121,"count":1,"type":"MAT3"}]}"#;
     let import = parse(input, ValidationProfile::Gltf20).unwrap();
-    let source = crate::DocumentAccessorSource::new(&import.document, &import.resources);
+    let source = crate::DocumentAccessorSource::new(import.document(), &import.resources);
 
     let accessor = source.read_accessor(0).unwrap();
     assert_eq!(accessor.accessor_type, "MAT3");
@@ -1890,7 +1952,7 @@ fn an_accessor_does_not_read_past_its_buffer_view() {
             r#"{{"asset":{{"version":"2.0"}},"buffers":[{{"byteLength":24,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}}],"bufferViews":[{{"buffer":0,"byteLength":12}},{{"buffer":0,"byteOffset":12,"byteLength":12}}],"accessors":[{{"bufferView":0,"componentType":5126,"count":{count},"type":"VEC3"}}]}}"#
         );
         let import = parse(input.as_bytes(), ValidationProfile::Gltf20).unwrap();
-        let source = crate::DocumentAccessorSource::new(&import.document, &import.resources);
+        let source = crate::DocumentAccessorSource::new(import.document(), &import.resources);
         source.read_accessor(0).map(|accessor| accessor.bytes.len())
     };
     assert_eq!(accessor(1).unwrap(), 12);
@@ -1911,7 +1973,7 @@ fn an_accessor_does_not_read_past_its_buffer_view() {
 fn a_sparse_accessor_without_a_view_fails_to_reserve_rather_than_aborts() {
     let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":16,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAAAAAA=="}],"bufferViews":[{"buffer":0,"byteLength":4},{"buffer":0,"byteOffset":4,"byteLength":12}],"accessors":[{"componentType":5126,"count":1125899906842624,"type":"VEC3","sparse":{"count":1,"indices":{"bufferView":0,"componentType":5125},"values":{"bufferView":1}}}]}"#;
     let import = parse(input, ValidationProfile::Gltf20).unwrap();
-    let source = crate::DocumentAccessorSource::new(&import.document, &import.resources);
+    let source = crate::DocumentAccessorSource::new(import.document(), &import.resources);
     let result = source.read_accessor(0).map(|accessor| accessor.count);
     assert!(
         result
@@ -2028,7 +2090,7 @@ fn import_materializes_sparse_accessors() {
     import.decompress_in_place().unwrap();
     assert_eq!(
         import
-            .decode_geometry_primitive(import.document.primitive(crate::MeshIndex(0), 0).unwrap())
+            .decode_geometry_primitive(import.document().primitive(crate::MeshIndex(0), 0).unwrap())
             .unwrap()
             .0
             .num_points(),
@@ -2229,7 +2291,7 @@ fn raw_writer_roundtrips_every_primitive_mode_and_append() {
     assert_eq!(
         import
             .unwrap()
-            .document
+            .document()
             .mesh(crate::MeshIndex(0))
             .unwrap()
             .primitive_count(),
@@ -2242,7 +2304,7 @@ fn raw_writer_roundtrips_every_primitive_mode_and_append() {
 fn write_rejects_incompatible_morph_targets_atomically() {
     let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":24,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}],"bufferViews":[{"buffer":0,"byteLength":12},{"buffer":0,"byteOffset":12,"byteLength":12}],"accessors":[{"bufferView":0,"componentType":5126,"count":1,"type":"VEC3","min":[0,0,0],"max":[0,0,0]},{"bufferView":1,"componentType":5126,"count":1,"type":"VEC3"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0},"targets":[{"POSITION":1}],"extras":{"keep":true}}]}]}"#;
     let mut import = crate::parse(input, ValidationProfile::Gltf20).unwrap();
-    let before = import.document.to_json_bytes().unwrap();
+    let before = import.document().to_json_bytes().unwrap();
     let error = import
         .write_primitive(
             crate::PrimitiveIndex::new(crate::MeshIndex(0), 0),
@@ -2254,7 +2316,7 @@ fn write_rejects_incompatible_morph_targets_atomically() {
         error,
         crate::Error::Geometry(crate::GeometryError::MorphTargetCount { .. })
     ));
-    assert_eq!(import.document.to_json_bytes().unwrap(), before);
+    assert_eq!(import.document().to_json_bytes().unwrap(), before);
 }
 
 #[cfg(feature = "write")]
@@ -2267,14 +2329,14 @@ fn standalone_raw_geometry_roundtrips_json_and_glb() {
         crate::GeometryWriteOptions::default(),
     )
     .unwrap();
-    assert_eq!(import.document.nodes().len(), 1);
-    assert_eq!(import.document.scenes().len(), 1);
+    assert_eq!(import.document().nodes().len(), 1);
+    assert_eq!(import.document().scenes().len(), 1);
     assert_eq!(
-        import.document.as_value()["accessors"][0]["min"],
+        import.document().as_value()["accessors"][0]["min"],
         crate::JsonValue::Array(vec![0u64.into(), 0u64.into(), 0u64.into()])
     );
     assert_eq!(
-        import.document.as_value()["accessors"][0]["max"],
+        import.document().as_value()["accessors"][0]["max"],
         crate::JsonValue::Array(vec![1u64.into(), 1u64.into(), 0u64.into()])
     );
     assert_eq!(
@@ -2326,7 +2388,7 @@ fn standalone_raw_geometry_roundtrips_json_and_glb() {
 fn write_primitive_preserves_non_geometry_fields_and_is_atomic() {
     let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":12,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAA"}],"bufferViews":[{"buffer":0,"byteLength":12}],"accessors":[{"bufferView":0,"componentType":5126,"count":1,"type":"VEC3","min":[0,0,0],"max":[0,0,0]}],"materials":[{}],"meshes":[{"primitives":[{"attributes":{"POSITION":0},"material":0,"extras":{"tag":7},"extensions":{"VENDOR_keep":{"value":9}}}]}]}"#;
     let mut import = crate::parse(input, ValidationProfile::Gltf20).unwrap();
-    let before = import.document.to_json_bytes().unwrap();
+    let before = import.document().to_json_bytes().unwrap();
     let invalid = crate::PackedAttribute::new(
         "POSITION",
         3,
@@ -2336,7 +2398,7 @@ fn write_primitive_preserves_non_geometry_fields_and_is_atomic() {
         vec![0; 8],
     );
     assert!(invalid.is_err());
-    assert_eq!(import.document.to_json_bytes().unwrap(), before);
+    assert_eq!(import.document().to_json_bytes().unwrap(), before);
 
     let geometry = packed_triangle(crate::ComponentType::F32);
     let report = import
@@ -2350,7 +2412,7 @@ fn write_primitive_preserves_non_geometry_fields_and_is_atomic() {
         report.preserve_reasons,
         vec![crate::PreserveReason::ExistingReferences]
     );
-    let primitive = import.document.primitive(crate::MeshIndex(0), 0).unwrap();
+    let primitive = import.document().primitive(crate::MeshIndex(0), 0).unwrap();
     assert_eq!(primitive.value()["material"].as_u64(), Some(0));
     assert_eq!(primitive.value()["extras"]["tag"].as_u64(), Some(7));
     assert_eq!(
@@ -2374,7 +2436,7 @@ fn raw_writer_preserves_draft_64_bit_components() {
         .unwrap();
     assert_eq!(read, geometry);
     assert_eq!(
-        import.document.as_value()["accessors"][0]["componentType"].as_u64(),
+        import.document().as_value()["accessors"][0]["componentType"].as_u64(),
         Some(5130)
     );
 }

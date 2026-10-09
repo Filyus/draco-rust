@@ -64,9 +64,9 @@ fuzz_target!(|data: &[u8]| {
 
 fn compress_and_check(mut import: Import, options: &CompressionOptions, input: &[u8]) {
     let mut attempts = 0;
-    for mesh in 0..import.document.meshes().len() {
+    for mesh in 0..import.document().meshes().len() {
         let primitive_count = import
-            .document
+            .document()
             .mesh(MeshIndex(mesh))
             .map_or(0, |mesh| mesh.primitive_count());
         for primitive in 0..primitive_count {
@@ -75,7 +75,7 @@ fn compress_and_check(mut import: Import, options: &CompressionOptions, input: &
             }
             attempts += 1;
             let already_draco = import
-                .document
+                .document()
                 .primitive(MeshIndex(mesh), primitive)
                 .is_some_and(|reference| reference.extension(KHR_DRACO_MESH_COMPRESSION).is_some());
             if import
@@ -117,13 +117,13 @@ fn check_compressed(
         Err(error) => fail(format!("does not read back: {error}")),
     };
 
-    let Some(reference) = import.document.primitive(mesh, primitive) else {
+    let Some(reference) = import.document().primitive(mesh, primitive) else {
         fail("disappeared from the document".into());
     };
-    let source = DocumentAccessorSource::new(&import.document, &import.resources);
+    let source = DocumentAccessorSource::new(import.document(), &import.resources);
     let count_of = |accessor: usize| {
         import
-            .document
+            .document()
             .accessor(accessor.into())
             .and_then(|accessor| accessor.count())
     };

@@ -388,7 +388,7 @@ impl GltfAsset {
     #[cfg(feature = "read")]
     #[wasm_bindgen(js_name = meshCount)]
     pub fn mesh_count(&self) -> usize {
-        self.import.document.meshes().len()
+        self.import.document().meshes().len()
     }
 
     /// Returns the number of primitives in one mesh.
@@ -396,7 +396,7 @@ impl GltfAsset {
     #[wasm_bindgen(js_name = primitiveCount)]
     pub fn primitive_count(&self, mesh: usize) -> Result<usize, JsValue> {
         self.import
-            .document
+            .document()
             .mesh(draco_gltf::MeshIndex(mesh))
             .map(|mesh| {
                 mesh.value()
@@ -474,13 +474,13 @@ impl GltfAsset {
 
     /// Returns the lossless JSON document. Untouched JSON keeps its source bytes.
     pub fn json(&self) -> Result<Vec<u8>, JsValue> {
-        self.import.document.to_json_bytes().map_err(wasm_error)
+        self.import.document().to_json_bytes().map_err(wasm_error)
     }
 
     /// Returns minified JSON while preserving object order and number lexemes.
     #[wasm_bindgen(js_name = minifiedJson)]
     pub fn minified_json(&self) -> Vec<u8> {
-        self.import.document.to_minified_json_bytes()
+        self.import.document().to_minified_json_bytes()
     }
 
     /// Serializes a GLB version 2 or 3 container.
@@ -497,7 +497,7 @@ impl GltfAsset {
     #[cfg(feature = "strict-validation")]
     pub fn validate(&self, validation_profile: &str) -> Result<(), JsValue> {
         self.import
-            .document
+            .document()
             .validate(profile(validation_profile)?)
             .map_err(wasm_error)
     }
@@ -526,7 +526,7 @@ impl GltfAsset {
             return Err(JsValue::from_str("unsupported glTF root array"));
         }
         self.import
-            .document
+            .document()
             .as_value()
             .get(kind)
             .and_then(|value| value.as_array())
@@ -561,7 +561,7 @@ impl GltfAsset {
 
     /// Returns mesh, scene, primitive, and Draco usage counts.
     pub fn summary(&self) -> JsValue {
-        summary_to_js(asset_summary(self.import.document.clone()))
+        summary_to_js(asset_summary(self.import.document().clone()))
     }
 
     /// Materializes every Draco primitive atomically into ordinary accessors.

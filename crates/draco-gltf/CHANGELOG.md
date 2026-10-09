@@ -35,6 +35,23 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Breaking: `Import::document` is no longer a public field.** Read the
+  document with `Import::document()`, change it with `Import::document_mut()`,
+  and take it out with `Import::into_document()`.
+  - Why: the import now remembers that its document passed validation, and
+    `read_primitive`, `read_primitives` and the Draco decodes skip validating it
+    again until it changes. A public field let it change without the import
+    knowing; `document_mut` is the one way to change it, and the next such read
+    validates the document as it is then.
+  - An import is marked validated when it is parsed, so reading primitives one
+    call at a time no longer validates the whole document on every call --
+    which, with `strict-validation`, was most of the cost of reading a scene of
+    many small primitives that way.
+  - `Import::validate` itself still validates on every call, against whatever
+    registry it is given.
+- **Draft-profile validation no longer formats a location for every object.**
+  The `uid` checks of `strict-validation` collect UIDs first and stop when a
+  document has none; refusals name the same objects as before.
 - **`Import::decompress_in_place` decodes primitives side by side** on the
   threads `ImportOptions::draco_decode_threads` allows, a batch of that many
   at a time, so no more decoded geometry is held at once than there are

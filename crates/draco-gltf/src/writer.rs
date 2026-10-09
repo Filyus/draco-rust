@@ -110,7 +110,7 @@ impl Import {
         geometry.validate(self.validation_profile())?;
         let mut candidate = self.clone();
         let primitives = candidate
-            .document
+            .document_mut()
             .as_value_mut()
             .get_mut("meshes")
             .and_then(Value::as_array_mut)
@@ -142,7 +142,7 @@ impl Import {
     ///     ValidationProfile::Gltf20,
     ///     GeometryWriteOptions::default(),
     /// )?;
-    /// assert_eq!(scene.document.meshes().len(), 1);
+    /// assert_eq!(scene.document().meshes().len(), 1);
     /// # Ok::<(), draco_gltf::Error>(())
     /// ```
     pub fn from_geometry(
@@ -169,7 +169,7 @@ impl Import {
         geometry: &PackedGeometry,
     ) -> Result<usize> {
         let primitive = self
-            .document
+            .document()
             .primitive(location.mesh, location.primitive)
             .ok_or_else(|| Error::Validation(vec!["primitive is out of range".into()]))?;
         validate_morph_targets(self, primitive, geometry.vertex_count())?;
@@ -194,7 +194,7 @@ impl Import {
         };
         let encoded_bytes = bytes.len();
 
-        let root = self.document.as_value_mut();
+        let root = self.document_mut().as_value_mut();
         ensure_root_array(root, "buffers")?
             .push(Value::object([("byteLength", Value::from(bytes.len()))]));
         let first_view = ensure_root_array(root, "bufferViews")?.len();
@@ -483,7 +483,7 @@ fn validate_morph_targets(
             let count = accessor
                 .as_u64()
                 .and_then(|index| usize::try_from(index).ok())
-                .and_then(|index| import.document.accessor(crate::AccessorIndex(index)))
+                .and_then(|index| import.document().accessor(crate::AccessorIndex(index)))
                 .and_then(|accessor| accessor.count())
                 .and_then(|count| usize::try_from(count).ok())
                 .ok_or_else(|| {

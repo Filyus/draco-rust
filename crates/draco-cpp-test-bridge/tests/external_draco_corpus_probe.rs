@@ -42,7 +42,7 @@ fn files(dir: &Path, out: &mut Vec<PathBuf>) {
 
 /// The streams of a glTF's Draco primitives, named by mesh and primitive.
 fn gltf_streams(import: &draco_gltf::Import) -> Vec<(String, Vec<u8>)> {
-    let json = import.document.as_value();
+    let json = import.document().as_value();
     let mut streams = Vec::new();
     for (m, mesh) in json["meshes"].as_array().into_iter().flatten().enumerate() {
         for (p, primitive) in mesh["primitives"]

@@ -64,7 +64,7 @@ fn f32_values(attribute: &draco_gltf::PackedAttribute) -> Option<Vec<f32>> {
 /// inside a tile would only be re-sorting something already local.
 fn load(path: &PathBuf) -> Option<(PointCloud, usize)> {
     let import = draco_gltf::open(path, ValidationProfile::Gltf20).expect("the file parses");
-    let mesh_count = import.document.meshes().len();
+    let mesh_count = import.document().meshes().len();
 
     let mut positions: Vec<f32> = Vec::new();
     let mut colors: Vec<f32> = Vec::new();
@@ -73,13 +73,13 @@ fn load(path: &PathBuf) -> Option<(PointCloud, usize)> {
 
     for mesh in 0..mesh_count {
         let index = MeshIndex(mesh);
-        if import.document.mesh(index).is_none() {
+        if import.document().mesh(index).is_none() {
             continue;
         }
         // A mesh does not publish its primitive count, so walk until the
         // document stops answering.
         let mut primitive = 0usize;
-        while import.document.primitive(index, primitive).is_some() {
+        while import.document().primitive(index, primitive).is_some() {
             let geometry = import
                 .read_primitive(PrimitiveIndex::new(index, primitive))
                 .expect("the primitive materializes");

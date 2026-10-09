@@ -1083,7 +1083,7 @@ impl Import {
                     .ok_or_else(|| Error::ResourceLimit("total source buffer size overflow".into()))
             })?;
         let reference = self
-            .document
+            .document()
             .primitive(mesh, primitive)
             .ok_or_else(|| Error::Extension("primitive out of range".into()))?;
         self.ensure_transform_safe(reference)?;
@@ -1115,7 +1115,7 @@ impl Import {
             .attribute_indices()
             .map(|(semantic, index)| {
                 let normalized = self
-                    .document
+                    .document()
                     .accessor(index)
                     .is_some_and(crate::Accessor::normalized);
                 (semantic.to_owned(), normalized)
@@ -1160,7 +1160,7 @@ impl Import {
         let buffer = self.resources.buffers.len();
         let view;
         {
-            let root = self.document.as_value_mut();
+            let root = self.document_mut().as_value_mut();
             let buffers = root["buffers"]
                 .as_array_mut()
                 .ok_or_else(|| Error::Extension("buffers is not an array".into()))?;
@@ -1208,7 +1208,7 @@ impl Import {
         self.resources.buffers.push(bytes.clone());
         if options.mode == CompressionMode::DracoOnly {
             compact_draco_only_resources(
-                &mut self.document,
+                self.checked.get_mut(),
                 &mut self.resources.buffers,
                 &self.extensions,
                 options.max_output_bytes,

@@ -14,7 +14,7 @@ fn fixture(path: &str) -> PathBuf {
 }
 
 fn accessor(import: &Import, index: usize) -> AccessorData {
-    DocumentAccessorSource::new(&import.document, &import.resources)
+    DocumentAccessorSource::new(import.document(), &import.resources)
         .read_accessor(index)
         .unwrap()
 }
@@ -34,7 +34,7 @@ fn khronos_box_glb_compresses_and_reloads() {
         ValidationProfile::Gltf20,
     )
     .unwrap();
-    let original_nodes = import.document.as_value()["nodes"].clone();
+    let original_nodes = import.document().as_value()["nodes"].clone();
 
     let report = import
         .compress_primitive(MeshIndex(0), 0, CompressionOptions::default())
@@ -44,10 +44,10 @@ fn khronos_box_glb_compresses_and_reloads() {
     let bytes = import.to_bytes(OutputFormat::GlbV2).unwrap();
     let reloaded = parse(&bytes, ValidationProfile::Gltf20).unwrap();
     reloaded
-        .document
+        .document()
         .validate(ValidationProfile::Gltf20)
         .unwrap();
-    assert_eq!(reloaded.document.as_value()["nodes"], original_nodes);
+    assert_eq!(reloaded.document().as_value()["nodes"], original_nodes);
     let primitive = reloaded.draco_primitives().next().unwrap();
     assert_eq!(
         reloaded
@@ -65,7 +65,7 @@ fn skin_and_animation_fixture_survive_draco_roundtrip() {
     let skin_accessor = accessor(&import, 4);
     let animation_input = accessor(&import, 5);
     let animation_output = accessor(&import, 6);
-    let nodes = import.document.as_value()["nodes"].clone();
+    let nodes = import.document().as_value()["nodes"].clone();
 
     import
         .compress_primitive(MeshIndex(0), 0, CompressionOptions::default())
@@ -73,15 +73,15 @@ fn skin_and_animation_fixture_survive_draco_roundtrip() {
     let bytes = import.to_bytes(OutputFormat::GlbV2).unwrap();
     let reloaded = parse(&bytes, ValidationProfile::Gltf20).unwrap();
     reloaded
-        .document
+        .document()
         .validate(ValidationProfile::Gltf20)
         .unwrap();
 
-    assert_eq!(reloaded.document.as_value()["nodes"], nodes);
-    let skin_index = reloaded.document.as_value()["skins"][0]["inverseBindMatrices"]
+    assert_eq!(reloaded.document().as_value()["nodes"], nodes);
+    let skin_index = reloaded.document().as_value()["skins"][0]["inverseBindMatrices"]
         .as_u64()
         .unwrap() as usize;
-    let sampler = &reloaded.document.as_value()["animations"][0]["samplers"][0];
+    let sampler = &reloaded.document().as_value()["animations"][0]["samplers"][0];
     let animation_input_index = sampler["input"].as_u64().unwrap() as usize;
     let animation_output_index = sampler["output"].as_u64().unwrap() as usize;
     assert_same_accessor(&accessor(&reloaded, skin_index), &skin_accessor);
@@ -108,13 +108,13 @@ fn host_neutral_draco_decode_matches_read_primitive() {
         ValidationProfile::Gltf20,
     )
     .unwrap();
-    let primitive = import.document.primitive(MeshIndex(0), 0).unwrap();
+    let primitive = import.document().primitive(MeshIndex(0), 0).unwrap();
     let extension = DracoPrimitiveExtension::from_json(
         primitive.extension(KHR_DRACO_MESH_COMPRESSION).unwrap(),
     )
     .unwrap();
 
-    let view = &import.document.as_value()["bufferViews"]
+    let view = &import.document().as_value()["bufferViews"]
         .as_array()
         .unwrap()[extension.buffer_view()];
     let buffer = &import.resources.buffers[view["buffer"].as_u64().unwrap() as usize];
@@ -123,12 +123,12 @@ fn host_neutral_draco_decode_matches_read_primitive() {
 
     let mut contract = DracoPrimitiveContract::new().with_profile(ValidationProfile::Gltf20);
     for (semantic, index) in primitive.attribute_indices() {
-        let accessor = import.document.accessor(index).unwrap();
+        let accessor = import.document().accessor(index).unwrap();
         contract =
             contract.with_attribute(semantic, accessor.count().unwrap(), accessor.normalized());
     }
     let indices = import
-        .document
+        .document()
         .accessor(primitive.indices().unwrap())
         .unwrap()
         .count()
@@ -187,7 +187,7 @@ fn host_neutral_draco_encode_matches_compress_primitive() {
     compressed
         .compress_primitive(MeshIndex(0), 0, options)
         .unwrap();
-    let primitive = compressed.document.primitive(MeshIndex(0), 0).unwrap();
+    let primitive = compressed.document().primitive(MeshIndex(0), 0).unwrap();
     let extension = DracoPrimitiveExtension::from_json(
         primitive.extension(KHR_DRACO_MESH_COMPRESSION).unwrap(),
     )
@@ -198,7 +198,7 @@ fn host_neutral_draco_encode_matches_compress_primitive() {
         extension
     );
 
-    let root = compressed.document.as_value();
+    let root = compressed.document().as_value();
     let view = &root["bufferViews"].as_array().unwrap()[extension.buffer_view()];
     let buffer = &compressed.resources.buffers[view["buffer"].as_u64().unwrap() as usize];
     let start = view.get("byteOffset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
@@ -298,7 +298,7 @@ fn draco_primitive_keeps_uncompressed_extra_attributes() {
         let values: Vec<f32> = (0..count).map(|i| i as f32).collect();
         let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
         let buffer = import.resources.buffers.len();
-        let root = import.document.as_value_mut();
+        let root = import.document_mut().as_value_mut();
         root["buffers"]
             .as_array_mut()
             .unwrap()
@@ -352,7 +352,7 @@ fn draco_primitive_keeps_uncompressed_extra_attributes() {
 }
 
 fn declared_count(import: &Import, index: draco_gltf::AccessorIndex) -> usize {
-    import.document.accessor(index).unwrap().count().unwrap() as usize
+    import.document().accessor(index).unwrap().count().unwrap() as usize
 }
 
 /// Accessors declare what the stream decodes to, on a mesh where the encoder
@@ -388,7 +388,7 @@ fn compressed_accessors_match_the_decoded_stream() {
                 },
             )
             .unwrap();
-        let primitive = import.document.primitive(MeshIndex(0), 0).unwrap();
+        let primitive = import.document().primitive(MeshIndex(0), 0).unwrap();
         let stream = import.decode_draco_primitive(primitive).unwrap();
         for (semantic, index) in primitive.attribute_indices() {
             assert_eq!(
@@ -407,7 +407,7 @@ fn compressed_accessors_match_the_decoded_stream() {
         if mode == CompressionMode::Fallback {
             // Without the extension, a reader sees the same geometry.
             let mut fallback = import.clone();
-            fallback.document.as_value_mut()["meshes"][0]["primitives"][0]
+            fallback.document_mut().as_value_mut()["meshes"][0]["primitives"][0]
                 .as_object_mut()
                 .unwrap()
                 .retain(|(key, _)| key != "extensions");
@@ -465,7 +465,7 @@ fn compressing_morph_targets_keeps_vertex_order() {
         for (before, after) in before.iter().zip(&after) {
             assert!((before - after).abs() <= tolerance, "{before} -> {after}");
         }
-        let primitive = import.document.primitive(MeshIndex(0), 0).unwrap();
+        let primitive = import.document().primitive(MeshIndex(0), 0).unwrap();
         assert_eq!(primitive.morph_targets().count(), 2);
     }
 

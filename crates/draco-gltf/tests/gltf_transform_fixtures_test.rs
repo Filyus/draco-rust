@@ -24,7 +24,7 @@ fn import(name: &str) -> Import {
     };
     let import =
         import_slice_with_options(&bytes, &options).unwrap_or_else(|e| panic!("{name}: {e}"));
-    let generator = import.document.as_value()["asset"]["generator"].as_str();
+    let generator = import.document().as_value()["asset"]["generator"].as_str();
     assert!(
         generator.is_some_and(|g| g.starts_with("glTF-Transform")),
         "{name} was written by {generator:?}"
@@ -37,19 +37,19 @@ fn import(name: &str) -> Import {
 fn primitives(name: &str) -> Vec<PackedGeometry> {
     let import = import(name);
     let mut decoded = Vec::new();
-    for mesh in 0..import.document.meshes().len() {
+    for mesh in 0..import.document().meshes().len() {
         let count = import
-            .document
+            .document()
             .mesh(MeshIndex(mesh))
             .map_or(0, |mesh| mesh.primitive_count());
         for primitive in 0..count {
             let reference = import
-                .document
+                .document()
                 .primitive(MeshIndex(mesh), primitive)
                 .unwrap();
             let declared = |accessor: usize| {
                 import
-                    .document
+                    .document()
                     .accessor(accessor.into())
                     .and_then(|a| a.count())
             };

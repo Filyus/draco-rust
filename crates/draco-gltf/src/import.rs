@@ -15,11 +15,76 @@ use crate::{ExternalAssetIndex, FileIndex};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{ExternalFilePolicy, FileResourceResolver};
 
+/// The document, and whether it has passed validation since it last changed.
+///
+/// Its own type with private fields so that nothing -- in this crate either --
+/// reaches the document mutably without dropping the mark. A mark that
+/// outlived a change would let a read skip the checks the changed document
+/// fails.
+mod checked {
+    use std::sync::OnceLock;
+
+    use crate::{Document, Result};
+
+    #[derive(Clone)]
+    pub(crate) struct CheckedDocument {
+        document: Document,
+        validated: OnceLock<()>,
+    }
+
+    impl CheckedDocument {
+        /// `validated` says the document has just passed the checks
+        /// [`Self::validate_once`] would run.
+        pub(crate) fn new(document: Document, validated: bool) -> Self {
+            let mark = OnceLock::new();
+            if validated {
+                let _ = mark.set(());
+            }
+            Self {
+                document,
+                validated: mark,
+            }
+        }
+
+        pub(crate) fn get(&self) -> &Document {
+            &self.document
+        }
+
+        /// The document for changing it, which drops the mark.
+        pub(crate) fn get_mut(&mut self) -> &mut Document {
+            self.validated = OnceLock::new();
+            &mut self.document
+        }
+
+        pub(crate) fn into_inner(self) -> Document {
+            self.document
+        }
+
+        /// Runs `check` unless the document passed it since it last changed.
+        /// A failure is not remembered: the next call checks, and fails,
+        /// again.
+        #[cfg_attr(
+            not(any(feature = "draco-decode", feature = "draco-encode")),
+            allow(dead_code)
+        )]
+        pub(crate) fn validate_once(
+            &self,
+            check: impl FnOnce(&Document) -> Result<()>,
+        ) -> Result<()> {
+            if self.validated.get().is_none() {
+                check(&self.document)?;
+                let _ = self.validated.set(());
+            }
+            Ok(())
+        }
+    }
+}
+
 /// Lossless glTF document plus its resolved resources.
 #[derive(Clone)]
 pub struct Import {
-    /// Lossless parsed glTF document.
-    pub document: Document,
+    /// Lossless parsed glTF document; see [`Import::document`].
+    pub(crate) checked: checked::CheckedDocument,
     /// Resolved buffer resources indexed by document buffer index.
     pub resources: ResourceStore,
     /// Container format from which this import was read.
@@ -87,7 +152,7 @@ impl ResourceResolver for AliasResolver<'_> {
         let Some((_, target)) = self.aliases.iter().find(|(alias, _)| *alias == uri) else {
             return self.fallback.resolve(uri);
         };
-        let file = self.import.document.file(*target).ok_or_else(|| {
+        let file = self.import.document().file(*target).ok_or_else(|| {
             crate::GltfError::InvalidGltf(format!("alias {uri:?} names a missing file"))
         })?;
         if file.value().get("bufferView").is_some() {
@@ -106,11 +171,43 @@ impl ResourceResolver for AliasResolver<'_> {
 }
 
 impl Import {
+    /// The lossless parsed glTF document.
+    pub fn document(&self) -> &Document {
+        self.checked.get()
+    }
+
+    /// The document, for changing it.
+    ///
+    /// The import remembers that its document passed validation, and the
+    /// reads that need a valid document -- [`Self::read_primitive`],
+    /// [`Self::read_primitives`], the Draco decodes -- skip checking it again
+    /// until it changes. Reaching it through here counts as a change: the next
+    /// such read validates the document as it is then.
+    pub fn document_mut(&mut self) -> &mut Document {
+        self.checked.get_mut()
+    }
+
+    /// The document, giving up the import.
+    pub fn into_document(self) -> Document {
+        self.checked.into_inner()
+    }
+
+    /// [`Self::validate`] against the import's own registry, run once per
+    /// state of the document rather than on every read.
+    #[cfg(any(feature = "draco-decode", feature = "draco-encode"))]
+    fn validate_once(&self) -> Result<()> {
+        self.checked.validate_once(|document| {
+            document.validate(self.profile)?;
+            self.extensions.validate(document).map(drop)
+        })
+    }
+
     /// An accessor source over this import's document and buffers, held to the
     /// resource limits the import was read with.
     #[cfg(feature = "geometry")]
     pub fn accessor_source(&self) -> crate::DocumentAccessorSource<'_> {
-        crate::DocumentAccessorSource::new(&self.document, &self.resources).with_limits(self.limits)
+        crate::DocumentAccessorSource::new(self.document(), &self.resources)
+            .with_limits(self.limits)
     }
 
     #[cfg(feature = "write")]
@@ -120,9 +217,9 @@ impl Import {
 
     #[cfg(feature = "write")]
     pub(crate) fn validate_after_write(&self) -> Result<()> {
-        self.document.validate(self.profile)?;
+        self.document().validate(self.profile)?;
         #[cfg(feature = "draco-decode")]
-        self.extensions.validate(&self.document)?;
+        self.extensions.validate(self.document())?;
         Ok(())
     }
 
@@ -141,8 +238,8 @@ impl Import {
     /// [`ExtensionRegistry::allows_binary_transform`], which is false for
     /// anything unregistered and makes the transform refuse by name.
     pub fn validate(&self, extensions: &ExtensionRegistry) -> Result<()> {
-        self.document.validate(self.profile)?;
-        extensions.validate(&self.document)?;
+        self.document().validate(self.profile)?;
+        extensions.validate(self.document())?;
         Ok(())
     }
 
@@ -196,13 +293,13 @@ impl Import {
             }
             Ok(())
         }
-        visit(self.document.as_value(), &self.extensions)
+        visit(self.document().as_value(), &self.extensions)
     }
 
     /// Iterates primitives carrying the built-in Draco extension.
     #[cfg(feature = "draco-decode")]
     pub fn draco_primitives(&self) -> impl Iterator<Item = PrimitiveRef<'_>> + '_ {
-        self.document
+        self.document()
             .meshes()
             .into_iter()
             .flat_map(move |mesh| {
@@ -212,7 +309,7 @@ impl Import {
                     .and_then(Value::as_array)
                     .map_or(0, |values| values.len());
                 (0..count)
-                    .filter_map(move |primitive| self.document.primitive(mesh.index(), primitive))
+                    .filter_map(move |primitive| self.document().primitive(mesh.index(), primitive))
             })
             .filter(|primitive| {
                 primitive
@@ -248,10 +345,10 @@ impl Import {
         validated: bool,
     ) -> Result<(draco_core::Mesh, crate::DracoPrimitiveContract)> {
         if !validated {
-            self.validate(&self.extensions)?;
+            self.validate_once()?;
         }
         let mesh = self.extensions.decode_primitive(
-            &self.document,
+            self.document(),
             &self.resources,
             options,
             primitive,
@@ -267,7 +364,7 @@ impl Import {
             .with_threads(self.draco_decode.threads)
             .with_profile(self.profile);
         for (semantic, index) in primitive.attribute_indices() {
-            let accessor = self.document.accessor(index);
+            let accessor = self.document().accessor(index);
             let count = accessor.and_then(crate::Accessor::count).ok_or_else(|| {
                 Error::Validation(vec![format!(
                     "Draco attribute {semantic:?} accessor count is missing"
@@ -284,7 +381,7 @@ impl Import {
         if primitive.mode() == crate::PrimitiveMode::Triangles.to_gltf() {
             if let Some(index) = primitive.indices() {
                 let count = self
-                    .document
+                    .document()
                     .accessor(index)
                     .and_then(|accessor| accessor.count())
                     .ok_or_else(|| {
@@ -347,7 +444,7 @@ impl Import {
             // Validated once here. A document that fails is left to each Draco
             // primitive to validate again, so the error lands where a loop of
             // `read_primitive` calls would have met it.
-            let validated = self.validate(&self.extensions).is_ok();
+            let validated = self.validate_once().is_ok();
             crate::parallel::try_map_indexed(primitives.len(), workers, |index| {
                 self.read_primitive_with(primitives[index], &options, validated)
             })
@@ -369,7 +466,7 @@ impl Import {
         #[cfg(feature = "draco-decode")] validated: bool,
     ) -> Result<crate::PackedGeometry> {
         let reference = self
-            .document
+            .document()
             .primitive(primitive.mesh, primitive.primitive)
             .ok_or_else(|| Error::Extension("primitive out of range".into()))?;
         let mode = crate::PrimitiveMode::from_gltf(reference.mode()).ok_or_else(|| {
@@ -496,7 +593,7 @@ impl Import {
     pub fn to_bytes(&self, output: crate::OutputFormat) -> Result<Vec<u8>> {
         let format = match output {
             crate::OutputFormat::GltfJson => {
-                if self.document.buffers().into_iter().any(|buffer| {
+                if self.document().buffers().into_iter().any(|buffer| {
                     buffer.value().get("uri").and_then(Value::as_str).is_none()
                         && self
                             .resources
@@ -509,7 +606,7 @@ impl Import {
                             .into(),
                     ));
                 }
-                return self.document.to_json_bytes();
+                return self.document().to_json_bytes();
             }
             crate::OutputFormat::SameAsInput => self.input_format,
             crate::OutputFormat::GlbV2 => crate::GltfContainerFormat::GlbV2,
@@ -519,7 +616,7 @@ impl Import {
             let (json, bin) = self.consolidated_glb_payload()?;
             return Ok(crate::container::build_glb_from_json(&json, &bin, format)?);
         }
-        self.document.to_json_bytes()
+        self.document().to_json_bytes()
     }
 
     /// Serializes a self-contained `.gltf` output bundle.
@@ -539,14 +636,14 @@ impl Import {
     /// # Ok::<(), draco_gltf::Error>(())
     /// ```
     pub fn to_gltf_output(&self) -> Result<GltfOutput> {
-        let declared = self.document.buffers().len();
+        let declared = self.document().buffers().len();
         if declared != self.resources.buffers.len() {
             return Err(Error::ResourceLimit(format!(
                 "document declares {declared} buffers but resource store has {}",
                 self.resources.buffers.len()
             )));
         }
-        let mut document = self.document.clone();
+        let mut document = self.document().clone();
         let mut resources = Vec::new();
         let buffers = document
             .as_value_mut()
@@ -583,7 +680,7 @@ impl Import {
     /// Creates a GLB payload by consolidating resolved buffers while retaining
     /// every bufferView index and all non-resource JSON verbatim.
     fn consolidated_glb_payload(&self) -> Result<(Vec<u8>, Vec<u8>)> {
-        let declared = self.document.buffers().len();
+        let declared = self.document().buffers().len();
         if declared != self.resources.buffers.len() {
             return Err(Error::ResourceLimit(format!(
                 "document declares {declared} buffers but resource store has {}",
@@ -601,7 +698,7 @@ impl Import {
                 .map_err(|_| Error::ResourceLimit("GLB consolidation allocation failed".into()))?;
             bin.extend_from_slice(resource);
         }
-        let mut document = self.document.clone();
+        let mut document = self.document().clone();
         let root = document.as_value_mut();
         if let Some(views) = root.get_mut("bufferViews").and_then(Value::as_array_mut) {
             for (index, view) in views.iter_mut().enumerate() {
@@ -636,7 +733,7 @@ impl Import {
     #[cfg(all(feature = "write", feature = "draco-decode"))]
     fn decompress_in_place_inner(&mut self) -> Result<()> {
         let mut primitives = Vec::new();
-        for mesh in self.document.meshes() {
+        for mesh in self.document().meshes() {
             let count = mesh
                 .value()
                 .get("primitives")
@@ -644,7 +741,7 @@ impl Import {
                 .map_or(0, |values| values.len());
             for primitive_index in 0..count {
                 let primitive = self
-                    .document
+                    .document()
                     .primitive(mesh.index(), primitive_index)
                     .unwrap();
                 if primitive
@@ -666,15 +763,15 @@ impl Import {
                 self.write_raw_primitive_inner(primitive, geometry)?;
             }
         }
-        self.document.validate(self.profile)?;
-        self.extensions.validate(&self.document)?;
+        self.document().validate(self.profile)?;
+        self.extensions.validate(self.document())?;
         Ok(())
     }
 
     /// Lists declared glTF 2.1 `files` entries without resolving them.
     #[cfg(feature = "resources")]
     pub fn external_files(&self) -> impl Iterator<Item = FileIndex> + '_ {
-        self.document.files().into_iter().map(|file| file.index())
+        self.document().files().into_iter().map(|file| file.index())
     }
 
     /// Explicitly resolves and parses an external-asset model declaration.
@@ -688,7 +785,7 @@ impl Import {
         extensions: &ExtensionRegistry,
     ) -> Result<Self> {
         let file = self
-            .document
+            .document()
             .external_asset(asset)
             .and_then(|asset| asset.file())
             .ok_or_else(|| {
@@ -744,7 +841,7 @@ impl Import {
             )));
         }
         let entry = self
-            .document
+            .document()
             .file(file)
             .ok_or_else(|| Error::Extension(format!("file {} is out of range", file.0)))?;
         let source = entry.uri().map(str::to_owned).unwrap_or_else(|| {
@@ -793,7 +890,7 @@ impl Import {
             .and_then(|index| usize::try_from(index).ok())
             .ok_or_else(|| Error::Extension("file has neither uri nor bufferView".into()))?;
         let view = self
-            .document
+            .document()
             .buffer_view(crate::BufferViewIndex(view))
             .ok_or_else(|| Error::Extension("file bufferView is out of range".into()))?;
         let buffer = view
@@ -1013,7 +1110,9 @@ pub fn parse_with_options(
     )?;
     decode_meshopt_buffer_views(&document, &mut buffers)?;
     Ok(Import {
-        document,
+        // Validated above, against the same profile and registry the import
+        // keeps, so the first read need not check it again.
+        checked: checked::CheckedDocument::new(document, true),
         resources: ResourceStore { buffers },
         input_format: container.format,
         profile,
