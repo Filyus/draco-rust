@@ -1460,10 +1460,7 @@ fn mesh_instance_to_data(instance: &draco_io::FbxMeshInstance) -> MeshData {
                 *groups.entry(key).or_insert(next)
             })
             .collect();
-        let with_map = draco_io::fbx_render_mesh::build_draco_mesh_with_corner_map_kept_apart(
-            &render,
-            &keep_apart,
-        );
+        let with_map = draco_io::fbx_render_mesh::build_draco_mesh_keyed(&render, &keep_apart);
         let welded = mesh_to_js_data(&with_map.mesh);
         mesh.positions = welded.positions;
         mesh.indices = welded.indices;

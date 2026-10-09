@@ -349,7 +349,7 @@ pub fn build_draco_mesh_with_corner_map(render: &FbxRenderMesh) -> DracoMeshWith
 /// with one normal and one UV are still two sets of skin weights, and welding
 /// them leaves one set driving both. The mesh comes back with the same
 /// attributes, in the same order, as the unkeyed weld builds.
-pub fn build_draco_mesh_with_corner_map_kept_apart(
+pub fn build_draco_mesh_keyed(
     render: &FbxRenderMesh,
     keep_apart: &[u32],
 ) -> DracoMeshWithCornerMap {
@@ -565,14 +565,14 @@ mod tests {
         let plain = build_draco_mesh_with_corner_map(&render);
         assert_eq!(plain.mesh.num_points(), 3);
 
-        let apart = build_draco_mesh_with_corner_map_kept_apart(&render, &[0, 1, 2, 3, 4, 5]);
+        let apart = build_draco_mesh_keyed(&render, &[0, 1, 2, 3, 4, 5]);
         assert_eq!(apart.mesh.num_points(), 6);
         assert_ne!(apart.corner_to_point[0], apart.corner_to_point[3]);
         for (corner, &point) in apart.corner_to_point.iter().enumerate() {
             assert_eq!(apart.point_to_corner[point as usize], corner as u32);
         }
 
-        let together = build_draco_mesh_with_corner_map_kept_apart(&render, &[7, 8, 9, 7, 8, 9]);
+        let together = build_draco_mesh_keyed(&render, &[7, 8, 9, 7, 8, 9]);
         assert_eq!(together.mesh.num_points(), 3);
         assert_eq!(together.corner_to_point, plain.corner_to_point);
 
