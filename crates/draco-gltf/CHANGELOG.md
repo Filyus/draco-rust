@@ -60,6 +60,14 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     the tree, which leaves parse plus validation 3.5x faster.
   - Output is unchanged: an untouched document still writes its source bytes,
     and an edited one writes the same minified JSON as before.
+- **Breaking: Draco point clouds need the new `draco-point-cloud-decode`
+  feature.** `KHR_draco_mesh_compression` allows only `TRIANGLES` and
+  `TRIANGLE_STRIP` primitives, decoded as meshes, and upstream's glTF decoder
+  is built without point clouds. `draco-decode` no longer reads a point-cloud
+  stream; with `draco-point-cloud-decode`, which `full` and so the default
+  features include, it does as before, on several threads if asked. Without
+  it such a primitive fails with the decoder's error saying point-cloud
+  support is disabled. Leaving it out takes 11% off a WebAssembly reader.
 - **`DracoExtension` opts into binary transforms only with the `write`
   feature.** Without it, the builds that cannot run a binary transform, its
   `allows_binary_transform` is false and it keeps and remaps no references,

@@ -19,6 +19,18 @@ only anchor a shipping without a version of its own has.
   1.07x as long instead of 1.21x. The reader module is 0.8 kB of gzip smaller
   than before, and the converter's 3.0 kB larger.
 
+- **The glTF reader module is 12% smaller: 142.4 -> 125.2 kB gzip.** It no
+  longer decodes Draco point clouds, which `KHR_draco_mesh_compression` does
+  not allow and upstream's glTF decoder leaves out too; the converter still
+  reads them. The Draco decoder also stopped hashing one rare table. With its
+  JavaScript glue the reader is 132.6 kB, against 92.1 kB for upstream's glTF
+  decoder, its glue and three.js's two loaders, with every model read as fast
+  as before.
+
+- The modules no longer embed the paths of the machine that built them: every
+  panic location used to name its source file by absolute path, the builder's
+  user directory included. Each module is a little smaller for it.
+
 - **glTF scenes of many primitives load faster.** `GltfAsset.readPrimitives`
   reads several primitives in one call, and the converter reads a scene's
   primitives through it, 32 at a time. The document is validated once a call

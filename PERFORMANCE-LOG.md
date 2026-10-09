@@ -36,7 +36,7 @@ figure at all.
 `rejected` -- tried, deliberately not kept. `retracted` -- an earlier claim
 here was withdrawn. `diagnostic` -- measured only, no change proposed.
 
-90 rounds: 57 landed, 12 diagnostic, 11 null, 8 retracted, 2 rejected.
+91 rounds: 58 landed, 12 diagnostic, 11 null, 8 retracted, 2 rejected.
 
 | Round | Verdict | Headline |
 | --- | --- | ---: |
@@ -130,6 +130,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [glTF JSON As A Flat Tape](#gltf-json-as-a-flat-tape) | landed | `1.86 -> 1.20 ms WASM open` |
 | [Lazy Subtrees, Priced Before Built](#lazy-subtrees-priced-before-built) | landed | `1.20 -> 1.10 ms WASM open` |
 | [The Tape's Size, Taken Back](#the-tapes-size-taken-back) | landed | `147.2 -> 142.4 kB gzip` |
+| [The glTF Reader Against Upstream's, By Size](#the-gltf-reader-against-upstreams-by-size) | landed | `142.4 -> 125.2 kB gzip` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -5141,6 +5142,52 @@ Release module 147.2 -> 142.4 kB gzip, 0.8 under the tree's. Converter 287.4
 laid out as a tape inside `Document::as_json` (~0.8 kB raw) and the tree's
 drop (~0.6 kB). Removing those would take an indirect call in place of a
 direct one. VirtualCity's open and read times are unchanged within noise.
+
+### The glTF Reader Against Upstream's, By Size
+
+2026-10-09. After the tape, gltf-wasm's release module read every sample
+model as fast as upstream's glTF decoder driven by three.js or faster, and was
+1.63x its size: 150.5 kB gzip with its glue against 92.1 kB for
+`draco_decoder_gltf.wasm`, its glue and the two loaders (node's zlib at level
+9, which reads ~0.5 kB above the build tool's figure). The brief was size
+without speed. The module was read with names kept through wasm-opt (wasm-opt
+117 crashes on DWARF, so `wasm-bindgen` without `--keep-debug`, then
+`wasm-opt -g`). `DracoExtension::decode_primitive` is 100 kB with the whole
+decoder inlined into it, of 356 kB, and the data segments are 40 kB, ~30 kB of
+it error messages.
+
+- **Point clouds** (`landed`, `19e2a0d3`, `86ef0f3d`). Upstream's
+  `DRACO_GLTF_BITSTREAM` build enables mesh compression, normal encoding and
+  the standard edgebreaker, and no point clouds, because
+  `KHR_draco_mesh_compression` allows only `TRIANGLES` and `TRIANGLE_STRIP`.
+  Our `draco-decode` pulled in `point_cloud_decode`, on purpose since 0.6.0,
+  for files that put a point cloud under the extension anyway. It is now a
+  feature of its own, in `full` and in the converter build, and out of the
+  release module: 142.4 -> 126.5 kB. The valence edgebreaker stays, and
+  upstream keeps it too: the traversal its glTF build drops is the old
+  predictive one, which this port does not have.
+- **The topology-split map** (`landed`, `bebf0fcd`). The edgebreaker
+  connectivity decoder kept split corners in a `HashMap<i32, CornerIndex>`,
+  which brought SipHash and `RandomState` into a decoder whose keys run below
+  the symbol count. Indexed instead: -1.27 kB. `decode_all_drc_files` fails
+  when the stored corner is dropped, so the splits are covered.
+- **Build paths** (`landed`, `84b308fe`). 56 panic locations named their files
+  by absolute path, `C:\Users\...\.rustup\...` and the repository's own,
+  4.5 kB raw. With `--remap-path-prefix` from the build tool they read
+  `/rustc/<commit>/...`, `/cargo/...` and `./crates/...`: only 0.13 kB of gzip,
+  since gzip had already folded the repeated prefixes, but the modules no
+  longer carry the builder's user name or vary with its directory layout.
+- **Considered, not taken.** Error messages are the largest data and stay.
+  `draco-core` at `opt-level = 2` is the rest of the gap and is the 1.7x the
+  WASM decode was bought with. `rlsf` would save 8 kB and costs 10-18% of
+  open (see the allocator round).
+
+Against upstream now (`gltfbench.mjs`, 11 rounds, ratios of medians, output
+identical on all seven): `bun_zipper.glb` 0.67, Corset 0.83, BrainStem 0.91,
+CesiumMilkTruck 0.93, BoomBox 0.94, Lantern 0.94, VirtualCity 1.03, each
+within noise of the build before these changes. Size with glue: 132.6 kB gzip
+against 92.1, 1.44x (brotli 110.3 against 73.9). Every other module shrank a
+little from the remapped paths, `drc-wasm` the most at 0.5 kB.
 
 ## Unexplored
 
