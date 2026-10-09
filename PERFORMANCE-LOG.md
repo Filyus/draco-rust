@@ -4994,6 +4994,17 @@ it read 1.34-1.43x slower. What followed, by verdict:
 - **talc as the WASM allocator** (`rejected`, `probe/wasm-talc`). talc 5.1.1's
   `WasmDynamicTalc` read no faster than dlmalloc (VirtualCity open 1.87-2.16
   against 1.78-1.94 ms) and grew the module 143.0 -> 154.5 kB gzip.
+- **rlsf and rusty_alloc as the WASM allocator** (`rejected`,
+  `probe/wasm-rlsf`, `probe/wasm-rusty-alloc`). The ceiling was small before
+  either was built: dlmalloc itself is 5.4% of the open profile, the `Vec`
+  growth around it another 11.3%. Medians of 6: rlsf 0.2's TLSF
+  `SmallGlobalTlsf` opened VirtualCity in 2.18 ms and BrainStem in 1.04
+  against dlmalloc's 1.84 and 0.94, though it shrank the module 143.1 ->
+  134.9 kB gzip; rusty_alloc-api 2.2.5, a pure-Rust mimalloc design, opened
+  in 2.02 and 1.03 and grew it to 150.3 kB. Reads and copies stayed within
+  noise for both. The rest of the crates.io allocator list is bump arenas
+  that never free, single-threaded free lists slower than dlmalloc
+  (`linked_list_allocator`, `lol_alloc`) or the unmaintained `wee_alloc`.
 - **mimalloc** (`diagnostic`, not built). `libmimalloc-sys` 0.1.49 compiles
   mimalloc's C with system layers for Windows, macOS, Unix, WASI and
   Emscripten, none for `wasm32-unknown-unknown`; it would need clang with a
