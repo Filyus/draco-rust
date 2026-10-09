@@ -5228,8 +5228,15 @@ for this crate.
 
 So `opt-level = 2` stays, and on these reads it buys 7-18% over `s` (the
 1.7x is against `z`, measured on `drc-wasm`'s bare decode), for 13.3 kB.
-Untried and outside this brief: SIMD128 (a browser floor of Safari 16.4) and a
-newer wasm-opt than the cached 117.
+- **SIMD128** (`-Ctarget-feature=+simd128`, wasm-opt `--enable-simd`; the
+  modules then hold `v128` code and fail to instantiate without it, 96.5% of
+  users by caniuse in September 2026, Baseline since March 2023). At `2`:
+  123.5 kB, -2.3 kB, reads within noise of the scalar build on every model;
+  auto-vectorization finds little in a decoder whose loops carry entropy
+  state. At `s`: 111.8 kB and still 7-19% slower. Not taken: 1.8% of size for
+  a module that no longer loads anywhere SIMD is missing.
+
+Untried: a newer wasm-opt than the cached 117.
 
 ## Unexplored
 
