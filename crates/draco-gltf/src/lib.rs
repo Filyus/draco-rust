@@ -241,9 +241,10 @@ pub struct ImportOptions<'a> {
     /// calling thread, `0` takes as many as the machine has up to sixteen.
     /// [`Import::read_primitives`] and `Import::decompress_in_place` decode
     /// that many primitives side by side, each on one thread. A point-cloud
-    /// primitive read on its own splits its attributes across them, and a mesh
-    /// primitive read on its own decodes on the calling thread. The decoded
-    /// geometry is the same on any count.
+    /// primitive read on its own splits its attributes across them (with the
+    /// `draco-point-cloud-decode` feature, without which such a primitive does
+    /// not decode), and a mesh primitive read on its own decodes on the
+    /// calling thread. The decoded geometry is the same on any count.
     ///
     /// One by default for the reason `draco_core::PointCloudDecoder` gives: a
     /// caller importing files side by side, or serving many at once, would

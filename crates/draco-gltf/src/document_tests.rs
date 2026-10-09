@@ -1025,6 +1025,50 @@ mod compression_tests {
     /// large file, and a generic error would make it indistinguishable from
     /// the decoder refusing a malformed one -- the exact collapse
     /// `draco-core` once had across twelve re-wrapped errors.
+    /// A Draco point-cloud stream decodes only with the feature that reads
+    /// one, and without it fails with an error that names what is missing.
+    #[cfg(feature = "draco-encode")]
+    #[test]
+    fn point_cloud_streams_decode_only_with_their_feature() {
+        use draco_core::{
+            DataType, EncoderBuffer, EncoderOptions, GeometryAttributeType, PointAttribute,
+            PointCloud, PointCloudEncoder,
+        };
+
+        let mut cloud = PointCloud::new();
+        cloud.set_num_points(3);
+        let mut position = PointAttribute::new();
+        position.init(
+            GeometryAttributeType::Position,
+            3,
+            DataType::Float32,
+            false,
+            3,
+        );
+        for (index, value) in [0f32, 0., 0., 1., 0., 0., 0., 1., 0.].iter().enumerate() {
+            position.buffer_mut().write(index * 4, &value.to_le_bytes());
+        }
+        cloud.add_attribute(position);
+        let mut encoder = PointCloudEncoder::new();
+        encoder.set_point_cloud(cloud);
+        let mut buffer = EncoderBuffer::new();
+        encoder.encode(&EncoderOptions::new(), &mut buffer).unwrap();
+
+        let decoded = crate::draco_primitive::decode_payload(
+            buffer.data(),
+            &crate::DracoDecodeOptions::default(),
+        );
+        if cfg!(feature = "draco-point-cloud-decode") {
+            assert_eq!(decoded.unwrap().num_points(), 3);
+        } else {
+            let error = decoded.unwrap_err().to_string();
+            assert!(
+                error.contains("Point cloud decode support is disabled"),
+                "{error}"
+            );
+        }
+    }
+
     /// The threads a caller sets travel with the limits into the import, and
     /// so to every decode it makes, and a Draco primitive decodes the same on
     /// the machine's threads as on one.

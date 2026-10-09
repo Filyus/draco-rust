@@ -53,7 +53,13 @@ document = []
 # Accessor materialization and PackedGeometry contracts.
 geometry = ["document"]
 # KHR_draco_mesh_compression decoding and Draco-backed packed geometry.
-draco-decode = ["geometry", "draco-core/decoder", "draco-core/point_cloud_decode", "draco-core/edgebreaker_valence_decode"]
+draco-decode = ["geometry", "draco-core/decoder", "draco-core/edgebreaker_valence_decode"]
+# Draco point-cloud streams in glTF primitives. The extension allows only
+# TRIANGLES and TRIANGLE_STRIP, decoded as meshes, and upstream's glTF decoder
+# builds without point clouds; files with POINTS primitives under the extension
+# exist all the same, and this reads them, on several threads if asked. It is
+# 11% of the WASM reader's gzip, which is why it is a feature of its own.
+draco-point-cloud-decode = ["draco-decode", "draco-core/point_cloud_decode"]
 # Optional compatibility mode for reading older Draco bitstreams embedded in
 # KHR_draco_mesh_compression payloads. Writers still emit the current bitstream.
 legacy-bitstream-decode = ["draco-core/legacy_bitstream_decode"]
@@ -76,7 +82,7 @@ write = ["read", "strict-validation"]
 # writes the same stream as speed 5 does.
 draco-encode = ["write", "draco-decode", "draco-core/encoder", "draco-core/edgebreaker_valence_encode"]
 # Release-grade scene API.
-full = ["read", "accessors", "strict-validation", "draco-decode", "write", "draco-encode"]
+full = ["read", "accessors", "strict-validation", "draco-decode", "draco-point-cloud-decode", "write", "draco-encode"]
 # Repository-fixture tests are intentionally opt-in and are not run from the
 # published crate tarball, which has no access to the workspace testdata tree.
 test = []

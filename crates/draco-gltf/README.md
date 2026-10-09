@@ -64,6 +64,9 @@ by the caller and resource limits.
 - `document`: lossless DOM, typed views, containers and serialization.
 - `geometry`: accessor materialization and `PackedGeometry`.
 - `draco-decode`: `KHR_draco_mesh_compression` decoding.
+- `draco-point-cloud-decode`: Draco point-cloud streams in `POINTS`
+  primitives, which the extension does not allow but some files carry; depends
+  on `draco-decode`.
 - `resources`: explicit URI and `files` resolution.
 - `strict-validation`: strict scene-reference, node-tree, and POSITION-bounds validation.
 - `read`: ordinary primitive reading with resources and validation.

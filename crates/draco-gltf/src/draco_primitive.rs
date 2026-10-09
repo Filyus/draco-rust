@@ -220,6 +220,8 @@ impl DracoPrimitiveContract {
 pub(crate) fn decode_payload(payload: &[u8], options: &crate::DracoDecodeOptions) -> Result<Mesh> {
     let mut mesh = Mesh::new();
     let mut decoder = MeshDecoder::new();
+    // Threads only reach a point-cloud stream; a mesh decodes on this one.
+    #[cfg(feature = "draco-point-cloud-decode")]
     decoder.set_threads(options.threads);
     decoder
         .decode(
