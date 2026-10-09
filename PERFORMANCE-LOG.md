@@ -36,7 +36,7 @@ figure at all.
 `rejected` -- tried, deliberately not kept. `retracted` -- an earlier claim
 here was withdrawn. `diagnostic` -- measured only, no change proposed.
 
-82 rounds: 50 landed, 11 diagnostic, 11 null, 8 retracted, 2 rejected.
+83 rounds: 51 landed, 11 diagnostic, 11 null, 8 retracted, 2 rejected.
 
 | Round | Verdict | Headline |
 | --- | --- | ---: |
@@ -122,6 +122,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [The KD-Tree Walk On One Row](#the-kd-tree-walk-on-one-row) | landed | `33 MB -> linear, +0.7% to -9.6% time` |
 | [Threads, Re-Measured For 2.3.0](#threads-re-measured-for-230) | diagnostic | `2.1x to 4.0x on 16 threads` |
 | [glTF Primitives Side By Side](#gltf-primitives-side-by-side) | landed | `2.9x to 3.5x on 8 threads, 14x from validating once` |
+| [WASM Decode Against Upstream's: An i128 Nobody Priced](#wasm-decode-against-upstreams-an-i128-nobody-priced) | landed | `-19 to -27% WASM decode` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -4773,6 +4774,68 @@ The outputs were compared with `==` on every iteration. The tests hold
 repeated, on 1, 2, 4 and the machine's threads, the first failure in order
 under a face ceiling, and `decompress_in_place` to the same bytes on every
 count. Without the sort by index the first and last of those fail.
+
+### WASM Decode Against Upstream's: An i128 Nobody Priced
+
+2026-10-09, same laptop, Node 24.21. `drc-wasm` built with `read` alone (the
+set `draco_decoder_gltf.wasm` carries, see `web/README.md`) against upstream
+1.5.7-100's prebuilt glTF and full decoders, all arms in one process, order
+rotated per round, 7-9 rounds. Each arm does what three.js's DRACOLoader does:
+decode, then copy the indices and every attribute out to typed arrays. Every
+arm's indices and attributes were compared bit for bit before anything was
+timed, on all nine fixtures. A second copy of the same build was loaded as an
+arm of its own; its median sat within 7% of the first on every file, which is
+this harness's floor.
+
+Before: upstream ahead by 8-16% on every mesh with a predicted attribute
+(bunny with normals 13.6 against 15.7 ms, grid 1025^2 435 against 483, its
+valence encoding 521 against 630), level on position-only meshes, behind on a
+sequential stream (5.9 against 2.4) and on tiny meshes, where its per-call
+cost dominates. Natively the same files decode level or slightly faster than
+C++, so the deficit was the WASM path.
+
+`node --cpu-prof` on a build with names kept put 6.3% of a valence-grid decode
+in `__multi3`, called from the geometric normal predictor: the decoder summed
+the fan's cross products and divided in `i128`, which wasm32 has no
+instruction for. The encoder and upstream wrap in `i64`. `7ea61d30` makes the
+decoder do the same, which also fixes a real divergence: past `i64` the old
+decoder predicted a different normal from the one the encoder subtracted.
+
+| file | upstream | before | after |
+| --- | ---: | ---: | ---: |
+| bunny_cpp | `13.2` | `16.0` | `11.7` |
+| bunny_gltf | `14.6` | `16.1` | `12.2` |
+| grid 1025^2, standard | `411` | `489` | `372` |
+| grid 1025^2, valence | `501` | `619` | `498` |
+
+Milliseconds, medians. Also measured, and not kept:
+
+- **`wasm-opt -Oz --converge`** (what `build-tool` runs) against no `wasm-opt`
+  at all: the unoptimised module is 3-3.5% faster and 30% larger raw. `-O3`
+  instead of `-Oz` is `-Oz` within the floor. `diagnostic`.
+- **The first decode** in a fresh process stays behind: bunny 35 against 28 ms,
+  grid 609 against 544, while every later call is ahead. Instantiating a
+  second instance from the already-warm module splits it: on the grid about
+  50-65 ms of the first call is memory growth (upstream's: ~35) and ~170 ms is
+  code still on V8's baseline tier (upstream's: ~100). WebAssembly has no
+  on-stack replacement, so a pass that loops over the whole mesh inside one
+  call runs that call on baseline code. `probe/wasm-symbol-runs` walks the
+  EdgeBreaker symbols in `#[inline(never)]` runs of 4096: that loop's own
+  first-call surcharge in the profile fell from +73 to +12 ms and the total did
+  not move (609 against 613, 7 processes) -- the surcharge is spread over every
+  whole-mesh pass, `decode_attributes` and its inlined helpers the largest.
+  `null`.
+- **16 MiB initial memory** (`--initial-memory`, upstream's own figure, ours
+  is 1 MiB): first decode within a millisecond on bunny, lamp and the
+  position-only bunny. `null`.
+- **Module load in Node** reads 16 ms against upstream's 5. It is not the
+  module: wasm-bindgen's loader evaluates `typeof Response`, and Node's first
+  touch of that global loads its fetch implementation, ~17 ms. Compiling and
+  instantiating the module itself take ~1.5 ms. A browser does not pay it.
+  `diagnostic`.
+
+The harness (`arms.mjs`, `bench.mjs`, `cold.mjs`, `memtest.mjs`) lived in the
+session scratchpad and is not committed.
 
 ## Unexplored
 
