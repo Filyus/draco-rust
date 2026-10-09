@@ -83,7 +83,7 @@ impl<'a> DocumentAccessorSource<'a> {
     ) -> Result<(usize, u8, u32, DataType, bool, Vec<u8>)> {
         let accessor = self
             .document
-            .as_value()
+            .as_json()
             .get("accessors")
             .and_then(|v| v.as_array())
             .and_then(|v| v.get(index))
@@ -213,13 +213,7 @@ impl<'a> DocumentAccessorSource<'a> {
             data_type,
             accessor
                 .get("normalized")
-                .and_then(|v| {
-                    if let crate::JsonValue::Bool(v) = v {
-                        Some(*v)
-                    } else {
-                        None
-                    }
-                })
+                .and_then(|value| value.as_bool())
                 .unwrap_or(false),
             bytes,
         ))
@@ -236,7 +230,13 @@ impl<'a> DocumentAccessorSource<'a> {
         default_stride: usize,
     ) -> Result<(&[u8], usize, usize)> {
         let bytes = buffer_view_bytes(self.document, self.resources, view_index)?;
-        let view = &self.document.as_value()["bufferViews"][view_index];
+        let view = self
+            .document
+            .as_json()
+            .get("bufferViews")
+            .and_then(|value| value.as_array())
+            .and_then(|values| values.get(view_index))
+            .unwrap_or_default();
         let offset = usize::try_from(offset)
             .map_err(|_| Error::ResourceLimit("accessor byteOffset is invalid".into()))?;
         let stride = view
@@ -254,7 +254,7 @@ impl<'a> DocumentAccessorSource<'a> {
 
     fn apply_sparse(
         &self,
-        sparse: &crate::JsonValue,
+        sparse: crate::JsonRef<'_>,
         count: usize,
         layout: AccessorLayout,
         bytes: &mut [u8],
@@ -374,7 +374,7 @@ impl<'a> DocumentAccessorSource<'a> {
             self.read::<MATRICES>(index)?;
         let accessor_type = self
             .document
-            .as_value()
+            .as_json()
             .get("accessors")
             .and_then(|value| value.as_array())
             .and_then(|values| values.get(index))
@@ -404,7 +404,7 @@ pub(crate) fn buffer_view_bytes<'r>(
     index: usize,
 ) -> Result<&'r [u8]> {
     let view = document
-        .as_value()
+        .as_json()
         .get("bufferViews")
         .and_then(|value| value.as_array())
         .and_then(|values| values.get(index))
@@ -523,7 +523,13 @@ impl AccessorSource for DocumentAccessorSource<'_> {
         let (count, c, _, t, n, b) = self
             .read::<false>(index)
             .map_err(|e| GltfError::InvalidGltf(e.to_string()))?;
-        let a = &self.document.as_value()["accessors"][index];
+        let a = self
+            .document
+            .as_json()
+            .get("accessors")
+            .and_then(|value| value.as_array())
+            .and_then(|values| values.get(index))
+            .unwrap_or_default();
         if !expected.contains(&a.get("type").and_then(|v| v.as_str()).unwrap_or(""))
             || !allowed
                 .contains(&(a.get("componentType").and_then(|v| v.as_u64()).unwrap_or(0) as u32))

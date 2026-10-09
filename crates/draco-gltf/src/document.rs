@@ -3,9 +3,11 @@
 //! The JSON DOM is authoritative: typed views deliberately never own a second
 //! schema copy, so draft fields and unknown extensions survive edits.
 
+use std::fmt;
 use std::marker::PhantomData;
+use std::sync::OnceLock;
 
-use crate::json::Value;
+use crate::json::{JsonArray, JsonItems, JsonObject, JsonRef, Tape, Value};
 
 use crate::{Error, Result};
 
@@ -128,10 +130,27 @@ impl PrimitiveIndex {
 }
 
 /// Semantically lossless glTF JSON document.
-#[derive(Clone, Debug)]
+///
+/// A document is read from a flat tape of its JSON values and edited as a
+/// [`Value`] tree, and holds whichever of the two it was last given: parsing
+/// builds only the tape, [`Document::as_value_mut`] turns it into a tree and
+/// drops the tape, and the next read lays the edited tree out as a tape again.
+/// At least one of them is always present, and when both are they agree.
+#[derive(Clone)]
 pub struct Document {
-    root: Value,
-    original_json: Option<Vec<u8>>,
+    tape: OnceLock<Tape>,
+    tree: OnceLock<Value>,
+    /// Whether the tape still starts with the source, unchanged.
+    pristine: bool,
+}
+
+impl fmt::Debug for Document {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Document")
+            .field("json", &self.as_json())
+            .field("pristine", &self.pristine)
+            .finish()
+    }
 }
 
 impl Document {
@@ -145,13 +164,14 @@ impl Document {
     /// # Ok::<(), draco_gltf::Error>(())
     /// ```
     pub fn from_json_bytes(bytes: &[u8]) -> Result<Self> {
-        let root = Value::parse(bytes).map_err(Error::Json)?;
-        if !root.is_object() {
+        let tape = Tape::parse(bytes).map_err(Error::Json)?;
+        if !tape.root().is_object() {
             return Err(Error::Validation(vec!["glTF root is not an object".into()]));
         }
         Ok(Self {
-            root,
-            original_json: Some(bytes.to_vec()),
+            tape: OnceLock::from(tape),
+            tree: OnceLock::new(),
+            pristine: true,
         })
     }
 
@@ -161,20 +181,45 @@ impl Document {
             return Err(Error::Validation(vec!["glTF root is not an object".into()]));
         }
         Ok(Self {
-            root,
-            original_json: None,
+            tape: OnceLock::new(),
+            tree: OnceLock::from(root),
+            pristine: false,
         })
     }
 
-    /// Returns the complete lossless JSON value.
+    /// Returns the complete lossless JSON value for reading.
+    ///
+    /// This is the cheap way to look at the document: it borrows the parsed
+    /// form directly, where [`Document::as_value`] has to build a tree.
+    pub fn as_json(&self) -> JsonRef<'_> {
+        self.tape
+            .get_or_init(|| {
+                Tape::from_value(self.tree.get().expect("a document holds a tape or a tree"))
+            })
+            .root()
+    }
+
+    /// Returns the complete lossless JSON value as an owned tree.
+    ///
+    /// The tree is built from the parsed document on the first call and kept.
+    /// Reading through [`Document::as_json`] builds nothing.
     pub fn as_value(&self) -> &Value {
-        &self.root
+        self.tree.get_or_init(|| self.as_json().to_value())
     }
 
     /// Returns mutable JSON and marks the source representation dirty.
     pub fn as_value_mut(&mut self) -> &mut Value {
-        self.original_json = None;
-        &mut self.root
+        self.pristine = false;
+        if self.tree.get().is_none() {
+            let tree = self.as_json().to_value();
+            self.tree = OnceLock::from(tree);
+        }
+        // The tree is about to change, so the tape describes a document that
+        // is no longer this one.
+        self.tape = OnceLock::new();
+        self.tree
+            .get_mut()
+            .expect("the tree was built a line above")
     }
 
     /// Serializes JSON, preserving original bytes when the document is untouched.
@@ -187,9 +232,9 @@ impl Document {
     /// # Ok::<(), draco_gltf::Error>(())
     /// ```
     pub fn to_json_bytes(&self) -> Result<Vec<u8>> {
-        match &self.original_json {
-            Some(bytes) => Ok(bytes.clone()),
-            None => Ok(self.root.to_vec()),
+        match self.tape.get() {
+            Some(tape) if self.pristine => Ok(tape.source().to_vec()),
+            _ => Ok(self.to_minified_json_bytes()),
         }
     }
 
@@ -211,7 +256,9 @@ impl Document {
     /// # Ok::<(), draco_gltf::Error>(())
     /// ```
     pub fn to_minified_json_bytes(&self) -> Vec<u8> {
-        self.root.to_vec()
+        // An edited document is written through the tape too: the next read
+        // needs that tape anyway, and one writer is less code to ship.
+        self.as_json().to_vec()
     }
 
     /// Performs basic structural checks, plus strict graph checks when enabled.
@@ -220,13 +267,13 @@ impl Document {
     /// references, node trees, and finite ordered `POSITION` bounds. Compact
     /// readers retain local bounds checks while materializing individual data.
     pub fn validate(&self, profile: ValidationProfile) -> Result<()> {
-        let asset = self
-            .root
+        let root = self.as_json();
+        let asset = root
             .get("asset")
             .ok_or_else(|| Error::Validation(vec!["asset is missing or not an object".into()]))?;
         let version = asset
             .get("version")
-            .and_then(Value::as_str)
+            .and_then(JsonRef::as_str)
             .ok_or_else(|| {
                 Error::Validation(vec!["asset.version is missing or not a string".into()])
             })?;
@@ -261,7 +308,7 @@ impl Document {
             "skins",
             "textures",
         ] {
-            if let Some(value) = self.root.get(name) {
+            if let Some(value) = root.get(name) {
                 let array = value
                     .as_array()
                     .ok_or_else(|| Error::Validation(vec![format!("{name} is not an array")]))?;
@@ -273,16 +320,16 @@ impl Document {
             }
         }
         if profile == ValidationProfile::Gltf20
-            && (self.root.get("externalAssets").is_some()
-                || self.root.get("files").is_some()
-                || self.root.get("shapes").is_some())
+            && (root.get("externalAssets").is_some()
+                || root.get("files").is_some()
+                || root.get("shapes").is_some())
         {
             return Err(Error::Validation(vec![
                 "glTF 2.1 fields require the draft profile".into(),
             ]));
         }
         #[cfg(feature = "strict-validation")]
-        validate_references(&self.root, profile)?;
+        validate_references(root, profile)?;
         Ok(())
     }
 
@@ -392,11 +439,11 @@ impl Document {
     }
     /// Returns the document's preferred scene index, if declared.
     pub fn default_scene(&self) -> Option<SceneIndex> {
-        index_value(&self.root, "scene").map(SceneIndex)
+        index_value(self.as_json(), "scene").map(SceneIndex)
     }
     /// Returns the optional draft thumbnail image declared by `asset.thumbnail`.
     pub fn thumbnail(&self) -> Option<ImageIndex> {
-        self.root
+        self.as_json()
             .get("asset")
             .and_then(|asset| index_value(asset, "thumbnail"))
             .map(ImageIndex)
@@ -443,20 +490,35 @@ impl Document {
 
     fn objects<I>(&self, key: &'static str) -> Objects<'_, I> {
         Objects {
-            values: self.root.get(key).and_then(Value::as_array).unwrap_or(&[]),
+            values: self
+                .as_json()
+                .get(key)
+                .and_then(JsonRef::as_array)
+                .unwrap_or_default(),
             marker: PhantomData,
         }
     }
 }
 
 #[cfg(feature = "strict-validation")]
-fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
+fn validate_references(root: JsonRef<'_>, profile: ValidationProfile) -> Result<()> {
+    // Every reference is checked against the length of the root array it
+    // points into, and a document makes thousands of references into a dozen
+    // arrays, so the lengths are taken once. The first member of a name is
+    // the one counted, as a lookup by name would find.
+    let lengths: Vec<(&str, usize)> = root
+        .as_object()
+        .unwrap_or_default()
+        .iter()
+        .map(|(name, value)| (name, value.as_array().map_or(0, JsonArray::len)))
+        .collect();
     let len = |name: &str| -> usize {
-        root.get(name)
-            .and_then(Value::as_array)
-            .map_or(0, <[Value]>::len)
+        lengths
+            .iter()
+            .find(|(key, _)| *key == name)
+            .map_or(0, |(_, len)| *len)
     };
-    let check = |value: &Value, field: &str, target: &str| -> Result<()> {
+    let check = |value: JsonRef<'_>, field: &str, target: &str| -> Result<()> {
         if let Some(raw) = value.get(field) {
             let index = raw
                 .as_u64()
@@ -472,7 +534,7 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
         }
         Ok(())
     };
-    let required_index = |value: &Value, field: &str, target: &str| -> Result<()> {
+    let required_index = |value: JsonRef<'_>, field: &str, target: &str| -> Result<()> {
         if value.get(field).is_none() {
             return Err(Error::Validation(vec![format!("{field} is missing")]));
         }
@@ -480,20 +542,20 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
     };
     for view in root
         .get("bufferViews")
-        .and_then(Value::as_array)
-        .unwrap_or(&[])
+        .and_then(JsonRef::as_array)
+        .unwrap_or_default()
     {
         check(view, "buffer", "buffers")?;
     }
     for accessor in root
         .get("accessors")
-        .and_then(Value::as_array)
-        .unwrap_or(&[])
+        .and_then(JsonRef::as_array)
+        .unwrap_or_default()
     {
         check(accessor, "bufferView", "bufferViews")?;
         let component = accessor
             .get("componentType")
-            .and_then(Value::as_u64)
+            .and_then(JsonRef::as_u64)
             .ok_or_else(|| Error::Validation(vec!["accessor componentType is missing".into()]))?;
         let component = ComponentType::from_gltf(component).ok_or_else(|| {
             Error::Validation(vec![format!(
@@ -517,7 +579,7 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
         }
         let kind = accessor
             .get("type")
-            .and_then(Value::as_str)
+            .and_then(JsonRef::as_str)
             .ok_or_else(|| Error::Validation(vec!["accessor type is missing".into()]))?;
         if !matches!(
             kind,
@@ -527,20 +589,28 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
                 "unsupported accessor type {kind:?}"
             )]));
         }
-        if accessor.get("count").and_then(Value::as_u64).is_none() {
+        if accessor.get("count").and_then(JsonRef::as_u64).is_none() {
             return Err(Error::Validation(vec![
                 "accessor count is missing or invalid".into(),
             ]));
         }
     }
-    for image in root.get("images").and_then(Value::as_array).unwrap_or(&[]) {
+    for image in root
+        .get("images")
+        .and_then(JsonRef::as_array)
+        .unwrap_or_default()
+    {
         check(image, "bufferView", "bufferViews")?;
     }
     if let Some(asset) = root.get("asset") {
         check(asset, "thumbnail", "images")?;
     }
-    for file in root.get("files").and_then(Value::as_array).unwrap_or(&[]) {
-        if file.get("mimeType").and_then(Value::as_str).is_none() {
+    for file in root
+        .get("files")
+        .and_then(JsonRef::as_array)
+        .unwrap_or_default()
+    {
+        if file.get("mimeType").and_then(JsonRef::as_str).is_none() {
             return Err(Error::Validation(vec![
                 "file mimeType is missing or not a string".into(),
             ]));
@@ -574,12 +644,12 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
                 .as_array()
                 .ok_or_else(|| Error::Validation(vec!["file aliases is not an array".into()]))?;
             for entry in aliases {
-                if entry.get("alias").and_then(Value::as_str).is_none() {
+                if entry.get("alias").and_then(JsonRef::as_str).is_none() {
                     return Err(Error::Validation(vec![
                         "file alias is missing or not a string".into(),
                     ]));
                 }
-                if entry.get("file").and_then(Value::as_u64).is_none() {
+                if entry.get("file").and_then(JsonRef::as_u64).is_none() {
                     return Err(Error::Validation(vec![
                         "file alias target is missing or not an index".into(),
                     ]));
@@ -590,10 +660,10 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
     }
     for asset in root
         .get("externalAssets")
-        .and_then(Value::as_array)
-        .unwrap_or(&[])
+        .and_then(JsonRef::as_array)
+        .unwrap_or_default()
     {
-        if asset.get("file").and_then(Value::as_u64).is_none() {
+        if asset.get("file").and_then(JsonRef::as_u64).is_none() {
             return Err(Error::Validation(vec![
                 "external asset file is missing or not an index".into(),
             ]));
@@ -602,21 +672,25 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
     }
     for texture in root
         .get("textures")
-        .and_then(Value::as_array)
-        .unwrap_or(&[])
+        .and_then(JsonRef::as_array)
+        .unwrap_or_default()
     {
         check(texture, "sampler", "samplers")?;
         check(texture, "source", "images")?;
     }
-    for mesh in root.get("meshes").and_then(Value::as_array).unwrap_or(&[]) {
+    for mesh in root
+        .get("meshes")
+        .and_then(JsonRef::as_array)
+        .unwrap_or_default()
+    {
         for primitive in mesh
             .get("primitives")
-            .and_then(Value::as_array)
-            .unwrap_or(&[])
+            .and_then(JsonRef::as_array)
+            .unwrap_or_default()
         {
             check(primitive, "indices", "accessors")?;
             check(primitive, "material", "materials")?;
-            if let Some(attributes) = primitive.get("attributes").and_then(Value::as_object) {
+            if let Some(attributes) = primitive.get("attributes").and_then(JsonRef::as_object) {
                 for (semantic, index) in attributes {
                     let index = index.as_u64().ok_or_else(|| {
                         Error::Validation(vec![format!(
@@ -643,8 +717,8 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
     }
     for (node_index, node) in root
         .get("nodes")
-        .and_then(Value::as_array)
-        .unwrap_or(&[])
+        .and_then(JsonRef::as_array)
+        .unwrap_or_default()
         .iter()
         .enumerate()
     {
@@ -663,7 +737,7 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
                     "node boundingVolume is not an object".into(),
                 ]));
             }
-            if volume.get("shape").and_then(Value::as_u64).is_none() {
+            if volume.get("shape").and_then(JsonRef::as_u64).is_none() {
                 return Err(Error::Validation(vec![
                     "node boundingVolume shape is missing or not an index".into(),
                 ]));
@@ -671,7 +745,7 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
             check(volume, "shape", "shapes")?;
             validate_bounding_volume_transform(node_index, volume)?;
         }
-        if let Some(children) = node.get("children").and_then(Value::as_array) {
+        if let Some(children) = node.get("children").and_then(JsonRef::as_array) {
             for child in children {
                 if child.as_u64().is_none_or(|index| {
                     usize::try_from(index)
@@ -685,8 +759,12 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
             }
         }
     }
-    for scene in root.get("scenes").and_then(Value::as_array).unwrap_or(&[]) {
-        if let Some(nodes) = scene.get("nodes").and_then(Value::as_array) {
+    for scene in root
+        .get("scenes")
+        .and_then(JsonRef::as_array)
+        .unwrap_or_default()
+    {
+        if let Some(nodes) = scene.get("nodes").and_then(JsonRef::as_array) {
             for node in nodes {
                 if node.as_u64().is_none_or(|index| {
                     usize::try_from(index)
@@ -702,10 +780,14 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
     }
     validate_node_hierarchy(root)?;
     check(root, "scene", "scenes")?;
-    for skin in root.get("skins").and_then(Value::as_array).unwrap_or(&[]) {
+    for skin in root
+        .get("skins")
+        .and_then(JsonRef::as_array)
+        .unwrap_or_default()
+    {
         check(skin, "inverseBindMatrices", "accessors")?;
         check(skin, "skeleton", "nodes")?;
-        if let Some(joints) = skin.get("joints").and_then(Value::as_array) {
+        if let Some(joints) = skin.get("joints").and_then(JsonRef::as_array) {
             for joint in joints {
                 if joint.as_u64().is_none_or(|index| {
                     usize::try_from(index)
@@ -719,16 +801,20 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
             }
         }
     }
-    for mesh in root.get("meshes").and_then(Value::as_array).unwrap_or(&[]) {
+    for mesh in root
+        .get("meshes")
+        .and_then(JsonRef::as_array)
+        .unwrap_or_default()
+    {
         for primitive in mesh
             .get("primitives")
-            .and_then(Value::as_array)
-            .unwrap_or(&[])
+            .and_then(JsonRef::as_array)
+            .unwrap_or_default()
         {
             for target in primitive
                 .get("targets")
-                .and_then(Value::as_array)
-                .unwrap_or(&[])
+                .and_then(JsonRef::as_array)
+                .unwrap_or_default()
             {
                 if let Some(attributes) = target.as_object() {
                     for (semantic, index) in attributes {
@@ -748,17 +834,17 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
     }
     for animation in root
         .get("animations")
-        .and_then(Value::as_array)
-        .unwrap_or(&[])
+        .and_then(JsonRef::as_array)
+        .unwrap_or_default()
     {
         let samplers = animation
             .get("samplers")
-            .and_then(Value::as_array)
-            .unwrap_or(&[]);
+            .and_then(JsonRef::as_array)
+            .unwrap_or_default();
         for sampler in samplers {
             required_index(sampler, "input", "accessors")?;
             required_index(sampler, "output", "accessors")?;
-            if let Some(interpolation) = sampler.get("interpolation").and_then(Value::as_str) {
+            if let Some(interpolation) = sampler.get("interpolation").and_then(JsonRef::as_str) {
                 if !matches!(interpolation, "LINEAR" | "STEP" | "CUBICSPLINE") {
                     return Err(Error::Validation(vec![format!(
                         "animation sampler interpolation {interpolation:?} is invalid"
@@ -768,10 +854,10 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
         }
         for channel in animation
             .get("channels")
-            .and_then(Value::as_array)
-            .unwrap_or(&[])
+            .and_then(JsonRef::as_array)
+            .unwrap_or_default()
         {
-            let sampler = channel.get("sampler").and_then(Value::as_u64);
+            let sampler = channel.get("sampler").and_then(JsonRef::as_u64);
             if sampler.is_none_or(|index| {
                 usize::try_from(index)
                     .ok()
@@ -783,9 +869,12 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
             }
             if let Some(target) = channel.get("target") {
                 check(target, "node", "nodes")?;
-                let path = target.get("path").and_then(Value::as_str).ok_or_else(|| {
-                    Error::Validation(vec!["animation channel target path is missing".into()])
-                })?;
+                let path = target
+                    .get("path")
+                    .and_then(JsonRef::as_str)
+                    .ok_or_else(|| {
+                        Error::Validation(vec!["animation channel target path is missing".into()])
+                    })?;
                 // `pointer` is the path KHR_animation_pointer defines, and it
                 // targets a JSON pointer rather than a node, which is why the
                 // node index is absent on such a channel. The extension is
@@ -818,13 +907,13 @@ fn validate_references(root: &Value, profile: ValidationProfile) -> Result<()> {
 }
 
 #[cfg(feature = "strict-validation")]
-fn validate_position_accessor(root: &Value, index: usize) -> Result<()> {
+fn validate_position_accessor(root: JsonRef<'_>, index: usize) -> Result<()> {
     let accessor = root
         .get("accessors")
-        .and_then(Value::as_array)
+        .and_then(JsonRef::as_array)
         .and_then(|accessors| accessors.get(index))
         .ok_or_else(|| Error::Validation(vec![format!("POSITION accessor {index} is missing")]))?;
-    if accessor.get("type").and_then(Value::as_str) != Some("VEC3") {
+    if accessor.get("type").and_then(JsonRef::as_str) != Some("VEC3") {
         return Err(Error::Validation(vec![format!(
             "POSITION accessor {index} must have type VEC3"
         )]));
@@ -834,7 +923,7 @@ fn validate_position_accessor(root: &Value, index: usize) -> Result<()> {
     for field in ["min", "max"] {
         let values = accessor
             .get(field)
-            .and_then(Value::as_array)
+            .and_then(JsonRef::as_array)
             .filter(|values| values.len() == 3)
             .ok_or_else(|| {
                 Error::Validation(vec![format!(
@@ -861,16 +950,19 @@ fn validate_position_accessor(root: &Value, index: usize) -> Result<()> {
 }
 
 #[cfg(feature = "strict-validation")]
-fn validate_node_hierarchy(root: &Value) -> Result<()> {
-    let nodes = root.get("nodes").and_then(Value::as_array).unwrap_or(&[]);
+fn validate_node_hierarchy(root: JsonRef<'_>) -> Result<()> {
+    let nodes = root
+        .get("nodes")
+        .and_then(JsonRef::as_array)
+        .unwrap_or_default();
     let mut parents = vec![None; nodes.len()];
     let mut edges = vec![Vec::new(); nodes.len()];
 
     for (parent, node) in nodes.iter().enumerate() {
         for child in node
             .get("children")
-            .and_then(Value::as_array)
-            .unwrap_or(&[])
+            .and_then(JsonRef::as_array)
+            .unwrap_or_default()
         {
             let child = child
                 .as_u64()
@@ -928,12 +1020,16 @@ fn validate_node_hierarchy(root: &Value) -> Result<()> {
 
     for (scene_index, scene) in root
         .get("scenes")
-        .and_then(Value::as_array)
-        .unwrap_or(&[])
+        .and_then(JsonRef::as_array)
+        .unwrap_or_default()
         .iter()
         .enumerate()
     {
-        for root_node in scene.get("nodes").and_then(Value::as_array).unwrap_or(&[]) {
+        for root_node in scene
+            .get("nodes")
+            .and_then(JsonRef::as_array)
+            .unwrap_or_default()
+        {
             let root_node = root_node
                 .as_u64()
                 .and_then(|value| usize::try_from(value).ok())
@@ -952,21 +1048,30 @@ fn validate_node_hierarchy(root: &Value) -> Result<()> {
 
 #[cfg(feature = "strict-validation")]
 fn validate_draco_extension(
-    root: &Value,
-    check: &impl Fn(&Value, &str, &str) -> Result<()>,
+    root: JsonRef<'_>,
+    check: &impl Fn(JsonRef<'_>, &str, &str) -> Result<()>,
 ) -> Result<()> {
     const NAME: &str = crate::KHR_DRACO_MESH_COMPRESSION;
     let listed = |field: &str| {
         root.get(field)
-            .and_then(Value::as_array)
+            .and_then(JsonRef::as_array)
             .is_some_and(|values| values.iter().any(|value| value.as_str() == Some(NAME)))
     };
     let required = listed("extensionsRequired");
-    for mesh in root.get("meshes").and_then(Value::as_array).unwrap_or(&[]) {
+    let used = std::cell::OnceCell::new();
+    let accessors = root
+        .get("accessors")
+        .and_then(JsonRef::as_array)
+        .unwrap_or_default();
+    for mesh in root
+        .get("meshes")
+        .and_then(JsonRef::as_array)
+        .unwrap_or_default()
+    {
         for primitive in mesh
             .get("primitives")
-            .and_then(Value::as_array)
-            .unwrap_or(&[])
+            .and_then(JsonRef::as_array)
+            .unwrap_or_default()
         {
             let Some(extension) = primitive
                 .get("extensions")
@@ -974,12 +1079,12 @@ fn validate_draco_extension(
             else {
                 continue;
             };
-            if !listed("extensionsUsed") {
+            if !*used.get_or_init(|| listed("extensionsUsed")) {
                 return Err(Error::Validation(vec![
                     "KHR_draco_mesh_compression is missing from extensionsUsed".into(),
                 ]));
             }
-            let mode = primitive.get("mode").and_then(Value::as_u64).unwrap_or(4);
+            let mode = primitive.get("mode").and_then(JsonRef::as_u64).unwrap_or(4);
             if !matches!(mode, 4 | 5) {
                 return Err(Error::Validation(vec![
                     "KHR_draco_mesh_compression requires TRIANGLES or TRIANGLE_STRIP".into(),
@@ -988,13 +1093,13 @@ fn validate_draco_extension(
             check(extension, "bufferView", "bufferViews")?;
             let attributes = extension
                 .get("attributes")
-                .and_then(Value::as_object)
+                .and_then(JsonRef::as_object)
                 .ok_or_else(|| {
                     Error::Validation(vec!["Draco extension attributes is not an object".into()])
                 })?;
             let primitive_attributes = primitive
                 .get("attributes")
-                .and_then(Value::as_object)
+                .and_then(JsonRef::as_object)
                 .ok_or_else(|| {
                     Error::Validation(vec!["Draco primitive attributes is not an object".into()])
                 })?;
@@ -1026,12 +1131,10 @@ fn validate_draco_extension(
                 for (semantic, _) in attributes {
                     let accessor = primitive_attributes
                         .iter()
-                        .find(|(name, _)| name == semantic)
+                        .find(|(name, _)| *name == semantic)
                         .and_then(|(_, value)| value.as_u64())
                         .and_then(|value| usize::try_from(value).ok())
-                        .and_then(|index| {
-                            root.get("accessors").and_then(Value::as_array)?.get(index)
-                        })
+                        .and_then(|index| accessors.get(index))
                         .ok_or_else(|| {
                             Error::Validation(vec!["Draco accessor is invalid".into()])
                         })?;
@@ -1045,9 +1148,7 @@ fn validate_draco_extension(
                     let accessor = index
                         .as_u64()
                         .and_then(|value| usize::try_from(value).ok())
-                        .and_then(|index| {
-                            root.get("accessors").and_then(Value::as_array)?.get(index)
-                        })
+                        .and_then(|index| accessors.get(index))
                         .ok_or_else(|| {
                             Error::Validation(vec!["Draco index accessor is invalid".into()])
                         })?;
@@ -1070,15 +1171,15 @@ const CORE_SHAPE_TYPES: [&str; 5] = ["box", "capsule", "cylinder", "plane", "sph
 /// degenerate shapes. A core shape's own object is optional, and its
 /// parameters then take their defaults, which are valid.
 #[cfg(feature = "strict-validation")]
-fn validate_shapes(root: &Value) -> Result<()> {
+fn validate_shapes(root: JsonRef<'_>) -> Result<()> {
     for (index, shape) in root
         .get("shapes")
-        .and_then(Value::as_array)
-        .unwrap_or(&[])
+        .and_then(JsonRef::as_array)
+        .unwrap_or_default()
         .iter()
         .enumerate()
     {
-        let kind = shape.get("type").and_then(Value::as_str).ok_or_else(|| {
+        let kind = shape.get("type").and_then(JsonRef::as_str).ok_or_else(|| {
             Error::Validation(vec!["shape type is missing or not a string".into()])
         })?;
         if !CORE_SHAPE_TYPES.contains(&kind) {
@@ -1100,7 +1201,7 @@ fn validate_shapes(root: &Value) -> Result<()> {
 }
 
 #[cfg(feature = "strict-validation")]
-fn validate_shape_parameters(index: usize, kind: &str, definition: &Value) -> Result<()> {
+fn validate_shape_parameters(index: usize, kind: &str, definition: JsonRef<'_>) -> Result<()> {
     let fail = |what: String| Error::Validation(vec![format!("shapes[{index}].{kind}: {what}")]);
     if !definition.is_object() {
         return Err(fail("is not an object".into()));
@@ -1164,7 +1265,7 @@ fn validate_shape_parameters(index: usize, kind: &str, definition: &Value) -> Re
 
 /// Checks the transform a bounding volume places its shape with.
 #[cfg(feature = "strict-validation")]
-fn validate_bounding_volume_transform(node: usize, volume: &Value) -> Result<()> {
+fn validate_bounding_volume_transform(node: usize, volume: JsonRef<'_>) -> Result<()> {
     for (name, length) in [("rotation", 4), ("scale", 3), ("translation", 3)] {
         let Some(value) = volume.get(name) else {
             continue;
@@ -1175,7 +1276,7 @@ fn validate_bounding_volume_transform(node: usize, volume: &Value) -> Result<()>
             .and_then(|components| {
                 components
                     .iter()
-                    .map(Value::as_f64)
+                    .map(JsonRef::as_f64)
                     .collect::<Option<Vec<_>>>()
             })
             .ok_or_else(|| {
@@ -1193,7 +1294,7 @@ fn validate_bounding_volume_transform(node: usize, volume: &Value) -> Result<()>
 }
 
 #[cfg(feature = "strict-validation")]
-fn validate_uids(root: &Value) -> Result<()> {
+fn validate_uids(root: JsonRef<'_>) -> Result<()> {
     use std::collections::BTreeMap;
 
     const KINDS: [&str; 16] = [
@@ -1218,8 +1319,8 @@ fn validate_uids(root: &Value) -> Result<()> {
     let objects = || {
         KINDS.into_iter().flat_map(|kind| {
             root.get(kind)
-                .and_then(Value::as_array)
-                .unwrap_or(&[])
+                .and_then(JsonRef::as_array)
+                .unwrap_or_default()
                 .iter()
                 .enumerate()
                 .map(move |(index, value)| ((kind, index), value))
@@ -1254,7 +1355,7 @@ fn validate_uids(root: &Value) -> Result<()> {
     // Only names some UID equals can conflict, so only those are collected.
     let mut names: BTreeMap<&str, Vec<(&str, usize)>> = BTreeMap::new();
     for (location, value) in objects() {
-        if let Some(name) = value.get("name").and_then(Value::as_str) {
+        if let Some(name) = value.get("name").and_then(JsonRef::as_str) {
             if uids.contains_key(name) {
                 names.entry(name).or_default().push(location);
             }
@@ -1279,7 +1380,7 @@ fn validate_uids(root: &Value) -> Result<()> {
 #[derive(Clone, Copy)]
 pub struct ObjectRef<'a, I> {
     index: I,
-    value: &'a Value,
+    value: JsonRef<'a>,
 }
 impl<'a, I: Copy> ObjectRef<'a, I> {
     /// Returns the typed index of this object.
@@ -1287,23 +1388,23 @@ impl<'a, I: Copy> ObjectRef<'a, I> {
         self.index
     }
     /// Returns the underlying lossless JSON object.
-    pub fn value(self) -> &'a Value {
+    pub fn value(self) -> JsonRef<'a> {
         self.value
     }
     /// Returns the optional glTF object name.
     pub fn name(self) -> Option<&'a str> {
-        self.value.get("name").and_then(Value::as_str)
+        self.value.get("name").and_then(JsonRef::as_str)
     }
     /// Returns the optional draft UID.
     pub fn uid(self) -> Option<&'a str> {
-        self.value.get("uid").and_then(Value::as_str)
+        self.value.get("uid").and_then(JsonRef::as_str)
     }
     /// Returns the object's unknown or extension fields.
-    pub fn extensions(self) -> Option<&'a [(String, Value)]> {
-        self.value.get("extensions").and_then(Value::as_object)
+    pub fn extensions(self) -> Option<JsonObject<'a>> {
+        self.value.get("extensions").and_then(JsonRef::as_object)
     }
     /// Returns the object's application-defined extras value.
-    pub fn extras(self) -> Option<&'a Value> {
+    pub fn extras(self) -> Option<JsonRef<'a>> {
         self.value.get("extras")
     }
 }
@@ -1319,7 +1420,7 @@ macro_rules! typed_object {
                 self.0.index()
             }
             /// Returns the underlying lossless JSON object.
-            pub fn value(self) -> &'a Value {
+            pub fn value(self) -> JsonRef<'a> {
                 self.0.value()
             }
             /// Returns the optional glTF object name.
@@ -1331,11 +1432,11 @@ macro_rules! typed_object {
                 self.0.uid()
             }
             /// Returns the object's application-defined extras value.
-            pub fn extras(self) -> Option<&'a Value> {
+            pub fn extras(self) -> Option<JsonRef<'a>> {
                 self.0.extras()
             }
             /// Returns the object's unknown or extension fields.
-            pub fn extensions(self) -> Option<&'a [(String, Value)]> {
+            pub fn extensions(self) -> Option<JsonObject<'a>> {
                 self.0.extensions()
             }
         }
@@ -1362,11 +1463,11 @@ typed_object!(Texture, TextureIndex);
 impl<'a> Buffer<'a> {
     /// Returns the declared buffer length.
     pub fn byte_length(self) -> Option<u64> {
-        self.value().get("byteLength").and_then(Value::as_u64)
+        self.value().get("byteLength").and_then(JsonRef::as_u64)
     }
     /// Returns the optional external buffer URI.
     pub fn uri(self) -> Option<&'a str> {
-        self.value().get("uri").and_then(Value::as_str)
+        self.value().get("uri").and_then(JsonRef::as_str)
     }
 }
 
@@ -1379,16 +1480,16 @@ impl<'a> BufferView<'a> {
     pub fn byte_offset(self) -> u64 {
         self.value()
             .get("byteOffset")
-            .and_then(Value::as_u64)
+            .and_then(JsonRef::as_u64)
             .unwrap_or(0)
     }
     /// Returns the declared view length.
     pub fn byte_length(self) -> Option<u64> {
-        self.value().get("byteLength").and_then(Value::as_u64)
+        self.value().get("byteLength").and_then(JsonRef::as_u64)
     }
     /// Returns the optional interleaved byte stride.
     pub fn byte_stride(self) -> Option<u64> {
-        self.value().get("byteStride").and_then(Value::as_u64)
+        self.value().get("byteStride").and_then(JsonRef::as_u64)
     }
 }
 
@@ -1399,29 +1500,29 @@ impl<'a> Accessor<'a> {
     }
     /// Returns the number of accessor elements.
     pub fn count(self) -> Option<u64> {
-        self.value().get("count").and_then(Value::as_u64)
+        self.value().get("count").and_then(JsonRef::as_u64)
     }
     /// Returns the typed component format.
     pub fn component_type(self) -> Option<ComponentType> {
         self.value()
             .get("componentType")
-            .and_then(Value::as_u64)
+            .and_then(JsonRef::as_u64)
             .and_then(ComponentType::from_gltf)
     }
     /// Returns the accessor shape such as `SCALAR` or `VEC3`.
     pub fn accessor_type(self) -> Option<&'a str> {
-        self.value().get("type").and_then(Value::as_str)
+        self.value().get("type").and_then(JsonRef::as_str)
     }
     /// Returns whether integer values are normalized on read.
     pub fn normalized(self) -> bool {
-        matches!(self.value().get("normalized"), Some(Value::Bool(true)))
+        self.value().get("normalized").and_then(JsonRef::as_bool) == Some(true)
     }
 }
 
 impl<'a> Image<'a> {
     /// Returns the optional image URI.
     pub fn uri(self) -> Option<&'a str> {
-        self.value().get("uri").and_then(Value::as_str)
+        self.value().get("uri").and_then(JsonRef::as_str)
     }
     /// Returns the optional image buffer-view index.
     pub fn buffer_view(self) -> Option<BufferViewIndex> {
@@ -1468,10 +1569,10 @@ impl<'a> Node<'a> {
     pub fn children(self) -> impl Iterator<Item = NodeIndex> + 'a {
         self.value()
             .get("children")
-            .and_then(Value::as_array)
-            .unwrap_or(&[])
+            .and_then(JsonRef::as_array)
+            .unwrap_or_default()
             .iter()
-            .filter_map(Value::as_u64)
+            .filter_map(JsonRef::as_u64)
             .filter_map(|index| usize::try_from(index).ok())
             .map(NodeIndex)
     }
@@ -1482,10 +1583,10 @@ impl<'a> Scene<'a> {
     pub fn nodes(self) -> impl Iterator<Item = NodeIndex> + 'a {
         self.value()
             .get("nodes")
-            .and_then(Value::as_array)
-            .unwrap_or(&[])
+            .and_then(JsonRef::as_array)
+            .unwrap_or_default()
             .iter()
-            .filter_map(Value::as_u64)
+            .filter_map(JsonRef::as_u64)
             .filter_map(|index| usize::try_from(index).ok())
             .map(NodeIndex)
     }
@@ -1494,11 +1595,11 @@ impl<'a> Scene<'a> {
 impl<'a> File<'a> {
     /// Returns the declared file MIME type.
     pub fn mime_type(self) -> Option<&'a str> {
-        self.value().get("mimeType").and_then(Value::as_str)
+        self.value().get("mimeType").and_then(JsonRef::as_str)
     }
     /// Returns the optional external file URI.
     pub fn uri(self) -> Option<&'a str> {
-        self.value().get("uri").and_then(Value::as_str)
+        self.value().get("uri").and_then(JsonRef::as_str)
     }
     /// Returns the optional embedded buffer-view index.
     pub fn buffer_view(self) -> Option<BufferViewIndex> {
@@ -1512,8 +1613,8 @@ impl<'a> File<'a> {
     pub fn aliases(self) -> impl Iterator<Item = (&'a str, FileIndex)> {
         self.value()
             .get("aliases")
-            .and_then(Value::as_array)
-            .unwrap_or(&[])
+            .and_then(JsonRef::as_array)
+            .unwrap_or_default()
             .iter()
             .filter_map(|entry| {
                 Some((
@@ -1533,10 +1634,10 @@ impl<'a> ExternalAsset<'a> {
 
 /// Typed view of a node's draft bounding-volume object.
 #[derive(Clone, Copy)]
-pub struct BoundingVolume<'a>(&'a Value);
+pub struct BoundingVolume<'a>(JsonRef<'a>);
 impl<'a> BoundingVolume<'a> {
     /// Returns the underlying bounding-volume JSON object.
-    pub fn value(self) -> &'a Value {
+    pub fn value(self) -> JsonRef<'a> {
         self.0
     }
     /// Returns the referenced draft shape index.
@@ -1548,10 +1649,10 @@ impl<'a> BoundingVolume<'a> {
 impl<'a> Shape<'a> {
     /// Returns the shape discriminator.
     pub fn shape_type(self) -> Option<&'a str> {
-        self.value().get("type").and_then(Value::as_str)
+        self.value().get("type").and_then(JsonRef::as_str)
     }
     /// Returns the shape definition under its discriminator key.
-    pub fn definition(self) -> Option<&'a Value> {
+    pub fn definition(self) -> Option<JsonRef<'a>> {
         self.shape_type().and_then(|kind| self.value().get(kind))
     }
 }
@@ -1561,21 +1662,21 @@ impl<'a> Mesh<'a> {
     pub fn primitive_count(self) -> usize {
         self.value()
             .get("primitives")
-            .and_then(Value::as_array)
-            .map_or(0, <[Value]>::len)
+            .and_then(JsonRef::as_array)
+            .map_or(0, JsonArray::len)
     }
 }
 
-fn index_value(value: &Value, name: &str) -> Option<usize> {
+fn index_value(value: JsonRef<'_>, name: &str) -> Option<usize> {
     value
         .get(name)
-        .and_then(Value::as_u64)
+        .and_then(JsonRef::as_u64)
         .and_then(|index| usize::try_from(index).ok())
 }
 
 /// Typed iterator over a root-level glTF array.
 pub struct Objects<'a, I> {
-    values: &'a [Value],
+    values: JsonArray<'a>,
     marker: PhantomData<I>,
 }
 impl<'a, I: From<usize> + Into<usize> + Copy> Objects<'a, I> {
@@ -1599,12 +1700,12 @@ impl<'a, I: From<usize> + Into<usize> + Copy> Objects<'a, I> {
 impl<'a, I: From<usize> + Into<usize> + Copy> IntoIterator for Objects<'a, I> {
     type Item = ObjectRef<'a, I>;
     type IntoIter = std::iter::Map<
-        std::iter::Enumerate<std::slice::Iter<'a, Value>>,
-        fn((usize, &'a Value)) -> ObjectRef<'a, I>,
+        std::iter::Enumerate<JsonItems<'a>>,
+        fn((usize, JsonRef<'a>)) -> ObjectRef<'a, I>,
     >;
     fn into_iter(self) -> Self::IntoIter {
         fn make<I: From<usize> + Into<usize> + Copy>(
-            (index, value): (usize, &Value),
+            (index, value): (usize, JsonRef<'_>),
         ) -> ObjectRef<'_, I> {
             ObjectRef {
                 index: I::from(index),
@@ -1652,23 +1753,29 @@ impl<'a> PrimitiveRef<'a> {
         self.primitive
     }
     /// Returns the primitive's lossless JSON object.
-    pub fn value(self) -> &'a Value {
-        &self.document.as_value()["meshes"][self.mesh.0]["primitives"][self.primitive]
+    pub fn value(self) -> JsonRef<'a> {
+        self.document
+            .meshes()
+            .get(self.mesh)
+            .and_then(|mesh| mesh.value().get("primitives"))
+            .and_then(JsonRef::as_array)
+            .and_then(|primitives| primitives.get(self.primitive))
+            .unwrap_or_default()
     }
     /// Returns the primitive attribute map.
-    pub fn attributes(self) -> Option<&'a [(String, Value)]> {
-        self.value().get("attributes").and_then(Value::as_object)
+    pub fn attributes(self) -> Option<JsonObject<'a>> {
+        self.value().get("attributes").and_then(JsonRef::as_object)
     }
     /// Iterates over named primitive attribute accessor indexes.
     pub fn attribute_indices(self) -> impl Iterator<Item = (&'a str, AccessorIndex)> + 'a {
         self.attributes()
-            .unwrap_or(&[])
+            .unwrap_or_default()
             .iter()
             .filter_map(|(semantic, value)| {
                 value
                     .as_u64()
                     .and_then(|index| usize::try_from(index).ok())
-                    .map(|index| (semantic.as_str(), AccessorIndex(index)))
+                    .map(|index| (semantic, AccessorIndex(index)))
             })
     }
     /// Returns the optional index accessor.
@@ -1683,21 +1790,21 @@ impl<'a> PrimitiveRef<'a> {
     pub fn mode(self) -> u32 {
         self.value()
             .get("mode")
-            .and_then(Value::as_u64)
+            .and_then(JsonRef::as_u64)
             .and_then(|mode| u32::try_from(mode).ok())
             .unwrap_or(4)
     }
     /// Iterates over morph-target attribute maps.
-    pub fn morph_targets(self) -> impl Iterator<Item = &'a [(String, Value)]> + 'a {
+    pub fn morph_targets(self) -> impl Iterator<Item = JsonObject<'a>> + 'a {
         self.value()
             .get("targets")
-            .and_then(Value::as_array)
-            .unwrap_or(&[])
+            .and_then(JsonRef::as_array)
+            .unwrap_or_default()
             .iter()
-            .filter_map(Value::as_object)
+            .filter_map(JsonRef::as_object)
     }
     /// Returns a named primitive extension payload.
-    pub fn extension(self, name: &str) -> Option<&'a Value> {
+    pub fn extension(self, name: &str) -> Option<JsonRef<'a>> {
         self.value().get("extensions")?.get(name)
     }
 }

@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::json::Value;
+use crate::json::{JsonRef, Value};
 #[cfg(feature = "draco-decode")]
 use draco_core::Mesh;
 
@@ -28,7 +28,7 @@ pub const EXT_MESHOPT_COMPRESSION: &str = "EXT_meshopt_compression";
 pub const KHR_MESHOPT_COMPRESSION: &str = "KHR_meshopt_compression";
 
 /// Reads a `extensions` object's meshopt entry under either spelling.
-pub fn meshopt_extension(extensions: Option<&Value>) -> Option<(&'static str, &Value)> {
+pub fn meshopt_extension(extensions: Option<JsonRef<'_>>) -> Option<(&'static str, JsonRef<'_>)> {
     let extensions = extensions?;
     for name in [EXT_MESHOPT_COMPRESSION, KHR_MESHOPT_COMPRESSION] {
         if let Some(value) = extensions.get(name) {
@@ -149,10 +149,10 @@ const PROPERTY_TABLE_SLOTS: [&str; 3] = ["values", "arrayOffsets", "stringOffset
 /// This and [`instancing_accessors_mut`] walk the same places and must keep
 /// doing so: a reference one of them keeps alive and the other does not
 /// rewrite ends up pointing at a slot that moved.
-fn instancing_accessors(root: &Value) -> impl Iterator<Item = &Value> {
+fn instancing_accessors(root: JsonRef<'_>) -> impl Iterator<Item = JsonRef<'_>> {
     root.get("nodes")
-        .and_then(Value::as_array)
-        .unwrap_or(&[])
+        .and_then(JsonRef::as_array)
+        .unwrap_or_default()
         .iter()
         .filter_map(|node| {
             node.get("extensions")?
@@ -189,19 +189,19 @@ fn instancing_accessors_mut(root: &mut Value) -> impl Iterator<Item = &mut Value
 /// the extension makes — property attributes name vertex attributes by string,
 /// and property textures name textures — so they are also the only thing a
 /// binary transform can invalidate.
-fn property_table_views(root: &Value) -> impl Iterator<Item = &Value> {
+fn property_table_views(root: JsonRef<'_>) -> impl Iterator<Item = JsonRef<'_>> {
     root.get("extensions")
         .and_then(|extensions| extensions.get(EXT_STRUCTURAL_METADATA))
         .and_then(|metadata| metadata.get("propertyTables"))
-        .and_then(Value::as_array)
-        .unwrap_or(&[])
+        .and_then(JsonRef::as_array)
+        .unwrap_or_default()
         .iter()
         .filter_map(|table| table.get("properties")?.as_object())
         .flatten()
         .flat_map(|(_, property)| {
             PROPERTY_TABLE_SLOTS
                 .iter()
-                .filter_map(|slot| property.get(slot))
+                .filter_map(move |slot| property.get(slot))
         })
 }
 
@@ -231,7 +231,7 @@ fn property_table_views_mut(root: &mut Value) -> impl Iterator<Item = &mut Value
 }
 
 /// Marks one index as still in use, or reports that it never was valid.
-fn keep_reference(value: &Value, used: &mut [bool], kind: &str) -> Result<()> {
+fn keep_reference(value: JsonRef<'_>, used: &mut [bool], kind: &str) -> Result<()> {
     let index = value
         .as_u64()
         .and_then(|value| usize::try_from(value).ok())
@@ -261,7 +261,7 @@ impl ExtensionHandler for MeshGpuInstancingExtension {
         accessors: &mut [bool],
         _buffer_views: &mut [bool],
     ) -> Result<()> {
-        for value in instancing_accessors(document.as_value()) {
+        for value in instancing_accessors(document.as_json()) {
             keep_reference(value, accessors, "EXT_mesh_gpu_instancing accessor")?;
         }
         Ok(())
@@ -295,7 +295,7 @@ impl ExtensionHandler for StructuralMetadataExtension {
         _accessors: &mut [bool],
         buffer_views: &mut [bool],
     ) -> Result<()> {
-        for value in property_table_views(document.as_value()) {
+        for value in property_table_views(document.as_json()) {
             keep_reference(value, buffer_views, "EXT_structural_metadata bufferView")?;
         }
         Ok(())
@@ -534,8 +534,8 @@ impl ExtensionHandler for DracoExtension {
             for primitive in mesh
                 .value()
                 .get("primitives")
-                .and_then(Value::as_array)
-                .unwrap_or(&[])
+                .and_then(JsonRef::as_array)
+                .unwrap_or_default()
             {
                 let Some(extension) = primitive
                     .get("extensions")
@@ -545,7 +545,7 @@ impl ExtensionHandler for DracoExtension {
                 };
                 let index = extension
                     .get("bufferView")
-                    .and_then(Value::as_u64)
+                    .and_then(JsonRef::as_u64)
                     .and_then(|value| usize::try_from(value).ok())
                     .filter(|index| *index < buffer_views.len())
                     .ok_or_else(|| Error::Extension("Draco bufferView is invalid".into()))?;
@@ -593,15 +593,15 @@ impl ExtensionHandler for DracoExtension {
         context: &mut ExtensionValidationContext,
     ) -> Result<()> {
         let accessors = document
-            .as_value()
+            .as_json()
             .get("accessors")
-            .and_then(Value::as_array)
-            .unwrap_or(&[]);
+            .and_then(JsonRef::as_array)
+            .unwrap_or_default();
         for mesh in document.meshes() {
             for primitive_index in mesh
                 .value()
                 .get("primitives")
-                .and_then(Value::as_array)
+                .and_then(JsonRef::as_array)
                 .into_iter()
                 .flatten()
                 .enumerate()
@@ -617,7 +617,7 @@ impl ExtensionHandler for DracoExtension {
                 };
                 for accessor in primitive
                     .get("attributes")
-                    .and_then(Value::as_object)
+                    .and_then(JsonRef::as_object)
                     .into_iter()
                     .flat_map(|attrs| attrs.iter().map(|(_, value)| value))
                     .chain(primitive.get("indices"))
@@ -676,25 +676,25 @@ pub(crate) struct DracoContract {
     pub attributes: Vec<(String, u32)>,
 }
 
-pub(crate) fn parse_draco_extension(value: Option<&Value>) -> Result<Option<DracoContract>> {
+pub(crate) fn parse_draco_extension(value: Option<JsonRef<'_>>) -> Result<Option<DracoContract>> {
     let Some(value) = value else {
         return Ok(None);
     };
     let buffer_view = value
         .get("bufferView")
-        .and_then(Value::as_u64)
+        .and_then(JsonRef::as_u64)
         .and_then(|value| usize::try_from(value).ok())
         .ok_or_else(|| Error::Extension("Draco bufferView is invalid".into()))?;
     let attributes = value
         .get("attributes")
-        .and_then(Value::as_object)
+        .and_then(JsonRef::as_object)
         .ok_or_else(|| Error::Extension("Draco attributes is invalid".into()))?
         .iter()
         .map(|(name, value)| {
             value
                 .as_u64()
                 .and_then(|value| u32::try_from(value).ok())
-                .map(|value| (name.clone(), value))
+                .map(|value| (name.to_owned(), value))
                 .ok_or_else(|| Error::Extension(format!("Draco attribute {name} is invalid")))
         })
         .collect::<Result<Vec<_>>>()?;

@@ -527,7 +527,7 @@ impl GltfAsset {
         }
         self.import
             .document()
-            .as_value()
+            .as_json()
             .get(kind)
             .and_then(|value| value.as_array())
             .and_then(|values| values.get(index))

@@ -110,7 +110,10 @@ fn host_neutral_draco_decode_matches_read_primitive() {
     .unwrap();
     let primitive = import.document().primitive(MeshIndex(0), 0).unwrap();
     let extension = DracoPrimitiveExtension::from_json(
-        primitive.extension(KHR_DRACO_MESH_COMPRESSION).unwrap(),
+        &primitive
+            .extension(KHR_DRACO_MESH_COMPRESSION)
+            .unwrap()
+            .to_value(),
     )
     .unwrap();
 
@@ -189,7 +192,10 @@ fn host_neutral_draco_encode_matches_compress_primitive() {
         .unwrap();
     let primitive = compressed.document().primitive(MeshIndex(0), 0).unwrap();
     let extension = DracoPrimitiveExtension::from_json(
-        primitive.extension(KHR_DRACO_MESH_COMPRESSION).unwrap(),
+        &primitive
+            .extension(KHR_DRACO_MESH_COMPRESSION)
+            .unwrap()
+            .to_value(),
     )
     .unwrap();
     assert_eq!(encoded.extension(extension.buffer_view()), extension);

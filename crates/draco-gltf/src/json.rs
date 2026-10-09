@@ -5,6 +5,11 @@ use std::mem;
 use std::ops::{Index, IndexMut};
 use std::slice;
 
+mod tape;
+
+pub(crate) use tape::Tape;
+pub use tape::{JsonArray, JsonItems, JsonMembers, JsonObject, JsonRef};
+
 /// Dependency-free JSON value that preserves number lexemes and object order.
 ///
 /// The type is recursive, so every operation that walks a whole tree --
@@ -36,13 +41,7 @@ pub enum Value {
 impl Value {
     /// Parses one complete JSON value.
     pub fn parse(input: &[u8]) -> Result<Self, String> {
-        let mut parser = Parser { input, pos: 0 };
-        let value = parser.value()?;
-        parser.space();
-        if parser.pos != input.len() {
-            return Err("trailing JSON data".into());
-        }
-        Ok(value)
+        Tape::parse(input).map(|tape| tape.root().to_value())
     }
     /// Serializes this value as whitespace-free JSON.
     pub fn to_vec(&self) -> Vec<u8> {
@@ -428,304 +427,45 @@ fn write_string(out: &mut Vec<u8>, value: &str) {
     }
     out.push(b'"');
 }
-/// A container the parser has opened but not yet closed: where its entries
-/// start on the parser's shared stack of array items or object members.
-///
-/// Object frames also hold the key whose value is being parsed, so that the key
-/// and its value only become a pair once the value is complete.
-enum Frame {
-    Array(usize),
-    Object(usize, String),
-}
-
-struct Parser<'a> {
-    input: &'a [u8],
-    pos: usize,
-}
-impl<'a> Parser<'a> {
-    fn space(&mut self) {
-        while self
-            .input
-            .get(self.pos)
-            .is_some_and(|c| c.is_ascii_whitespace())
-        {
-            self.pos += 1;
-        }
-    }
-    fn take(&mut self, c: u8) -> bool {
-        self.space();
-        if self.input.get(self.pos) == Some(&c) {
-            self.pos += 1;
-            true
-        } else {
-            false
-        }
-    }
-    /// Parses one complete value, holding open containers on the heap.
-    ///
-    /// Nesting costs one frame per level instead of a call frame, so the only
-    /// bound on depth is the memory the document itself pays for: a level
-    /// cannot be opened without spending an input byte on its bracket. The
-    /// worst shape for this, an input that is nothing but brackets, peaks near
-    /// 37 bytes of heap per input byte; VirtualCity's 490 kB of glTF JSON, a
-    /// document that carries actual content, peaks near 3.4.
-    ///
-    /// The entries of every open container wait on two shared stacks, one for
-    /// array items and one for object members, and a container that closes
-    /// takes its own off the top in one allocation of exactly its length,
-    /// rather than each growing a vector of its own a doubling at a time -- an
-    /// allocation and a copy at every power of two, for each of the thousands
-    /// of small objects a glTF document is made of, and capacity left over in
-    /// every one of them.
-    fn value(&mut self) -> Result<Value, String> {
-        let mut stack: Vec<Frame> = Vec::new();
-        let mut items: Vec<Value> = Vec::new();
-        let mut members: Vec<(String, Value)> = Vec::new();
-        // The value finished most recently, waiting to be stored in the
-        // container that encloses it.
-        let mut done;
-        'value: loop {
-            self.space();
-            match self.input.get(self.pos).copied() {
-                Some(b'{') => {
-                    self.pos += 1;
-                    if self.take(b'}') {
-                        done = Value::Object(Vec::new());
-                    } else {
-                        let key = self.object_key()?;
-                        stack.push(Frame::Object(members.len(), key));
-                        continue 'value;
-                    }
-                }
-                Some(b'[') => {
-                    self.pos += 1;
-                    if self.take(b']') {
-                        done = Value::Array(Vec::new());
-                    } else {
-                        stack.push(Frame::Array(items.len()));
-                        continue 'value;
-                    }
-                }
-                Some(b'"') => done = Value::String(self.string()?),
-                Some(b't') => done = self.literal(b"true", Value::Bool(true))?,
-                Some(b'f') => done = self.literal(b"false", Value::Bool(false))?,
-                Some(b'n') => done = self.literal(b"null", Value::Null)?,
-                Some(b'-' | b'0'..=b'9') => done = self.number()?,
-                _ => return Err("expected JSON value".into()),
-            }
-            // Store the finished value, then close every container that ends
-            // here; each one becomes a finished value for the level above it.
-            loop {
-                let closed = match stack.last_mut() {
-                    None => return Ok(done),
-                    Some(Frame::Array(_)) => {
-                        items.push(done);
-                        if self.take(b']') {
-                            true
-                        } else if self.take(b',') {
-                            false
-                        } else {
-                            return Err("missing array comma".into());
-                        }
-                    }
-                    Some(Frame::Object(_, key)) => {
-                        members.push((mem::take(key), done));
-                        if self.take(b'}') {
-                            true
-                        } else if self.take(b',') {
-                            false
-                        } else {
-                            return Err("missing object comma".into());
-                        }
-                    }
-                };
-                if !closed {
-                    if let Some(Frame::Object(_, key)) = stack.last_mut() {
-                        *key = self.object_key()?;
-                    }
-                    continue 'value;
-                }
-                // Every container opened after this one has closed already, so
-                // its entries are the top of the stack, from `start` up.
-                done = match stack.pop().expect("a frame was just observed on the stack") {
-                    Frame::Array(start) => Value::Array(items.split_off(start)),
-                    Frame::Object(start, _) => Value::Object(members.split_off(start)),
-                };
-            }
-        }
-    }
-    /// Consumes one object key and the colon that must follow it.
-    fn object_key(&mut self) -> Result<String, String> {
-        self.space();
-        if self.input.get(self.pos) != Some(&b'"') {
-            return Err("object key is not a string".into());
-        }
-        let key = self.string()?;
-        if !self.take(b':') {
-            return Err("missing object colon".into());
-        }
-        Ok(key)
-    }
-    fn literal(&mut self, s: &[u8], v: Value) -> Result<Value, String> {
-        if self.input.get(self.pos..self.pos + s.len()) == Some(s) {
-            self.pos += s.len();
-            Ok(v)
-        } else {
-            Err("invalid JSON literal".into())
-        }
-    }
-    fn string(&mut self) -> Result<String, String> {
-        self.pos += 1;
-        let mut out = String::new();
-        loop {
-            let b = *self.input.get(self.pos).ok_or("unterminated string")?;
-            self.pos += 1;
-            match b {
-                b'"' => return Ok(out),
-                b'\\' => {
-                    let esc = *self.input.get(self.pos).ok_or("bad escape")?;
-                    self.pos += 1;
-                    match esc {
-                        b'"' => out.push('"'),
-                        b'\\' => out.push('\\'),
-                        b'/' => out.push('/'),
-                        b'b' => out.push('\u{8}'),
-                        b'f' => out.push('\u{c}'),
-                        b'n' => out.push('\n'),
-                        b'r' => out.push('\r'),
-                        b't' => out.push('\t'),
-                        b'u' => {
-                            let first = self.unicode_escape()?;
-                            let scalar = match first {
-                                0xd800..=0xdbff => {
-                                    if self.input.get(self.pos..self.pos + 2) != Some(b"\\u") {
-                                        return Err("unpaired high surrogate".into());
-                                    }
-                                    self.pos += 2;
-                                    let second = self.unicode_escape()?;
-                                    if !(0xdc00..=0xdfff).contains(&second) {
-                                        return Err("invalid low surrogate".into());
-                                    }
-                                    0x1_0000
-                                        + (u32::from(first - 0xd800) << 10)
-                                        + u32::from(second - 0xdc00)
-                                }
-                                0xdc00..=0xdfff => return Err("unpaired low surrogate".into()),
-                                value => u32::from(value),
-                            };
-                            out.push(char::from_u32(scalar).ok_or("invalid unicode scalar")?);
-                        }
-                        _ => return Err("invalid escape".into()),
-                    }
-                }
-                0..=0x1f => return Err("control character in string".into()),
-                0x20..=0x7f => out.push(char::from(b)),
-                _ => {
-                    // Decode exactly one scalar from the lead byte. Validating
-                    // the whole remaining input here would make parsing
-                    // quadratic in document size.
-                    let width = match b {
-                        0xc2..=0xdf => 2,
-                        0xe0..=0xef => 3,
-                        0xf0..=0xf4 => 4,
-                        _ => return Err("invalid utf8".into()),
-                    };
-                    let start = self.pos - 1;
-                    let encoded = self.input.get(start..start + width).ok_or("invalid utf8")?;
-                    let ch = std::str::from_utf8(encoded)
-                        .map_err(|_| "invalid utf8")?
-                        .chars()
-                        .next()
-                        .ok_or("invalid utf8")?;
-                    out.push(ch);
-                    self.pos = start + width;
-                }
-            }
-        }
-    }
-    fn number(&mut self) -> Result<Value, String> {
-        let start = self.pos;
-        if self.input.get(self.pos) == Some(&b'-') {
-            self.pos += 1;
-        }
-        match self.input.get(self.pos) {
-            Some(b'0') => self.pos += 1,
-            Some(b'1'..=b'9') => {
-                self.pos += 1;
-                while self
-                    .input
-                    .get(self.pos)
-                    .is_some_and(|byte| byte.is_ascii_digit())
-                {
-                    self.pos += 1;
-                }
-            }
-            _ => return Err("invalid number".into()),
-        }
-        if self.input.get(self.pos) == Some(&b'.') {
-            self.pos += 1;
-            if !self
-                .input
-                .get(self.pos)
-                .is_some_and(|byte| byte.is_ascii_digit())
-            {
-                return Err("invalid number fraction".into());
-            }
-            while self
-                .input
-                .get(self.pos)
-                .is_some_and(|byte| byte.is_ascii_digit())
-            {
-                self.pos += 1;
-            }
-        }
-        if self
-            .input
-            .get(self.pos)
-            .is_some_and(|byte| matches!(byte, b'e' | b'E'))
-        {
-            self.pos += 1;
-            if self
-                .input
-                .get(self.pos)
-                .is_some_and(|byte| matches!(byte, b'+' | b'-'))
-            {
-                self.pos += 1;
-            }
-            if !self
-                .input
-                .get(self.pos)
-                .is_some_and(|byte| byte.is_ascii_digit())
-            {
-                return Err("invalid number exponent".into());
-            }
-            while self
-                .input
-                .get(self.pos)
-                .is_some_and(|byte| byte.is_ascii_digit())
-            {
-                self.pos += 1;
-            }
-        }
-        let text =
-            std::str::from_utf8(&self.input[start..self.pos]).map_err(|_| "invalid number")?;
-        Ok(Value::Number(text.into()))
-    }
-
-    fn unicode_escape(&mut self) -> Result<u16, String> {
-        let hex = self
-            .input
-            .get(self.pos..self.pos + 4)
-            .ok_or("short unicode escape")?;
-        self.pos += 4;
-        let text = std::str::from_utf8(hex).map_err(|_| "invalid unicode escape")?;
-        u16::from_str_radix(text, 16).map_err(|_| "invalid unicode escape".into())
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{mem, Value};
+    use super::{mem, JsonRef, Tape, Value};
+
+    /// Whether a tape value and a tree hold the same document, reached through
+    /// the tape's own accessors: items by position, members in order.
+    fn same(tape: JsonRef<'_>, tree: &Value) -> bool {
+        let mut work = vec![(tape, tree)];
+        while let Some((tape, tree)) = work.pop() {
+            let equal = match tree {
+                Value::Null => tape.is_null(),
+                Value::Bool(v) => tape.as_bool() == Some(*v),
+                Value::Number(v) => tape.as_number() == Some(v.as_str()),
+                Value::String(v) => tape.as_str() == Some(v.as_str()),
+                Value::Array(items) => tape.as_array().is_some_and(|array| {
+                    array.len() == items.len()
+                        && items.iter().enumerate().all(|(index, item)| {
+                            let entry = array.get(index).expect("an item at every position");
+                            work.push((entry, item));
+                            true
+                        })
+                }),
+                Value::Object(members) => tape.as_object().is_some_and(|object| {
+                    object.len() == members.len()
+                        && object
+                            .iter()
+                            .zip(members)
+                            .all(|((key, entry), (name, member))| {
+                                work.push((entry, member));
+                                key == name
+                            })
+                }),
+            };
+            if !equal {
+                return false;
+            }
+        }
+        true
+    }
 
     #[test]
     fn parses_unicode_surrogate_pairs() {
@@ -806,7 +546,18 @@ mod tests {
                 soup.push_str(tokens[(next() % tokens.len() as u64) as usize]);
             }
 
-            let scalars = ["1", "-2.5e3", "true", "false", "null", r#""s""#, "[]", "{}"];
+            let scalars = [
+                "1",
+                "-2.5e3",
+                "true",
+                "false",
+                "null",
+                r#""s""#,
+                r#""a\"b\u00e9\/\n""#,
+                "\"\u{e9}\u{1f680}\"",
+                "[]",
+                "{}",
+            ];
             let mut structured = String::new();
             // Each frame is the bracket that closes it and whether it already
             // holds an entry, which is what decides the separator.
@@ -857,11 +608,124 @@ mod tests {
                 assert_eq!(reparsed, value, "seed {seed} changed across a round trip");
                 assert_eq!(reparsed.to_vec(), text, "seed {seed} serializes unstably");
                 assert_eq!(value.clone(), value, "seed {seed} clones unequal");
+
+                // The tape the tree was built from, and one laid out from the
+                // tree, both read and write as the tree does.
+                let parsed = Tape::parse(source.as_bytes()).expect("the tree parsed");
+                let laid_out = Tape::from_value(&value);
+                for tape in [&parsed, &laid_out] {
+                    assert!(
+                        same(tape.root(), &value),
+                        "seed {seed} tape reads differently"
+                    );
+                    assert_eq!(
+                        tape.root().to_vec(),
+                        text,
+                        "seed {seed} tape writes differently"
+                    );
+                    assert_eq!(
+                        tape.root().to_value(),
+                        value,
+                        "seed {seed} tape copies out wrong"
+                    );
+                }
+                assert_eq!(
+                    parsed.root(),
+                    laid_out.root(),
+                    "seed {seed} tapes compare unequal"
+                );
             }
         }
         // A generator that stopped producing parsable documents would make the
         // round trip vacuous.
         assert!(accepted > 3_000, "only {accepted} documents parsed");
+    }
+
+    #[test]
+    fn tape_equality_distinguishes_what_the_tree_does() {
+        let parse = |text: &str| Tape::parse(text.as_bytes()).unwrap();
+        let pairs = [
+            (r#"{"a":[1,{"b":null}]}"#, r#"{"a":[1,{"b":null}]}"#, true),
+            // An escaped spelling is the same string.
+            (r#"["\u0061\/"]"#, r#"["a/"]"#, true),
+            ("1", r#""1""#, false),
+            ("1", "1.0", false),
+            (r#"{"a":1,"b":2}"#, r#"{"b":2,"a":1}"#, false),
+            ("[1,2]", "[1,2,3]", false),
+            ("[[1],2]", "[[1,2]]", false),
+            ("[]", "{}", false),
+            ("true", "false", false),
+        ];
+        for (a, b, equal) in pairs {
+            assert_eq!(parse(a).root() == parse(b).root(), equal, "{a} against {b}");
+        }
+    }
+
+    #[test]
+    fn tape_integers_read_as_str_parse_reads_them() {
+        let lexemes = [
+            "0",
+            "7",
+            "12",
+            "18446744073709551615",
+            "18446744073709551616",
+            "99999999999999999999",
+            "-0",
+            "-1",
+            "1.0",
+            "1e2",
+            "1E+2",
+        ];
+        let source = format!("[{}]", lexemes.join(","));
+        let tape = Tape::parse(source.as_bytes()).unwrap();
+        let items = tape.root().as_array().unwrap();
+        for (item, lexeme) in items.iter().zip(lexemes) {
+            assert_eq!(item.as_u64(), lexeme.parse().ok(), "{lexeme}");
+        }
+        assert_eq!(Tape::parse(br#""5""#).unwrap().root().as_u64(), None);
+    }
+
+    #[test]
+    fn tape_reads_items_by_position_across_nested_arrays() {
+        let tape = Tape::parse(br#"[[1,[2,3]],[],[4],{"k":[5,6]},7]"#).unwrap();
+        let root = tape.root().as_array().unwrap();
+        assert_eq!(root.len(), 5);
+        let first = root.get(0).unwrap().as_array().unwrap();
+        assert_eq!(
+            first
+                .get(1)
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .get(1)
+                .unwrap()
+                .as_u64(),
+            Some(3)
+        );
+        assert!(root.get(1).unwrap().as_array().unwrap().is_empty());
+        assert_eq!(
+            root.get(2)
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .get(0)
+                .unwrap()
+                .as_u64(),
+            Some(4)
+        );
+        let nested = root.get(3).unwrap().get("k").unwrap().as_array().unwrap();
+        assert_eq!(
+            nested
+                .iter()
+                .filter_map(JsonRef::as_u64)
+                .collect::<Vec<_>>(),
+            [5, 6]
+        );
+        assert_eq!(root.get(4).unwrap().as_u64(), Some(7));
+        assert!(root.get(5).is_none());
+        // A missing value reads as null.
+        assert!(JsonRef::default().is_null());
+        assert!(JsonRef::default().as_array().is_none());
     }
 
     #[test]
@@ -943,6 +807,11 @@ mod tests {
                 let copy = value.clone();
                 assert!(copy == value);
                 assert_eq!(copy.to_vec().len(), source.len());
+                let tape = Tape::parse(source.as_bytes()).expect("deep nesting parses");
+                let laid_out = Tape::from_value(&value);
+                assert!(tape.root() == laid_out.root());
+                assert_eq!(laid_out.root().to_vec().len(), source.len());
+                assert!(tape.root().to_value() == value);
             })
             .expect("spawning the test thread")
             .join()

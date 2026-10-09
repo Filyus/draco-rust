@@ -32,9 +32,34 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
   - Up to that many decodes are in flight at once, each held to the Draco
     ceilings on its own. WebAssembly reads on the calling thread.
+- **`Document::as_json` reads the document without building a tree.** It
+  returns a `JsonRef`, a copyable position in the parsed document, with the
+  read half of `JsonValue`'s methods: `get`, `as_str`, `as_u64`, `as_f64`,
+  `as_bool`, `as_number` (the lexeme as written), `as_array` and `as_object`.
+  It also has `to_value` to copy a subtree out as a tree and `to_vec` to
+  serialize one. Arrays (`JsonArray`) reach an item by position in one step,
+  and objects (`JsonObject`) iterate their members in document order.
 
 ### Changed
 
+- **Breaking: the typed views return `JsonRef` where they returned
+  `&JsonValue`.** This covers `value()` on every view, `extras()`,
+  `Shape::definition` and `PrimitiveRef::extension`. `extensions()` and
+  `PrimitiveRef::attributes` return `Option<JsonObject>`, `morph_targets`
+  iterates `JsonObject`s, and `meshopt_extension` takes and returns `JsonRef`.
+  Indexing is `get`: `value["a"]["b"]` becomes
+  `value.get("a").and_then(|a| a.get("b"))`. `Document::as_value` still
+  returns the whole tree, which it now builds on first use and keeps.
+  - Why: the document is parsed into one flat table of values with strings
+    and numbers left in the source text, rather than into a tree with a heap
+    block for every key, string, number and container. A tree is built only
+    when the document is edited (`as_value_mut`) or asked for (`as_value`).
+  - Opening VirtualCity, a scene with 490 kB of JSON, takes 1.2 ms in
+    WebAssembly instead of 1.86, and the JSON parse takes 0.44 ms natively
+    instead of 2.3. Strict validation is about 1.4x slower natively than on
+    the tree, which leaves parse plus validation 3.5x faster.
+  - Output is unchanged: an untouched document still writes its source bytes,
+    and an edited one writes the same minified JSON as before.
 - **Breaking: `Import::document` is no longer a public field.** Read the
   document with `Import::document()`, change it with `Import::document_mut()`,
   and take it out with `Import::into_document()`.

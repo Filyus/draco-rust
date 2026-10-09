@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::json::Value;
+use crate::json::{JsonRef, Value};
 
 use crate::extensions::{meshopt_extension, meshopt_extension_mut};
 #[cfg(feature = "draco-decode")]
@@ -161,7 +161,7 @@ impl ResourceResolver for AliasResolver<'_> {
                 .embedded_file_bytes(file.value())
                 .map_err(|error| crate::GltfError::InvalidGltf(error.to_string()));
         }
-        if let Some(source) = file.value().get("uri").and_then(Value::as_str) {
+        if let Some(source) = file.value().get("uri").and_then(JsonRef::as_str) {
             return crate::resolve_resource_uri(source, Some(self.fallback), None);
         }
         Err(crate::GltfError::InvalidGltf(format!(
@@ -248,7 +248,7 @@ impl Import {
         let Some(extensions) = primitive
             .value()
             .get("extensions")
-            .and_then(Value::as_object)
+            .and_then(JsonRef::as_object)
         else {
             return Ok(());
         };
@@ -266,34 +266,33 @@ impl Import {
     pub(crate) fn ensure_document_binary_transform_safe(&self) -> Result<()> {
         // Walked with an explicit stack: the document's nesting is the input's,
         // and `json::Value` accepts any depth the input pays for.
-        fn visit(root: &Value, registry: &ExtensionRegistry) -> Result<()> {
+        fn visit(root: JsonRef<'_>, registry: &ExtensionRegistry) -> Result<()> {
             let mut stack = vec![root];
             while let Some(value) = stack.pop() {
-                match value {
-                    Value::Array(values) => stack.extend(values.iter().rev()),
-                    Value::Object(values) => {
-                        for (name, value) in values.iter().rev() {
-                            if name == "extensions" {
-                                let extensions = value.as_object().ok_or_else(|| {
-                                    Error::Extension("extensions is not an object".into())
-                                })?;
-                                for (extension, _) in extensions {
-                                    if !registry.allows_binary_transform(extension) {
-                                        return Err(Error::Extension(format!(
+                if let Some(values) = value.as_array() {
+                    stack.extend(values.iter().rev());
+                } else if let Some(values) = value.as_object() {
+                    let values: Vec<_> = values.iter().collect();
+                    for (name, value) in values.into_iter().rev() {
+                        if name == "extensions" {
+                            let extensions = value.as_object().ok_or_else(|| {
+                                Error::Extension("extensions is not an object".into())
+                            })?;
+                            for (extension, _) in extensions {
+                                if !registry.allows_binary_transform(extension) {
+                                    return Err(Error::Extension(format!(
                                             "cannot produce Draco-only output with extension {extension:?}: its binary-reference semantics are not registered as transform-safe"
                                         )));
-                                    }
                                 }
                             }
-                            stack.push(value);
                         }
+                        stack.push(value);
                     }
-                    _ => {}
                 }
             }
             Ok(())
         }
-        visit(self.document().as_value(), &self.extensions)
+        visit(self.document().as_json(), &self.extensions)
     }
 
     /// Iterates primitives carrying the built-in Draco extension.
@@ -306,7 +305,7 @@ impl Import {
                 let count = mesh
                     .value()
                     .get("primitives")
-                    .and_then(Value::as_array)
+                    .and_then(JsonRef::as_array)
                     .map_or(0, |values| values.len());
                 (0..count)
                     .filter_map(move |primitive| self.document().primitive(mesh.index(), primitive))
@@ -554,22 +553,22 @@ impl Import {
         let value = primitive.value();
         let attributes = value
             .get("attributes")
-            .and_then(Value::as_object)
+            .and_then(JsonRef::as_object)
             .ok_or_else(|| Error::Extension("primitive attributes are invalid".into()))?
             .iter()
             .map(|(semantic, value)| {
                 value
                     .as_u64()
                     .and_then(|value| usize::try_from(value).ok())
-                    .map(|index| (semantic.clone(), index))
+                    .map(|index| (semantic.to_owned(), index))
                     .ok_or_else(|| Error::Extension(format!("attribute {semantic} is invalid")))
             })
             .collect::<Result<Vec<_>>>()?;
         let indices = value
             .get("indices")
-            .and_then(Value::as_u64)
+            .and_then(JsonRef::as_u64)
             .and_then(|value| usize::try_from(value).ok());
-        let mode = value.get("mode").and_then(Value::as_u64).unwrap_or(4) as u32;
+        let mode = value.get("mode").and_then(JsonRef::as_u64).unwrap_or(4) as u32;
         let source = self.accessor_source();
         Ok(crate::decode_geometry(&source, mode, &attributes, indices)?)
     }
@@ -594,7 +593,11 @@ impl Import {
         let format = match output {
             crate::OutputFormat::GltfJson => {
                 if self.document().buffers().into_iter().any(|buffer| {
-                    buffer.value().get("uri").and_then(Value::as_str).is_none()
+                    buffer
+                        .value()
+                        .get("uri")
+                        .and_then(JsonRef::as_str)
+                        .is_none()
                         && self
                             .resources
                             .buffers
@@ -737,7 +740,7 @@ impl Import {
             let count = mesh
                 .value()
                 .get("primitives")
-                .and_then(Value::as_array)
+                .and_then(JsonRef::as_array)
                 .map_or(0, |values| values.len());
             for primitive_index in 0..count {
                 let primitive = self
@@ -847,7 +850,11 @@ impl Import {
         let source = entry.uri().map(str::to_owned).unwrap_or_else(|| {
             format!(
                 "bufferView:{}",
-                entry.value()["bufferView"].as_u64().unwrap_or(u64::MAX)
+                entry
+                    .value()
+                    .get("bufferView")
+                    .and_then(JsonRef::as_u64)
+                    .unwrap_or(u64::MAX)
             )
         });
         if self.provenance.iter().any(|ancestor| ancestor == &source) {
@@ -883,10 +890,10 @@ impl Import {
     }
 
     #[cfg(feature = "resources")]
-    fn embedded_file_bytes(&self, file: &Value) -> Result<Vec<u8>> {
+    fn embedded_file_bytes(&self, file: JsonRef<'_>) -> Result<Vec<u8>> {
         let view = file
             .get("bufferView")
-            .and_then(Value::as_u64)
+            .and_then(JsonRef::as_u64)
             .and_then(|index| usize::try_from(index).ok())
             .ok_or_else(|| Error::Extension("file has neither uri nor bufferView".into()))?;
         let view = self
@@ -947,9 +954,9 @@ fn rebase_buffer_reference(value: &mut Value, offsets: &[usize], label: &str) ->
 /// downstream accessor read unaware of the compression.
 fn decode_meshopt_buffer_views(document: &Document, buffers: &mut [Vec<u8>]) -> Result<()> {
     let Some(views) = document
-        .as_value()
+        .as_json()
         .get("bufferViews")
-        .and_then(Value::as_array)
+        .and_then(JsonRef::as_array)
     else {
         return Ok(());
     };
@@ -958,9 +965,9 @@ fn decode_meshopt_buffer_views(document: &Document, buffers: &mut [Vec<u8>]) -> 
             continue;
         };
         let fail = |message: &str| Error::Extension(format!("bufferViews[{index}]: {message}"));
-        let number = |value: Option<&Value>| {
+        let number = |value: Option<JsonRef<'_>>| {
             value
-                .and_then(Value::as_u64)
+                .and_then(JsonRef::as_u64)
                 .and_then(|value| usize::try_from(value).ok())
         };
 
@@ -983,10 +990,10 @@ fn decode_meshopt_buffer_views(document: &Document, buffers: &mut [Vec<u8>]) -> 
         let mode = MeshoptMode::from_name(
             extension
                 .get("mode")
-                .and_then(Value::as_str)
+                .and_then(JsonRef::as_str)
                 .ok_or_else(|| fail("meshopt mode is missing"))?,
         )?;
-        let filter = match extension.get("filter").and_then(Value::as_str) {
+        let filter = match extension.get("filter").and_then(JsonRef::as_str) {
             Some(name) => MeshoptFilter::from_name(name)?,
             None => MeshoptFilter::None,
         };
@@ -1065,11 +1072,11 @@ pub fn parse_with_options(
     extensions.validate(&document)?;
     let mut references = Vec::new();
     for buffer in document.buffers() {
-        let uri = buffer.value().get("uri").and_then(Value::as_str);
+        let uri = buffer.value().get("uri").and_then(JsonRef::as_str);
         let byte_length = buffer
             .value()
             .get("byteLength")
-            .and_then(Value::as_u64)
+            .and_then(JsonRef::as_u64)
             .and_then(|value| usize::try_from(value).ok())
             .ok_or_else(|| {
                 Error::Validation(vec![format!(
@@ -1093,7 +1100,7 @@ pub fn parse_with_options(
         };
         let meshopt_fallback = meshopt_extension(buffer.value().get("extensions"))
             .and_then(|(_, value)| value.get("fallback"))
-            .is_some_and(|value| matches!(value, Value::Bool(true)));
+            .is_some_and(|value| value.as_bool() == Some(true));
         references.push(GltfBufferReference {
             uri,
             chunk,

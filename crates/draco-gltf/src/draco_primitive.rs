@@ -31,7 +31,7 @@ use std::collections::BTreeMap;
 use draco_core::{DecodeLimits, DecoderBuffer, Mesh, MeshDecoder};
 
 use crate::extensions::{parse_draco_extension, DracoContract};
-use crate::json::Value;
+use crate::json::{Tape, Value};
 use crate::{Error, GeometryError, PackedGeometry, PrimitiveMode, Result, ValidationProfile};
 
 /// A parsed `KHR_draco_mesh_compression` primitive extension object.
@@ -45,7 +45,7 @@ impl DracoPrimitiveExtension {
     /// Parses the value of a primitive's `KHR_draco_mesh_compression` key.
     /// Checks the object's shape only.
     pub fn from_json(value: &Value) -> Result<Self> {
-        let contract = parse_draco_extension(Some(value))?
+        let contract = parse_draco_extension(Some(Tape::from_value(value).root()))?
             .ok_or_else(|| Error::Extension("missing Draco extension".into()))?;
         Ok(Self::from_contract(contract))
     }

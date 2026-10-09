@@ -52,6 +52,40 @@ fn document_preserves_untouched_json() {
     assert_eq!(document.to_json_bytes().unwrap(), bytes);
 }
 
+#[test]
+fn reads_follow_the_document_from_tape_to_tree_and_back() {
+    let bytes = br#"{ "asset": {"version": "2.0"}, "meshes": [{"name": "ab"}] }"#;
+    let mut document = Document::from_json_bytes(bytes).unwrap();
+    assert_eq!(
+        document.mesh(crate::MeshIndex(0)).unwrap().name(),
+        Some("ab")
+    );
+    // Building the tree to look at it changes nothing.
+    assert_eq!(
+        document.as_value()["meshes"][0]["name"].as_str(),
+        Some("ab")
+    );
+    assert_eq!(document.to_json_bytes().unwrap(), bytes);
+
+    document.as_value_mut()["meshes"][0]["name"] = "c".into();
+    assert_eq!(
+        document.mesh(crate::MeshIndex(0)).unwrap().name(),
+        Some("c")
+    );
+    assert_eq!(document.as_value()["meshes"][0]["name"].as_str(), Some("c"));
+    let edited = br#"{"asset":{"version":"2.0"},"meshes":[{"name":"c"}]}"#;
+    assert_eq!(document.to_json_bytes().unwrap(), edited);
+    assert_eq!(document.to_minified_json_bytes(), edited);
+    // A second edit after a read lands on the tree the read left behind.
+    document.as_value_mut()["meshes"][0]["name"] = "d".into();
+    assert_eq!(
+        document.mesh(crate::MeshIndex(0)).unwrap().name(),
+        Some("d")
+    );
+    let copy = document.clone();
+    assert_eq!(copy.as_json(), document.as_json());
+}
+
 #[cfg(not(feature = "strict-validation"))]
 #[test]
 fn basic_validation_defers_scene_graph_checks() {
@@ -847,7 +881,10 @@ mod compression_tests {
             .primitive(crate::MeshIndex(0), 0)
             .unwrap()
             .attributes()
-            .unwrap()[0]
+            .unwrap()
+            .iter()
+            .next()
+            .unwrap()
             .1
             .as_u64()
             .unwrap() as usize;
@@ -857,8 +894,13 @@ mod compression_tests {
             .unwrap();
         assert!(accessor.buffer_view().is_none());
         assert_eq!(accessor.count(), Some(3));
-        assert_eq!(accessor.value()["min"].as_array().unwrap().len(), 3);
-        assert_eq!(accessor.value()["max"].as_array().unwrap().len(), 3);
+        for bound in ["min", "max"] {
+            let values = accessor
+                .value()
+                .get(bound)
+                .and_then(crate::JsonRef::as_array);
+            assert_eq!(values.map(crate::JsonArray::len), Some(3));
+        }
     }
 
     /// Four points forming a unit-square strip: (0,0,0)-(1,0,0)-(0,1,0)-(1,1,0),
@@ -1541,7 +1583,10 @@ mod compression_tests {
                 .primitive(crate::MeshIndex(1), 0)
                 .unwrap()
                 .attributes()
-                .unwrap()[0]
+                .unwrap()
+                .iter()
+                .next()
+                .unwrap()
                 .1
                 .as_u64(),
             Some(0)
@@ -1694,7 +1739,7 @@ mod compression_tests {
             .attributes()
             .unwrap()
             .iter()
-            .find(|(name, _)| name == "POSITION")
+            .find(|(name, _)| *name == "POSITION")
             .unwrap()
             .1
             .as_u64()
@@ -1706,7 +1751,10 @@ mod compression_tests {
                 .primitive(crate::MeshIndex(1), 0)
                 .unwrap()
                 .attributes()
-                .unwrap()[0]
+                .unwrap()
+                .iter()
+                .next()
+                .unwrap()
                 .1
                 .as_u64(),
             Some(0)
@@ -2413,12 +2461,14 @@ fn write_primitive_preserves_non_geometry_fields_and_is_atomic() {
         vec![crate::PreserveReason::ExistingReferences]
     );
     let primitive = import.document().primitive(crate::MeshIndex(0), 0).unwrap();
-    assert_eq!(primitive.value()["material"].as_u64(), Some(0));
-    assert_eq!(primitive.value()["extras"]["tag"].as_u64(), Some(7));
-    assert_eq!(
-        primitive.value()["extensions"]["VENDOR_keep"]["value"].as_u64(),
-        Some(9)
-    );
+    let field = |path: &[&str]| {
+        path.iter()
+            .try_fold(primitive.value(), |value, key| value.get(key))
+            .and_then(crate::JsonRef::as_u64)
+    };
+    assert_eq!(field(&["material"]), Some(0));
+    assert_eq!(field(&["extras", "tag"]), Some(7));
+    assert_eq!(field(&["extensions", "VENDOR_keep", "value"]), Some(9));
 }
 
 #[cfg(feature = "write")]
