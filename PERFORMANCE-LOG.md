@@ -36,7 +36,7 @@ figure at all.
 `rejected` -- tried, deliberately not kept. `retracted` -- an earlier claim
 here was withdrawn. `diagnostic` -- measured only, no change proposed.
 
-87 rounds: 54 landed, 12 diagnostic, 11 null, 8 retracted, 2 rejected.
+88 rounds: 55 landed, 12 diagnostic, 11 null, 8 retracted, 2 rejected.
 
 | Round | Verdict | Headline |
 | --- | --- | ---: |
@@ -127,6 +127,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [The WASM Gap, Read Against Instruction Counts](#the-wasm-gap-read-against-instruction-counts) | diagnostic | `0.90x / 0.80x C++ instructions` |
 | [The Same Lookups, On The Encoder And In The UV Predictor](#the-same-lookups-on-the-encoder-and-in-the-uv-predictor) | landed | `-6.5% encode, -6.3% UV decode` |
 | [glTF Scenes Against three.js: Validation, JSON, Allocator](#gltf-scenes-against-threejs-validation-json-allocator) | landed | `64 -> 5.6 ms one-at-a-time reads` |
+| [glTF JSON As A Flat Tape](#gltf-json-as-a-flat-tape) | landed | `1.86 -> 1.20 ms WASM open` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -5017,6 +5018,65 @@ BrainStem 0.94, BoomBox 0.95, VirtualCity 1.17 -- the last now opening its
 streams ~10% slower per stream, and copying out. Size is upstream's: 149.5
 kB gzip for gltf-wasm and its glue against 91.8 kB for the decoder, its glue
 and both three.js loaders.
+
+### glTF JSON As A Flat Tape
+
+2026-10-09. The round above left VirtualCity opening in ~1.9 ms against
+`JSON.parse`'s ~1.0, and its open profile said where: building the `Value`
+tree was 59% of open and free together, dropping it another 20%. Each key,
+string, number and container was a heap block of its own, and no allocator
+swap could reach that. The fix was the one an outside survey ranked first: a
+flat tape.
+
+- **The ceiling, measured on a prototype before the API was touched.** A
+  scratch crate at gltf-wasm's profile parsed VirtualCity's 493 kB of JSON
+  into one vector of 12-byte nodes, with strings and numbers left as spans of
+  the input, which is checked as UTF-8 once up front. Medians of 41 in WASM:
+  `JSON.parse` 0.87 ms, the tree parsed and dropped 1.88, the tape 0.63.
+  Native: 2.3-3.8 ms against 0.35-0.37.
+- **The shape that shipped.** `Document` holds a tape or a tree, whichever it
+  was last given. Parsing builds only the tape. `as_value_mut` builds the tree
+  and drops the tape, and the next read lays the tree out as a tape again.
+  `as_value` builds the tree on demand and keeps it. Every read, the views
+  included, goes through `JsonRef`, a `Copy` position in the tape. An array's
+  items sit contiguously in a slot table, so `accessors[i]` takes one step.
+  `JsonValue::parse` became the tape parser plus a copy out, and the old
+  parser is gone. Breaking: the views return `JsonRef` where they returned
+  `&JsonValue`.
+- **WASM open** (`gltfsplit2.mjs`, medians of 30, 3 rounds): VirtualCity
+  1.78-1.87 -> 1.20-1.21 ms against `JSON.parse`'s 0.87-1.0. BrainStem
+  0.93-0.98 -> 0.71-0.75.
+- **Reads paid for it at first.** `readPrimitives` on VirtualCity went up by
+  ~0.5 ms. The JSON accesses in the read profile came to ~11% against the
+  tree's ~3%, and `JsonRef::as_str` was 3.6% of that on its own: a lookup took
+  each key as a `&str`, and slicing a `str` checks character boundaries at
+  both ends. Lookups now compare key bytes, and `as_u64` reads digits
+  directly, which brings the JSON accesses back to ~3.5% and reads back
+  within noise of the tree's.
+- **Native validation is slower, and was bisected down.** Instructions for
+  one draft-profile document validation of VirtualCity under callgrind:
+  1.64M on the tree, 4.33M on the first tape. Comparing a key's length before
+  its bytes brought that to 3.13M. Giving each key node the index of the next
+  member (16-byte nodes), so a lookup never reads the values it passes over,
+  brought it to 2.69M. Counting the root arrays once instead of finding one on
+  every reference, and hoisting `extensionsUsed` and `accessors` out of the
+  Draco loop, brought it to 2.29M. Comparing keys with an inline byte loop
+  instead of `memcmp` was `null` (2.31M) and was reverted. Extension
+  validation is at 0.93M against 0.79M. The rest is the tape's cost per
+  lookup, with each member step reading a node rather than walking a slice.
+  Parsing and validating together are still 3.5x faster natively:
+  `Document::from_json_bytes` went from 2.28-2.47 ms to 0.42-0.46 ms on
+  Windows' system allocator.
+- **Against upstream** (`gltfbench.mjs`, 11 rounds, ratios of medians):
+  VirtualCity 1.21 -> 1.07, BrainStem 0.94 -> 0.91. Corset (0.84), Lantern
+  (0.90-0.93), BoomBox (0.93-0.94), CesiumMilkTruck (0.93-0.97) and
+  `bun_zipper.glb` (0.65-0.66) are unchanged within noise. Every attribute and
+  index matched upstream's.
+- **Size grew.** The release module went 358,791 -> 367,095 bytes, 143.2 ->
+  146.9 kB gzip, and the converter build 281.6 -> 287.2 kB. The tree is still
+  how a document is edited, so both forms ship along with the conversion
+  between them. Reads through `JsonRef` also compile to more code than slice
+  iteration. Serializing only through the tape took back 0.25 kB.
 
 ## Unexplored
 

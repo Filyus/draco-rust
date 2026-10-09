@@ -11,6 +11,14 @@ only anchor a shipping without a version of its own has.
 
 ## Unreleased
 
+- **glTF scenes open faster.** gltf-wasm parses a scene's JSON into one flat
+  table instead of a tree of separately allocated values: VirtualCity, whose
+  JSON is 490 kB, opens in 1.2 ms instead of 1.86 (`JSON.parse` takes ~0.9 on
+  the same text), and BrainStem in 0.72 instead of 0.95. Against upstream's
+  glTF Draco decoder driven the way three.js drives it, VirtualCity now reads
+  1.07x as long instead of 1.21x. The module grew by 3.7 kB gzip in the reader
+  build and by 5.5 kB in the converter's.
+
 - **glTF scenes of many primitives load faster.** `GltfAsset.readPrimitives`
   reads several primitives in one call, and the converter reads a scene's
   primitives through it, 32 at a time. The document is validated once a call

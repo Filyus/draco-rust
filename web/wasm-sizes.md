@@ -8,8 +8,8 @@ Sizes are toolchain- and platform-dependent. Two builds of one commit on the sam
 | --- | --- | ---: | ---: |
 | drc-wasm | release | 623120 | 222846 |
 | fbx-wasm | release | 588569 | 241061 |
-| gltf-wasm | accessors,draco-encode,raw-resources,strict-validation | 732310 | 281614 |
-| gltf-wasm | release | 358791 | 143194 |
+| gltf-wasm | accessors,draco-encode,raw-resources,strict-validation | 745509 | 287163 |
+| gltf-wasm | release | 367095 | 146925 |
 | ktx2-wasm | release | 366749 | 175075 |
 | obj-wasm | release | 77149 | 42741 |
 | ply-wasm | release | 202323 | 91293 |
