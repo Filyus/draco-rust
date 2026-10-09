@@ -714,11 +714,28 @@ fn parse_skin_for_geometry(
             // `Indexes` and `Weights` pair by position. Dropping an entry on
             // one side only shifts every later influence onto another control
             // point, so the arrays are filtered together: a negative index
-            // loses its weight with it, arrays of unequal length reject the
-            // cluster, and an `Indexes` array that cannot be read as `i32`
-            // -- or is absent -- leaves nothing to pair and rejects it too,
-            // rather than accepting a cluster that moves nothing.
-            let raw_indices = child_i32_array(cluster, "Indexes");
+            // loses its weight with it, and arrays of unequal length reject
+            // the cluster -- which is also what becomes of `Weights` whose
+            // `Indexes` are missing. An `Indexes` array that is there but
+            // cannot be read as `i32` rejects it outright, so it is not taken
+            // for the case below.
+            //
+            // A cluster with neither array is kept. It names a bone this mesh
+            // does not deform -- Mixamo and Maya write one cluster per bone of
+            // the skeleton -- and the bone belongs in the skin with its bind
+            // transform even though it moves nothing here, as three.js's
+            // FBXLoader keeps it.
+            let raw_indices = match cluster
+                .children
+                .iter()
+                .find(|child| child.name == "Indexes")
+            {
+                Some(indexes) => match int_values(indexes) {
+                    Some(values) => values,
+                    None => continue,
+                },
+                None => Vec::new(),
+            };
             let weights = child_f64_array(cluster, "Weights")
                 .into_iter()
                 .map(|weight| weight as f32)
@@ -733,9 +750,6 @@ fn parse_skin_for_geometry(
                     u32::try_from(index).ok().map(|index| (index, weight))
                 })
                 .unzip();
-            if indices.is_empty() {
-                continue;
-            }
             clusters.push(crate::fbx_scene::FbxSkinCluster {
                 joint_node_id,
                 control_point_indices: indices,

@@ -978,14 +978,13 @@ mod shared_path_regressions {
         assert_eq!(cluster.weights, vec![0.25, 0.75]);
     }
 
-    /// An `Indexes` array that yields nothing -- empty, or one the binary
-    /// reader could not narrow to `i32` -- paired with weights passed every
-    /// length check before: the cluster was accepted with zero influences and
-    /// its bone moved nothing, in silence. A cluster with nothing readable to
-    /// influence is refused. (The unreadable variant exists only in the binary
-    /// container: ASCII narrows every `Indexes` value as it parses.)
+    /// `Weights` with no `Indexes` to pair them with passed every length check
+    /// once: the cluster was accepted with zero influences and the weights the
+    /// file meant for its bone were lost in silence. It is refused. (An
+    /// `Indexes` array the binary reader cannot narrow to `i32` is refused the
+    /// same way; ASCII narrows every value as it parses.)
     #[test]
-    fn an_empty_indexes_array_refuses_the_cluster() {
+    fn weights_without_indexes_refuse_the_cluster() {
         let decoded = scene(&skin_document(None, Some("0.25,0.75")));
         let skin = decoded.root_nodes[0].mesh_instances[0]
             .skin
@@ -993,8 +992,25 @@ mod shared_path_regressions {
             .expect("the skin should be read");
         assert!(
             skin.clusters.is_empty(),
-            "a cluster with no readable influences must be refused, not accepted inert"
+            "weights with nothing to pair them with must refuse the cluster"
         );
+    }
+
+    /// A cluster with neither array is a bone the mesh does not deform --
+    /// Mixamo writes one per bone of the skeleton -- and it stays in the skin,
+    /// with its bind transform and no influences. Refusing it took the bone
+    /// out of the skin's joint list, which a glTF written from the scene then
+    /// lacked.
+    #[test]
+    fn a_cluster_with_no_arrays_keeps_its_bone() {
+        let decoded = scene(&skin_document(None, None));
+        let skin = decoded.root_nodes[0].mesh_instances[0]
+            .skin
+            .as_ref()
+            .expect("the skin should be read");
+        assert_eq!(skin.clusters.len(), 1, "the unweighted bone is kept");
+        assert!(skin.clusters[0].control_point_indices.is_empty());
+        assert!(skin.clusters[0].weights.is_empty());
     }
 
     /// A minimal skinned triangle: one joint, one cluster with the given
