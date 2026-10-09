@@ -36,7 +36,7 @@ figure at all.
 `rejected` -- tried, deliberately not kept. `retracted` -- an earlier claim
 here was withdrawn. `diagnostic` -- measured only, no change proposed.
 
-91 rounds: 58 landed, 12 diagnostic, 11 null, 8 retracted, 2 rejected.
+92 rounds: 58 landed, 13 diagnostic, 11 null, 8 retracted, 2 rejected.
 
 | Round | Verdict | Headline |
 | --- | --- | ---: |
@@ -131,6 +131,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [Lazy Subtrees, Priced Before Built](#lazy-subtrees-priced-before-built) | landed | `1.20 -> 1.10 ms WASM open` |
 | [The Tape's Size, Taken Back](#the-tapes-size-taken-back) | landed | `147.2 -> 142.4 kB gzip` |
 | [The glTF Reader Against Upstream's, By Size](#the-gltf-reader-against-upstreams-by-size) | landed | `142.4 -> 125.2 kB gzip` |
+| [draco-core's Optimization Level, Re-Measured On glTF Reads](#draco-cores-optimization-level-re-measured-on-gltf-reads) | diagnostic | `opt 2 stays: s is -13.3 kB for +7-18%` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -5188,6 +5189,47 @@ CesiumMilkTruck 0.93, BoomBox 0.94, Lantern 0.94, VirtualCity 1.03, each
 within noise of the build before these changes. Size with glue: 132.6 kB gzip
 against 92.1, 1.44x (brotli 110.3 against 73.9). Every other module shrank a
 little from the remapped paths, `drc-wasm` the most at 0.5 kB.
+
+### draco-core's Optimization Level, Re-Measured On glTF Reads
+
+2026-10-10. `web/Cargo.toml` raises `draco-core` to `opt-level = 2` on
+`drc-wasm` figures (1.7x against `z`). Whether that holds for gltf-wasm, and
+what each alternative costs, was measured rather than assumed: every level
+built through the build tool, wasm-opt run by hand with the build tool's own
+flags, sizes by node's zlib at level 9, speed by `gltfbench.mjs` (9 rounds,
+seven models, against upstream and against the shipping build in one process).
+
+| draco-core | wasm-opt | gzip | scene read against `2` + `-Oz` |
+|---|---|---:|---|
+| `z` | `-Oz` | 115.7 kB | 1.22-1.31x slower than upstream on every model, ~+40% |
+| `s` | `-Oz` | **112.6 kB** | +7-16% (bun_zipper +16%, VirtualCity +12%, Corset +9%) |
+| `1` | `-Oz` | 132.7 kB | +3-7%, and larger |
+| **`2`** | `-Oz` | 125.9 kB | shipping |
+| `2` | `-Os` | 126.0 kB | -- |
+| `2` | `-O3` | 125.8 kB | within noise |
+| `3` | `-Oz` | 127.4 kB | within noise, larger |
+
+`s` is smaller than `z` here as well as faster, so `z` is never the choice
+for this crate.
+
+- **`s` with the hot spots inlined** (`rejected`, `probe/core-opt-s-hints`).
+  The per-function profiles of `s` and `2` differ in a handful of small
+  functions (`rabs_desc_read`, `try_push_face`, `set_left_most_corner`,
+  `CornerPositions::get_by_vertex`, the portable UV predictor's
+  `get_position_for_entry_id`), much of it attribution, since `2` inlines them
+  into their callers. `#[inline]` on all five at `s`: 112.2 kB, and reads
+  still 6-18% slower. The loss is spread over the decoder.
+- **`2` with LLVM's inliner held back** (`-Cllvm-args=-inline-threshold=N`,
+  which reaches every crate). 100: -1.4 kB, reads within noise. 50: -7.4 kB
+  and 3-8% slower. 25 and 0 are no smaller than 50. Not taken: a global LLVM
+  flag for 1.4 kB.
+- **No loop unrolling** (`-unroll-threshold=0`): -0.05 kB. Unrolling is not
+  where the size is.
+
+So `opt-level = 2` stays, and on these reads it buys 7-18% over `s` (the
+1.7x is against `z`, measured on `drc-wasm`'s bare decode), for 13.3 kB.
+Untried and outside this brief: SIMD128 (a browser floor of Safari 16.4) and a
+newer wasm-opt than the cached 117.
 
 ## Unexplored
 
