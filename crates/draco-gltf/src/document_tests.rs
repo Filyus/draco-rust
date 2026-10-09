@@ -828,10 +828,10 @@ mod compression_tests {
             ("POSITION".to_owned(), unique_id(position_id)),
             ("COLOR_0".to_owned(), unique_id(color_id)),
         ];
-        let normalized = [("COLOR_0".to_owned(), true)].into_iter().collect();
+        let normalized = |semantic: &str| (semantic == "COLOR_0").then_some(true);
 
         let geometry =
-            crate::PackedGeometry::from_draco_mesh(&mesh, &contract, &normalized).unwrap();
+            crate::PackedGeometry::from_draco_mesh(&mesh, &contract, normalized).unwrap();
 
         let flag = |semantic: &str| {
             geometry

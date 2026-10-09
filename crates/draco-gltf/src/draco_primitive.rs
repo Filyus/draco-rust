@@ -116,12 +116,13 @@ impl DracoPrimitiveExtension {
         contract: &DracoPrimitiveContract,
     ) -> Result<PackedGeometry> {
         validate_decoded_counts(mesh, contract)?;
-        let normalized = contract
-            .attributes
-            .iter()
-            .map(|(semantic, declared)| (semantic.clone(), declared.normalized))
-            .collect();
-        let geometry = PackedGeometry::from_draco_mesh(mesh, &self.attributes, &normalized)?;
+        let normalized = |semantic: &str| {
+            contract
+                .attributes
+                .get(semantic)
+                .map(|declared| declared.normalized)
+        };
+        let geometry = PackedGeometry::from_draco_mesh(mesh, &self.attributes, normalized)?;
         geometry.validate(contract.profile)?;
         Ok(geometry)
     }

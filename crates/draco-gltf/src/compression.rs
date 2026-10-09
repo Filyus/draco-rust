@@ -210,7 +210,9 @@ pub(crate) fn decode_encoded(
         bytes,
         &crate::DracoDecodeOptions::default().with_limits(draco_core::DecodeLimits::permissive()),
     )?;
-    let decoded = crate::PackedGeometry::from_draco_mesh(&mesh, mapping, normalized)?;
+    let decoded = crate::PackedGeometry::from_draco_mesh(&mesh, mapping, |semantic| {
+        normalized.get(semantic).copied()
+    })?;
     let index_count = decoded.indices().map_or(0, crate::PackedIndices::count);
     if (decoded.vertex_count(), index_count) != reported {
         return Err(Error::Extension(format!(
