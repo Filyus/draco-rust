@@ -75,6 +75,62 @@ function maxSkinPaletteDrift(expected: ViewerScene, actual: ViewerScene): number
     return worst;
 }
 
+function accessorValues(accessor: { bytes: ArrayBufferView; componentType: number; normalized: boolean } | undefined): number[] {
+    if (!accessor) return [];
+    const { buffer, byteOffset, byteLength } = accessor.bytes;
+    const view = accessor.componentType === 5126 ? new Float32Array(buffer, byteOffset, byteLength / 4)
+        : accessor.componentType === 5125 ? new Uint32Array(buffer, byteOffset, byteLength / 4)
+            : accessor.componentType === 5123 ? new Uint16Array(buffer, byteOffset, byteLength / 2)
+                : new Uint8Array(buffer, byteOffset, byteLength);
+    const scale = !accessor.normalized ? 1 : accessor.componentType === 5123 ? 65535 : accessor.componentType === 5121 ? 255 : 1;
+    return Array.from(view, (value) => value / scale);
+}
+
+/**
+ * Which bones move each vertex, and how much, as joint name -> weight.
+ *
+ * Read per vertex rather than through the evaluated pose: the pose checks above
+ * compare bone matrices, which are right even when the weights put them on the
+ * wrong vertices. Only Blender's evaluated mesh saw that, and Blender is not on
+ * every machine that runs this.
+ */
+function vertexInfluences(scene: ViewerScene, renderable: { node: ViewerNode; skinIndex: number }): Map<string, number>[] {
+    const primitive = scene.meshes[renderable.node.meshIndex].primitives[0];
+    const joints = scene.skins[renderable.skinIndex].joints;
+    const sets = [['JOINTS_0', 'WEIGHTS_0'], ['JOINTS_1', 'WEIGHTS_1']]
+        .map(([j, w]) => [accessorValues(primitive.attributes[j]), accessorValues(primitive.attributes[w])]);
+    const count = primitive.attributes.POSITION.count;
+    return Array.from({ length: count }, (_, vertex) => {
+        const influences = new Map<string, number>();
+        for (const [jointIds, weights] of sets) {
+            for (let slot = 0; slot < 4 && vertex * 4 + slot < weights.length; slot += 1) {
+                const weight = weights[vertex * 4 + slot];
+                if (weight <= 1e-6) continue;
+                const name = joints[jointIds[vertex * 4 + slot]].node.name;
+                influences.set(name, (influences.get(name) ?? 0) + weight);
+            }
+        }
+        return influences;
+    });
+}
+
+function maxInfluenceDrift(expected: ViewerScene, actual: ViewerScene, label: string): number {
+    let worst = 0;
+    for (const left of expected.renderables.filter((item) => item.skinIndex >= 0)) {
+        const right = actual.renderables.find((item) => item.skinIndex >= 0 && item.node.name === left.node.name);
+        assert.ok(right, `${label}: no skinned ${left.node.name} after the round trip`);
+        const before = vertexInfluences(expected, left);
+        const after = vertexInfluences(actual, right!);
+        assert.equal(after.length, before.length, `${label} ${left.node.name} vertex count`);
+        before.forEach((influences, vertex) => {
+            for (const name of new Set([...influences.keys(), ...after[vertex].keys()])) {
+                worst = Math.max(worst, Math.abs((influences.get(name) ?? 0) - (after[vertex].get(name) ?? 0)));
+            }
+        });
+    }
+    return worst;
+}
+
 function skinPalette(meshWorld: ArrayLike<number>, jointWorld: ArrayLike<number>, inverseBind: ArrayLike<number>): number[] {
     const inverseMesh = invertMat4(meshWorld);
     assert.ok(inverseMesh, 'mesh world must be invertible');
@@ -359,6 +415,8 @@ for (const [label, path] of [['Mixamo', mixamoFbx], ['Samba', sambaFbx]]) {
     }
     assert.ok(worstWorld < 5e-4, `${label} world transform GLB drift ${worstWorld}`);
     assert.ok(worstSkin < 5e-4, `${label} skin palette GLB drift ${worstSkin}`);
+    const worstInfluence = maxInfluenceDrift(expected, actual, label);
+    assert.ok(worstInfluence < 1e-4, `${label} per-vertex skin weight GLB drift ${worstInfluence}`);
     if (existsSync(blender)) {
         const temp = await mkdtemp(resolve(tmpdir(), 'draco-scene-document-'));
         try {

@@ -168,6 +168,12 @@ pub struct MeshData {
     pub control_points: Vec<f32>,
     /// Original FBX polygon-corner index stream.
     pub polygon_vertex_indices: Vec<i32>,
+    /// For each render point, the triangle corner it was welded from, in the
+    /// order the fan triangulation of `polygon_vertex_indices` emits them.
+    /// A consumer expanding control-point- or polygon-vertex-keyed data onto
+    /// the render points reads it through this; empty when the points are not
+    /// welded corners (the stored-mesh fallback).
+    pub point_corners: Vec<u32>,
     /// Original UV layers, including mapping/reference metadata.
     pub uv_sets: Vec<UvSetOutput>,
     pub normal_sets: Vec<NormalSetOutput>,
@@ -1042,6 +1048,7 @@ fn mesh_data_to_js(mesh: &MeshData) -> Object {
     set_skipped_f32_array(&obj, "weights1", &mesh.weights1);
     set_skipped_f32_array(&obj, "controlPoints", &mesh.control_points);
     set_skipped_i32_array(&obj, "polygonVertexIndices", &mesh.polygon_vertex_indices);
+    set_skipped_u32_array(&obj, "pointCorners", &mesh.point_corners);
     if let Some(geometric) = &mesh.geometric_transform {
         set_js(
             &obj,
@@ -1431,7 +1438,32 @@ fn mesh_instance_to_data(instance: &draco_io::FbxMeshInstance) -> MeshData {
         // welded point forward for the per-set data Draco has no attribute
         // for (tangents, extra UV sets) and for remapping control-point-keyed
         // skin weights and morph deltas below.
-        let with_map = draco_io::fbx_render_mesh::build_draco_mesh_with_corner_map(&render);
+        //
+        // The weld compares only what the Draco mesh stores, so everything
+        // carried from the representative corner has to keep its corners
+        // apart: the control point, whose skin weights and morph deltas the
+        // point takes, and the tangent and UV sets the mesh has no attribute
+        // for. Two control points that share a position, normal and UV --
+        // the joints of Mixamo's Beta_Joints do -- are otherwise one point
+        // driven by one set of weights.
+        let mut groups = std::collections::HashMap::<Vec<u32>, u32>::new();
+        let keep_apart: Vec<u32> = (0..render.corner_count())
+            .map(|corner| {
+                let mut key = vec![render.corner_to_control_point[corner]];
+                if let Some(layer) = render.tangents.first() {
+                    key.extend(layer.values[corner].iter().map(|v| v.to_bits()));
+                }
+                for layer in &render.uvs {
+                    key.extend(layer.values[corner].iter().map(|v| v.to_bits()));
+                }
+                let next = groups.len() as u32;
+                *groups.entry(key).or_insert(next)
+            })
+            .collect();
+        let with_map = draco_io::fbx_render_mesh::build_draco_mesh_with_corner_map_kept_apart(
+            &render,
+            &keep_apart,
+        );
         let welded = mesh_to_js_data(&with_map.mesh);
         mesh.positions = welded.positions;
         mesh.indices = welded.indices;
@@ -1460,6 +1492,7 @@ fn mesh_instance_to_data(instance: &draco_io::FbxMeshInstance) -> MeshData {
             })
             .collect();
         mesh.uvs = mesh.uv_layers.first().cloned().unwrap_or_default();
+        mesh.point_corners = with_map.point_to_corner.clone();
         with_map
             .point_to_corner
             .iter()
@@ -1718,6 +1751,7 @@ fn mesh_to_js_data(mesh: &Mesh) -> MeshData {
         weights1: Vec::new(),
         control_points: Vec::new(),
         polygon_vertex_indices: Vec::new(),
+        point_corners: Vec::new(),
         uv_sets: Vec::new(),
         normal_sets: Vec::new(),
         color_sets: Vec::new(),

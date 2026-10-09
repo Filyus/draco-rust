@@ -455,57 +455,74 @@ function expandFbxInfluences(source: FbxJson, vertexCount: number) {
   return sets;
 }
 
-function buildRenderPointsByControl(source: FbxJson) {
-  const byControl = new Map<number, number[]>();
-  if (!source.polygonVertexIndices?.length) return byControl;
-  let polygon: number[] = [];
-  let render = 0;
-  const emit = (controlPoint: number) => {
-    if (!byControl.has(controlPoint)) byControl.set(controlPoint, []);
-    byControl.get(controlPoint)!.push(render);
-    render += 1;
-  };
+/**
+ * The control point and the polygon vertex behind every render point.
+ *
+ * The polygon stream fan-triangulates into triangle corners, in the order the
+ * reader emits them. A welded mesh has fewer points than corners, and says
+ * through `pointCorners` which corner each point was taken from; a mesh
+ * without it has one point per corner. Indexing the corners as if they were
+ * the points put a welded mesh's skin weights and extra UV sets on the wrong
+ * vertices.
+ */
+function renderPointSources(source: FbxJson): { controlPoint: number[]; polygonVertex: number[] } | null {
+  if (!source.polygonVertexIndices?.length) return null;
+  const cornerControl: number[] = [];
+  const cornerVertex: number[] = [];
+  let polygon: { controlPoint: number; vertex: number }[] = [];
+  let vertex = 0;
   for (const encoded of source.polygonVertexIndices) {
-    polygon.push(encoded < 0 ? ~encoded : encoded);
+    polygon.push({ controlPoint: encoded < 0 ? ~encoded : encoded, vertex });
+    vertex += 1;
     if (encoded < 0) {
       for (let index = 1; index < polygon.length - 1; index += 1) {
-        emit(polygon[0]); emit(polygon[index]); emit(polygon[index + 1]);
+        for (const entry of [polygon[0], polygon[index], polygon[index + 1]]) {
+          cornerControl.push(entry.controlPoint);
+          cornerVertex.push(entry.vertex);
+        }
       }
       polygon = [];
     }
   }
+  const pointCorners: ArrayLike<number> | undefined = source.pointCorners;
+  if (!pointCorners?.length) return { controlPoint: cornerControl, polygonVertex: cornerVertex };
+  const controlPoint: number[] = new Array(pointCorners.length);
+  const polygonVertex: number[] = new Array(pointCorners.length);
+  for (let point = 0; point < pointCorners.length; point += 1) {
+    controlPoint[point] = cornerControl[pointCorners[point]];
+    polygonVertex[point] = cornerVertex[pointCorners[point]];
+  }
+  return { controlPoint, polygonVertex };
+}
+
+function buildRenderPointsByControl(source: FbxJson) {
+  const byControl = new Map<number, number[]>();
+  const points = renderPointSources(source);
+  if (!points) return byControl;
+  points.controlPoint.forEach((controlPoint, render) => {
+    if (!byControl.has(controlPoint)) byControl.set(controlPoint, []);
+    byControl.get(controlPoint)!.push(render);
+  });
   return byControl;
 }
 
 function expandFbxLayer(source: FbxJson, layer: FbxJson, components: number, vertexCount: number) {
-  if (!layer || !source.controlPoints?.length || !source.polygonVertexIndices?.length) return null;
+  if (!layer || !source.controlPoints?.length) return null;
+  const points = renderPointSources(source);
+  if (!points) return null;
   const output: number[] = [];
-  // Hoisted out of emit: these do not vary per corner, and emit runs once for
-  // every polygon vertex in the mesh.
+  // Hoisted out of the loop: these do not vary per point.
   const mapping = layer.mapping || 'ByControlPoint';
   const indexToDirect = layer.reference === 'IndexToDirect';
   const values: ArrayLike<number> = layer.values || [];
-  const emit = (controlPoint: number, corner: number) => {
-    const logical = mapping === 'ByPolygonVertex' ? corner : mapping === 'AllSame' ? 0 : controlPoint;
+  for (let point = 0; point < points.controlPoint.length; point += 1) {
+    const logical = mapping === 'ByPolygonVertex' ? points.polygonVertex[point] : mapping === 'AllSame' ? 0 : points.controlPoint[point];
     const valueIndex = indexToDirect ? (layer.indices?.[logical] ?? logical) : logical;
     const start = Math.max(0, valueIndex) * components;
     // Copied element by element: slicing allocated a throwaway array per
-    // corner, and spreading it passed the copy as arguments.
+    // point, and spreading it passed the copy as arguments.
     const end = Math.min(start + components, values.length);
     for (let index = start; index < end; index += 1) output.push(values[index]);
-  };
-  let polygon: { controlPoint: number; corner: number }[] = [];
-  let corner = 0;
-  for (const encoded of source.polygonVertexIndices) {
-    const controlPoint = encoded < 0 ? ~encoded : encoded;
-    polygon.push({ controlPoint, corner });
-    corner += 1;
-    if (encoded < 0) {
-      for (let index = 1; index < polygon.length - 1; index += 1) {
-        for (const entry of [polygon[0], polygon[index], polygon[index + 1]]) emit(entry.controlPoint, entry.corner);
-      }
-      polygon = [];
-    }
   }
   return output.length === vertexCount * components ? output : null;
 }
