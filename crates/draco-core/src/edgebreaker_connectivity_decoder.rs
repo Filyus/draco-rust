@@ -11,7 +11,6 @@ use crate::geometry_indices::{
 };
 use crate::mesh_edgebreaker_shared::EdgeFaceName;
 use crate::status::DracoError;
-use std::collections::HashMap;
 
 pub trait EdgebreakerTraversalDecoder {
     fn decode_symbol(&mut self) -> Result<u32, DracoError>;
@@ -58,7 +57,10 @@ pub struct EdgebreakerConnectivityDecoder {
     declared_num_faces: i32,
     max_num_vertices: usize,
     active_corner_stack: Vec<CornerIndex>,
-    topology_split_active_corners: HashMap<i32, CornerIndex>,
+    /// The corner each topology split resumes from, by decoder symbol id.
+    /// Ids run below the symbol count, so this is indexed rather than hashed,
+    /// and it is allocated at the first split: most meshes have none.
+    topology_split_active_corners: Vec<Option<CornerIndex>>,
     invalid_vertices: Vec<VertexIndex>,
 }
 
@@ -70,7 +72,7 @@ impl EdgebreakerConnectivityDecoder {
             declared_num_faces: num_faces,
             max_num_vertices: max_num_vertices.max(0) as usize,
             active_corner_stack: Vec::new(),
-            topology_split_active_corners: HashMap::new(),
+            topology_split_active_corners: Vec::new(),
             invalid_vertices: Vec::new(),
         }
     }
@@ -284,10 +286,14 @@ impl EdgebreakerConnectivityDecoder {
                 let corner_b = self.pop_active_corner("TOPOLOGY_S")?;
 
                 let decoder_split_symbol_id = symbol_id;
-                if let Some(corner_from_map) = self
-                    .topology_split_active_corners
-                    .get(&decoder_split_symbol_id)
-                    .cloned()
+                if let Some(corner_from_map) = usize::try_from(decoder_split_symbol_id)
+                    .ok()
+                    .and_then(|id| {
+                        self.topology_split_active_corners
+                            .get(id)
+                            .copied()
+                            .flatten()
+                    })
                 {
                     self.active_corner_stack.push(corner_from_map);
                 }
@@ -403,8 +409,16 @@ impl EdgebreakerConnectivityDecoder {
                         EdgeFaceName::LeftFaceEdge => self.corner_table.previous(act_top_corner),
                     };
                     let decoder_split_symbol_id = num_symbols - encoder_split_symbol_id - 1;
-                    self.topology_split_active_corners
-                        .insert(decoder_split_symbol_id, new_active_corner);
+                    // An id past the symbols is never looked up again.
+                    if let Ok(id) = usize::try_from(decoder_split_symbol_id) {
+                        let splits = &mut self.topology_split_active_corners;
+                        if splits.is_empty() {
+                            splits.resize(usize::try_from(num_symbols).unwrap_or(0), None);
+                        }
+                        if let Some(slot) = splits.get_mut(id) {
+                            *slot = Some(new_active_corner);
+                        }
+                    }
                 }
             }
 
