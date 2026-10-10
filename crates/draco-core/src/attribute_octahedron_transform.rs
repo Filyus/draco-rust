@@ -134,9 +134,9 @@ impl AttributeOctahedronTransform {
     }
 
     /// Converts with the octahedron-to-vector arithmetic of Draco 0.9.1 to
-    /// 1.3.x when `legacy_octahedron_to_vector` is set. The decoder no longer
-    /// does: Draco 1.5.7 converts every bitstream version with the current
-    /// arithmetic, which is what
+    /// 1.3.x when `legacy_octahedron_to_vector` is set. The decoder does not
+    /// call it: like Draco 1.5.7, it converts every bitstream version with the
+    /// current arithmetic, which is what
     /// [`inverse_transform_attribute`](AttributeTransform::inverse_transform_attribute)
     /// does.
     #[deprecated(

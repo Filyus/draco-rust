@@ -498,6 +498,11 @@ fn fnv1a64(bytes: impl IntoIterator<Item = u8>) -> u64 {
 /// face indices as little-endian u32, and the vertex records (position then
 /// normal, f32 each) in point order. `test_nm_quant.0.9.0` also carries
 /// octahedral normals (transform id 2), so its digest pins their conversion.
+///
+/// To re-derive a pin: `draco_decoder -i testdata/<stream> -o out.ply`, then
+/// FNV-1a 64 over the bytes after `end_header`: for the index, each face's
+/// three `int` indices (skipping the leading `uchar` count); for the
+/// vertices, the vertex records as written (24 bytes each).
 #[test]
 fn legacy_non_manifold_streams_number_points_as_upstream() {
     let fixtures = [
