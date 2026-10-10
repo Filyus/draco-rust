@@ -707,6 +707,46 @@ mod shared_path_regressions {
         assert_eq!(root.mesh_instances[0].morph_targets.len(), 1);
     }
 
+    /// An object-to-object edge names no property, so a string spelled after
+    /// one is not part of it. Read as one, it made each repeat of an edge a
+    /// different edge, and the multiplication above came back: corpus units
+    /// of 3.8 KB that tagged their repeats with stray strings decoded to 14448
+    /// morph targets and timed the round-trip target out.
+    #[test]
+    fn a_repeated_connection_with_a_trailing_string_is_still_one_edge() {
+        let decoded = scene(
+            "FBXHeaderExtension:  {\n\tFBXVersion: 7500\n}\n\
+             Objects:  {\n\
+             \tGeometry: 100, \"Geometry::Tri\", \"Mesh\" {\n\
+             \t\tVertices: *9 {\n\t\t\ta: 0,0,0,1,0,0,0,1,0\n\t\t}\n\
+             \t\tPolygonVertexIndex: *3 {\n\t\t\ta: 0,1,-3\n\t\t}\n\t}\n\
+             \tModel: 200, \"Model::Cube\", \"Mesh\" {\n\t}\n\
+             \tDeformer: 300, \"Deformer::Shapes\", \"BlendShape\" {\n\t}\n\
+             \tDeformer: 400, \"SubDeformer::Wide\", \"BlendShapeChannel\" {\n\
+             \t\tDeformPercent: 0\n\
+             \t\tFullWeights: *1 {\n\t\t\ta: 100\n\t\t}\n\t}\n\
+             \tGeometry: 500, \"Geometry::Wide\", \"Shape\" {\n\
+             \t\tIndexes: *1 {\n\t\t\ta: 0\n\t\t}\n\
+             \t\tVertices: *3 {\n\t\t\ta: 1,0,0\n\t\t}\n\t}\n}\n\
+             Connections:  {\n\
+             \tC: \"OO\",100,200\n\
+             \tC: \"OO\",100,200,\"A\"\n\
+             \tC: \"OO\",200,0\n\
+             \tC: \"OO\",200,0,\"B\"\n\
+             \tC: \"OO\",300,100\n\
+             \tC: \"OO\",300,100,\"C\"\n\
+             \tC: \"OO\",400,300\n\
+             \tC: \"OO\",400,300,\"D\"\n\
+             \tC: \"OO\",500,400\n\
+             \tC: \"OO\",500,400,\"E\"\n}\n",
+        );
+        assert_eq!(decoded.root_nodes.len(), 1);
+        let root = &decoded.root_nodes[0];
+        assert!(root.children.is_empty());
+        assert_eq!(root.mesh_instances.len(), 1);
+        assert_eq!(root.mesh_instances[0].morph_targets.len(), 1);
+    }
+
     /// A Model's material slots are addressed by position, so the one place a
     /// repeated connection is not a repetition. A mesh whose faces use the
     /// same material in two separate slots is spelled by connecting that

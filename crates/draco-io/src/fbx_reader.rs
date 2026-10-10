@@ -1300,8 +1300,12 @@ impl FbxConnection {
             .properties
             .get(2)
             .and_then(|property| object_ref(property, names))?;
-        let property = match node.properties.get(3) {
-            Some(FbxProperty::String(name)) => Some(name.clone()),
+        // Only an object-to-property edge names a property. Anything spelled
+        // after an object-to-object edge is not part of the relation, and kept
+        // it would make two statements of one edge look like two edges to the
+        // de-duplication in `FbxObjectIndex::build`.
+        let property = match (kind, node.properties.get(3)) {
+            (ConnectionKind::Op, Some(FbxProperty::String(name))) => Some(name.clone()),
             _ => None,
         };
         Some(Self {
