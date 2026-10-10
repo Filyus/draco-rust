@@ -985,4 +985,53 @@ mod tests {
             );
         }
     }
+    /// Members walk from either end: reversed is the forward order reversed,
+    /// and steps taken from both ends, switching after some have gone from the
+    /// front, meet in the middle with every member returned once.
+    #[test]
+    fn object_members_walk_from_either_end() {
+        let tape = Tape::parse(br#"{"a":1,"b":[2],"c":{"d":3},"e":"f","g":null}"#).unwrap();
+        let object = tape.root().as_object().unwrap();
+        let forward: Vec<&str> = object.iter().map(|(key, _)| key).collect();
+        let mut backward: Vec<&str> = object.iter().rev().map(|(key, _)| key).collect();
+        backward.reverse();
+        assert_eq!(forward, ["a", "b", "c", "e", "g"]);
+        assert_eq!(backward, forward);
+        for front_first in 0..=forward.len() {
+            let mut members = object.iter();
+            let mut seen = Vec::new();
+            for _ in 0..front_first {
+                seen.push(members.next().unwrap().0);
+            }
+            let mut tail = Vec::new();
+            while members.len() > 0 {
+                tail.push(members.next_back().unwrap().0);
+                if let Some((key, _)) = members.next() {
+                    seen.push(key);
+                }
+            }
+            assert!(members.next().is_none() && members.next_back().is_none());
+            tail.reverse();
+            seen.extend(tail);
+            assert_eq!(seen, forward, "switching after {front_first}");
+        }
+        assert_eq!(
+            object.iter().next_back().map(|(_, v)| v.is_null()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn objects_and_arrays_debug_as_their_members() {
+        let tape = Tape::parse(br#"{"a":[1,"x"],"b":{}}"#).unwrap();
+        let root = tape.root();
+        assert_eq!(
+            format!("{:?}", root.as_object().unwrap()),
+            r#"{"a": [1,"x"], "b": {}}"#
+        );
+        assert_eq!(
+            format!("{:?}", root.at("a").as_array().unwrap()),
+            r#"[1, "x"]"#
+        );
+    }
 }

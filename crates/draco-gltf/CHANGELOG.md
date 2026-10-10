@@ -44,7 +44,8 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     animation drives: `root.pointer("/nodes/0/translation")`.
   - `to_value` copies a subtree out as a tree and `to_vec` serializes one.
     Arrays (`JsonArray`) reach an item by position in one step, and objects
-    (`JsonObject`) iterate their members in document order.
+    (`JsonObject`) iterate their members in document order. Both iterate
+    from either end and print with `{:?}`.
 
 ### Changed
 

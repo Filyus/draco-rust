@@ -697,6 +697,20 @@ impl fmt::Debug for JsonRef<'_> {
     }
 }
 
+impl fmt::Debug for JsonObject<'_> {
+    /// The members as a map, each value as JSON text.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_map().entries(self.iter()).finish()
+    }
+}
+
+impl fmt::Debug for JsonArray<'_> {
+    /// The items as a list, each as JSON text.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
+    }
+}
+
 /// The members of a JSON object, in document order.
 #[derive(Clone, Copy)]
 pub struct JsonObject<'a> {
@@ -757,6 +771,7 @@ impl<'a> JsonObject<'a> {
             tape: self.tape,
             index: self.first,
             left: self.len,
+            collected: None,
         }
     }
 }
@@ -770,11 +785,31 @@ impl<'a> IntoIterator for JsonObject<'a> {
 }
 
 /// Iterator over the members of a [`JsonObject`].
+///
+/// Members are linked forward only, so the first step taken from the back
+/// walks what is left once and keeps the members' positions; iterating from
+/// the front alone allocates nothing.
 #[derive(Clone)]
 pub struct JsonMembers<'a> {
     tape: &'a Tape,
+    /// The next member from the front, while nothing has been collected.
     index: u32,
     left: u32,
+    /// The remaining members' key positions, once a step from the back has
+    /// collected them, with the front and back cursors into them.
+    collected: Option<(Vec<u32>, usize, usize)>,
+}
+
+impl<'a> JsonMembers<'a> {
+    fn member(&self, key: u32) -> (&'a str, JsonRef<'a>) {
+        let tape = self.tape;
+        let value = JsonRef {
+            tape,
+            index: key + 1,
+        };
+        let key = JsonRef { tape, index: key };
+        (key.as_str().unwrap_or_default(), value)
+    }
 }
 
 impl<'a> Iterator for JsonMembers<'a> {
@@ -784,19 +819,54 @@ impl<'a> Iterator for JsonMembers<'a> {
             return None;
         }
         self.left -= 1;
-        let key = JsonRef {
-            tape: self.tape,
-            index: self.index,
+        let key = match &mut self.collected {
+            Some((keys, front, _)) => {
+                *front += 1;
+                keys[*front - 1]
+            }
+            None => {
+                let key = self.index;
+                self.index = JsonRef {
+                    tape: self.tape,
+                    index: key,
+                }
+                .node()
+                .next;
+                key
+            }
         };
-        let value = JsonRef {
-            tape: self.tape,
-            index: self.index + 1,
-        };
-        self.index = key.node().next;
-        Some((key.as_str().unwrap_or_default(), value))
+        Some(self.member(key))
     }
     fn size_hint(&self) -> (usize, Option<usize>) {
         (self.left as usize, Some(self.left as usize))
+    }
+}
+
+impl DoubleEndedIterator for JsonMembers<'_> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.left == 0 {
+            return None;
+        }
+        if self.collected.is_none() {
+            let mut keys = Vec::with_capacity(self.left as usize);
+            let mut index = self.index;
+            for _ in 0..self.left {
+                keys.push(index);
+                index = JsonRef {
+                    tape: self.tape,
+                    index,
+                }
+                .node()
+                .next;
+            }
+            let back = keys.len();
+            self.collected = Some((keys, 0, back));
+        }
+        self.left -= 1;
+        let (keys, _, back) = self.collected.as_mut()?;
+        *back -= 1;
+        let key = keys[*back];
+        Some(self.member(key))
     }
 }
 
