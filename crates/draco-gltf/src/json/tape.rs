@@ -218,6 +218,28 @@ impl Tape {
     }
 }
 
+/// One JSON Pointer token with `~1` and `~0` undone, borrowed when it has
+/// neither; `None` for a `~` followed by anything else.
+fn unescape_pointer_token(token: &str) -> Option<std::borrow::Cow<'_, str>> {
+    if !token.contains('~') {
+        return Some(std::borrow::Cow::Borrowed(token));
+    }
+    let mut out = String::with_capacity(token.len());
+    let mut chars = token.chars();
+    while let Some(c) = chars.next() {
+        if c == '~' {
+            match chars.next() {
+                Some('0') => out.push('~'),
+                Some('1') => out.push('/'),
+                _ => return None,
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    Some(std::borrow::Cow::Owned(out))
+}
+
 /// What [`JsonRef::at`] takes: a key, which looks up an object member, or a
 /// position, which looks up an array item.
 ///
@@ -393,6 +415,38 @@ impl<'a> JsonRef<'a> {
     /// [`get`]: Self::get
     pub fn at(self, index: impl JsonIndex) -> JsonRef<'a> {
         index.index_into(self).unwrap_or_default()
+    }
+    /// Resolves a JSON Pointer (RFC 6901) against this value.
+    ///
+    /// The empty pointer is this value; otherwise each `/`-separated token
+    /// names an object member, with `~1` standing for `/` and `~0` for `~`, or
+    /// an array item by its decimal position. `KHR_animation_pointer` names the
+    /// property an animation drives this way, `/nodes/0/translation` for one.
+    ///
+    /// `None` when a token finds nothing, when the pointer does not start with
+    /// `/`, for a `~` not followed by `0` or `1`, and for a position with a
+    /// leading zero or the `-` that means one past an array's end.
+    pub fn pointer(self, pointer: &str) -> Option<JsonRef<'a>> {
+        if pointer.is_empty() {
+            return Some(self);
+        }
+        let mut value = self;
+        for token in pointer.strip_prefix('/')?.split('/') {
+            let token = unescape_pointer_token(token)?;
+            value = if value.is_array() {
+                let digits = token.as_bytes();
+                let canonical = !digits.is_empty()
+                    && digits.iter().all(u8::is_ascii_digit)
+                    && (digits.len() == 1 || digits[0] != b'0');
+                if !canonical {
+                    return None;
+                }
+                value.as_array()?.get(token.parse().ok()?)?
+            } else {
+                value.get(&token)?
+            };
+        }
+        Some(value)
     }
     /// Copies this value out as an owned tree.
     pub fn to_value(self) -> Value {

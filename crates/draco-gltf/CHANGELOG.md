@@ -37,7 +37,9 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   read half of `JsonValue`'s methods: `get`, `as_str`, `as_u64`, `as_f64`,
   `as_bool`, `as_number` (the lexeme as written), `as_array` and `as_object`,
   and `at`, which steps by key or position the way indexing a `JsonValue`
-  does, reading as null where there is nothing.
+  does, reading as null where there is nothing. `pointer` resolves a JSON
+  Pointer (RFC 6901), the way `KHR_animation_pointer` names the property an
+  animation drives: `root.pointer("/nodes/0/translation")`.
   It also has `to_value` to copy a subtree out as a tree and `to_vec` to
   serialize one. Arrays (`JsonArray`) reach an item by position in one step,
   and objects (`JsonObject`) iterate their members in document order.

@@ -900,4 +900,57 @@ mod tests {
         let key = String::from("asset");
         assert_eq!(tape.root().at(&key).at("version").as_str(), Some("2.0"));
     }
+    /// RFC 6901's own examples (section 5): every pointer resolves to the
+    /// value the RFC gives it, escapes and the empty key included. Malformed
+    /// pointers and positions an array does not have resolve to nothing.
+    #[test]
+    fn pointer_resolves_rfc_6901s_examples() {
+        let source = r#"{"foo":["bar","baz"],"":0,"a/b":1,"c%d":2,"e^f":3,"g|h":4,"i\\j":5,"k\"l":6," ":7,"m~n":8}"#;
+        let tape = Tape::parse(source.as_bytes()).unwrap();
+        let root = tape.root();
+        assert!(root.pointer("").is_some_and(|whole| whole.is_object()));
+        assert_eq!(
+            root.pointer("/foo")
+                .and_then(|foo| foo.as_array())
+                .map(|a| a.len()),
+            Some(2)
+        );
+        assert_eq!(root.pointer("/foo/0").and_then(|v| v.as_str()), Some("bar"));
+        for (pointer, expected) in [
+            ("/", 0),
+            ("/a~1b", 1),
+            ("/c%d", 2),
+            ("/e^f", 3),
+            ("/g|h", 4),
+            ("/i\\j", 5),
+            ("/k\"l", 6),
+            ("/ ", 7),
+            ("/m~0n", 8),
+        ] {
+            assert_eq!(
+                root.pointer(pointer).and_then(|v| v.as_u64()),
+                Some(expected),
+                "{pointer}"
+            );
+        }
+        for pointer in [
+            "foo",
+            "/foo/01",
+            "/foo/-",
+            "/foo/2",
+            "/foo/+1",
+            "/m~2n",
+            "/m~",
+            "/missing/0",
+        ] {
+            assert!(root.pointer(pointer).is_none(), "{pointer}");
+        }
+        // The shape KHR_animation_pointer's targets take.
+        let gltf = Tape::parse(br#"{"nodes":[{"translation":[1,2,3]}]}"#).unwrap();
+        let translation = gltf
+            .root()
+            .pointer("/nodes/0/translation")
+            .and_then(|v| v.as_array());
+        assert_eq!(translation.map(|a| a.len()), Some(3));
+    }
 }
