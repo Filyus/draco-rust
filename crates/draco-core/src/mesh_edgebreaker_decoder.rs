@@ -747,7 +747,11 @@ impl MeshEdgebreakerDecoder {
             feature = "legacy_bitstream_decode"
         ))]
         let mut legacy_seam_decoders: Vec<RAnsBitDecoder> = Vec::new();
-        let remove_invalid_vertices = num_attribute_data == 0 || bitstream_version < 0x0202;
+        // As upstream, for every bitstream version: with attribute seams the
+        // vertices a split symbol emptied stay as isolated slots instead of
+        // being filled from the end of the table, and point ids follow that
+        // sparser vertex order.
+        let remove_invalid_vertices = num_attribute_data == 0;
 
         let num_vertices = if self.traversal_decoder_type == 1 {
             // Predictive mode (legacy, pre-0.10.0). Buffer order mirrors valence:

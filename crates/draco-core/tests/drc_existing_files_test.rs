@@ -484,6 +484,83 @@ fn decode_legacy_mesh_v20_v21_from_testdata() {
     }
 }
 
+fn fnv1a64(bytes: impl IntoIterator<Item = u8>) -> u64 {
+    bytes.into_iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
+/// The legacy non-manifold Edgebreaker streams carry attribute seams, so
+/// upstream keeps the vertices a split symbol emptied as isolated slots
+/// rather than filling them from the end of the table, and numbers points in
+/// that sparser vertex order. The pins are FNV-1a 64 digests of what the
+/// reference `draco_decoder` 1.5.7 writes to binary PLY for each stream: the
+/// face indices as little-endian u32, and the vertex records (position, then
+/// normal where it is pinned, f32 each) in point order.
+///
+/// `test_nm_quant.0.9.0` pins positions alone: its normals are octahedron
+/// id 2 in a pre-2.0 stream, which this crate converts with the historical
+/// 0.9.1 float arithmetic (see SUPPORT_MATRIX.md), a few ulps from 1.5.7.
+#[test]
+fn legacy_non_manifold_streams_number_points_as_upstream() {
+    let fixtures = [
+        (
+            "test_nm.obj.edgebreaker.0.9.1.drc",
+            true,
+            0x3a2a_c864_b080_5a80,
+        ),
+        (
+            "test_nm.obj.edgebreaker.0.10.0.drc",
+            true,
+            0x3a2a_c864_b080_5a80,
+        ),
+        (
+            "test_nm.obj.edgebreaker.1.0.0.drc",
+            true,
+            0x3a2a_c864_b080_5a80,
+        ),
+        (
+            "test_nm.obj.edgebreaker.1.1.0.drc",
+            true,
+            0x6aac_b542_010c_9686,
+        ),
+        ("test_nm_quant.0.9.0.drc", false, 0x5e06_dda5_9c16_ccde),
+    ];
+    for (fixture, with_normals, vertex_digest) in fixtures {
+        let bytes = read_file_bytes(&repo_testdata_dir().join(fixture));
+        let mut mesh = Mesh::new();
+        MeshDecoder::new()
+            .decode(&mut DecoderBuffer::new(&bytes), &mut mesh)
+            .unwrap_or_else(|err| panic!("{fixture}: {err:?}"));
+        assert_eq!(
+            (mesh.num_points(), mesh.num_faces()),
+            (99, 170),
+            "{fixture}"
+        );
+
+        let index = (0..mesh.num_faces())
+            .flat_map(|f| mesh.face(draco_core::geometry_indices::FaceIndex(f as u32)))
+            .flat_map(|point| point.0.to_le_bytes());
+        assert_eq!(fnv1a64(index), 0x4da0_1b2c_2e26_83b7, "{fixture}: index");
+
+        let pos = mesh
+            .named_attribute(GeometryAttributeType::Position)
+            .expect("position");
+        let normal = mesh
+            .named_attribute(GeometryAttributeType::Normal)
+            .expect("normal");
+        let vertices = (0..mesh.num_points() as u32).flat_map(|p| {
+            let point = PointIndex(p);
+            let mut record = read_f32_tuple(pos, point, 3);
+            if with_normals {
+                record.extend(read_f32_tuple(normal, point, 3));
+            }
+            record.into_iter().flat_map(f32::to_le_bytes)
+        });
+        assert_eq!(fnv1a64(vertices), vertex_digest, "{fixture}: vertices");
+    }
+}
+
 #[test]
 fn decode_point_cloud_sequential_v22_v23_from_testdata() {
     let fixtures = [
