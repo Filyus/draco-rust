@@ -84,6 +84,7 @@ function compareStream(name: string, data: Uint8Array) {
         find = { id };
       } else {
         const first = drc.decode_draco(data, [{ id }]);
+        assert.ok(first.success && first.attributes.length === 1, `${name}: shared id ${id}: ${first.error}`);
         assert.equal(
           first.attributes[0].itemSize,
           decoder.GetAttributeByUniqueId(geometry, id).num_components(),
@@ -113,6 +114,7 @@ function compareStream(name: string, data: Uint8Array) {
           continue;
         }
         assert.ok(result.success, `${where}: ${result.error}`);
+        assert.equal(result.attributes.length, 1, `${where}: one attribute returned`);
         const [decoded] = result.attributes;
         assert.ok(decoded.array instanceof TypedArray, `${where}: array type`);
         assert.equal(decoded.itemSize, itemSize, `${where}: itemSize`);
