@@ -8,6 +8,11 @@ has changed in them; each package version has a section of its own.
 
 ## Unreleased
 
+- **KTX2 textures decode faster in the converter.** The transcoder in
+  `ktx2-wasm` is now built for speed rather than size, as the Draco codec and
+  the format readers already were: UASTC textures decode up to 2.4 times as
+  fast and the fixtures 13% faster overall, for 9 kB of the module's gzip.
+
 ## [0.1.1] - 2026-10-10
 
 - **Published from CI, with provenance.** The packages are built and published

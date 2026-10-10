@@ -135,7 +135,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [draco-core's Optimization Level, Re-Measured On glTF Reads](#draco-cores-optimization-level-re-measured-on-gltf-reads) | diagnostic | `opt 2 stays: s is -13.3 kB for +7-18%` |
 | [The KD-Tree Encoder On One Row](#the-kd-tree-encoder-on-one-row) | landed | `16.6 MB -> linear at d=255, -1.5% to -17.4% time` |
 | [draco-core 2.3.1 Against 2.3.0](#draco-core-231-against-230) | diagnostic | `-27 to -35% WASM decode with predicted normals, -6 to -7% native` |
-| [KTX2 In WASM: zrip, And The Transcoder's Optimization Level](#ktx2-in-wasm-zrip-and-the-transcoders-optimization-level) | diagnostic | `zrip: 3x native, 1.9x WASM Zstd, 1.01x WASM decode; opt 2: 0.87x for +8.7 kB` |
+| [KTX2 In WASM: zrip, And The Transcoder's Optimization Level](#ktx2-in-wasm-zrip-and-the-transcoders-optimization-level) | landed (opt 2), deferred (zrip) | `zrip: 3x native, 1.9x WASM Zstd, 1.01x WASM decode; opt 2: 0.87x for +8.7 kB` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -5440,8 +5440,10 @@ with five repeats a sample and the current build first put `2d_uastc` at
 Verdicts: `zrip` is `deferred` -- right natively, not yet worth its size in
 the one place this crate runs; a decoder that reaches the Zstd stage's 2x
 without the module cost would change that. The transcoder's level is
-`proposed`: at 2 it is the `draco-core` and `draco-io` case again, UASTC up
-to `2.4x` and every file but one beyond the floor, for 5% of the module.
+`landed`: at 2 it is the `draco-core` and `draco-io` case again, UASTC up to
+`2.4x` and every file but one beyond the floor, for 5% of the module.
+`web/Cargo.toml` carries it as a per-package override, and the recorded
+`ktx2-wasm` went from 174,986 to 184,133 bytes of gzip.
 
 ## Unexplored
 

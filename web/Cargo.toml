@@ -68,3 +68,14 @@ opt-level = 2
 [profile.release.package.draco-io]
 opt-level = 2
 
+# The KTX2 transcoder, measured the same way: `ktx2-wasm` decoding every level
+# of every Basis fixture to RGBA, eight builds in one process, every one
+# writing identical pixels. At 2 the whole set takes 0.87x the time it does at
+# "z", UASTC files up to 2.4x faster (block decoding is loops over modes and
+# partitions, the codec case again) and ETC1S 1-12%, for 8.7 kB of the
+# module's gzip (+5%). 3 is 0.84x for 14.4 kB; "s" is 0.98x and 0.7 kB
+# smaller. Its dependencies stay at "z": the Zstd decoder is a small share of
+# a texture's time at either level. PERFORMANCE-LOG, "KTX2 In WASM".
+[profile.release.package.draco-texture]
+opt-level = 2
+
