@@ -2,11 +2,23 @@
 
 The converter and its WASM wrappers are not published to crates.io. The
 converter deploys to GitHub Pages from `main`; the wrappers shipped as zipped
-assets on crate releases until 2026-10-10 and are to ship as `@draco-rust/*` npm
-packages, each with a version of its own. This file records what has changed in
-them; the `Unreleased` section becomes the first packages' notes.
+assets on crate releases until 2026-10-10 and now ship as `@draco-rust/*` npm
+packages, all at the one version in `web/npm/VERSION`. This file records what
+has changed in them; each package version has a section of its own.
 
 ## Unreleased
+
+## [0.1.1] - 2026-10-10
+
+- **Published from CI, with provenance.** The packages are built and published
+  by `npm.yml` through npm trusted publishing, so each version on npmjs.com
+  links to the commit and the workflow run that produced it.
+- `@draco-rust/fbx` no longer lets a repeated connection multiply the scene:
+  repeats of one edge tagged with stray strings each counted as a new edge,
+  and a 3.8 kB file could decode to fourteen thousand morph targets. The other
+  packages are unchanged from 0.1.0.
+
+## [0.1.0] - 2026-10-10
 
 - **The modules are packaged for npm as `@draco-rust/*`.**
   - `@draco-rust/decoder` decodes Draco: `.` reads meshes and point clouds
