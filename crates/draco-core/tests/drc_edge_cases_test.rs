@@ -1602,10 +1602,13 @@ fn legacy_material_attribute_matches_the_modern_reference() {
 /// transform (id 2) over a predictive EdgeBreaker connectivity. Unlike the
 /// 1.1.0/2.2 pair above, the 0.9.1 encoder quantizes the octahedral grid
 /// differently, so we compare against a golden reference captured from the
-/// historical Draco 0.9.1 C++ decoder rather than a 2.2 fixture.
+/// Draco 1.5.7 decoder rather than a 2.2 fixture. Draco 0.9.1 to 1.3.x turned
+/// octahedral coordinates into a vector with other float arithmetic, a few
+/// ulps away; 1.5.7 converts every bitstream version the current way, and so
+/// does this crate.
 #[cfg(feature = "legacy_bitstream_decode")]
 #[test]
-fn legacy_091_octahedron_normals_match_historical_decoder() {
+fn legacy_091_octahedron_normals_match_draco_1_5_7() {
     use draco_core::geometry_attribute::GeometryAttributeType;
     let bytes =
         std::fs::read(repo_testdata_dir().join("legacy_draco/sphere.mesh_eb_norm.0.9.1.drc"))
@@ -1618,9 +1621,9 @@ fn legacy_091_octahedron_normals_match_historical_decoder() {
 
     let att = mesh.attribute(mesh.named_attribute_id(GeometryAttributeType::Normal));
     let stride = att.byte_stride() as usize;
-    let mut got: Vec<[u32; 3]> = (0..att.size())
-        .map(|i| {
-            let off = i * stride;
+    let mut got: Vec<[u32; 3]> = (0..mesh.num_points() as u32)
+        .map(|p| {
+            let off = att.mapped_index(PointIndex(p)).0 as usize * stride;
             let mut n = [0u32; 3];
             for (k, c) in n.iter_mut().enumerate() {
                 let mut b = [0u8; 4];
@@ -1651,7 +1654,7 @@ fn legacy_091_octahedron_normals_match_historical_decoder() {
 
     assert_eq!(
         got, expected,
-        "0.9.1 octahedron normals are not byte-exact vs the historical Draco decoder"
+        "0.9.1 octahedron normals are not byte-exact vs the Draco 1.5.7 decoder"
     );
 }
 

@@ -133,6 +133,16 @@ impl AttributeOctahedronTransform {
         Ok(())
     }
 
+    /// Converts with the octahedron-to-vector arithmetic of Draco 0.9.1 to
+    /// 1.3.x when `legacy_octahedron_to_vector` is set. The decoder no longer
+    /// does: Draco 1.5.7 converts every bitstream version with the current
+    /// arithmetic, which is what
+    /// [`inverse_transform_attribute`](AttributeTransform::inverse_transform_attribute)
+    /// does.
+    #[deprecated(
+        since = "2.4.0",
+        note = "the decoder converts every bitstream version as Draco 1.5.7 does; use inverse_transform_attribute"
+    )]
     pub fn inverse_transform_attribute_with_legacy_octahedron(
         &self,
         attribute: &PointAttribute,
@@ -221,6 +231,7 @@ impl AttributeOctahedronTransform {
             let t = i32::from_le_bytes(t_array);
 
             let att_val = if legacy_octahedron_to_vector {
+                #[allow(deprecated)]
                 converter.quantized_octahedral_coords_to_unit_vector_legacy(s, t)
             } else {
                 converter.quantized_octahedral_coords_to_unit_vector(s, t)

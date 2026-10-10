@@ -495,38 +495,19 @@ fn fnv1a64(bytes: impl IntoIterator<Item = u8>) -> u64 {
 /// rather than filling them from the end of the table, and numbers points in
 /// that sparser vertex order. The pins are FNV-1a 64 digests of what the
 /// reference `draco_decoder` 1.5.7 writes to binary PLY for each stream: the
-/// face indices as little-endian u32, and the vertex records (position, then
-/// normal where it is pinned, f32 each) in point order.
-///
-/// `test_nm_quant.0.9.0` pins positions alone: its normals are octahedron
-/// id 2 in a pre-2.0 stream, which this crate converts with the historical
-/// 0.9.1 float arithmetic (see SUPPORT_MATRIX.md), a few ulps from 1.5.7.
+/// face indices as little-endian u32, and the vertex records (position then
+/// normal, f32 each) in point order. `test_nm_quant.0.9.0` also carries
+/// octahedral normals (transform id 2), so its digest pins their conversion.
 #[test]
 fn legacy_non_manifold_streams_number_points_as_upstream() {
     let fixtures = [
-        (
-            "test_nm.obj.edgebreaker.0.9.1.drc",
-            true,
-            0x3a2a_c864_b080_5a80,
-        ),
-        (
-            "test_nm.obj.edgebreaker.0.10.0.drc",
-            true,
-            0x3a2a_c864_b080_5a80,
-        ),
-        (
-            "test_nm.obj.edgebreaker.1.0.0.drc",
-            true,
-            0x3a2a_c864_b080_5a80,
-        ),
-        (
-            "test_nm.obj.edgebreaker.1.1.0.drc",
-            true,
-            0x6aac_b542_010c_9686,
-        ),
-        ("test_nm_quant.0.9.0.drc", false, 0x5e06_dda5_9c16_ccde),
+        ("test_nm.obj.edgebreaker.0.9.1.drc", 0x3a2a_c864_b080_5a80),
+        ("test_nm.obj.edgebreaker.0.10.0.drc", 0x3a2a_c864_b080_5a80),
+        ("test_nm.obj.edgebreaker.1.0.0.drc", 0x3a2a_c864_b080_5a80),
+        ("test_nm.obj.edgebreaker.1.1.0.drc", 0x6aac_b542_010c_9686),
+        ("test_nm_quant.0.9.0.drc", 0x6ffd_1f4a_9440_0db5),
     ];
-    for (fixture, with_normals, vertex_digest) in fixtures {
+    for (fixture, vertex_digest) in fixtures {
         let bytes = read_file_bytes(&repo_testdata_dir().join(fixture));
         let mut mesh = Mesh::new();
         MeshDecoder::new()
@@ -552,9 +533,7 @@ fn legacy_non_manifold_streams_number_points_as_upstream() {
         let vertices = (0..mesh.num_points() as u32).flat_map(|p| {
             let point = PointIndex(p);
             let mut record = read_f32_tuple(pos, point, 3);
-            if with_normals {
-                record.extend(read_f32_tuple(normal, point, 3));
-            }
+            record.extend(read_f32_tuple(normal, point, 3));
             record.into_iter().flat_map(f32::to_le_bytes)
         });
         assert_eq!(fnv1a64(vertices), vertex_digest, "{fixture}: vertices");

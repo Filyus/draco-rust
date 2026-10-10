@@ -49,7 +49,9 @@ that compare against legacy decoders can be enabled by setting:
 | `cube_att_material.mesh_eb.1.1.0.drc` | `../cube_att_material.obj` | Draco 1.1.0 | `-cl 10 -qp 14 -qt 12 -qn 10 --metadata` | `v2.1 mesh method=1, GENERIC (material) attribute` |
 | `cube_att_material.mesh_eb.2.2.drc` | `../cube_att_material.obj` | modern Draco | `-cl 10 -qp 14 -qt 12 -qn 10 --metadata` | `v2.2 mesh method=1, GENERIC reference, matching quantization`. `cube_att_material.obj` is `cube_att.obj` with its twelve faces split `usemtl matA`/`matB`, which the real OBJ reader turns into a `Uint8` GENERIC attribute -- the one attribute type the `cube_att.*` fixtures above never carry, and the only one that reaches `SequentialIntegerAttributeDecoder` unquantized. Quantization bits are pinned explicitly (rather than left at each tool's own default) because the 1.0.0/1.1.0 CLI default is `14/12/10`, not the `11/10/8` the 2.2 tool defaults to; without pinning them the sequential/EdgeBreaker legacy pair and the 2.2 reference would quantize position/texcoord/normal differently and the comparison would be tolerance-based instead of exact. Neither the 1.0.0 nor an unadorned modern OBJ writer round-trips a GENERIC attribute at all -- both need `mtllib`/`usemtl` in the source and `--metadata` at encode time so the material name reaches the stream's own attribute metadata, and 1.0.0's writer drops the attribute on export regardless, which is why this pair is checked by decoding all five fixtures with this crate's own decoder and comparing values, not by diffing against real decoder output the way the fixtures above are. |
 
-`sphere.mesh_eb_norm.0.9.1.normals_golden.bin` stores the sorted little-endian
-`f32` normal triplets decoded from `sphere.mesh_eb_norm.0.9.1.drc` by the
-historical Draco 0.9.1 C++ decoder. Its octahedron-to-vector float conversion
-differs from modern Draco, so the golden locks byte-exact legacy output.
+`sphere.mesh_eb_norm.0.9.1.normals_golden.bin` stores every point's normal,
+sorted, as little-endian `f32` triplets decoded from
+`sphere.mesh_eb_norm.0.9.1.drc` by the Draco 1.5.7 decoder (binary PLY output).
+Draco 0.9.1 to 1.3.x turned octahedral coordinates into a vector with other
+float arithmetic, a few ulps away; 1.5.7 uses the current form for every
+bitstream version, and the golden locks that.

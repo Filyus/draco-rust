@@ -232,9 +232,10 @@ refused on its own.
   decodes it, and encodes it only via the `force_predictive_traversal` option —
   never auto-selected.
 - **Normal octahedron (id 2).** C++ used it through `0.9.1`, then switched to the
-  canonicalized transform (id 3) in `0.10.0`. `draco-core` decodes id 2 and, for
-  pre-2.0 streams, also uses the historical `0.9.1` octahedron-to-vector float
-  conversion so byte output matches the old decoder exactly.
+  canonicalized transform (id 3) in `0.10.0`. `draco-core` decodes id 2 and,
+  like Draco 1.5.7, turns octahedral coordinates into a vector with the current
+  float arithmetic for every bitstream version. Draco 0.9.1 to 1.3.x used other
+  arithmetic, a few ulps away, so their output is not reproduced bit for bit.
 - **Pre-2.2 layout.** The pre-2.2 valence and constrained-multi-parallelogram
   layouts decode with the default compatibility feature and encode with
   `legacy_bitstream_encode`. They differ from

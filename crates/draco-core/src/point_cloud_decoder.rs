@@ -176,7 +176,6 @@ fn dequantize_in_parallel(
 fn undo_octahedra_in_parallel(
     pc: &mut PointCloud,
     mut pending: Vec<PendingNormal>,
-    bitstream_version: u16,
     threads: usize,
 ) -> Status {
     pending.sort_by_key(|n| n.att_id);
@@ -191,13 +190,7 @@ fn undo_octahedra_in_parallel(
         let mut oct = AttributeOctahedronTransform::new(-1);
         let done = oct
             .set_parameters(n.quantization_bits as i32)
-            .and_then(|()| {
-                oct.inverse_transform_attribute_with_legacy_octahedron(
-                    &n.portable,
-                    dst,
-                    bitstream_version < 0x0200,
-                )
-            });
+            .and_then(|()| oct.inverse_transform_attribute(&n.portable, dst));
         if let Err(e) = done {
             *error = Some(DracoError::general(format!(
                 "Failed to decode normals: {e}"
@@ -674,7 +667,7 @@ impl PointCloudDecoder {
 
                 if in_parallel {
                     dequantize_in_parallel(pc, pending_quant, threads)?;
-                    undo_octahedra_in_parallel(pc, pending_normals, bitstream_version, threads)?;
+                    undo_octahedra_in_parallel(pc, pending_normals, threads)?;
                 } else {
                     for q in pending_quant {
                         let dst = pc.try_attribute_mut(q.att_id)?;
@@ -688,14 +681,10 @@ impl PointCloudDecoder {
                         let mut oct = AttributeOctahedronTransform::new(-1);
                         oct.set_parameters(n.quantization_bits as i32)?;
                         let dst = pc.try_attribute_mut(n.att_id)?;
-                        oct.inverse_transform_attribute_with_legacy_octahedron(
-                            &n.portable,
-                            dst,
-                            bitstream_version < 0x0200,
-                        )
-                        .map_err(|e| {
-                            DracoError::general(format!("Failed to decode normals: {e}"))
-                        })?;
+                        oct.inverse_transform_attribute(&n.portable, dst)
+                            .map_err(|e| {
+                                DracoError::general(format!("Failed to decode normals: {e}"))
+                            })?;
                     }
                 }
             }

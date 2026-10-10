@@ -1271,12 +1271,8 @@ impl MeshDecoder {
                 if dst.size() != n.portable.size() {
                     dst.resize_unique_entries(n.portable.size())?;
                 }
-                oct.inverse_transform_attribute_with_legacy_octahedron(
-                    &n.portable,
-                    dst,
-                    bitstream_version < 0x0200,
-                )
-                .map_err(|e| DracoError::general(format!("Failed to decode normals: {e}")))?;
+                oct.inverse_transform_attribute(&n.portable, dst)
+                    .map_err(|e| DracoError::general(format!("Failed to decode normals: {e}")))?;
             }
 
             let _phase = crate::decode_phase_probe::PhaseTimer::start(

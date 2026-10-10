@@ -306,6 +306,13 @@ impl OctahedronToolBox {
         }
     }
 
+    /// The octahedron-to-vector arithmetic of Draco 0.9.1 to 1.3.x, which
+    /// differs from [`Self::quantized_octahedral_coords_to_unit_vector`] by a
+    /// few ulps. Draco 1.5.7 uses the current form for every bitstream version.
+    #[deprecated(
+        since = "2.4.0",
+        note = "Draco 1.5.7 converts every bitstream version with quantized_octahedral_coords_to_unit_vector"
+    )]
     pub fn quantized_octahedral_coords_to_unit_vector_legacy(&self, s: i32, t: i32) -> [f32; 3] {
         let max_quantized_value = self.max_value as f32;
         let in_s = s as f32 / max_quantized_value;
