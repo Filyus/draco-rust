@@ -172,6 +172,10 @@ jobs:
             (cd "$dir" && npm publish --access public)
           done
 
+      # A version can take minutes to show in the registry's reads after the
+      # publish returns: 0.1.1 took over a minute for some packages, and one
+      # failed a 60-second wait that was already published. Reads bypass the
+      # local cache, and each package gets up to ten minutes.
       - name: Check every package is published
         env:
           VERSION: ${{ needs.build.outputs.version }}
@@ -179,8 +183,8 @@ jobs:
           set -euo pipefail
           for dir in dist/*/; do
             name="$(node -p "require('./${dir}package.json').name")"
-            for attempt in 1 2 3 4 5 6; do
-              if npm view "$name@$VERSION" version >/dev/null 2>&1; then
+            for attempt in $(seq 1 60); do
+              if npm view --prefer-online "$name@$VERSION" version >/dev/null 2>&1; then
                 echo "$name@$VERSION is on the registry."
                 continue 2
               fi
