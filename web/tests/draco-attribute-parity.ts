@@ -39,7 +39,6 @@ const semantics = ['POSITION', 'NORMAL', 'COLOR', 'TEX_COORD', 'GENERIC'] as con
 const bytesOf = (array: ArrayBufferView) => new Uint8Array(array.buffer, array.byteOffset, array.byteLength);
 
 let files = 0;
-const renumbered: string[] = [];
 let compared = 0;
 let refusals = 0;
 function compareStream(name: string, data: Uint8Array) {
@@ -57,36 +56,18 @@ function compareStream(name: string, data: Uint8Array) {
     assert.equal(ours.geometry, isMesh ? 'mesh' : 'point_cloud', name);
     files += 1;
 
-    // Upstream's index, and whether ours numbers the points the same way. On
-    // the legacy non-manifold test_nm streams it does not: the same triangles
-    // reach the same values at every corner, through points numbered
-    // differently. Those are compared corner by corner instead.
-    let theirIndex: Uint32Array | null = null;
-    let samePoints = true;
+    // Points are numbered as upstream numbers them, so the index is equal and
+    // every attribute compares point by point.
     if (isMesh) {
       const count = geometry.num_faces() * 3;
       const ptr = upstream._malloc(count * 4);
       decoder.GetTrianglesUInt32Array(geometry, count * 4, ptr);
-      theirIndex = new Uint32Array(upstream.HEAPF32.buffer, ptr, count).slice();
+      const theirIndex = new Uint32Array(upstream.HEAPF32.buffer, ptr, count).slice();
       upstream._free(ptr);
-      assert.equal(ours.index.length, count, `${name}: index length`);
-      samePoints = ours.index.every((corner: number, i: number) => corner === theirIndex![i]);
-      if (!samePoints) renumbered.push(name);
+      assert.deepEqual(ours.index, theirIndex, `${name}: index`);
     } else {
       assert.equal(ours.index, null, `${name}: a point cloud has no index`);
     }
-    // The values each triangle corner reaches, or each point's when the
-    // numbering agrees.
-    const reach = (array: ArrayBufferView & ArrayLike<number>, index: ArrayLike<number> | null, itemSize: number) => {
-      if (samePoints || !index) return bytesOf(array);
-      const width = (array as any).BYTES_PER_ELEMENT * itemSize;
-      const out = new Uint8Array(index.length * width);
-      const bytes = bytesOf(array);
-      for (let corner = 0; corner < index.length; corner += 1) {
-        out.set(bytes.subarray(index[corner] * width, (index[corner] + 1) * width), corner * width);
-      }
-      return out;
-    };
 
     const ids = Array.from({ length: geometry.num_attributes() }, (_, i) => decoder.GetAttribute(geometry, i).unique_id());
     for (let i = 0; i < geometry.num_attributes(); i += 1) {
@@ -126,11 +107,7 @@ function compareStream(name: string, data: Uint8Array) {
         assert.equal(decoded.itemSize, itemSize, `${where}: itemSize`);
         assert.equal(decoded.uniqueId, id, `${where}: uniqueId`);
         assert.equal(decoded.normalized, attribute.normalized(), `${where}: normalized`);
-        assert.deepEqual(
-          reach(decoded.array, ours.index, itemSize),
-          reach(theirArray as any, theirIndex, itemSize),
-          `${where}: values`,
-        );
+        assert.deepEqual(bytesOf(decoded.array), bytesOf(theirArray), `${where}: values`);
         compared += 1;
       }
     }
@@ -209,17 +186,7 @@ assert.equal(missing.success, false);
 assert.match(missing.error, /unique id 4242/);
 
 assert.ok(files >= 20, `only ${files} fixtures decoded`);
-// Which streams number their points differently is pinned, so a change in
-// either direction shows up here.
-assert.deepEqual(renumbered, [
-  'test_nm.obj.edgebreaker.0.10.0.drc',
-  'test_nm.obj.edgebreaker.0.9.1.drc',
-  'test_nm.obj.edgebreaker.1.0.0.drc',
-  'test_nm.obj.edgebreaker.1.1.0.drc',
-  'test_nm_quant.0.9.0.drc',
-]);
 console.log(
   `draco-attribute-parity: ${compared} attribute arrays over ${files} streams (${synthetic} written for the edges) ` +
-    'match upstream byte for byte, ' +
-    `${refusals} refusals agree; ${renumbered.length} legacy streams compared per corner`,
+    `match upstream byte for byte, ${refusals} refusals agree`,
 );
