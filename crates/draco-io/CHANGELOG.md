@@ -9,6 +9,14 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **`PlyWriter` writes binary little-endian by default.** `PlyFormat::default()`
+  is now `BinaryLittleEndian`, the one format upstream Draco's encoder writes;
+  text is several times the size and slower to read back. `write_ply_mesh` and
+  `write_ply_positions` follow it. For text, ask for it with
+  `.with_format(PlyFormat::Ascii)`.
+
 ## [0.5.2](https://github.com/Filyus/draco-rust/compare/draco-io-v0.5.1...draco-io-v0.5.2) - 2026-10-04
 
 ### Changed

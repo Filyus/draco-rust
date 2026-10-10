@@ -1,10 +1,13 @@
 /// PLY storage format.
+///
+/// The default is binary little-endian, the one format upstream Draco's
+/// encoder writes: text is several times the size and slower to read back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PlyFormat {
     /// Text PLY format.
-    #[default]
     Ascii,
     /// Binary little-endian PLY format.
+    #[default]
     BinaryLittleEndian,
     /// Binary big-endian PLY format.
     BinaryBigEndian,

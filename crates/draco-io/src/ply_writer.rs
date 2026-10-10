@@ -1187,7 +1187,7 @@ mod tests {
     #[test]
     fn named_generics_are_not_written_by_default() {
         let mesh = with_named_generics(2, &[("opacity", DataType::Float32, &[1.0, 2.0])]);
-        let mut writer = PlyWriter::new();
+        let mut writer = PlyWriter::new().with_format(PlyFormat::Ascii);
         Writer::add_mesh(&mut writer, &mesh, None).unwrap();
         let text = String::from_utf8(writer.write_to_vec().unwrap()).unwrap();
         assert!(!text.contains("opacity"), "{text}");
@@ -1204,7 +1204,9 @@ mod tests {
                 ("opacity", DataType::Float32, &[3.0, 4.0]),
             ],
         );
-        let mut writer = PlyWriter::new().with_generic_attributes(true);
+        let mut writer = PlyWriter::new()
+            .with_format(PlyFormat::Ascii)
+            .with_generic_attributes(true);
         Writer::add_mesh(&mut writer, &mesh, None).unwrap();
         let text = String::from_utf8(writer.write_to_vec().unwrap()).unwrap();
         let properties = text
@@ -1304,7 +1306,7 @@ mod tests {
         assert_eq!(writer.face_count(), 0);
         assert!(!writer.has_normals());
         assert!(!writer.has_colors());
-        assert!(!writer.is_binary_little_endian());
+        assert!(writer.is_binary_little_endian());
     }
 
     #[test]
@@ -1342,14 +1344,18 @@ mod tests {
         let file = NamedTempFile::new().unwrap();
         write_ply_positions(file.path(), &points).unwrap();
 
-        let content = fs::read_to_string(file.path()).unwrap();
-        assert!(content.contains("ply"));
-        assert!(content.contains("format ascii 1.0"));
+        let bytes = fs::read(file.path()).unwrap();
+        let content = String::from_utf8_lossy(&bytes);
+        assert!(content.starts_with("ply\nformat binary_little_endian 1.0\n"));
         assert!(content.contains("element vertex 3"));
         assert!(content.contains("property float x"));
-        assert!(content.contains("end_header"));
-        assert!(content.contains("0.000000 0.000000 0.000000"));
-        assert!(content.contains("1.000000 0.000000 0.000000"));
+        let header_end = content.find("end_header\n").unwrap() + "end_header\n".len();
+        // Three points of three little-endian floats each.
+        assert_eq!(bytes.len() - header_end, 3 * 12);
+        assert_eq!(
+            &bytes[header_end + 12..header_end + 16],
+            &1.0f32.to_le_bytes()
+        );
     }
 
     #[test]
@@ -1358,12 +1364,21 @@ mod tests {
         let file = NamedTempFile::new().unwrap();
         write_ply_mesh(file.path(), &mesh).unwrap();
 
-        let content = fs::read_to_string(file.path()).unwrap();
-        assert!(content.contains("ply"));
+        let bytes = fs::read(file.path()).unwrap();
+        let content = String::from_utf8_lossy(&bytes);
+        assert!(content.starts_with("ply\nformat binary_little_endian 1.0\n"));
         assert!(content.contains("element vertex 3"));
         assert!(content.contains("element face 1"));
         assert!(content.contains("property list uchar int vertex_indices"));
-        assert!(content.contains("3 0 1 2")); // face with 0-based indices
+        // The face is last: a count of three, then the 0-based indices.
+        let face: Vec<u8> = [
+            &[3u8][..],
+            &0i32.to_le_bytes(),
+            &1i32.to_le_bytes(),
+            &2i32.to_le_bytes(),
+        ]
+        .concat();
+        assert!(bytes.ends_with(&face));
     }
 
     #[test]
@@ -1371,7 +1386,7 @@ mod tests {
         let mesh1 = create_triangle_mesh();
         let mesh2 = create_triangle_mesh();
 
-        let mut writer = PlyWriter::new();
+        let mut writer = PlyWriter::new().with_format(PlyFormat::Ascii);
         Writer::add_mesh(&mut writer, &mesh1, None).unwrap();
         Writer::add_mesh(&mut writer, &mesh2, None).unwrap();
 
@@ -1429,7 +1444,7 @@ mod tests {
 
     #[test]
     fn test_ply_with_colors() {
-        let mut writer = PlyWriter::new();
+        let mut writer = PlyWriter::new().with_format(PlyFormat::Ascii);
         writer.add_points_with_colors(
             &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
             &[[255, 0, 0, 255], [0, 255, 0, 255]],
@@ -1635,7 +1650,7 @@ mod tests {
             .write(12, &[4, 0, 0, 0, 5, 0, 0, 0, 6, 0, 0, 0]);
         mesh.add_attribute(pos_att);
 
-        let mut writer = PlyWriter::new();
+        let mut writer = PlyWriter::new().with_format(PlyFormat::Ascii);
         Writer::add_mesh(&mut writer, &mesh, None).unwrap();
         let output = String::from_utf8(writer.write_to_vec().unwrap()).unwrap();
         assert!(output.contains("property int x"));
