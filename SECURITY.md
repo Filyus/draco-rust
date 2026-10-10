@@ -144,8 +144,11 @@ allocate. Two shapes satisfy that, and every decode path here uses one of them:
   extends as output is produced, so a count nothing backs costs one small
   reservation and then an error when the coder runs out. `decode_symbols`
   appends into the caller's `Vec` starting at eight symbols per remaining input
-  byte; `DynamicIntegerPointsKdTreeDecoder` reserves on the same allowance;
-  `EdgebreakerConnectivityDecoder` and both EdgeBreaker traversals grow as
+  byte; `DynamicIntegerPointsKdTreeDecoder` reserves on the same allowance,
+  and its walk keeps one row and an undo log rather than a row per tree level,
+  so its memory is linear in the point dimension where C++ Draco 1.5.7 commits
+  a quadratic amount up front (upstream's `main` took the same walk in
+  google/draco#1241); `EdgebreakerConnectivityDecoder` and both EdgeBreaker traversals grow as
   faces and vertices are decoded; `draco-texture` grows an ETC1S image one
   block row at a time.
 - **Size after the data exists.** Where a consumer writes at computed offsets

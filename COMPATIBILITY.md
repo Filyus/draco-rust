@@ -4,6 +4,12 @@ This port targets byte-exact parity with C++ Draco 1.5.7, and mostly reaches it.
 The same mesh and options give the same bytes, and each implementation reads
 what the other writes.
 
+Upstream's `main` has since taken fixes from this port for three of the
+differences below, and a section says so where it applies. No release carries
+them yet: 1.5.7, of January 2024, is still the latest, and it is what "C++"
+means in the tables. Each claim about `main` was checked against a build of
+google/draco `eb7c044` (2026-10-10).
+
 The deliberate differences fall into two layers, kept apart below:
 
 1. **[The codec, `draco-core`](#the-codec-draco-core)** — what a given `Mesh` or
@@ -21,12 +27,13 @@ For which algorithms exist at all, see
 | difference | same bytes as C++? | C++ decodes ours? | we decode C++'s? |
 |---|---|---|---|
 | [`uint32` > `i32::MAX`][uint32] | C++ refuses | yes | yes |
-| [Overflowing corrections][wrap] | yes | no, nor its own | yes |
+| [Overflowing corrections][wrap] | yes | no, nor its own; `main` yes | yes |
 | [Integer details][minor] | yes | yes | old `uint32` parents differ |
 | [Point-cloud options][options] | only when off | yes | yes |
 | [`Mesh::finalize`][finalize] | yes; the mesh differs | yes | yes |
 | [64-bit dedup][dedup] | n/a | yes | yes |
-| [Range wider than `f32`][range] | we refuse; C++ writes NaN | n/a | yes, to NaN |
+| [Range wider than `f32`][range] | we refuse; C++ writes NaN, `main` refuses | n/a | yes, to NaN |
+| [Unquantized integer normals][intnormals] | no: C++ writes other normals; `main` yes | yes | its stream holds other normals |
 
 [uint32]: #uint32-attribute-values-above-i32max
 [wrap]: #prediction-corrections-that-overflow-int32
@@ -35,6 +42,7 @@ For which algorithms exist at all, see
 [finalize]: #meshfinalize-drops-unused-points-and-values
 [dedup]: #deduplication-of-64-bit-attribute-values
 [range]: #quantizing-a-range-wider-than-f32
+[intnormals]: #unquantized-integer-normals-below-speed-4
 
 "C++ refuses": C++ Draco will not encode that input. "n/a": nothing upstream
 builds reaches that code.
@@ -227,6 +235,12 @@ Files that decode identically in both implementations still do. Every
 correction that stays inside the wrap range reconstructs exactly as before; the
 results differ only where C++'s own arithmetic wraps.
 
+Upstream's `main` decodes these streams too, since google/draco#1238 (merged
+2026-10-09) moved its addition to `int64_t`. Its test
+`TestTexCoordPredictionThatWrapsRoundTrips` round-trips the 911-byte stream.
+The change touched only the decoder, so `main` still writes the bytes this
+encoder writes.
+
 #### How each implementation handles it
 
 The encoder wraps each correction into `min_correction..=max_correction`, half
@@ -354,11 +368,43 @@ No usable stream changes: the only input affected is one where C++'s output
 does not hold the geometry it was given. Both decoders read the C++ stream the
 same way, to NaN.
 
+Upstream's `main` refuses the range as well, since google/draco#1234 (merged
+2026-10-09); its test `TestQuantizationRangeWiderThanFloatIsRefused` covers it.
+
 #### Tests
 
 | test | file | what it pins |
 |---|---|---|
 | `a_range_wider_than_f32_is_refused` | [`draco-core/src/attribute_quantization_transform.rs`](crates/draco-core/src/attribute_quantization_transform.rs) | The encode going back to writing a NaN stream. |
+
+### Unquantized integer normals below speed 4
+
+A normal attribute whose values are already integers, and that is given no
+quantization, keeps the wrap transform. Below speed 4 both encoders select
+geometric-normal prediction for it, which predicts in octahedral coordinates
+that the wrap transform does not have.
+
+C++ Draco 1.5.7 builds the scheme over the wrap transform anyway. Its encoder
+factory, unlike its decoder factory, has no case per transform, and the scheme
+then asks the wrap transform for its quantization bits, a stub that returns -1
+behind `DRACO_DCHECK(false)`. A debug build asserts. A release build predicts
+from an uninitialized octahedron toolbox and writes a stream that decodes to
+other normals, with every step reporting success.
+
+This encoder codes a delta instead, the fallback upstream's factory takes for
+any mesh scheme it cannot build
+([`sequential_integer_attribute_encoder.rs`](crates/draco-core/src/sequential_integer_attribute_encoder.rs)).
+Upstream's `main` does the same since google/draco#1239 (merged 2026-10-09),
+and for the mesh of its test `TestIntegerNormalsAtSpeedZeroRoundTrip` the two
+encoders write the same 216 bytes. Every decoder reads the delta stream. Normals
+that are quantized, which is how any normal from a float source arrives, are not
+affected and encode as before.
+
+#### Tests
+
+| test | file | what it pins |
+|---|---|---|
+| `integer_normals_below_speed_four_encode_a_delta_as_upstream_main_does` | [`draco-core/tests/encoder_hardening_test.rs`](crates/draco-core/tests/encoder_hardening_test.rs) | The bytes `main` writes for that mesh ([`testdata/cpp_main_integer_normals_speed_0.drc`](testdata/cpp_main_integer_normals_speed_0.drc)), and that they decode to the input's normals. |
 
 ## File readers, `draco-io` and `draco-gltf`
 
