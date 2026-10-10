@@ -41,6 +41,8 @@ const bytesOf = (array: ArrayBufferView) => new Uint8Array(array.buffer, array.b
 let files = 0;
 let compared = 0;
 let refusals = 0;
+let bySemantic = 0;
+const unreachable: string[] = [];
 function compareStream(name: string, data: Uint8Array) {
   const decoder = new upstream.Decoder();
   const isMesh = data[7] === 1;
@@ -72,19 +74,28 @@ function compareStream(name: string, data: Uint8Array) {
     const ids = Array.from({ length: geometry.num_attributes() }, (_, i) => decoder.GetAttribute(geometry, i).unique_id());
     for (let i = 0; i < geometry.num_attributes(); i += 1) {
       const id = ids[i];
+      const attribute = decoder.GetAttribute(geometry, i);
+      const semantic = semantics.find((s) => upstream[s] === attribute.attribute_type());
       // Streams before 1.3 give every attribute unique id 0. A lookup by id
-      // then finds the first of them on both sides, which is what is checked
-      // for the rest; their values are compared through the first.
-      if (ids.indexOf(id) !== i) {
+      // then finds the first of them on both sides, which is checked here; the
+      // rest are reached by semantic instead, as the first of their type.
+      let find: { id: number } | { semantic: (typeof semantics)[number] };
+      if (ids.indexOf(id) === i) {
+        find = { id };
+      } else {
         const first = drc.decode_draco(data, [{ id }]);
         assert.equal(
           first.attributes[0].itemSize,
           decoder.GetAttributeByUniqueId(geometry, id).num_components(),
           `${name}: a shared id ${id} finds the first attribute that has it`,
         );
-        continue;
+        if (!semantic || decoder.GetAttributeId(geometry, upstream[semantic]) !== i) {
+          unreachable.push(`${name} attribute ${i}`);
+          continue;
+        }
+        find = { semantic };
+        bySemantic += 1;
       }
-      const attribute = decoder.GetAttribute(geometry, i);
       const itemSize = attribute.num_components();
       for (const [typeName, TypedArray, dataType] of types) {
         const byteLength = geometry.num_points() * itemSize * TypedArray.BYTES_PER_ELEMENT;
@@ -94,8 +105,8 @@ function compareStream(name: string, data: Uint8Array) {
           new Uint8Array(upstream.HEAPF32.buffer, ptr, byteLength).slice().buffer,
         );
         upstream._free(ptr);
-        const result = drc.decode_draco(data, [{ name: 'a', id, type: typeName }]);
-        const where = `${name} attribute ${id} as ${typeName}`;
+        const result = drc.decode_draco(data, [{ name: 'a', ...find, type: typeName }]);
+        const where = `${name} attribute ${i} (${'id' in find ? `id ${id}` : find.semantic}) as ${typeName}`;
         if (!ok) {
           assert.equal(result.success, false, `${where}: upstream refuses, ours decoded`);
           refusals += 1;
@@ -186,7 +197,11 @@ assert.equal(missing.success, false);
 assert.match(missing.error, /unique id 4242/);
 
 assert.ok(files >= 20, `only ${files} fixtures decoded`);
+// An attribute that shares its id with an earlier one and is not the first of
+// its type either has no request that reaches it, so it would go unchecked.
+assert.deepEqual(unreachable, [], 'attributes no request reaches');
+assert.ok(bySemantic > 0, 'no attribute was reached by semantic');
 console.log(
   `draco-attribute-parity: ${compared} attribute arrays over ${files} streams (${synthetic} written for the edges) ` +
-    `match upstream byte for byte, ${refusals} refusals agree`,
+    `match upstream byte for byte (${bySemantic} legacy attributes reached by semantic), ${refusals} refusals agree`,
 );
