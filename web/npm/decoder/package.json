@@ -43,6 +43,14 @@
       "types": "./legacy/index.d.ts",
       "default": "./legacy/index.js"
     },
+    "./pool": {
+      "types": "./pool.d.ts",
+      "default": "./pool.js"
+    },
+    "./*/pool": {
+      "types": "./*/pool.d.ts",
+      "default": "./*/pool.js"
+    },
     "./*.wasm": "./*.wasm",
     "./package.json": "./package.json"
   },

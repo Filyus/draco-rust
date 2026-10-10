@@ -5,7 +5,9 @@
 //! bundler takes only the wasm an application imports. The packages' manifests
 //! and READMEs are tracked in `web/npm/<package>/`; this builds the entries
 //! next to copies of them in `web/npm/dist/<package>/`, ready for `npm pack` or
-//! `npm publish`.
+//! `npm publish`. Hand-written modules that go with every entry, which import
+//! the entry as `./index.js`, are tracked in `web/npm/<package>/entry/` and
+//! copied next to each.
 
 use std::env;
 use std::ffi::OsString;
@@ -201,6 +203,7 @@ pub(crate) fn build_packages(config: &Config, only: &[String]) -> Result<(), Str
             ),
         )?;
         copy(&license, &dist.join("LICENSE"))?;
+        let shared = shared_files(&template.join("entry"))?;
 
         for entry in package.entries {
             let target = match entry.path.strip_prefix("./") {
@@ -208,6 +211,9 @@ pub(crate) fn build_packages(config: &Config, only: &[String]) -> Result<(), Str
                 None => dist.clone(),
             };
             build_entry(config, package, entry, &wasm_opt, &target)?;
+            for file in &shared {
+                copy(file, &target.join(file.file_name().unwrap_or_default()))?;
+            }
             let (raw, gzip) = measure_wasm_size(&target.join("index_bg.wasm"))?;
             println!(
                 "  @draco-rust/{:<8} {:<14} {raw:>8} raw {gzip:>8} gzip ({:.1} KiB)",
@@ -285,6 +291,24 @@ fn build_entry(
             entry.features.join(",")
         )
     })
+}
+
+/// The files in a package's `entry/` directory, none when it has none.
+fn shared_files(dir: &Path) -> Result<Vec<std::path::PathBuf>, String> {
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut files = Vec::new();
+    for item in fs::read_dir(dir).map_err(|error| format!("{}: {error}", dir.display()))? {
+        let path = item
+            .map_err(|error| format!("{}: {error}", dir.display()))?
+            .path();
+        if path.is_file() {
+            files.push(path);
+        }
+    }
+    files.sort();
+    Ok(files)
 }
 
 /// Every `@draco-rust/*` package carries this one version: they are built from

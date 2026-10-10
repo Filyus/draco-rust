@@ -135,7 +135,51 @@ for (const [name, parse, create, file, faces] of formats) {
   assert.ok(again.success, name + ' ' + file + ' reread: ' + again.error);
   assert.equal(again.meshes[0].positions.length, mesh.positions.length, name + ' ' + file + ' round trip');
 }
-console.log('npm-packages: OK (4 decoder entries, encoder, 3 glTF entries, FBX, OBJ, PLY, STL)');
+// Each decoder entry's pool decodes on worker threads what the entry decodes
+// here, byte for byte, with several streams in flight at once.
+const same = (a, b, what) => {
+  assert.equal(a.success, b.success, what);
+  assert.equal(a.error, b.error, what);
+  assert.deepEqual(a.index, b.index, what + ' index');
+  assert.equal(a.attributes.length, b.attributes.length, what);
+  a.attributes.forEach((attribute, i) => {
+    assert.equal(attribute.array.constructor, b.attributes[i].array.constructor, what);
+    assert.deepEqual(attribute.array, b.attributes[i].array, what + ' ' + attribute.name);
+  });
+};
+const requests = [
+  { name: 'position', semantic: 'POSITION', type: 'Float32Array' },
+  { name: 'color', semantic: 'COLOR', type: 'Uint8Array' },
+];
+for (const spec of Object.keys(decoders)) {
+  const { decode_draco } = await load(spec);
+  const { createDecoderPool } = await import(spec.replace(/^(@draco-rust\\/decoder)(\\/.*)?$/, '$1$2/pool'));
+  const pool = createDecoderPool({ workers: 2 });
+  const inputs = [streams.mesh, streams.cloud, streams.legacy, streams.mesh, streams.cloud, streams.mesh];
+  const results = await Promise.all(inputs.map((bytes) => pool.decode(bytes, requests)));
+  inputs.forEach((bytes, i) => same(results[i], decode_draco(bytes, requests), spec + ' pool, stream ' + i));
+  assert.equal(results.filter((result) => result.success).length > 0, true, spec);
+  // Without workers the pool decodes here, to the same answer.
+  const local = createDecoderPool({ workers: 0 });
+  same(await local.decode(streams.mesh), decode_draco(streams.mesh, undefined), spec + ' on this thread');
+  pool.dispose();
+  local.dispose();
+}
+{
+  const { createDecoderPool } = await import('@draco-rust/decoder/pool');
+  const pool = createDecoderPool({ workers: 1 });
+  const copy = streams.mesh.slice();
+  assert.ok((await pool.decode(copy)).success);
+  assert.equal(copy.byteLength, streams.mesh.byteLength, 'a decode copies the stream unless told otherwise');
+  assert.ok((await pool.decode(copy, undefined, { transfer: true })).success);
+  assert.equal(copy.byteLength, 0, 'transfer hands the stream to the worker');
+  const pending = pool.decode(streams.mesh);
+  pool.dispose();
+  await assert.rejects(pending, /disposed/);
+  await assert.rejects(pool.decode(streams.mesh), /disposed/);
+}
+
+console.log('npm-packages: OK (4 decoder entries with their pools, encoder, 3 glTF entries, FBX, OBJ, PLY, STL)');
 `);
   process.stdout.write(execFileSync(process.execPath, ['consumer.mjs'], { cwd: project }).toString());
 } finally {
