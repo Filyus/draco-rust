@@ -133,34 +133,10 @@ impl AttributeOctahedronTransform {
         Ok(())
     }
 
-    /// Converts with the octahedron-to-vector arithmetic of Draco 0.9.1 to
-    /// 1.3.x when `legacy_octahedron_to_vector` is set. The decoder does not
-    /// call it: like Draco 1.5.7, it converts every bitstream version with the
-    /// current arithmetic, which is what
-    /// [`inverse_transform_attribute`](AttributeTransform::inverse_transform_attribute)
-    /// does.
-    #[deprecated(
-        since = "2.4.0",
-        note = "the decoder converts every bitstream version as Draco 1.5.7 does; use inverse_transform_attribute"
-    )]
-    pub fn inverse_transform_attribute_with_legacy_octahedron(
-        &self,
-        attribute: &PointAttribute,
-        target_attribute: &mut PointAttribute,
-        legacy_octahedron_to_vector: bool,
-    ) -> Status {
-        self.inverse_transform_attribute_impl(
-            attribute,
-            target_attribute,
-            legacy_octahedron_to_vector,
-        )
-    }
-
     fn inverse_transform_attribute_impl(
         &self,
         attribute: &PointAttribute,
         target_attribute: &mut PointAttribute,
-        legacy_octahedron_to_vector: bool,
     ) -> Status {
         if target_attribute.data_type() != DataType::Float32 {
             return Err(DracoError::invalid_parameter(format!(
@@ -230,12 +206,7 @@ impl AttributeOctahedronTransform {
             let s = i32::from_le_bytes(s_array);
             let t = i32::from_le_bytes(t_array);
 
-            let att_val = if legacy_octahedron_to_vector {
-                #[allow(deprecated)]
-                converter.quantized_octahedral_coords_to_unit_vector_legacy(s, t)
-            } else {
-                converter.quantized_octahedral_coords_to_unit_vector(s, t)
-            };
+            let att_val = converter.quantized_octahedral_coords_to_unit_vector(s, t);
 
             let target_offset = i * 12;
             // Write floats using bytemuck
@@ -298,7 +269,7 @@ impl AttributeTransform for AttributeOctahedronTransform {
         attribute: &PointAttribute,
         target_attribute: &mut PointAttribute,
     ) -> Status {
-        self.inverse_transform_attribute_impl(attribute, target_attribute, false)
+        self.inverse_transform_attribute_impl(attribute, target_attribute)
     }
 
     #[cfg(feature = "encoder")]
