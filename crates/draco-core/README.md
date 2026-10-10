@@ -10,7 +10,10 @@ meshes and point clouds.
 
 It targets compatibility with the official C++ Draco format without linking the
 C++ library. The crate is suitable for native Rust, WASM, and format conversion
-pipelines that need direct access to Draco geometry data.
+pipelines that need direct access to Draco geometry data. For JavaScript, the
+same decoder and encoder are on npm as
+[`@draco-rust/decoder`](https://www.npmjs.com/package/@draco-rust/decoder) and
+[`@draco-rust/encoder`](https://www.npmjs.com/package/@draco-rust/encoder).
 
 This project is independent and is not an official Google Draco release.
 

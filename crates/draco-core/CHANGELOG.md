@@ -8,13 +8,61 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.3.1](https://github.com/Filyus/draco-rust/compare/draco-core-v2.3.0...draco-core-v2.3.1) - 2026-10-10
+
+### Added
+
+- **The codec is on npm for JavaScript.** `@draco-rust/decoder` and
+  `@draco-rust/encoder` are this crate's decoder and encoder built to
+  WebAssembly, for the browser, bundlers and Node, and jsDelivr serves them
+  too. The decoder comes whole or cut to meshes, point clouds or the older
+  bitstreams. They carry a version of their own, starting at 0.1, and are built
+  and published from CI with npm provenance. glTF, FBX, OBJ, PLY and STL are
+  there as well, as `@draco-rust/gltf`, `fbx`, `obj`, `ply` and `stl`.
+
 ### Changed
 
-- **The KD-tree encoder's memory is linear in the point dimension.** It kept a
-  row for every depth of the tree, `2 * (32d + 1) * d` values allocated up
-  front: 1 MB for a 62-component cloud, 16.6 MB at 255 and 1.1 GB at 2048. It
-  now walks on one row and an undo log, as the decoder has since 2.3.0. The
-  output is byte-identical, and encoding is up to 17% faster at high dimension.
+- **Meshes with predicted normals or texture coordinates decode faster, with
+  the same output.** Each predictor resolves the positions it reads once per
+  pass instead of on every read, a float attribute of an EdgeBreaker mesh is
+  read a value at a time instead of a component at a time, and the rANS slot
+  table is filled a symbol's run at a time. The same position tables speed up
+  the encoder's normal and texture-coordinate prediction, with the same bytes
+  out. Against 2.3.0:
+  - Natively, a grid of 66 thousand points with normals and texture
+    coordinates decodes 6% to 7% faster and encodes 3% to 5% faster.
+  - On wasm32, meshes with predicted normals decode 27% to 35% faster, with
+    or without texture coordinates. Most of that is the normal predictor no
+    longer using 128-bit arithmetic (see the fix below), which wasm32 has no
+    instructions for. Under Node, the Stanford bunny with normals decodes in
+    11.9 ms instead of 17.1 ms, where upstream's `draco_decoder_gltf.wasm`
+    takes 13.9 ms.
+
+### Fixed
+
+- **Normals decode correctly on meshes whose positions span the `i32`
+  range.** The decoder summed the cross products around a vertex in 128 bits,
+  while the encoder, like C++ Draco, wraps them in 64. Once a cross product
+  left `i64` the decoder predicted a different normal from the one the encoder
+  had subtracted, and decoded the wrong normals. Both now wrap as C++ does.
+- **Geometric normal prediction matches Draco 1.5.7 when the summed normal
+  is very large.** Three differences, each reached only by large sums: the
+  sum's magnitude now saturates at `i64::MAX` instead of wrapping, and for
+  streams from Draco 1.0.0, which predict from one triangle, the magnitude is
+  truncated to 32 bits and the triangle is added once per face around the
+  vertex, as 1.5.7 decodes them.
+- **The KD-tree encoder's memory grows linearly with the number of
+  components, not with its square, as the decoder's has since 2.3.0.** It
+  kept a row of `dimension` values for every level of the tree, allocated up
+  front: 1 MB for a cloud of 62 components, 17 MB at 255 and 1.1 GB at 2048.
+  - The encoder now keeps one row and undoes each split on the way back, the
+    decoder's walk.
+  - The encoded bytes are unchanged, and encoding is faster too: 4% to 6% for
+    clouds of three to six components and 10% for 64.
+- **`PointAttribute::read_f32s` cannot compute a wrapped byte offset.** An
+  attribute whose value count was set without sizing its buffer could make
+  the offset wrap on 32-bit targets, wasm32 among them, and read the wrong
+  bytes instead of leaving the missing values at zero.
 
 ## [2.3.0](https://github.com/Filyus/draco-rust/compare/draco-core-v2.2.1...draco-core-v2.3.0) - 2026-10-04
 
