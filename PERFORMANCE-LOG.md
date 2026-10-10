@@ -36,7 +36,7 @@ figure at all.
 `rejected` -- tried, deliberately not kept. `retracted` -- an earlier claim
 here was withdrawn. `diagnostic` -- measured only, no change proposed.
 
-93 rounds: 59 landed, 13 diagnostic, 11 null, 8 retracted, 2 rejected.
+94 rounds: 59 landed, 14 diagnostic, 11 null, 8 retracted, 2 rejected.
 
 | Round | Verdict | Headline |
 | --- | --- | ---: |
@@ -136,6 +136,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [The KD-Tree Encoder On One Row](#the-kd-tree-encoder-on-one-row) | landed | `16.6 MB -> linear at d=255, -1.5% to -17.4% time` |
 | [draco-core 2.3.1 Against 2.3.0](#draco-core-231-against-230) | diagnostic | `-27 to -35% WASM decode with predicted normals, -6 to -7% native` |
 | [KTX2 In WASM: zrip, And The Transcoder's Optimization Level](#ktx2-in-wasm-zrip-and-the-transcoders-optimization-level) | landed (opt 2), deferred (zrip) | `zrip: 3x native, 1.9x WASM Zstd, 1.01x WASM decode; opt 2: 0.87x for +8.7 kB` |
+| [`decode_draco` Against draco3d, And The Pool](#decode_draco-against-draco3d-and-the-pool) | diagnostic | `0.99-2.48x draco3d's speed; 8 streams 98 -> 42 ms on 4 workers` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -5444,6 +5445,46 @@ without the module cost would change that. The transcoder's level is
 `2.4x` and every file but one beyond the floor, for 5% of the module.
 `web/Cargo.toml` carries it as a per-package override, and the recorded
 `ktx2-wasm` went from 174,986 to 184,133 bytes of gzip.
+
+### `decode_draco` Against draco3d, And The Pool
+
+2026-10-10, same laptop, at `b51e8956`, Node 24.21. What a three.js page
+would see on switching from `DRACOLoader`: the `@draco-rust/decoder` root
+entry as `build-tool --npm` publishes it, against `draco3d` 1.5.7's decoder
+module, which is what `DRACOLoader` loads. Both do `DRACOLoader`'s work for a
+`.drc` file: position, normal, colour and texture coordinates by type, as
+`Float32Array`, and the index, copied out of the module. One thread, A and B
+alternating in order, 31 samples after 5 warm-ups, medians. This module is
+instantiated first, which the KTX2 round above found costs the first one
+6-17%, so the ratios lean toward draco3d.
+
+| fixture | `decode_draco` | draco3d | draco3d / ours |
+| --- | ---: | ---: | ---: |
+| `bunny_cpp_standard.drc` (sequential) | `3.03 ms` | `5.68 ms` | `1.88x` |
+| `bunny_gltf.drc` (edgebreaker) | `12.63 ms` | `20.52 ms` | `1.63x` |
+| `bunny_cpp.drc` | `12.15 ms` | `15.10 ms` | `1.24x` |
+| `lamp_cpp_std.drc` | `2.13 ms` | `2.10 ms` | `0.99x` |
+| `car.drc` | `0.06 ms` | `0.15 ms` | `2.48x` |
+
+`createDecoderPool`, eight `bunny_gltf.drc` decodes in flight at once,
+medians of nine after a warm-up round:
+
+| workers | 8 streams |
+| ---: | ---: |
+| 0 (this thread) | `98.3 ms` |
+| 1 | `90.5 ms` |
+| 2 | `56.6 ms` |
+| 4 | `41.6 ms` |
+
+One worker matching the calling thread says the transfers in both directions
+cost nothing measurable here; four reach 2.4x, not 4x, on a laptop whose clock
+drops under sustained multi-core load. `lamp_cpp_std.drc` is the one file at
+parity; nothing in this round says why, and it is where a decode profile
+would start.
+
+Verdict: `diagnostic`. `DRACOLoader` itself, with its own worker pool and
+`GLTFLoader` on top, was not run: `three` is not a dependency of the web
+tests, and a browser comparison through it is the measurement still owed.
 
 ## Unexplored
 
