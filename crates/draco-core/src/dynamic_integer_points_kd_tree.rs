@@ -29,9 +29,10 @@ fn most_significant_bit(value: u32) -> u32 {
     31 - value.leading_zeros()
 }
 
-/// What one split of the decoder's walk changed in its current row, kept so
-/// the walk can put it back when it returns to a shallower node.
-#[cfg(feature = "decoder")]
+/// What one split of a walk changed in its current row, kept so the walk can
+/// put it back when it returns to a shallower node. The encoder and the
+/// decoder walk the same tree in the same order and keep the same log.
+#[cfg(any(feature = "encoder", feature = "decoder"))]
 #[derive(Clone, Copy)]
 struct SplitUndo {
     /// The depth of the node that split. Its row keeps the new level of
@@ -199,8 +200,9 @@ pub struct DynamicIntegerPointsKdTreeEncoder {
     deviations: Vec<u32>,
     num_remaining_bits: Vec<u32>,
     axes: Vec<u32>,
-    base_stack: Vec<u32>,
-    levels_stack: Vec<u32>,
+    /// The node being encoded: its base, then its levels, `dimension` each.
+    row: Vec<u32>,
+    undo: Vec<SplitUndo>,
     numbers_encoder: NumbersEncoder,
     remaining_bits_encoder: DirectBitEncoder,
     axis_encoder: DirectBitEncoder,
@@ -211,7 +213,6 @@ pub struct DynamicIntegerPointsKdTreeEncoder {
 impl DynamicIntegerPointsKdTreeEncoder {
     pub fn new(compression_level: u8, dimension: u32) -> Self {
         assert!(compression_level <= 6);
-        let stack_len = (32 * dimension + 1) as usize;
 
         let numbers_encoder = match compression_level {
             0 | 1 => NumbersEncoder::Direct(DirectBitEncoder::new()),
@@ -227,8 +228,8 @@ impl DynamicIntegerPointsKdTreeEncoder {
             deviations: vec![0; dimension as usize],
             num_remaining_bits: vec![0; dimension as usize],
             axes: vec![0; dimension as usize],
-            base_stack: vec![0; stack_len * dimension as usize],
-            levels_stack: vec![0; stack_len * dimension as usize],
+            row: Vec::new(),
+            undo: Vec::new(),
             numbers_encoder,
             remaining_bits_encoder: DirectBitEncoder::new(),
             axis_encoder: DirectBitEncoder::new(),
@@ -323,39 +324,77 @@ impl DynamicIntegerPointsKdTreeEncoder {
     }
 
     fn encode_internal(&mut self, points: &mut PointDVector) {
+        // The row and the log live on `self` so their allocations outlast one
+        // call, and are taken out for the walk so the coders can borrow
+        // `self` while the row is read.
+        let mut row = std::mem::take(&mut self.row);
+        let mut undo = std::mem::take(&mut self.undo);
+        self.encode_walk(points, &mut row, &mut undo);
+        self.row = row;
+        self.undo = undo;
+    }
+
+    /// Walks the tree depth first on one row, as the decoder's `decode_walk`
+    /// does and for the same reason: a row per level is quadratic in the
+    /// dimension, since the tree can be `32 * dimension` levels deep. A split
+    /// at depth `d` raises one level in the row of `d`, and the row of `d + 1`
+    /// is that row with one more base bit set, so the row of any pending node
+    /// is the current row with the splits below it taken back. Pending nodes
+    /// are never deeper than the node just encoded, which is what lets the
+    /// log be unwound from its end.
+    fn encode_walk(
+        &mut self,
+        points: &mut PointDVector,
+        row: &mut Vec<u32>,
+        undo: &mut Vec<SplitUndo>,
+    ) {
         #[derive(Clone, Copy)]
         struct Status {
             begin: usize,
             end: usize,
             last_axis: u32,
-            stack_pos: usize,
+            depth: u32,
         }
 
         let dimension = self.dimension as usize;
-        self.base_stack[0..dimension].fill(0);
-        self.levels_stack[0..dimension].fill(0);
-        let mut old_base = vec![0; dimension];
-        let mut levels = vec![0; dimension];
+        row.clear();
+        row.resize(2 * dimension, 0);
+        undo.clear();
+        let mut depth = 0u32;
 
         let mut stack: Vec<Status> = Vec::new();
         stack.push(Status {
             begin: 0,
             end: points.num_points(),
             last_axis: 0,
-            stack_pos: 0,
+            depth: 0,
         });
 
         while let Some(status) = stack.pop() {
             let begin = status.begin;
             let end = status.end;
             let last_axis = status.last_axis;
-            let stack_pos = status.stack_pos;
 
-            let row_start = stack_pos * dimension;
-            old_base.copy_from_slice(&self.base_stack[row_start..row_start + dimension]);
-            levels.copy_from_slice(&self.levels_stack[row_start..row_start + dimension]);
+            if status.depth != depth {
+                debug_assert!(status.depth < depth);
+                while let Some(&split) = undo.last() {
+                    if split.depth < status.depth {
+                        break;
+                    }
+                    let axis = split.axis as usize;
+                    row[axis] = split.old_base;
+                    if split.depth == status.depth {
+                        // The node's own split, whose level stays raised.
+                        break;
+                    }
+                    row[dimension + axis] = split.old_level;
+                    undo.pop();
+                }
+                depth = status.depth;
+            }
+            let (base, levels) = row.split_at_mut(dimension);
 
-            let axis = self.get_and_encode_axis(points, begin, end, &old_base, &levels, last_axis);
+            let axis = self.get_and_encode_axis(points, begin, end, base, levels, last_axis);
             let level = levels[axis as usize];
             let num_remaining_points = (end - begin) as u32;
 
@@ -385,10 +424,8 @@ impl DynamicIntegerPointsKdTreeEncoder {
 
             let num_remaining_bits = self.bit_length - level;
             let modifier = 1u32 << (num_remaining_bits - 1);
-            let child_start = (stack_pos + 1) * dimension;
-            self.base_stack[child_start..child_start + dimension].copy_from_slice(&old_base);
-            self.base_stack[child_start + axis as usize] += modifier;
-            let new_base_axis_value = self.base_stack[child_start + axis as usize];
+            let axis_index = axis as usize;
+            let new_base_axis_value = base[axis_index] + modifier;
 
             let split = points.partition(begin, end, axis as usize, new_base_axis_value);
 
@@ -407,16 +444,24 @@ impl DynamicIntegerPointsKdTreeEncoder {
                 self.encode_number(required_bits, num_remaining_points / 2 - second_half);
             }
 
-            levels[axis as usize] += 1;
-            self.levels_stack[row_start..row_start + dimension].copy_from_slice(&levels);
-            self.levels_stack[child_start..child_start + dimension].copy_from_slice(&levels);
+            // Both halves see the split axis one level deeper. The first half
+            // stays at this depth and keeps the base, the second goes one
+            // deeper with the split bit set in its base.
+            undo.push(SplitUndo {
+                depth,
+                axis,
+                old_level: levels[axis_index],
+                old_base: base[axis_index],
+            });
+            levels[axis_index] += 1;
+            base[axis_index] = new_base_axis_value;
 
             if split != begin {
                 stack.push(Status {
                     begin,
                     end: split,
                     last_axis: axis,
-                    stack_pos,
+                    depth,
                 });
             }
             if split != end {
@@ -424,9 +469,10 @@ impl DynamicIntegerPointsKdTreeEncoder {
                     begin: split,
                     end,
                     last_axis: axis,
-                    stack_pos: stack_pos + 1,
+                    depth: depth + 1,
                 });
             }
+            depth += 1;
         }
     }
 }

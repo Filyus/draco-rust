@@ -8,6 +8,14 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **The KD-tree encoder's memory is linear in the point dimension.** It kept a
+  row for every depth of the tree, `2 * (32d + 1) * d` values allocated up
+  front: 1 MB for a 62-component cloud, 16.6 MB at 255 and 1.1 GB at 2048. It
+  now walks on one row and an undo log, as the decoder has since 2.3.0. The
+  output is byte-identical, and encoding is up to 17% faster at high dimension.
+
 ## [2.3.0](https://github.com/Filyus/draco-rust/compare/draco-core-v2.2.1...draco-core-v2.3.0) - 2026-10-04
 
 ### Added

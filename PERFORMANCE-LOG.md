@@ -133,6 +133,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [The glTF Reader Against Upstream's, By Size](#the-gltf-reader-against-upstreams-by-size) | landed | `142.4 -> 125.2 kB gzip` |
 | [Writing glTF JSON After An Edit](#writing-gltf-json-after-an-edit) | landed | `0.34 -> 0.17 ms` |
 | [draco-core's Optimization Level, Re-Measured On glTF Reads](#draco-cores-optimization-level-re-measured-on-gltf-reads) | diagnostic | `opt 2 stays: s is -13.3 kB for +7-18%` |
+| [The KD-Tree Encoder On One Row](#the-kd-tree-encoder-on-one-row) | landed | `16.6 MB -> linear at d=255, -1.5% to -17.4% time` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -5281,6 +5282,44 @@ So `opt-level = 2` stays, and on these reads it buys 7-18% over `s` (the
   download Binaryen 133 from its release, checksum checked, and the build
   tool refuses `--record-sizes` with any other version, so the record and the
   shipped modules come from one wasm-opt.
+
+### The KD-Tree Encoder On One Row
+
+2026-10-10, Windows laptop, wall clock, Rust only. The encoder kept the shape
+[The KD-Tree Walk On One Row](#the-kd-tree-walk-on-one-row) took out of the
+decoder: a base row and a levels row for every depth of a tree `32 * d` levels
+deep, allocated whole when the encoder is built. That is `2 * (32d + 1) * d`
+values, 2.3 KB at `d = 3`, 1 MB at 62, 16.6 MB at 255 and 1.1 GB at 2048. The
+encoder now walks on one row and logs each split, the decoder's scheme, and the
+same short cut: a node at the current depth is the second half of the split
+just made and unwinds nothing. What it holds is the row's `2d` values and a log
+of at most `32d` splits at 16 bytes, grown as the walk reaches them.
+
+The output is the same. A probe encoded 22,000 generated clouds -- every speed,
+`d` from 1 to 100, noise, equal points, triplicates and a lattice, 1 to 300
+points -- with both builds, and every stream hashed identically. The same probe
+disagreed on 8,099 of them with the unwind condition off by one. The C++ parity
+tests for point clouds pass at all eleven speeds.
+
+Best of 100 encodes of a generated cloud, median over six rounds that
+alternated which build ran first:
+
+| `d` | points | speed | before | after | |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 3 | 50,000 | 10 | `5,138 us` | `5,008 us` | `-2.5%` |
+| 3 | 50,000 | 8 | `5,600 us` | `5,434 us` | `-3.0%` |
+| 6 | 20,000 | 6 | `2,580 us` | `2,542 us` | `-1.5%` |
+| 64 | 2,000 | 8 | `928 us` | `766 us` | `-17.4%` |
+| 255 | 500 | 8 | `692 us` | `655 us` | `-5.4%` |
+
+The low-dimension rows sit inside the spread of a single build (`4,868` to
+`5,382 us` for the first), so they say "no slower", not "faster". `pointcloud_drc
+encode kdtree 200000 20` (positions and colours, `d = 6`) took `746 ms`
+against `799 ms`, the new build ahead in each of four alternated pairs. The
+row-per-depth copies were never where the encoder's time went -- that was
+`partition`, see
+[The KD-Tree Encode, Counted For The First Time](#the-kd-tree-encode-counted-for-the-first-time)
+-- so the gain is the memory, with the time a side effect that grows with `d`.
 
 ## Unexplored
 
