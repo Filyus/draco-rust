@@ -21,6 +21,53 @@ use js_sys::{
 use wasm_bindgen::prelude::*;
 use wasm_bridge::{set_bool, set_js, set_opt_string, set_string_array};
 
+#[wasm_bindgen(typescript_custom_section)]
+const TYPES: &str = r#"
+/** The name of a typed array `decode_draco` can convert an attribute to. */
+export type DracoArrayType =
+  | "Int8Array" | "Uint8Array" | "Int16Array" | "Uint16Array"
+  | "Int32Array" | "Uint32Array" | "Float32Array";
+
+/** A Draco attribute type, as `semantic` names it. */
+export type DracoSemantic = "POSITION" | "NORMAL" | "COLOR" | "TEX_COORD" | "GENERIC";
+
+/**
+ * One attribute to decode: by `id`, its unique id, or by `semantic`, the first
+ * attribute of that type. `name` is handed back unchanged.
+ */
+export interface DracoAttributeRequest {
+  name?: string;
+  id?: number;
+  semantic?: DracoSemantic;
+  type?: DracoArrayType;
+}
+
+/** The typed arrays an attribute can come back in. */
+export type DracoArray =
+  | Int8Array | Uint8Array | Int16Array | Uint16Array | Int32Array | Uint32Array
+  | Float32Array | Float64Array | BigInt64Array | BigUint64Array;
+
+export interface DracoAttribute {
+  /** The request's `name`, or else the name the stream's metadata gives it. */
+  name?: string;
+  uniqueId: number;
+  semantic: DracoSemantic;
+  array: DracoArray;
+  itemSize: number;
+  normalized: boolean;
+}
+
+export interface DracoDecodeResult {
+  success: boolean;
+  error?: string;
+  warnings: string[];
+  geometry?: "mesh" | "point_cloud";
+  /** Triangle corners for a mesh, `null` for a point cloud. */
+  index: Uint32Array | null;
+  attributes: DracoAttribute[];
+}
+"#;
+
 /// Decodes a Draco stream and returns its attributes as typed arrays.
 ///
 /// `attributes` is `undefined` for every attribute in its own component type,
@@ -41,8 +88,12 @@ use wasm_bridge::{set_bool, set_js, set_opt_string, set_string_array};
 /// `index` a `Uint32Array` of triangle corners for a mesh and `null` for a
 /// point cloud, and each attribute `{ name, uniqueId, semantic, array,
 /// itemSize, normalized }`.
-#[wasm_bindgen]
-pub fn decode_draco(data: &[u8], attributes: JsValue) -> JsValue {
+#[wasm_bindgen(unchecked_return_type = "DracoDecodeResult")]
+pub fn decode_draco(
+    data: &[u8],
+    #[wasm_bindgen(unchecked_param_type = "DracoAttributeRequest[] | undefined")]
+    attributes: JsValue,
+) -> JsValue {
     match decode(data, &attributes) {
         Ok(result) => result.into(),
         Err(error) => {
