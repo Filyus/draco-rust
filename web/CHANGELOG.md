@@ -16,7 +16,10 @@ has changed in them; each package version has a section of its own.
     threads, from a bundle or from a CDN.
   - `createDracoLoader(THREE)` from `./three` stands in for three.js's
     `DRACOLoader` in `GLTFLoader` and for `.drc` files, without importing
-    three.
+    three. Against three 0.186's own, over the Draco glTF and `.drc`
+    fixtures, it builds the same geometry byte for byte, padding included; an
+    attribute that does not convert to the requested type is an error rather
+    than whatever DRACOLoader's failed conversion left in memory.
   - Each entry has its own pool and loader, and the entries grow by about
     5 KiB of gzip each.
 - **`@draco-rust/gltf` reads a value by JSON Pointer** with

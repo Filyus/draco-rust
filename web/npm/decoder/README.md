@@ -102,8 +102,13 @@ const gltf = await gltfLoader.loadAsync("model.glb");
 For a `.drc` file, `await loader.parseAsync(arrayBuffer)` returns a
 `BufferGeometry`, and `parse(buffer, onLoad, onError)` works as DRACOLoader's
 does. Vertex colours from a `.drc` file are converted from sRGB, as
-DRACOLoader converts them. `setWorkerLimit`, `preload` and `dispose` are there
-too. In TypeScript, `setDRACOLoader` expects the `DRACOLoader` class, so cast
+DRACOLoader converts them, and an attribute whose items are not a multiple of
+four bytes is padded and interleaved, as DRACOLoader pads it since r181. The
+geometry is the one DRACOLoader builds, byte for byte, with one difference: an
+attribute that does not convert to the type asked for -- a negative value
+into a `Uint16Array`, say -- is an error here, where DRACOLoader fills the
+attribute with whatever its failed conversion left in memory. `setWorkerLimit`,
+`preload` and `dispose` are there too. In TypeScript, `setDRACOLoader` expects the `DRACOLoader` class, so cast
 the loader: `createDracoLoader(THREE) as unknown as DRACOLoader`.
 
 ### From a CDN, without a bundler

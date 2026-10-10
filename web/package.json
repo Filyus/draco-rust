@@ -90,6 +90,7 @@
     "@types/node": "^24.13.3",
     "draco3d": "1.5.7",
     "gltf-validator": "2.0.0-dev.3.10",
+    "three": "0.186.1",
     "typescript": "^7.0.2"
   }
 }

@@ -4,12 +4,16 @@ import type { DecoderPool, DecoderPoolOptions } from './pool.js';
 /**
  * The three.js classes the loader builds with, passed in so the package uses
  * the application's own copy of three: `import * as THREE from "three"` will
- * do. With `Color` and `ColorManagement`, a `.drc` file's sRGB vertex colours
- * are made linear as DRACOLoader makes them.
+ * do. With `InterleavedBuffer` and `InterleavedBufferAttribute`, an attribute
+ * whose items are not a multiple of four bytes is padded to one, as DRACOLoader
+ * pads it since r181; with `Color` and `ColorManagement`, a `.drc` file's sRGB
+ * vertex colours are made linear as DRACOLoader makes them.
  */
 export interface ThreeClasses<Geometry> {
   BufferGeometry: new () => Geometry;
   BufferAttribute: new (array: any, itemSize: number, normalized?: boolean) => any;
+  InterleavedBuffer?: new (array: any, stride: number) => any;
+  InterleavedBufferAttribute?: new (buffer: any, itemSize: number, offset: number) => any;
   Color?: new () => any;
   /** `colorSpaceToWorking` since three r177, `toWorkingColorSpace` before. */
   ColorManagement?:

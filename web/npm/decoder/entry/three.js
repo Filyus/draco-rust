@@ -15,7 +15,8 @@ const defaultAttributes = {
 };
 
 export function createDracoLoader(three, options = {}) {
-  const { BufferGeometry, BufferAttribute, Color, ColorManagement } = three;
+  const { BufferGeometry, BufferAttribute, InterleavedBuffer, InterleavedBufferAttribute, Color, ColorManagement } =
+    three;
   if (typeof BufferGeometry !== 'function' || typeof BufferAttribute !== 'function') {
     throw new TypeError("createDracoLoader needs three.js's BufferGeometry and BufferAttribute");
   }
@@ -38,6 +39,23 @@ export function createDracoLoader(three, options = {}) {
     }
   }
 
+  // An item that is not a multiple of four bytes is padded to one, and the
+  // attribute interleaved over the padding, as DRACOLoader does since r181
+  // for glTF's data alignment rule -- when the classes for it were handed in.
+  function attributeOf(array, itemSize) {
+    const bytes = array.BYTES_PER_ELEMENT;
+    const stride = Math.ceil((itemSize * bytes) / 4) * (4 / bytes);
+    if (stride === itemSize || !InterleavedBuffer || !InterleavedBufferAttribute) {
+      return new BufferAttribute(array, itemSize);
+    }
+    const count = array.length / itemSize;
+    const padded = new array.constructor(count * stride);
+    for (let i = 0; i < count; i += 1) {
+      padded.set(array.subarray(i * itemSize, (i + 1) * itemSize), i * stride);
+    }
+    return new InterleavedBufferAttribute(new InterleavedBuffer(padded, stride), itemSize, 0);
+  }
+
   async function decode(buffer, attributeIDs, attributeTypes, vertexColorSpace) {
     const byId = !!attributeIDs;
     const requests = Object.entries(attributeIDs ?? defaultAttributes).map(([name, id]) => ({
@@ -51,7 +69,7 @@ export function createDracoLoader(three, options = {}) {
     const geometry = new BufferGeometry();
     if (result.index) geometry.setIndex(new BufferAttribute(result.index, 1));
     for (const { name, array, itemSize } of result.attributes) {
-      const attribute = new BufferAttribute(array, itemSize);
+      const attribute = attributeOf(array, itemSize);
       if (name === 'color') {
         if (vertexColorSpace === SRGB) toWorkingColorSpace(attribute);
         attribute.normalized = !(array instanceof Float32Array);
