@@ -61,9 +61,36 @@ workspace that embeds a Draco bitstream, so it is also the only place where a
 file format meets the codec; `draco-io` covers the formats that do not, and the
 two no longer depend on each other.
 
-`draco-texture` (KTX2 and Basis Universal transcoding) and the `web/` WASM
-wrappers are part of the repository but not published to crates.io; the wrappers
-ship as assets on each `draco-io` and `draco-gltf` release.
+`draco-texture` (KTX2 and Basis Universal transcoding) is part of the
+repository but not published.
+
+## JavaScript and WebAssembly
+
+The codec and the formats are also on npm, as WebAssembly modules for the
+browser, bundlers and Node. Each package and subpath is a module of its own, so
+an application downloads only the one it imports:
+
+| package | what it does |
+| --- | --- |
+| [`@draco-rust/decoder`](https://www.npmjs.com/package/@draco-rust/decoder) | Draco decode; `./mesh`, `./point-cloud` and `./legacy` cut it to what you need |
+| [`@draco-rust/encoder`](https://www.npmjs.com/package/@draco-rust/encoder) | Draco encode |
+| [`@draco-rust/gltf`](https://www.npmjs.com/package/@draco-rust/gltf) | glTF and GLB, with `./validate` and `./writer` |
+| [`@draco-rust/fbx`](https://www.npmjs.com/package/@draco-rust/fbx), [`obj`](https://www.npmjs.com/package/@draco-rust/obj), [`ply`](https://www.npmjs.com/package/@draco-rust/ply), [`stl`](https://www.npmjs.com/package/@draco-rust/stl) | the formats, read and write |
+
+```sh
+npm install @draco-rust/decoder
+```
+
+Or straight from jsDelivr, without a bundler:
+
+```js
+import init, { parse_drc_bytes } from "https://cdn.jsdelivr.net/npm/@draco-rust/decoder@0.1/mesh/index.js";
+await init();
+```
+
+The packages share one version and are built and published from CI with npm
+provenance; [`web/README.md`](web/README.md#npm-packages) says what each entry
+holds.
 
 ## Getting started
 
