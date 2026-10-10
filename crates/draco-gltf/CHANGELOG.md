@@ -9,6 +9,8 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.6.0...draco-gltf-v0.7.0) - 2026-10-10
+
 ### Added
 
 - **`Import::read_primitives` reads several primitives at once, side by side
@@ -68,7 +70,10 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     instead of 2.3. Strict validation is about 1.4x slower natively than on
     the tree, which leaves parse plus validation 3.5x faster.
   - Output is unchanged: an untouched document still writes its source bytes,
-    and an edited one writes the same minified JSON as before.
+    and an edited one writes the same minified JSON as before, twice as fast:
+    VirtualCity's edited JSON writes in 0.17 ms instead of 0.34, because runs
+    of a string with nothing to escape are copied rather than written a
+    character at a time.
 - **Breaking: Draco point clouds need the new `draco-point-cloud-decode`
   feature.** `KHR_draco_mesh_compression` allows only `TRIANGLES` and
   `TRIANGLE_STRIP` primitives, decoded as meshes, and upstream's glTF decoder
