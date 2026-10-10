@@ -179,7 +179,56 @@ for (const spec of Object.keys(decoders)) {
   await assert.rejects(pool.decode(streams.mesh), /disposed/);
 }
 
-console.log('npm-packages: OK (4 decoder entries with their pools, encoder, 3 glTF entries, FBX, OBJ, PLY, STL)');
+// The three.js adapter builds geometry with the classes it is handed; these
+// stand in for three's own and record what was built.
+class BufferAttribute {
+  constructor(array, itemSize) { Object.assign(this, { array, itemSize, normalized: false, count: array.length / itemSize }); }
+  setXYZ(i, x, y, z) { this.array.set([x, y, z], i * this.itemSize); }
+}
+class BufferGeometry {
+  attributes = {};
+  index = null;
+  setIndex(index) { this.index = index; }
+  setAttribute(name, attribute) { this.attributes[name] = attribute; }
+}
+let converted = 0;
+class Color {
+  fromBufferAttribute(attribute, i) { [this.r, this.g, this.b] = attribute.array.subarray(i * attribute.itemSize); return this; }
+}
+const ColorManagement = { colorSpaceToWorking(color, space) { assert.equal(space, 'srgb'); converted += 1; return color; } };
+const { createDracoLoader } = await import('@draco-rust/decoder/three');
+const { decode_draco } = await load('@draco-rust/decoder');
+const loader = createDracoLoader({ BufferGeometry, BufferAttribute, Color, ColorManagement }, { workers: 2 }).preload();
+
+// A .drc file, read by attribute type, with its sRGB colours made linear.
+const cloud = await loader.parseAsync(streams.cloud.slice().buffer);
+const reference = decode_draco(streams.cloud, [{ semantic: 'POSITION', type: 'Float32Array' }]);
+assert.deepEqual(cloud.attributes.position.array, reference.attributes[0].array);
+assert.equal(cloud.index, null, 'a point cloud has no index');
+assert.equal(converted, cloud.attributes.color.count, 'every colour went through the colour space');
+assert.equal(cloud.attributes.color.normalized, false, 'float colours are not normalized');
+
+// GLTFLoader's call: attributes by unique id, in the accessor's types.
+const ids = Object.fromEntries(decode_draco(streams.cloud, undefined).attributes.map((a) => [a.semantic === 'COLOR' ? 'color' : 'position', a.uniqueId]));
+const buffer = streams.cloud.slice().buffer;
+const gltf = await new Promise((resolve, reject) =>
+  loader.decodeDracoFile(buffer, resolve, ids, { position: 'Float32Array', color: 'Uint8Array' }, 'srgb-linear', reject));
+assert.ok(gltf.attributes.color.array instanceof Uint8Array);
+assert.equal(gltf.attributes.color.normalized, true, 'integer colours are normalized');
+assert.equal(converted, cloud.attributes.color.count, 'linear colours are left alone');
+assert.equal(buffer.byteLength, 0, 'the buffer went to the worker');
+// A shared primitive asks again with the same buffer and gets the same geometry.
+const again = await new Promise((resolve, reject) =>
+  loader.decodeDracoFile(buffer, resolve, ids, { position: 'Float32Array', color: 'Uint8Array' }, 'srgb-linear', reject));
+assert.equal(again, gltf);
+
+const mesh = await loader.parseAsync(streams.mesh);
+assert.ok(mesh.index.array instanceof Uint32Array && mesh.index.array.length > 0);
+const refused = await new Promise((resolve) => loader.decodeDracoFile(new ArrayBuffer(3), () => resolve(null), { position: 0 }, null, undefined, resolve));
+assert.ok(refused instanceof Error, 'a stream that does not decode reaches onError');
+loader.dispose();
+
+console.log('npm-packages: OK (4 decoder entries with their pools, three.js adapter, encoder, 3 glTF entries, FBX, OBJ, PLY, STL)');
 `);
   process.stdout.write(execFileSync(process.execPath, ['consumer.mjs'], { cwd: project }).toString());
 } finally {

@@ -51,6 +51,14 @@
       "types": "./*/pool.d.ts",
       "default": "./*/pool.js"
     },
+    "./three": {
+      "types": "./three.d.ts",
+      "default": "./three.js"
+    },
+    "./*/three": {
+      "types": "./*/three.d.ts",
+      "default": "./*/three.js"
+    },
     "./*.wasm": "./*.wasm",
     "./package.json": "./package.json"
   },
