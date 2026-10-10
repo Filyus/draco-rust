@@ -102,6 +102,12 @@ for (const spec of ['@draco-rust/gltf', '@draco-rust/gltf/validate', '@draco-rus
   const geometry = asset.readPrimitive(0, 0);
   assert.ok(geometry.attributeCount() > 0 && geometry.indexBytes().length > 0, spec);
   assert.ok(asset.glb(2).length > 0, spec);
+  // A JSON Pointer finds what the object accessor finds, and nothing past it.
+  const text = (bytes) => new TextDecoder().decode(bytes);
+  assert.deepEqual(JSON.parse(text(asset.jsonAt('/meshes/0'))), JSON.parse(text(asset.objectJson('meshes', 0))), spec);
+  assert.equal(JSON.parse(text(asset.jsonAt('/asset/version'))), '2.0', spec);
+  assert.equal(asset.jsonAt('/meshes/1'), undefined, spec);
+  assert.equal(asset.jsonAt('meshes'), undefined, spec + ': a pointer starts with /');
 }
 
 const fbx = await load('@draco-rust/fbx');

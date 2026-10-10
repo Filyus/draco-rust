@@ -535,6 +535,19 @@ impl GltfAsset {
             .ok_or_else(|| JsValue::from_str("glTF object index is out of range"))
     }
 
+    /// Returns the JSON value a JSON Pointer (RFC 6901) names as bytes, such
+    /// as `/nodes/0/translation`, the form `KHR_animation_pointer` names a
+    /// property in, or `undefined` when nothing is there. The empty pointer is
+    /// the whole document.
+    #[wasm_bindgen(js_name = jsonAt)]
+    pub fn json_at(&self, pointer: &str) -> Option<Vec<u8>> {
+        self.import
+            .document()
+            .as_json()
+            .pointer(pointer)
+            .map(|value| value.to_vec())
+    }
+
     /// Explicitly loads one glTF 2.1 `files` entry using the supplied resource map.
     #[wasm_bindgen(js_name = loadAsset)]
     pub fn load_asset(
