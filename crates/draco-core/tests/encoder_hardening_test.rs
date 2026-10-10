@@ -2173,3 +2173,80 @@ fn a_texture_coordinate_scheme_over_a_uint32_position_round_trips() {
         "texture coordinates changed in the round trip"
     );
 }
+
+/// Upstream's `TestIntegerNormalsAtSpeedZeroRoundTrip` mesh: a 5x5 grid whose
+/// normals are `int32` values in `[-3, 3]`, encoded at speeds 0/0.
+fn integer_normals_grid() -> Mesh {
+    let mut position = positions(25);
+    let mut normal = PointAttribute::new();
+    normal.init(GeometryAttributeType::Normal, 3, DataType::Int32, false, 25);
+    for y in 0..5i32 {
+        for x in 0..5i32 {
+            let p = y * 5 + x;
+            let point = [x as f32, y as f32, ((x * y) % 3) as f32 * 0.25];
+            let value = [(p % 7) - 3, ((p + 1) % 7) - 3, ((p + 2) % 7) - 3];
+            for c in 0..3 {
+                let at = (p as usize * 3 + c) * 4;
+                position.buffer_mut().write(at, &point[c].to_le_bytes());
+                normal.buffer_mut().write(at, &value[c].to_le_bytes());
+            }
+        }
+    }
+    let mut mesh = Mesh::new();
+    mesh.set_num_points(25);
+    mesh.add_attribute(position);
+    mesh.add_attribute(normal);
+    mesh.set_num_faces(32);
+    let mut face = 0;
+    for y in 0..4u32 {
+        for x in 0..4u32 {
+            let i = y * 5 + x;
+            mesh.set_face_from_indices(face, [i, i + 1, i + 5]);
+            mesh.set_face_from_indices(face + 1, [i + 1, i + 6, i + 5]);
+            face += 2;
+        }
+    }
+    mesh
+}
+
+/// Integral normals that nothing quantized keep the wrap transform, and below
+/// speed 4 the selector picks geometric-normal prediction for them, which
+/// predicts in octahedral coordinates the wrap transform does not have. The
+/// encoder codes a delta instead. C++ Draco 1.5.7 built the scheme over the
+/// wrap transform anyway and wrote a stream that decodes to other normals;
+/// upstream `main` falls back to the delta since google/draco#1239, and the
+/// fixture is the stream its own test writes for this mesh.
+#[test]
+fn integer_normals_below_speed_four_encode_a_delta_as_upstream_main_does() {
+    let mut options = EncoderOptions::new();
+    options.set_global_int("encoding_speed", 0);
+    options.set_global_int("decoding_speed", 0);
+    options.set_attribute_int(0, "quantization_bits", 11);
+    let bytes = encode_mesh(integer_normals_grid(), &options).expect("encode");
+    let upstream = include_bytes!("../../../testdata/cpp_main_integer_normals_speed_0.drc");
+    assert_eq!(bytes, upstream, "not the stream upstream main writes");
+
+    let mut decoded = Mesh::new();
+    MeshDecoder::new()
+        .decode(&mut DecoderBuffer::new(&bytes), &mut decoded)
+        .expect("the stream must decode");
+    let read = |mesh: &Mesh| {
+        let normal = mesh
+            .named_attribute(GeometryAttributeType::Normal)
+            .expect("a normal attribute");
+        let mut values: Vec<[i32; 3]> = (0..mesh.num_points())
+            .map(|point| {
+                let index = normal.mapped_index(PointIndex(point as u32)).0 as usize;
+                let mut raw = [0u8; 12];
+                normal.buffer().read(index * 12, &mut raw);
+                std::array::from_fn(|c| {
+                    i32::from_le_bytes(raw[c * 4..c * 4 + 4].try_into().unwrap())
+                })
+            })
+            .collect();
+        // The encoder reorders points, so the normals compare as sorted lists.
+        values.sort_unstable();
+        values
+    };
+    assert_eq!(read(&decoded), read(&integer_normals_grid()));
+}
