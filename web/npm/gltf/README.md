@@ -35,6 +35,9 @@ For a `.gltf` with external files, pass the files by URI:
 `GltfAsset.withResources(jsonBytes, { "scene.bin": binBytes }, "2.0")`.
 `readPrimitives(pairs)` reads many primitives in one call, and
 `asset.json()` and `asset.glb(2)` write the document back out.
+`asset.jsonAt("/nodes/0/translation")` reads one value by JSON Pointer, the
+form `KHR_animation_pointer` uses, as JSON bytes, or `undefined` when nothing
+is there.
 
 For loading from a CDN or in Node, see the
 [decoder's README](https://www.npmjs.com/package/@draco-rust/decoder); the same

@@ -8,6 +8,20 @@ has changed in them; each package version has a section of its own.
 
 ## Unreleased
 
+- **`@draco-rust/decoder` loads glTF's Draco meshes for three.js, on workers.**
+  - `decode_draco` returns attributes by unique id or by type, in the typed
+    array a loader asks for. Its conversions match upstream Draco 1.5.7's byte
+    for byte, over every fixture and every array type.
+  - `createDecoderPool` from `./pool` decodes on Web Workers or Node worker
+    threads, from a bundle or from a CDN.
+  - `createDracoLoader(THREE)` from `./three` stands in for three.js's
+    `DRACOLoader` in `GLTFLoader` and for `.drc` files, without importing
+    three.
+  - Each entry has its own pool and loader, and the entries grow by about
+    5 KiB of gzip each.
+- **`@draco-rust/gltf` reads a value by JSON Pointer** with
+  `asset.jsonAt("/nodes/0/translation")`.
+
 - **KTX2 textures decode faster in the converter.** The transcoder in
   `ktx2-wasm` is now built for speed rather than size, as the Draco codec and
   the format readers already were: UASTC textures decode up to 2.4 times as
