@@ -1,0 +1,191 @@
+name: "Release: publish npm packages"
+run-name: "release: publish @draco-rust/*"
+
+# Every `@draco-rust/*` package at the one version web/npm/VERSION names. npm
+# trusts this file by name: each package's trusted publisher is
+# Filyus/draco-rust, workflow `npm.yml`, environment `release`, so renaming
+# the file or the environment stops publishing until the packages are told.
+# The token is the run's OIDC identity, and npm attaches provenance on its own.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - name: Require main
+        run: |
+          if [ "$GITHUB_REF_NAME" != "main" ]; then
+            echo "The npm publish workflow must be started from main, got '$GITHUB_REF_NAME'."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Read package version
+        id: version
+        run: |
+          version="$(tr -d '[:space:]' < web/npm/VERSION)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Release version: $version"
+
+      - name: Require the release commit
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          subject="$(git log -1 --pretty=%s)"
+          expected="release: prepare npm v$VERSION"
+          echo "Commit subject: $subject"
+          if [ "$subject" != "$expected" ]; then
+            echo "Expected '$expected'. Prepare the release commit first (RELEASING.md)."
+            exit 1
+          fi
+          if ! grep -Fq "## [$VERSION]" web/CHANGELOG.md; then
+            echo "No changelog section for $VERSION in web/CHANGELOG.md."
+            exit 1
+          fi
+
+      - name: Check CI passed for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ci_url="$(gh run list \
+            --workflow ci.yml --branch main --commit "$GITHUB_SHA" \
+            --json conclusion,status,url --limit 20 \
+            --jq '.[] | select(.status == "completed" and .conclusion == "success") | .url' \
+            | head -n 1)"
+          if [ -z "$ci_url" ]; then
+            echo "No successful CI run found for $GITHUB_SHA. Wait for CI on main, then rerun."
+            exit 1
+          fi
+          echo "Using successful CI run: $ci_url"
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+
+      # The same pinned Binaryen as ci.yml and pages.yml: build-tool refuses
+      # --npm with any other wasm-opt, so the published sizes are the recorded
+      # ones.
+      - name: Install wasm-opt
+        env:
+          BINARYEN_VERSION: "133"
+          BINARYEN_SHA256: 2dc9c7813f5375db93d96ead4b78222fcc3e2677bbb832297af4797782a37489
+        run: |
+          archive="binaryen-version_${BINARYEN_VERSION}-x86_64-linux.tar.gz"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/WebAssembly/binaryen/releases/download/version_${BINARYEN_VERSION}/$archive"
+          echo "$BINARYEN_SHA256  $RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/binaryen-version_${BINARYEN_VERSION}/bin" >> "$GITHUB_PATH"
+
+      - name: Install Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build the packages
+        working-directory: web
+        run: |
+          npm ci
+          cargo run --manifest-path build-tool/Cargo.toml -- --npm
+
+      # Installs every tarball into a scratch project and runs each entry, so
+      # what is uploaded is what was tested.
+      - name: Test the packages as a consumer
+        working-directory: web
+        run: npm run test:npm-packages
+
+      - name: Upload the packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-packages
+          path: web/npm/dist
+          if-no-files-found: error
+
+  publish:
+    name: publish
+    runs-on: ubuntu-latest
+    needs: build
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Download the packages
+        uses: actions/download-artifact@v4
+        with:
+          name: npm-packages
+          path: dist
+
+      - name: Install Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing needs npm 11.5.1 or later.
+      - name: Install npm
+        run: npm install -g npm@^11.5.1 && npm --version
+
+      # A package already at this version is left alone, so a run that failed
+      # halfway can be started again.
+      - name: Publish
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          for dir in dist/*/; do
+            name="$(node -p "require('./${dir}package.json').name")"
+            built="$(node -p "require('./${dir}package.json').version")"
+            if [ "$built" != "$VERSION" ]; then
+              echo "$name is $built, web/npm/VERSION says $VERSION."
+              exit 1
+            fi
+            if npm view "$name@$VERSION" version >/dev/null 2>&1; then
+              echo "$name@$VERSION is already published; skipping."
+              continue
+            fi
+            (cd "$dir" && npm publish --access public)
+          done
+
+      - name: Check every package is published
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          for dir in dist/*/; do
+            name="$(node -p "require('./${dir}package.json').name")"
+            for attempt in 1 2 3 4 5 6; do
+              if npm view "$name@$VERSION" version >/dev/null 2>&1; then
+                echo "$name@$VERSION is on the registry."
+                continue 2
+              fi
+              sleep 10
+            done
+            echo "$name@$VERSION did not appear on the registry."
+            exit 1
+          done

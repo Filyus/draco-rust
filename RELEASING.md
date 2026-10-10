@@ -13,8 +13,8 @@ In the steps below, **`<crate>` is the crate being released** — substitute
 
 The `web/` WASM wrappers and converter are not published to crates.io, and a
 crate release no longer carries them: the zipped modules it used to attach were
-removed on 2026-10-10, and the modules are to ship as `@draco-rust/*` npm
-packages instead. The converter is deployed to GitHub Pages by `Pages: deploy
+removed on 2026-10-10, and the modules ship as `@draco-rust/*` npm packages
+instead ([npm packages](#npm-packages)). The converter is deployed to GitHub Pages by `Pages: deploy
 converter`, from `main` rather than from a tag — it demonstrates the current code, and pinning it
 to a crate release would show neither crate's version honestly.
 
@@ -241,3 +241,27 @@ Configure one Trusted Publisher entry **per crate** (`draco-core`, `draco-io`,
 - Repository name: `draco-rust`;
 - Workflow filename: `publish.yml`;
 - Environment name: `release`.
+
+## npm packages
+
+The seven `@draco-rust/*` packages share one version, in `web/npm/VERSION`,
+and are released together by `Release: publish npm packages`
+(`.github/workflows/npm.yml`):
+
+1. The agent bumps `web/npm/VERSION`, turns `Unreleased` in
+   `web/CHANGELOG.md` into `## [X.Y.Z] - date`, and shows the diff.
+2. After the maintainer approves the wording, the agent pushes it as one commit
+   with the subject `release: prepare npm vX.Y.Z` and waits for CI on it.
+3. The workflow is started from `main`. Its build job refuses anything but that
+   commit with a changelog section and green CI, builds every package with
+   `build-tool --npm`, and runs `test:npm-packages` on the tarballs.
+4. The maintainer approves the `release` environment; the publish job uploads
+   each package not yet at that version, with provenance.
+5. The agent checks each package's registry shasum against the workflow's
+   artifact and that jsDelivr serves the wasm.
+
+Each package has a Trusted Publisher on npmjs.com (package -> Settings ->
+Trusted publishing): `GitHub Actions`, owner `Filyus`, repository
+`draco-rust`, workflow `npm.yml`, environment `release`. A new package is
+published once by hand (`npm publish` from `web/npm/dist/<name>`, with 2FA)
+before it can be given one.
