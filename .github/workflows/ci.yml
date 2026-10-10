@@ -390,6 +390,7 @@ jobs:
       - name: Run scene model and material gates
         run: |
           npm run test:scene-document
+          npm run test:draco-attributes
           npm run test:scene-document-viewer
           npm run test:gltf-materials
           npm run test:gltf-material-parity

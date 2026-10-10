@@ -19,6 +19,11 @@ use js_sys::{Array, Object};
 // snake_case on the attribute list and stats.
 #[cfg(feature = "read")]
 use wasm_bridge::{f32_array_to_js, f64_array_to_js, set_string_array, u32_array_to_js};
+
+#[cfg(feature = "read")]
+mod attributes;
+#[cfg(feature = "read")]
+pub use attributes::decode_draco;
 #[cfg(feature = "write")]
 use wasm_bridge::{
     f64_array_from_js, get_field, opt_bool_from_js, opt_i32_from_js, optional_f32_array,
@@ -240,8 +245,9 @@ fn parse_result_to_js(result: &ParseResult) -> JsValue {
     obj.into()
 }
 
+/// Decodes a stream with the decoder this build carries.
 #[cfg(feature = "read")]
-fn parse_drc_internal(data: &[u8]) -> ParseResult {
+pub(crate) fn decode_mesh(data: &[u8]) -> Result<Mesh, String> {
     use draco_core::decoder_buffer::DecoderBuffer;
 
     let mut mesh = Mesh::new();
@@ -258,8 +264,16 @@ fn parse_drc_internal(data: &[u8]) -> ParseResult {
     // anyway: the target has no unwinding, and the release profile aborts on
     // top of that. What actually stands between a trap and a dead page is the
     // shell's own guard around this call.
-    match decoder.decode(&mut buffer, &mut mesh) {
-        Ok(()) => {
+    decoder
+        .decode(&mut buffer, &mut mesh)
+        .map(|()| mesh)
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(feature = "read")]
+fn parse_drc_internal(data: &[u8]) -> ParseResult {
+    match decode_mesh(data) {
+        Ok(mesh) => {
             let mut warnings = Vec::new();
             if mesh.num_faces() == 0 && cfg!(not(feature = "point-cloud-only")) {
                 warnings.push(
@@ -284,7 +298,7 @@ fn parse_drc_internal(data: &[u8]) -> ParseResult {
         Err(error) => ParseResult {
             success: false,
             meshes: vec![],
-            error: Some(error.to_string()),
+            error: Some(error),
             warnings: vec![],
             attributes: vec![],
         },

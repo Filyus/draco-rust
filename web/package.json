@@ -55,6 +55,7 @@
     "test:gltf-summary-parity": "node tests/gltf-summary-parity.ts",
     "test:export-branches": "node tests/export-branches.ts",
     "test:wasm-bridge": "node tests/wasm-bridge-contract.ts",
+    "test:draco-attributes": "node tests/draco-attribute-parity.ts",
     "test:style-legibility": "node tests/style-legibility.ts",
     "bench:formats": "node tests/format-benchmark.ts",
     "test:fbx-export-interpretation": "node tests/fbx-export-interpretation.ts",
