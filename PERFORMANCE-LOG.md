@@ -135,6 +135,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [draco-core's Optimization Level, Re-Measured On glTF Reads](#draco-cores-optimization-level-re-measured-on-gltf-reads) | diagnostic | `opt 2 stays: s is -13.3 kB for +7-18%` |
 | [The KD-Tree Encoder On One Row](#the-kd-tree-encoder-on-one-row) | landed | `16.6 MB -> linear at d=255, -1.5% to -17.4% time` |
 | [draco-core 2.3.1 Against 2.3.0](#draco-core-231-against-230) | diagnostic | `-27 to -35% WASM decode with predicted normals, -6 to -7% native` |
+| [KTX2 In WASM: zrip, And The Transcoder's Optimization Level](#ktx2-in-wasm-zrip-and-the-transcoders-optimization-level) | diagnostic | `zrip: 3x native, 1.9x WASM Zstd, 1.01x WASM decode; opt 2: 0.87x for +8.7 kB` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -5372,6 +5373,75 @@ The cl5 stream uses neither predictor the release changed, so it is the
 control. 2.3.0 trailed upstream's module on every mesh with predicted normals;
 2.3.1 is ahead on all of them. Most of it is the 128-bit arithmetic gone from
 the normal predictor, which wasm32 has no instructions for.
+
+### KTX2 In WASM: zrip, And The Transcoder's Optimization Level
+
+2026-10-10, same laptop. A re-run of
+[KTX2: Zstd, And Which Decoder](#ktx2-zstd-and-which-decoder) found the field
+moved: over the four Zstd fixtures, against C zstd 1.5.6, outputs checked
+first, best of seven, two runs:
+
+| decoder | time against C | `unsafe` |
+| --- | ---: | ---: |
+| this crate's `ruzstd` 0.7.3 block loop | `3.02-3.17x` | ~35 |
+| `ruzstd` 0.9.0 `decode_all`, and its fork `turnloop-zstd-decoder` | `3.0-3.1x` | ~39 / ~44 |
+| `zrip` 0.8.11 one-shot, `paranoid` | `0.81-0.85x` | 0 |
+| `zrip` 0.8.11 one-shot | `0.76-0.82x` | 37 |
+| `zrip` 0.8.11 streaming | `2.1-2.7x` | 0-37 |
+| `structured-zstd` 0.1.0 | `0.69-0.73x` | ~1,260 |
+| `zstdx` 0.2 | `0.82-0.90x` | ~280 |
+| `zstd-pure-rs` 0.2 | `0.92-0.99x` | ~510 |
+
+`zrip`'s one-shot path now checks a frame's declared size against the
+caller's limit before reserving it, and reserves at most `min(declared,
+128 MiB)`. That answers half of why it was rejected: a level may still claim
+anything under `layerCount`, so the declaration is taken only when it is at
+most 256 times the level's compressed bytes (or 1 MiB), read from the frame
+and block headers without decoding, and anything claiming more goes through
+the streaming decoder, which grows on bytes it has produced. Built, with
+tests for both paths and for a frame declaring 128 MiB over one RLE block,
+on `probe/zrip-ktx2`. Natively the Zstd stage went from `3.2x` C's time to
+`1.04x`.
+
+`draco-texture` ships only in `ktx2-wasm`, so the browser decides. `zrip`
+needs Rust 1.89 against the workspace's 1.88, and the module grows by
+14.3 kB of gzip, 173.7 to 188.0. The Zstd stage alone, in a module of
+nothing else, at opt-level `"z"` as the web profile builds dependencies:
+`ruzstd` 2,759 us over every Zstd level, `zrip` one-shot 1,472, streaming
+1,796; at opt-level 2, 2,448 / 1,276 / 1,562.
+
+Whole decodes, `Ktx2File` then `decodeRgba` on every level of every Basis
+fixture, eight builds in one Node 24.21 process, rounds rotated, each sample
+about 30 ms of repeats, medians of eleven, every build's RGBA compared first.
+A second copy of the current build, loaded first, measured 6-17% slower than
+the same build loaded second: the first module instantiated pays something
+the others do not, so it is a sacrifice and the ratios are against the
+second. Against the current build (`ruzstd`, transcoder at `"z"`):
+
+| fixture | transcoder `"s"` | 2 | 3 | `zrip` | `zrip`, transcoder 2 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `uastc_alpha_v250` (Zstd) | `0.76` | `0.42` | `0.40` | `0.98` | `0.41` |
+| `sample_uastc_zstd` | `0.93` | `0.80` | `0.76` | `0.91` | `0.69` |
+| `2d_uastc` (Zstd) | `0.97` | `0.90` | `0.90` | `0.99` | `0.87` |
+| `sample_etc1s` | `0.99` | `0.89` | `0.83` | `0.99` | `0.88` |
+| `facecap` (ETC1S) | `1.01` | `0.88` | `0.87` | `1.03` | `0.90` |
+| `2d_etc1s` | `1.01` | `0.93` | `0.93` | `1.08` | `0.99` |
+| `etc1s_alpha_v250` | `1.00` | `0.99` | `0.96` | `1.02` | `0.97` |
+| all | `0.98` | `0.87` | `0.84` | `1.01` | `0.86` |
+| gzip | `-0.7 kB` | `+8.7 kB` | `+14.4 kB` | `+14.3 kB` | `+23.9 kB` |
+
+The ETC1S fixtures carry no Zstd, so what `zrip` moves on them, `+2%` to
+`+8%`, is this harness's floor. Against it `zrip` gains on one file, and
+pays for the module what raising the transcoder's level does. An earlier pass
+with five repeats a sample and the current build first put `2d_uastc` at
+`+16%` to `+40%` with `zrip`; this one, which removes both, puts it at
+`0.99`.
+
+Verdicts: `zrip` is `deferred` -- right natively, not yet worth its size in
+the one place this crate runs; a decoder that reaches the Zstd stage's 2x
+without the module cost would change that. The transcoder's level is
+`proposed`: at 2 it is the `draco-core` and `draco-io` case again, UASTC up
+to `2.4x` and every file but one beyond the floor, for 5% of the module.
 
 ## Unexplored
 
