@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 
 const dist = fileURLToPath(new URL('../npm/dist/', import.meta.url));
 const testdata = fileURLToPath(new URL('../../testdata/', import.meta.url));
-const packages = ['decoder', 'encoder', 'gltf', 'fbx'];
+const packages = ['decoder', 'encoder', 'gltf', 'fbx', 'obj', 'ply', 'stl'];
 const version = readFileSync(fileURLToPath(new URL('../npm/VERSION', import.meta.url)), 'utf8').trim();
 for (const name of packages) {
   const manifest = join(dist, name, 'package.json');
@@ -110,7 +110,32 @@ assert.ok(written.success, written.error);
 const read = fbx.parse_fbx(written.binary_data);
 assert.ok(read.success, read.error);
 assert.equal(read.meshes.length, 1);
-console.log('npm-packages: OK (4 decoder entries, encoder, 3 glTF entries, FBX)');
+
+// Each format reads a file of its own, then writes what it read and reads that
+// back with the same positions.
+const formats = [
+  ['obj', 'parse_obj_bytes', 'create_obj', 'test_cube_shared.obj', true],
+  ['ply', 'parse_ply_bytes', 'create_ply', 'bun_zipper.ply', true],
+  ['ply', 'parse_ply_bytes', 'create_ply', 'point_cloud_pos.ply', false],
+  ['stl', 'parse_stl_bytes', 'create_stl', 'STL/test_sphere_ascii.stl', true],
+  ['stl', 'parse_stl_bytes', 'create_stl', 'STL/bunny.stl', true],
+];
+for (const [name, parse, create, file, faces] of formats) {
+  const module = await load('@draco-rust/' + name);
+  const first = module[parse](await fixture(file));
+  assert.ok(first.success, name + ' ' + file + ': ' + first.error);
+  const mesh = first.meshes[0];
+  assert.ok(mesh.positions.length > 0, name + ' ' + file);
+  assert.equal(mesh.indices.length > 0, faces, name + ' ' + file + ' faces');
+  const written = module[create](mesh, {});
+  assert.ok(written.success, name + ' ' + file + ' write: ' + written.error);
+  // OBJ comes back as text in data, binary PLY and STL in binary_data.
+  const output = written.binary_data ?? new TextEncoder().encode(written.data);
+  const again = module[parse](output);
+  assert.ok(again.success, name + ' ' + file + ' reread: ' + again.error);
+  assert.equal(again.meshes[0].positions.length, mesh.positions.length, name + ' ' + file + ' round trip');
+}
+console.log('npm-packages: OK (4 decoder entries, encoder, 3 glTF entries, FBX, OBJ, PLY, STL)');
 `);
   process.stdout.write(execFileSync(process.execPath, ['consumer.mjs'], { cwd: project }).toString());
 } finally {

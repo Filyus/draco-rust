@@ -15,8 +15,10 @@ takes only the wasm an application imports:
 | `@draco-rust/encoder` | `.` | `drc-wasm`, `write` |
 | `@draco-rust/gltf` | `.` reader; `./validate` adds strict validation; `./writer` adds writing and Draco compression | `gltf-wasm` |
 | `@draco-rust/fbx` | `.` | `fbx-wasm` |
+| `@draco-rust/obj`, `@draco-rust/ply`, `@draco-rust/stl` | `.` each | `obj-wasm`, `ply-wasm`, `stl-wasm` |
 
-OBJ, PLY, STL and KTX2 stay with the converter. The manifests and READMEs are
+Codec packages are named for what they do, format packages for the files they
+open. KTX2 stays with the converter. The manifests and READMEs are
 tracked in [`npm/`](npm/), and which features build which entry is the
 `PACKAGES` table in [`build-tool/src/npm.rs`](build-tool/src/npm.rs). Building
 needs the pinned wasm-opt, as `--record-sizes` does:

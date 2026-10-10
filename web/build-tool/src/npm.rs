@@ -85,6 +85,30 @@ const PACKAGES: &[Package] = &[
         ],
     },
     Package {
+        name: "obj",
+        module: "obj-wasm",
+        entries: &[Entry {
+            path: ".",
+            features: &["read", "write"],
+        }],
+    },
+    Package {
+        name: "ply",
+        module: "ply-wasm",
+        entries: &[Entry {
+            path: ".",
+            features: &["read", "write"],
+        }],
+    },
+    Package {
+        name: "stl",
+        module: "stl-wasm",
+        entries: &[Entry {
+            path: ".",
+            features: &["read", "write"],
+        }],
+    },
+    Package {
         name: "fbx",
         module: "fbx-wasm",
         entries: &[Entry {

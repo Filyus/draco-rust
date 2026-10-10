@@ -1,0 +1,44 @@
+{
+  "name": "@draco-rust/ply",
+  "version": "set from web/npm/VERSION by build-tool --npm",
+  "description": "PLY reading and writing in WebAssembly: meshes and point clouds, ASCII and binary, with every property kept, Gaussian splats included.",
+  "keywords": [
+    "ply",
+    "point-cloud",
+    "gaussian-splatting",
+    "mesh",
+    "3d",
+    "wasm",
+    "webassembly"
+  ],
+  "license": "Apache-2.0",
+  "author": "Filyus",
+  "homepage": "https://filyus.github.io/draco-rust/",
+  "bugs": {
+    "url": "https://github.com/Filyus/draco-rust/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Filyus/draco-rust.git",
+    "directory": "web/npm/ply"
+  },
+  "draco-rust": "set by build-tool --npm",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./*.wasm": "./*.wasm",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "**/*.js",
+    "**/*.d.ts",
+    "**/*.wasm"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

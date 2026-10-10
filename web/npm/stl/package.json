@@ -1,0 +1,43 @@
+{
+  "name": "@draco-rust/stl",
+  "version": "set from web/npm/VERSION by build-tool --npm",
+  "description": "STL reading and writing in WebAssembly, binary and ASCII.",
+  "keywords": [
+    "stl",
+    "mesh",
+    "3d-printing",
+    "3d",
+    "wasm",
+    "webassembly"
+  ],
+  "license": "Apache-2.0",
+  "author": "Filyus",
+  "homepage": "https://filyus.github.io/draco-rust/",
+  "bugs": {
+    "url": "https://github.com/Filyus/draco-rust/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Filyus/draco-rust.git",
+    "directory": "web/npm/stl"
+  },
+  "draco-rust": "set by build-tool --npm",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./*.wasm": "./*.wasm",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "**/*.js",
+    "**/*.d.ts",
+    "**/*.wasm"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

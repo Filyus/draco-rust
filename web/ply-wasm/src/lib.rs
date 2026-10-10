@@ -815,7 +815,8 @@ pub struct ExportOptions {
     pub include_uvs: Option<bool>,
     /// Decimal precision for coordinates
     pub precision: Option<u32>,
-    /// Output format: "ascii" or "binary_little_endian"
+    /// Output format: "binary_little_endian" (the default),
+    /// "binary_big_endian" or "ascii"
     pub format: Option<String>,
 }
 
@@ -921,7 +922,7 @@ fn export_options_from_js(value: &JsValue) -> ExportOptions {
 
 #[cfg(feature = "write")]
 fn create_ply_internal(mesh: &MeshInput, options: &ExportOptions) -> ExportResult {
-    let format = options.format.as_deref().unwrap_or("ascii");
+    let format = options.format.as_deref().unwrap_or("binary_little_endian");
     let ply_format = match format {
         "ascii" => PlyFormat::Ascii,
         "binary_little_endian" => PlyFormat::BinaryLittleEndian,
@@ -1446,13 +1447,15 @@ mod writer_tests {
             extras: Vec::new(),
         };
 
+        // Binary little-endian unless asked otherwise, as bytes rather than text.
         let result = create_ply_internal(&mesh, &ExportOptions::default());
         assert!(result.success);
-        assert!(result.data.is_some());
-        let data = result.data.unwrap();
-        assert!(data.contains("ply"));
-        assert!(data.contains("element vertex 3"));
-        assert!(data.contains("element face 1"));
+        assert!(result.data.is_none());
+        let bytes = result.binary_data.unwrap();
+        let header = String::from_utf8_lossy(&bytes);
+        assert!(header.starts_with("ply\nformat binary_little_endian 1.0\n"));
+        assert!(header.contains("element vertex 3"));
+        assert!(header.contains("element face 1"));
     }
 
     /// PLY holds per-vertex colours and texture coordinates, and both used to
@@ -1469,7 +1472,11 @@ mod writer_tests {
             extras: Vec::new(),
         };
 
-        let result = create_ply_internal(&mesh, &ExportOptions::default());
+        let options = ExportOptions {
+            format: Some("ascii".to_string()),
+            ..ExportOptions::default()
+        };
+        let result = create_ply_internal(&mesh, &options);
         assert!(result.success, "{:?}", result.error);
         let data = result.data.unwrap();
         assert!(data.contains("property uchar red"), "{data}");

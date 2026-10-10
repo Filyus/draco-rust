@@ -18,9 +18,15 @@ them; the `Unreleased` section becomes the first packages' notes.
     adds strict validation (152 KiB), and `./writer` adds writing and Draco
     compression (261 KiB).
   - `@draco-rust/fbx` reads and writes FBX (234 KiB).
+  - `@draco-rust/obj` (42 KiB), `@draco-rust/ply` (89 KiB) and
+    `@draco-rust/stl` (48 KiB) read and write their formats. PLY keeps every
+    property, so a Gaussian splat arrives whole.
 
   Every entry works from a bundler, from a CDN such as jsDelivr, and in Node.
   `drc-wasm` gained the `point-cloud-only` feature for the point-cloud entry.
+  `create_ply` writes binary little-endian unless `format` says otherwise, as
+  a `Uint8Array` in `binary_data`; `format: "ascii"` still returns text in
+  `data`. The converter names its format and is unchanged.
 
 - **The modules no longer ship as zips on crate releases.** The 148 zipped
   modules attached to 21 crate releases were removed, and releases attach none
