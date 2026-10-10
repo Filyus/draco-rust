@@ -558,7 +558,6 @@ impl<'a> JsonRef<'a> {
             }
             out.push(b'}');
         };
-        let nodes = &self.tape.nodes;
         let mut replace = patches.replace.iter().peekable();
         let mut open: Vec<Open> = Vec::new();
         let mut index = self.index;
@@ -590,7 +589,10 @@ impl<'a> JsonRef<'a> {
                 index = here.end();
                 continue;
             }
-            let node = nodes[index as usize];
+            // Through `node` rather than indexing `nodes`: a position past the
+            // tape, which is what a missing `at` and `JsonRef::default` are,
+            // reads and writes as null.
+            let node = here.node();
             match node.kind {
                 Kind::Null => out.extend_from_slice(b"null"),
                 Kind::False => out.extend_from_slice(b"false"),
@@ -1071,6 +1073,14 @@ impl Parser<'_> {
                     self.pos += 1;
                     if b == b'"' {
                         let to = self.tape.text.len();
+                        // The source is checked against 4 GiB, but decoded
+                        // escapes are appended to it, so the text can pass
+                        // what a node's offsets address.
+                        if u32::try_from(to).is_err() {
+                            return Err(
+                                "JSON document exceeds 4 GiB once its escapes are decoded".into()
+                            );
+                        }
                         self.tape.push(Kind::Text, from, to);
                         return Ok(());
                     }
@@ -1123,6 +1133,10 @@ impl Parser<'_> {
             .get(self.pos..self.pos + 4)
             .ok_or("short unicode escape")?;
         self.pos += 4;
+        // Four hex digits exactly: `from_str_radix` would also take a sign.
+        if !hex.iter().all(u8::is_ascii_hexdigit) {
+            return Err("invalid unicode escape".into());
+        }
         let text = std::str::from_utf8(hex).map_err(|_| "invalid unicode escape")?;
         u16::from_str_radix(text, 16).map_err(|_| "invalid unicode escape".into())
     }

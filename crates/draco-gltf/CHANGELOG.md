@@ -33,16 +33,18 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - Up to that many decodes are in flight at once, each held to the Draco
     ceilings on its own. WebAssembly reads on the calling thread.
 - **`Document::as_json` reads the document without building a tree.** It
-  returns a `JsonRef`, a copyable position in the parsed document, with the
-  read half of `JsonValue`'s methods: `get`, `as_str`, `as_u64`, `as_f64`,
-  `as_bool`, `as_number` (the lexeme as written), `as_array` and `as_object`,
-  and `at`, which steps by key or position the way indexing a `JsonValue`
-  does, reading as null where there is nothing. `pointer` resolves a JSON
-  Pointer (RFC 6901), the way `KHR_animation_pointer` names the property an
-  animation drives: `root.pointer("/nodes/0/translation")`.
-  It also has `to_value` to copy a subtree out as a tree and `to_vec` to
-  serialize one. Arrays (`JsonArray`) reach an item by position in one step,
-  and objects (`JsonObject`) iterate their members in document order.
+  returns a `JsonRef`, a copyable position in the parsed document.
+  - It reads the way `JsonValue` does, with `get`, `as_str`, `as_u64`,
+    `as_f64`, `as_array`, `as_object` and `is_object`, and `at` in place of
+    indexing: a key or a position, reading as null where there is nothing,
+    as `[]` on the tree does.
+  - Beyond `JsonValue` it has `as_bool`, `as_number` (the lexeme as written),
+    `is_null`, `is_array`, and `pointer`, which resolves a JSON Pointer
+    (RFC 6901), the way `KHR_animation_pointer` names the property an
+    animation drives: `root.pointer("/nodes/0/translation")`.
+  - `to_value` copies a subtree out as a tree and `to_vec` serializes one.
+    Arrays (`JsonArray`) reach an item by position in one step, and objects
+    (`JsonObject`) iterate their members in document order.
 
 ### Changed
 
@@ -100,6 +102,12 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   threads `ImportOptions::draco_decode_threads` allows, a batch of that many
   at a time, so no more decoded geometry is held at once than there are
   threads. The file it writes is the same on any count.
+
+### Fixed
+
+- **A `\u` escape takes four hex digits and nothing else.** The parser read
+  `"\u+041"` as `"A"`, accepting the sign `u16::from_str_radix` allows; JSON
+  does not, and the escape is now refused.
 
 ## [0.6.0](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.5.0...draco-gltf-v0.6.0) - 2026-10-04
 

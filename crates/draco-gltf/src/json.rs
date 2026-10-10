@@ -953,4 +953,36 @@ mod tests {
             .and_then(|v| v.as_array());
         assert_eq!(translation.map(|a| a.len()), Some(3));
     }
+    /// A position past the tape is null when written as well as when read:
+    /// `at` lands there on a miss, and `Debug` writes through the same path.
+    #[test]
+    fn a_missing_at_writes_and_formats_as_null() {
+        let tape = Tape::parse(br#"{"a":1}"#).unwrap();
+        let missing = tape.root().at("nope").at(3);
+        assert_eq!(missing.to_vec(), b"null");
+        assert_eq!(format!("{missing:?}"), "null");
+        assert_eq!(JsonRef::default().to_vec(), b"null");
+    }
+
+    /// A `\u` escape is four hex digits; a sign is not one, though
+    /// `u16::from_str_radix` would take a leading `+`.
+    #[test]
+    fn a_unicode_escape_takes_four_hex_digits_and_nothing_else() {
+        assert_eq!(
+            Tape::parse(br#""\u0041""#).unwrap().root().as_str(),
+            Some("A")
+        );
+        for bad in [
+            &br#""\u+041""#[..],
+            br#""\u-041""#,
+            br#""\u 041""#,
+            br#""\u004""#,
+        ] {
+            assert!(
+                Tape::parse(bad).is_err(),
+                "{}",
+                String::from_utf8_lossy(bad)
+            );
+        }
+    }
 }
