@@ -73,43 +73,28 @@ Without `ZSTD_SOURCE_DIR` the Zstd step is skipped and the report says so.
 
 ## Speed Snapshot
 
-Seeded synthetic sweep, position-only -- `3` runs, medians, `us/1k faces`:
+Seeded synthetic sweep, position-only, 12 meshes over 4 families: `us` per
+1,000 faces, the median over the meshes of a run, then the median over three
+runs. Measured 2026-10-10 at `57d8cb22` with `tools/perf-suite`:
 
 | Speed | Encode C++ / Rust | Encode | Decode C++ / Rust | Decode |
 | ---: | ---: | ---: | ---: | ---: |
-| 0 | `602` / `542` | `1.11x` | `67.3` / `83.5` | `0.81x` |
-| 5 | `353` / `391` | `0.90x` | `36.3` / `55.7` | `0.65x` |
-| 9 | `346` / `385` | `0.90x` | `31.6` / `50.8` | `0.62x` |
-| 10 | `38.8` / `32.0` | `1.21x` | `16.6` / `11.5` | `1.44x` |
+| 0 | `420.3` / `259.1` | `1.62x` | `92.0` / `72.3` | `1.27x` |
+| 1 | `613.7` / `293.5` | `2.09x` | `87.9` / `64.6` | `1.36x` |
+| 2 | `229.1` / `122.9` | `1.86x` | `73.2` / `49.6` | `1.48x` |
+| 3 | `227.2` / `121.0` | `1.88x` | `70.2` / `53.6` | `1.31x` |
+| 4 | `232.0` / `124.7` | `1.86x` | `63.2` / `48.2` | `1.31x` |
+| 5 | `202.5` / `103.3` | `1.96x` | `52.5` / `39.8` | `1.32x` |
+| 6 | `205.8` / `111.1` | `1.85x` | `53.6` / `40.8` | `1.31x` |
+| 7 | `200.7` / `114.4` | `1.75x` | `51.1` / `39.6` | `1.29x` |
+| 8 | `190.0` / `93.0` | `2.04x` | `45.1` / `32.9` | `1.37x` |
+| 9 | `201.0` / `97.9` | `2.05x` | `44.6` / `33.7` | `1.32x` |
+| 10 | `52.3` / `17.0` | `3.08x` | `21.2` / `9.9` | `2.13x` |
 
-That sweep is synthetic and position-only. On the Stanford Bunny -- 69k faces,
-one decoder per side, same payload, whole-decode milliseconds -- the same
-comparison after the corner-table access round (`decode_loop`, 300 iterations,
-pristine 1.5.7) reads:
-
-| Asset | Speed | C++ | Rust | |
-| --- | ---: | ---: | ---: | ---: |
-| with normals | 1 | `13.94` | `11.80` | `1.18x` |
-| with normals | 5 | `7.76` | `7.66` | `1.01x` |
-| with normals | 9 | `4.46` | `4.80` | `0.93x` |
-| position only | 1 | `5.80` | `6.77` | `0.86x` |
-| position only | 5 | `3.36` | `4.29` | `0.78x` |
-| position only | 9 | `3.01` | `3.97` | `0.76x` |
-
-So the port is ahead on a real mesh at speed 1, at or past parity at speed 5
-on both payloads, and `1.3x` behind at worst -- speed 9, position only, where
-connectivity dominates most -- not the `1.6x` the synthetic sweep alone
-suggests. Encode stays at parity to `10%` behind; the sequential path at speed
-`10` is `1.2x` to `1.44x` ahead.
-
-**These two tables are the oldest current figures here, and they disagree with
-the newer ones below.** Both predate the release-profile change and the rounds
-after it; the per-harness tables in the next section were taken at `0667cfe1`
-and put the port ahead on every cell of every payload they cover. Where the two
-disagree, the per-harness tables are the later measurement. Re-taking these two
-against a pristine build is the outstanding item -- see
-[`PERFORMANCE-LOG.md`](PERFORMANCE-LOG.md) for what the reference build was
-when they were taken.
+The port is ahead at every speed on both operations: `1.6x`-`3.1x` on encode
+and `1.3x`-`2.1x` on decode, widest at speed 10, the sequential coder. The
+named-model and real-model tables below show the same on real meshes, with
+narrower margins on decode.
 
 ## Benchmarks
 
@@ -174,28 +159,28 @@ Ryzen AI 7 350, one thread, C++ Draco 1.5.7 release, 10-bit positions,
 medians of nine rounds of twenty, at speed 4 (EdgeBreaker) and speed 10
 (sequential). Every cell wrote byte-identical output on both sides.
 
-Measured 2026-10-04 at `99969d2d`, speed 4:
+Measured 2026-10-10 at `57d8cb22`, speed 4:
 
-| model | faces | C++ encode | Rust encode | | C++ decode | Rust decode | |
-|---|---|---|---|---|---|---|---|
-| bunny | 69,451 | `20,258.0 [19,862.0..22,279.0]` | `12,093.5 [11,356.5..12,447.6]` | `1.68x` | `6,487.0 [6,122.0..7,320.0]` | `4,739.5 [4,548.7..5,353.8]` | `1.37x` |
-| lamp | 12,082 | `2,935.0 [2,892.0..2,985.0]` | `1,949.9 [1,916.2..1,965.7]` | `1.51x` | `1,357.0 [1,335.0..1,389.0]` | `1,060.0 [1,035.9..1,067.5]` | `1.28x` |
-| car | 1,744 | `690.0 [675.0..709.0]` | `368.5 [358.2..378.7]` | `1.87x` | `284.0 [274.0..320.0]` | `165.4 [163.0..183.2]` | `1.72x` |
+| model | faces | C++ encode | Rust encode |  | C++ decode | Rust decode |  |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| bunny | 69,451 | `28,016.0 [20,733.0..32,612.0]` | `16,488.7 [12,512.9..18,283.6]` | `1.70x` | `8,903.0 [7,224.0..9,959.0]` | `6,431.8 [5,443.1..6,955.5]` | `1.38x` |
+| lamp | 12,082 | `4,226.0 [4,111.0..4,426.0]` | `2,971.3 [2,688.7..3,056.7]` | `1.42x` | `1,949.0 [1,873.0..2,059.0]` | `1,488.9 [1,397.5..1,515.2]` | `1.31x` |
+| car | 1,744 | `998.0 [938.0..1,034.0]` | `556.5 [501.7..576.2]` | `1.79x` | `411.0 [378.0..464.0]` | `228.7 [219.2..247.9]` | `1.80x` |
 
 Speed 10:
 
-| model | faces | C++ encode | Rust encode | | C++ decode | Rust decode | |
-|---|---|---|---|---|---|---|---|
-| bunny | 69,451 | `3,791.0 [3,552.0..4,379.0]` | `1,359.6 [1,159.6..1,547.2]` | `2.79x` | `1,627.0 [1,396.0..2,051.0]` | `620.9 [432.7..717.7]` | `2.62x` |
-| lamp | 12,082 | `555.0 [542.0..596.0]` | `226.3 [208.6..238.3]` | `2.45x` | `255.0 [246.0..299.0]` | `104.4 [97.0..105.8]` | `2.44x` |
-| car | 1,744 | `149.0 [143.0..154.0]` | `61.2 [58.7..78.1]` | `2.44x` | `65.0 [64.0..68.0]` | `29.7 [27.7..31.0]` | `2.19x` |
+| model | faces | C++ encode | Rust encode |  | C++ decode | Rust decode |  |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| bunny | 69,451 | `4,083.0 [3,696.0..4,293.0]` | `1,487.7 [1,359.8..1,677.3]` | `2.74x` | `1,767.0 [1,460.0..2,135.0]` | `638.5 [468.7..738.2]` | `2.77x` |
+| lamp | 12,082 | `620.0 [558.0..650.0]` | `252.8 [229.9..270.4]` | `2.45x` | `286.0 [270.0..309.0]` | `115.7 [107.3..125.0]` | `2.47x` |
+| car | 1,744 | `158.0 [153.0..160.0]` | `65.3 [59.8..72.6]` | `2.42x` | `70.0 [68.0..75.0]` | `31.5 [29.9..33.6]` | `2.22x` |
 
 Microseconds. The ratios are stable across runs to within about 0.02x; the
 absolute figures are not, and are comparable only inside their own run, which
 is why ratios are quoted from a run rather than carried between them.
 
-The same session timed the draco-core 2.2.1 release beside this tree, the two
-binaries alternated (2.2.1, this, this, 2.2.1) with the C++ side as the control
+The run of 2026-10-04 at `99969d2d` timed the draco-core 2.2.1 release beside
+that tree, the two binaries alternated (2.2.1, this, this, 2.2.1) with the C++ side as the control
 that should not move. At speed 4 the Rust encode is 3-5% faster than 2.2.1's
 and the decode 0-4%: the point-cloud rounds since reached the attribute coding
 a mesh shares -- the rANS write and read, the symbol plan, the tagged packing,
@@ -232,27 +217,34 @@ cargo test --manifest-path crates/Cargo.toml -p draco-cpp-test-bridge --test ben
 ```
 
 Ryzen AI 7 350, one thread, C++ Draco 1.5.7 release, 10-bit positions, median
-of 21 runs (5 for the two bunny meshes, over 30k faces). Measured 2026-09-04 at
-`0667cfe1`; C++/Rust ratio, `>1x` favors Rust:
+of 21 runs (5 for the two bunny meshes, over 30k faces). Measured 2026-10-10 at
+`57d8cb22`; C++/Rust ratio, `>1x` favors Rust.
 
-| model | faces | enc x @0 | @5 (default) | @9 | @10 | dec x @0 | @5 (default) | @9 | @10 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Stanford bunny (.ply) | 69,451 | `1.3x` | `1.1x` | `1.1x` | `2.4x` | `1.1x` | `1.0x` | `1.3x` | `2.9x` |
-| bunny (.drc) | 69,451 | `1.3x` | `1.3x` | `1.2x` | `2.4x` | `1.1x` | `1.3x` | `1.3x` | `2.9x` |
-| car | 1,744 | `3.2x` | `1.9x` | `1.8x` | `2.2x` | `1.7x` | `1.8x` | `2.2x` | `3.3x` |
-| lamp | 12,082 | `1.6x` | `1.5x` | `1.8x` | `1.9x` | `1.2x` | `1.3x` | `1.7x` | `1.9x` |
+Encode:
 
-At speed 10 (sequential, no edgebreaker) the port is `1.9x`-`2.9x` ahead on
-every model and every operation -- the largest, most consistent lead in this
-document, and the full 11-speed run (this table shows four columns of it) has
-never previously appeared here: the harness existed (one commit,
-`c61a14fd`) but nothing had run it through into `PERFORMANCE.md`. Speeds 6-9
-show a size jump on three of the four models (e.g. lamp `143,412B` to
-`151,701B` between speed 5 and 6) worth noting for whoever next reads the
-compression-ratio side of this sweep, though it is not this table's subject.
-Full per-speed output, including the smaller car and lamp assets which sit
-inside a few percent of each other at the small end, is in the harness's own
-`--nocapture` output rather than reproduced here in full.
+| model | faces | @0 | @1 | @2 | @3 | @4 | @5 | @6 | @7 | @8 | @9 | @10 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Stanford bunny | 69,451 | `1.37x` | `1.32x` | `1.09x` | `1.10x` | `1.08x` | `1.15x` | `1.11x` | `1.17x` | `1.14x` | `1.17x` | `3.09x` |
+| bunny (drc) | 69,451 | `1.41x` | `1.52x` | `1.36x` | `1.36x` | `1.30x` | `1.30x` | `1.23x` | `1.23x` | `1.31x` | `1.30x` | `3.15x` |
+| car | 1,744 | `3.10x` | `3.00x` | `2.25x` | `1.94x` | `1.83x` | `1.88x` | `1.59x` | `1.48x` | `1.78x` | `1.70x` | `2.23x` |
+| lamp | 12,082 | `1.55x` | `1.68x` | `1.67x` | `1.61x` | `1.61x` | `1.57x` | `1.85x` | `1.65x` | `1.81x` | `1.77x` | `2.59x` |
+
+Decode:
+
+| model | faces | @0 | @1 | @2 | @3 | @4 | @5 | @6 | @7 | @8 | @9 | @10 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Stanford bunny | 69,451 | `1.20x` | `1.04x` | `1.10x` | `1.21x` | `1.23x` | `1.04x` | `1.09x` | `1.17x` | `1.01x` | `1.17x` | `2.98x` |
+| bunny (drc) | 69,451 | `1.29x` | `1.16x` | `1.38x` | `1.45x` | `1.45x` | `1.18x` | `1.33x` | `1.33x` | `1.41x` | `1.40x` | `3.12x` |
+| car | 1,744 | `1.78x` | `1.09x` | `2.22x` | `1.63x` | `1.83x` | `1.84x` | `2.25x` | `2.23x` | `2.26x` | `2.26x` | `3.07x` |
+| lamp | 12,082 | `1.23x` | `1.23x` | `1.33x` | `1.40x` | `1.34x` | `1.37x` | `1.75x` | `1.70x` | `1.77x` | `1.79x` | `2.33x` |
+
+Every cell favors Rust. Speed 10, the sequential coder, is the widest margin on
+every model, `2.2x`-`3.2x` both ways; at the EdgeBreaker speeds the Stanford
+bunny decodes `1.0x`-`1.2x` faster and the smaller models mostly more. Speeds
+6-9 write larger files than speed 5 on three of the four models (lamp `143,412` to
+`151,701` bytes), which is the compression side of this sweep rather than its
+subject. The harness's `--nocapture` output carries every model's per-speed
+times and sizes.
 
 ### Decode Through The C++ Bridge
 
@@ -272,17 +264,17 @@ cargo test --manifest-path crates/Cargo.toml -p draco-cpp-test-bridge --test ben
 ```
 
 Ryzen AI 7 350, pristine C++ Draco 1.5.7, median per-iteration over 9 batches.
-Measured 2026-09-04 at `0667cfe1`, C++/Rust speedup (`>1x` favors Rust):
+Measured 2026-10-10 at `57d8cb22`, C++/Rust speedup (`>1x` favors Rust):
 
-| grid | speed 0 | speed 1 | speed 5 | speed 10 | overall |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| 20x20 (722 faces) | `1.04x` | `1.22x` | `1.32x` | `1.80x` | `1.20x` |
-| 50x50 (4,802 faces) | `1.25x` | `1.24x` | `1.32x` | `1.72x` | `1.29x` |
-| 100x100 (19,602 faces) | `1.25x` | `1.26x` | `1.32x` | `1.70x` | `1.30x` |
+| grid | faces | @0 | @1 | @5 | @10 | overall |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 20x20 | 722 | `1.11x` | `1.11x` | `1.33x` | `1.64x` | `1.18x` |
+| 50x50 | 4,802 | `1.20x` | `1.28x` | `1.42x` | `2.24x` | `1.31x` |
+| 100x100 | 19,602 | `1.36x` | `1.22x` | `1.46x` | `2.14x` | `1.37x` |
 
-Every cell favors Rust, the lead widens with mesh size at every non-10 speed,
-and speed 10 (sequential, no edgebreaker) is the largest margin on all three
-sizes -- the same shape the real-model and seeded sweeps above show.
+Every cell favors Rust, and speed 10 (sequential, no EdgeBreaker) is the
+largest margin on all three sizes -- the same shape the real-model and seeded
+sweeps above show.
 
 ### Encode Through The C++ Bridge
 
@@ -299,12 +291,12 @@ cargo test --manifest-path crates/Cargo.toml -p draco-cpp-test-bridge --test ben
 ```
 
 Same machine and reference build, averaged over 5 iterations. Measured
-2026-09-04 at `0667cfe1`, byte-identical output on every cell (`MATCH`):
+2026-10-10 at `57d8cb22`, byte-identical output on every cell:
 
-| grid | speed 0 | speed 1 | speed 5 | speed 10 |
-| --- | ---: | ---: | ---: | ---: |
-| 50x50 (4,802 faces) | `1.44x` | `1.57x` | `1.51x` | `1.68x` |
-| 100x100 (19,602 faces) | `1.54x` | `1.55x` | `1.40x` | `1.77x` |
+| grid | faces | @0 | @1 | @5 | @10 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 50x50 | 4,802 | `1.42x` | `1.56x` | `1.49x` | `2.22x` |
+| 100x100 | 19,602 | `1.49x` | `1.54x` | `1.40x` | `2.48x` |
 
 ### Decode Matrix, One Process
 
@@ -390,22 +382,21 @@ two time side by side.
 cargo test --manifest-path crates/Cargo.toml -p draco-cpp-test-bridge --test bench_encode_decode_matrix --release -- --nocapture --test-threads=1
 ```
 
-Same machine and reference build. Measured 2026-09-04 at `0667cfe1`, byte
-size and decoded point/face counts matched on every cell (`OK`); `bench_encode_decode_matrix`,
-the 100x100 grid (19,602 faces), C++/Rust speedup:
+Same machine and reference build. Measured 2026-10-10 at `57d8cb22`, byte
+size and decoded point and face counts matched on every cell. C++/Rust
+speedup:
 
-| speed | encode | decode |
-| ---: | ---: | ---: |
-| 0 | `1.56x` | `1.23x` |
-| 1 | `1.51x` | `1.20x` |
-| 5 | `1.65x` | `1.27x` |
-| 9 | `1.63x` | `1.31x` |
-| 10 | `1.80x` | `1.81x` |
+| mesh | operation | @0 | @1 | @2 | @3 | @4 | @5 | @6 | @7 | @8 | @9 | @10 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| grid 100x100 | encode | `1.52x` | `1.52x` | `1.50x` | `1.52x` | `1.55x` | `1.48x` | `1.54x` | `1.71x` | `1.70x` | `1.72x` | `2.64x` |
+| grid 100x100 | decode | `1.37x` | `1.36x` | `1.41x` | `1.41x` | `1.47x` | `1.36x` | `1.37x` | `1.32x` | `1.41x` | `1.44x` | `2.22x` |
+| sphere 24x48 | encode | `1.68x` | `1.61x` | `1.63x` | `1.60x` | `1.46x` | `1.76x` | `1.73x` | `2.03x` | `1.72x` | `1.62x` | `2.03x` |
+| sphere 24x48 | decode | `1.31x` | `1.26x` | `1.42x` | `1.43x` | `1.51x` | `1.41x` | `1.33x` | `1.37x` | `1.36x` | `1.40x` | `1.88x` |
+| cube subdiv20 | encode | `1.65x` | `1.59x` | `1.67x` | `1.75x` | `1.65x` | `1.83x` | `1.74x` | `1.92x` | `1.88x` | `1.67x` | `3.07x` |
+| cube subdiv20 | decode | `1.32x` | `1.34x` | `1.44x` | `1.48x` | `1.47x` | `1.39x` | `1.46x` | `1.40x` | `1.45x` | `1.52x` | `2.03x` |
 
-`bench_generated_encode_decode_matrix`'s cube subdiv20 (4,800 faces) reads
-similarly: encode `1.40x`-`1.80x`, decode `1.23x`-`1.85x` across speeds
-0-10, both ends anchored by the same speed-10 sequential-path lead the other
-tables in this document show.
+Encode leads by `1.5x`-`3.1x` and decode by `1.3x`-`2.2x`, widest at or near
+speed 10 on every mesh.
 
 ### Decode Real Files
 
@@ -503,14 +494,14 @@ was slow.
 cargo run --release --manifest-path tools/basis-cpp-oracle/Cargo.toml --example speed
 ```
 
-Where it stands, 2026-09-24 on Windows, as time against the reference's, over
-the last two runs:
+Where it stands, measured 2026-10-10 at `57d8cb22` on Windows, as time against
+the reference's:
 
 | codec | all targets | slowest target |
 | --- | ---: | ---: |
-| ETC1S | `0.70-0.71x` | ASTC and RGBA8, about `0.8x` |
-| UASTC | `0.85-0.86x` | BC7, `0.91-0.94x` |
-| both | `0.73-0.74x` | |
+| ETC1S | `0.68x` | ASTC, `0.81x` |
+| UASTC | `0.82x` | BC7, `0.93x` |
+| both | `0.71x` | |
 
 Every target is faster than the reference. The fixtures' UASTC blocks are 88%
 solid-colour, which weights the UASTC figure toward that path; how a busy
@@ -535,8 +526,8 @@ crate alone.
 ZSTD_SOURCE_DIR=<a facebook/zstd checkout> cargo run --release --manifest-path tools/zstd-bench/Cargo.toml
 ```
 
-Where it stands, 2026-09-24 on Windows against zstd 1.5.6: about `3.5x` C's
-time over the four fixtures (3.2 MB out). The decoder is `ruzstd`; the
+Where it stands, measured 2026-10-10 at `57d8cb22` on Windows against zstd
+1.5.6: about `3.2x` C's time over the four fixtures (3.2 MB out). The decoder is `ruzstd`; the
 candidates measured against it, and why none was taken, are in
 `PERFORMANCE-LOG.md` under *KTX2: Zstd, And Which Decoder*.
 

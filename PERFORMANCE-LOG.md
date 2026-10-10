@@ -134,6 +134,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [Writing glTF JSON After An Edit](#writing-gltf-json-after-an-edit) | landed | `0.34 -> 0.17 ms` |
 | [draco-core's Optimization Level, Re-Measured On glTF Reads](#draco-cores-optimization-level-re-measured-on-gltf-reads) | diagnostic | `opt 2 stays: s is -13.3 kB for +7-18%` |
 | [The KD-Tree Encoder On One Row](#the-kd-tree-encoder-on-one-row) | landed | `16.6 MB -> linear at d=255, -1.5% to -17.4% time` |
+| [draco-core 2.3.1 Against 2.3.0](#draco-core-231-against-230) | diagnostic | `-27 to -35% WASM decode with predicted normals, -6 to -7% native` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -5320,6 +5321,57 @@ row-per-depth copies were never where the encoder's time went -- that was
 `partition`, see
 [The KD-Tree Encode, Counted For The First Time](#the-kd-tree-encode-counted-for-the-first-time)
 -- so the gain is the memory, with the time a side effect that grows with `d`.
+
+### draco-core 2.3.1 Against 2.3.0
+
+2026-10-10, same laptop, at `57d8cb22`, for the release notes: what the
+2.3.0..2.3.1 changes add up to, since each round above measured only its own
+step. `tools/perf-suite` compares against C++ and cannot say this.
+
+Native: one bench built twice, against the `draco-core-v2.3.0` tag and this
+tree, same release profile (fat LTO, one codegen unit), six rounds alternating
+which ran first, medians of 10-40 iterations each, then the median over rounds.
+Every case produced the same output size and point count on both.
+
+| case | 2.3.0 | 2.3.1 | |
+| --- | ---: | ---: | ---: |
+| decode `bunny_gltf.drc` (normals) | `9,904 us` | `9,292 us` | `-6.2%` |
+| decode grid 257^2, normals and UVs, speed 0 | `24.7 ms` | `23.2 ms` | `-6.2%` |
+| decode the same, speed 3 | `20.5 ms` | `19.0 ms` | `-7.4%` |
+| encode the same, speed 0 / 3 | `55.1 / 32.3 ms` | `53.4 / 30.7 ms` | `-3.1% / -5.0%` |
+| the same at speeds 5 and 7 | | | within 1-3% |
+| decode `bunny_cpp_standard.drc`, `lamp_cpp_std.drc` | | | within 1% |
+| KD-tree encode, `d` 3 / 6 / 64, speed 8 | | | `-4.1% / -6.3% / -10.5%` |
+
+Point clouds otherwise stand where 2.3.0 left them. Generated clouds of 20,000
+to 500,000 points, nine rounds rotating 2.3.0, this tree and this tree with
+`fcdfd249` reverted: KD-tree decode within 1.1%, sequential decode within 1.5%
+(`-3.1%` at `d` 64), sequential encode within 0.8%, and the revert reads the
+same as the tree. A first pass on clouds ten times smaller put sequential
+decode at `+13%` and `+27%`; a rerun put the same cases at `-8%` and `-4%`.
+Decodes of half a millisecond are not resolvable by this method, so the
+figures above are from the larger clouds.
+
+WASM: `drc-wasm` with `read` alone, built twice from this tree's `web/`, once
+against 2.3.0's `draco-core` and once against this one, both through `wasm-opt`
+133 with `build-tool`'s flags, so only the core differs. Node 24.21, the
+harness of [WASM Decode Against Upstream's](#wasm-decode-against-upstreams-an-i128-nobody-priced),
+both arms and upstream 1.5.7-100's `draco_decoder_gltf.wasm` in one process,
+nine rounds, outputs compared first:
+
+| file | 2.3.0 | 2.3.1 | | upstream |
+| --- | ---: | ---: | ---: | ---: |
+| bunny_cpp (normals) | `17.1 ms` | `11.9 ms` | `-29%` | `13.9 ms` |
+| bunny_gltf (normals) | `17.2 ms` | `11.8 ms` | `-31%` | `15.2 ms` |
+| grid 257^2, standard | `28.3 ms` | `18.2 ms` | `-35%` | `22.8 ms` |
+| grid 257^2, valence | `35.2 ms` | `25.4 ms` | `-28%` | `27.8 ms` |
+| grid 257^2 with UVs, cl10 | `45.1 ms` | `32.6 ms` | `-27%` | `35.7 ms` |
+| grid 257^2 with UVs, cl5 | `19.0 ms` | `18.3 ms` | `-3%` | `19.7 ms` |
+
+The cl5 stream uses neither predictor the release changed, so it is the
+control. 2.3.0 trailed upstream's module on every mesh with predicted normals;
+2.3.1 is ahead on all of them. Most of it is the 128-bit arithmetic gone from
+the normal predictor, which wasm32 has no instructions for.
 
 ## Unexplored
 
