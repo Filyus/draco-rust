@@ -36,7 +36,7 @@ figure at all.
 `rejected` -- tried, deliberately not kept. `retracted` -- an earlier claim
 here was withdrawn. `diagnostic` -- measured only, no change proposed.
 
-94 rounds: 59 landed, 14 diagnostic, 11 null, 8 retracted, 2 rejected.
+95 rounds: 59 landed, 15 diagnostic, 11 null, 8 retracted, 2 rejected.
 
 | Round | Verdict | Headline |
 | --- | --- | ---: |
@@ -137,6 +137,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [draco-core 2.3.1 Against 2.3.0](#draco-core-231-against-230) | diagnostic | `-27 to -35% WASM decode with predicted normals, -6 to -7% native` |
 | [KTX2 In WASM: zrip, And The Transcoder's Optimization Level](#ktx2-in-wasm-zrip-and-the-transcoders-optimization-level) | landed (opt 2), deferred (zrip) | `zrip: 3x native, 1.9x WASM Zstd, 1.01x WASM decode; opt 2: 0.87x for +8.7 kB` |
 | [`decode_draco` Against draco3d, And The Pool](#decode_draco-against-draco3d-and-the-pool) | diagnostic | `0.99-2.48x draco3d's speed; 8 streams 98 -> 42 ms on 4 workers` |
+| [`createDracoLoader` Against DRACOLoader, In The Browser](#createdracoloader-against-dracoloader-in-the-browser) | diagnostic | `1.33-2.01x warm, 1.03-1.10x cold` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -5485,6 +5486,45 @@ would start.
 Verdict: `diagnostic`. `DRACOLoader` itself, with its own worker pool and
 `GLTFLoader` on top, was not run: `three` is not a dependency of the web
 tests, and a browser comparison through it is the measurement still owed.
+
+### `createDracoLoader` Against DRACOLoader, In The Browser
+
+2026-10-10, same laptop, at `c443d97f` with `@draco-rust/decoder` rebuilt by
+`build-tool --npm`. The comparison the round above left owed, now that `three`
+0.186.1 is a dev dependency: `web/scripts/bench-three-draco-loader.mjs` runs
+the `mesh` entry's `createDracoLoader(THREE)` and three's own `DRACOLoader`,
+which loads upstream's Draco 1.5.7 decoder, in headless Chromium through
+Playwright, both limited to four workers. Every sample is a fresh page that
+loads its own module, the arms alternate in order, and one sacrificial page
+of each goes first. Medians of two full runs:
+
+| scenario | ours | DRACOLoader | DRACOLoader / ours |
+| --- | ---: | ---: | ---: |
+| cold: a new loader to the first `bun_zipper.glb` (n=11) | `71.2 / 63.0 ms` | `73.6 / 69.3 ms` | `1.03 / 1.10x` |
+| `bun_zipper.glb` through `GLTFLoader`, warm (n=36) | `20.8 / 19.7 ms` | `32.3 / 32.3 ms` | `1.55 / 1.64x` |
+| 16 `bunny_gltf.drc` at once, edgebreaker (n=28) | `77.1 / 76.1 ms` | `103.8 / 100.9 ms` | `1.35 / 1.33x` |
+| 16 `bunny_cpp_standard.drc` at once, sequential (n=28) | `14.7 / 14.0 ms` | `28.3 / 28.1 ms` | `1.93 / 2.01x` |
+
+The control, this loader against a second copy of itself, read `1.01x`,
+`1.01x`, `1.03x` and `0.97x` on the four rows: the floor is about 3%, so every
+warm row is real and the cold one is at most a small win. Cold is mostly
+compiling the module and starting a worker, which both sides pay alike from
+a local disk; over a network the download decides it instead. Gzip, as a page
+downloads it:
+
+| | wasm | JavaScript | total |
+| --- | ---: | ---: | ---: |
+| `@draco-rust/decoder/mesh` with `pool`, `worker` and `three` | `78.8 kB` | `9.6 kB` | `88.4 kB` |
+| `DRACOLoader`'s default decoder (`libs/draco/`) | `88.2 kB` | `11.7 kB` | `99.9 kB` |
+| `DRACOLoader`'s glTF-only decoder (`libs/draco/gltf/`) | `63.2 kB` | `11.5 kB` | `74.8 kB` |
+
+The glTF-only decoder is the one a size-conscious page would pick, and
+against it this entry is `13.6 kB` larger. That is where the next size round
+starts: what `mesh` carries that a glTF Draco stream cannot use.
+
+Verdict: `diagnostic`. The warm ratios sit near the single-thread ones in the
+round above, so the pool passes the decoder's speed through without eating
+it.
 
 ## Unexplored
 

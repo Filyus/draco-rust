@@ -471,6 +471,26 @@ against its parent commit.
 cargo run --release --manifest-path crates/Cargo.toml   -p draco-cpp-test-bridge --example dump_decoded -- grid_s5.drc out.bin
 ```
 
+### In The Browser, Against three.js's DRACOLoader
+
+File: `web/scripts/bench-three-draco-loader.mjs`
+
+`@draco-rust/decoder/mesh/three` against three 0.186's `DRACOLoader`, which
+runs upstream's Draco 1.5.7 decoder, both on four workers in headless
+Chromium. Medians, two runs; the same-source control is within 3%:
+
+| scenario | `createDracoLoader` | `DRACOLoader` | |
+| --- | ---: | ---: | ---: |
+| `bun_zipper.glb` through `GLTFLoader`, warm | `19.7-20.8 ms` | `32.3 ms` | `1.55-1.64x` |
+| 16 `bunny_gltf.drc` (edgebreaker) at once | `76.1-77.1 ms` | `100.9-103.8 ms` | `1.33-1.35x` |
+| 16 `bunny_cpp_standard.drc` (sequential) at once | `14.0-14.7 ms` | `28.1-28.3 ms` | `1.93-2.01x` |
+| a new loader to the first `bun_zipper.glb` | `63.0-71.2 ms` | `69.3-73.6 ms` | `1.03-1.10x` |
+
+What a page downloads for it, gzip: `88.4 kB` for the `mesh` entry with its
+pool, worker and loader, against `99.9 kB` for `DRACOLoader`'s default decoder
+and `74.8 kB` for its glTF-only one. The round is in `PERFORMANCE-LOG.md`, as
+*`createDracoLoader` Against DRACOLoader, In The Browser*.
+
 ### KTX2 Transcode Against The Reference
 
 File: `tools/basis-cpp-oracle/examples/speed.rs`
