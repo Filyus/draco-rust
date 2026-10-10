@@ -35,7 +35,9 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`Document::as_json` reads the document without building a tree.** It
   returns a `JsonRef`, a copyable position in the parsed document, with the
   read half of `JsonValue`'s methods: `get`, `as_str`, `as_u64`, `as_f64`,
-  `as_bool`, `as_number` (the lexeme as written), `as_array` and `as_object`.
+  `as_bool`, `as_number` (the lexeme as written), `as_array` and `as_object`,
+  and `at`, which steps by key or position the way indexing a `JsonValue`
+  does, reading as null where there is nothing.
   It also has `to_value` to copy a subtree out as a tree and `to_vec` to
   serialize one. Arrays (`JsonArray`) reach an item by position in one step,
   and objects (`JsonObject`) iterate their members in document order.
@@ -47,8 +49,10 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `Shape::definition` and `PrimitiveRef::extension`. `extensions()` and
   `PrimitiveRef::attributes` return `Option<JsonObject>`, `morph_targets`
   iterates `JsonObject`s, and `meshopt_extension` takes and returns `JsonRef`.
-  Indexing is `get`: `value["a"]["b"]` becomes
-  `value.get("a").and_then(|a| a.get("b"))`. `Document::as_value` still
+  Indexing is `at`, which carries on as null where there is nothing, as `[]`
+  on the tree does: `value["meshes"][0]["name"]` becomes
+  `value.at("meshes").at(0).at("name")`. `get` is the form that returns an
+  `Option`. `Document::as_value` still
   returns the whole tree, which it now builds on first use and keeps.
   - Why: the document is parsed into one flat table of values with strings
     and numbers left in the source text, rather than into a tree with a heap

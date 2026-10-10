@@ -218,6 +218,41 @@ impl Tape {
     }
 }
 
+/// What [`JsonRef::at`] takes: a key, which looks up an object member, or a
+/// position, which looks up an array item.
+///
+/// Implemented for `&str`, `&String` and `usize`, the types indexing a
+/// [`Value`] takes, and sealed.
+pub trait JsonIndex: sealed::Sealed {
+    #[doc(hidden)]
+    fn index_into(self, value: JsonRef<'_>) -> Option<JsonRef<'_>>;
+}
+
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for &str {}
+    impl Sealed for &String {}
+    impl Sealed for usize {}
+}
+
+impl JsonIndex for &str {
+    fn index_into(self, value: JsonRef<'_>) -> Option<JsonRef<'_>> {
+        value.get(self)
+    }
+}
+
+impl JsonIndex for &String {
+    fn index_into(self, value: JsonRef<'_>) -> Option<JsonRef<'_>> {
+        value.get(self)
+    }
+}
+
+impl JsonIndex for usize {
+    fn index_into(self, value: JsonRef<'_>) -> Option<JsonRef<'_>> {
+        value.as_array()?.get(self)
+    }
+}
+
 /// A borrowed JSON value inside a parsed document.
 ///
 /// It is a position in the document's flat node table, so it is `Copy`, and
@@ -345,6 +380,19 @@ impl<'a> JsonRef<'a> {
     /// Looks up an object member by key.
     pub fn get(self, key: &str) -> Option<JsonRef<'a>> {
         self.as_object()?.get(key)
+    }
+    /// Looks up a member by key or an item by position, and reads as null when
+    /// there is none.
+    ///
+    /// This is what indexing a [`Value`] does, so `value["meshes"][0]["name"]`
+    /// on the tree is `value.at("meshes").at(0).at("name")` here: a step that
+    /// finds nothing, or that is taken into a value that is neither an object
+    /// nor an array, carries on as null rather than ending the chain. [`get`]
+    /// is the form that says whether a member was there.
+    ///
+    /// [`get`]: Self::get
+    pub fn at(self, index: impl JsonIndex) -> JsonRef<'a> {
+        index.index_into(self).unwrap_or_default()
     }
     /// Copies this value out as an owned tree.
     pub fn to_value(self) -> Value {

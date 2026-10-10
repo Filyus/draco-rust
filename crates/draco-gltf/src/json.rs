@@ -7,7 +7,7 @@ use std::slice;
 
 mod tape;
 
-pub use tape::{JsonArray, JsonItems, JsonMembers, JsonObject, JsonRef};
+pub use tape::{JsonArray, JsonIndex, JsonItems, JsonMembers, JsonObject, JsonRef};
 pub(crate) use tape::{Patches, Tape};
 
 /// Dependency-free JSON value that preserves number lexemes and object order.
@@ -854,5 +854,50 @@ mod tests {
             .expect("spawning the test thread")
             .join()
             .expect("the deep value is handled without overflowing");
+    }
+    /// `at` reads a path the way indexing the tree does: every step that is
+    /// there, missing, past the end of an array, or taken into a value of the
+    /// wrong kind lands on the same value.
+    #[test]
+    fn at_follows_a_path_the_way_tree_indexing_does() {
+        enum Step {
+            Key(&'static str),
+            Item(usize),
+        }
+        use Step::{Item, Key};
+        let source = r#"{"meshes":[{"name":"a","primitives":[{"attributes":{"POSITION":0}}]},{"name":"b"}],"asset":{"version":"2.0"},"n":3}"#;
+        let tape = Tape::parse(source.as_bytes()).unwrap();
+        let tree = tape.root().to_value();
+        let paths: [&[Step]; 9] = [
+            &[Key("meshes"), Item(0), Key("name")],
+            &[
+                Key("meshes"),
+                Item(0),
+                Key("primitives"),
+                Item(0),
+                Key("attributes"),
+                Key("POSITION"),
+            ],
+            &[Key("meshes"), Item(1)],
+            &[Key("meshes"), Item(2), Key("name")],
+            &[Key("missing"), Key("deeper"), Item(0)],
+            &[Key("n"), Key("x")],
+            &[Key("asset"), Item(0)],
+            &[Key("meshes"), Key("name")],
+            &[],
+        ];
+        for (number, path) in paths.iter().enumerate() {
+            let (mut at, mut indexed) = (tape.root(), &tree);
+            for step in path.iter() {
+                match *step {
+                    Key(key) => (at, indexed) = (at.at(key), &indexed[key]),
+                    Item(item) => (at, indexed) = (at.at(item), &indexed[item]),
+                }
+            }
+            assert!(same(at, indexed), "path {number}");
+        }
+        assert!(tape.root().at("missing").at(0).is_null());
+        let key = String::from("asset");
+        assert_eq!(tape.root().at(&key).at("version").as_str(), Some("2.0"));
     }
 }

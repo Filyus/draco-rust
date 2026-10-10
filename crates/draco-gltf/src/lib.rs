@@ -52,7 +52,7 @@ pub use packed::{GeometryError, PackedAttribute, PackedGeometry, PackedIndices, 
 mod writer;
 /// Lossless JSON value used by the document model.
 pub use json::Value as JsonValue;
-pub use json::{JsonArray, JsonItems, JsonMembers, JsonObject, JsonRef};
+pub use json::{JsonArray, JsonIndex, JsonItems, JsonMembers, JsonObject, JsonRef};
 #[cfg(feature = "write")]
 pub use writer::{GeometryEncoding, GeometryWriteOptions, GeometryWriteReport, PreserveReason};
 /// Extension contracts and resource storage used by document transforms.
