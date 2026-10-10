@@ -22,7 +22,7 @@ Draco compression. The two crates do not depend on each other.
 
 ```toml
 [dependencies]
-draco-io = "0.5"
+draco-io = "0.6"
 ```
 
 To keep a binary small, disable the default format readers and writers and
@@ -30,7 +30,7 @@ enable only the features required by the application:
 
 ```toml
 [dependencies]
-draco-io = { version = "0.5", default-features = false, features = ["obj-reader", "obj-writer"] }
+draco-io = { version = "0.6", default-features = false, features = ["obj-reader", "obj-writer"] }
 ```
 
 ## Supported formats

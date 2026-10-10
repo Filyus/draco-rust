@@ -9,6 +9,19 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/Filyus/draco-rust/compare/draco-io-v0.5.2...draco-io-v0.6.0) - 2026-10-10
+
+### Added
+
+- **`fbx_render_mesh::build_draco_mesh_keyed` welds an FBX mesh's corners
+  only where a caller's keys agree.** The weld compares what the Draco mesh
+  stores: position and the first normal, UV and colour set. A caller that
+  carries more per point, read from each point's representative corner -- skin
+  weights and morph deltas by control point, tangents, further UV sets --
+  passes one key per corner, and corners whose keys differ are never welded.
+  The mesh comes back with the same attributes, in the same order, as
+  `build_draco_mesh_with_corner_map` builds.
+
 ### Changed
 
 - **`PlyWriter` writes binary little-endian by default.** `PlyFormat::default()`
@@ -16,6 +29,23 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   text is several times the size and slower to read back. `write_ply_mesh` and
   `write_ply_positions` follow it. For text, ask for it with
   `.with_format(PlyFormat::Ascii)`.
+
+### Fixed
+
+- **An FBX skin keeps the bones a mesh does not deform.** Mixamo and Maya write
+  a skin cluster for every bone of the skeleton, and one for a bone the mesh
+  does not deform carries neither `Indexes` nor `Weights`. 0.5.2 dropped such a
+  cluster, and with it the bone's place in the mesh's skin and its bind
+  transform: Mixamo's `Beta_Surface` lost `mixamorig:Spine`. It is kept again,
+  with no influences, as three.js's `FBXLoader` keeps it. `Weights` without
+  `Indexes` are still refused, and an `Indexes` array that cannot be read as
+  integers is now refused rather than taken for an unweighted bone.
+- **A repeated FBX connection can no longer multiply the scene.** A string
+  spelled after an object-to-object connection was read as part of it, so
+  repeats of one edge tagged with different strings counted as different
+  edges, and the scene passes, which nest, multiplied everything under them. A
+  3.8 kB document could decode to fourteen thousand morph targets and write
+  back 10 MB; it now decodes to what it names.
 
 ## [0.5.2](https://github.com/Filyus/draco-rust/compare/draco-io-v0.5.1...draco-io-v0.5.2) - 2026-10-04
 
