@@ -462,7 +462,7 @@ fn print_help() {
     println!("Options:");
     println!("  --app                    Build the converter app with glTF Draco encoding");
     println!("  --debug                  Build with wasm-pack --dev");
-    println!("  --no-optimize            Skip manual wasm-opt");
+    println!("  --no-optimize            Skip manual wasm-opt and glue minification");
     println!("  --features <list>        Comma-separated cargo features");
     println!("  --no-default-features    Build with only the features named by --features");
     println!("  --module <crate>         Build one module; may be repeated");
@@ -637,6 +637,22 @@ fn build_module(config: &Config, module: &str) -> BuildResult {
                 }
             }
             None => log.push("wasm-opt not found; leaving wasm unoptimized".to_string()),
+        }
+    }
+
+    let glue_file = module_output_dir.join(format!("{output_name}.js"));
+    if !config.debug && !config.no_optimize && glue_file.exists() {
+        match find_esbuild(&config.web_dir) {
+            Some(esbuild) => {
+                if let Err(error) = minify_glue(&esbuild, &glue_file, &mut log) {
+                    log.push(format!("Error: {error}"));
+                    let _ = fs::remove_dir_all(&module_output_dir);
+                    result.elapsed = timer.elapsed();
+                    result.log = log;
+                    return result;
+                }
+            }
+            None => log.push("esbuild not found; leaving the JS glue unminified".to_string()),
         }
     }
 
@@ -1089,6 +1105,97 @@ fn exe_name(name: &str) -> String {
     } else {
         name.to_string()
     }
+}
+
+/// The esbuild the Node dependencies carry, as a command ready to take the
+/// CLI's own arguments: `ESBUILD` if set, else the one npm installs under
+/// `web/node_modules`, else one on `PATH`.
+///
+/// npm's `.bin` shims are shell scripts the Windows process API will not
+/// spawn, so the installed CLI runs through `node`; a global install and an
+/// `ESBUILD` path are executables that run as they are. `None` is a tree
+/// without the Node dependencies installed, which the module builds survive
+/// with unminified glue and the npm build refuses.
+pub(crate) struct Esbuild {
+    program: OsString,
+    args: Vec<OsString>,
+}
+
+pub(crate) fn find_esbuild(web_dir: &Path) -> Option<Esbuild> {
+    if let Some(path) = env::var_os("ESBUILD") {
+        let path = PathBuf::from(path);
+        // The CLI JavaScript runs through `node`; an explicit binary runs as
+        // it is.
+        return Some(if path.extension().is_some_and(|ext| ext == "js") {
+            Esbuild {
+                program: OsString::from("node"),
+                args: vec![path.into_os_string()],
+            }
+        } else {
+            Esbuild {
+                program: path.into_os_string(),
+                args: Vec::new(),
+            }
+        });
+    }
+    let cli = web_dir
+        .join("node_modules")
+        .join("esbuild")
+        .join("bin")
+        .join("esbuild");
+    if cli.exists() {
+        return Some(Esbuild {
+            program: OsString::from("node"),
+            args: vec![cli.into_os_string()],
+        });
+    }
+    find_on_path("esbuild").map(|path| Esbuild {
+        program: path.into_os_string(),
+        args: Vec::new(),
+    })
+}
+
+/// Minifies the JS glue wasm-bindgen wrote, in place. The glue is what a page
+/// downloads beside the module, and esbuild takes about a third off it
+/// without touching what the module does: the same exports leave, so the
+/// callers of the glue see nothing but a smaller file.
+pub(crate) fn minify_glue(
+    esbuild: &Esbuild,
+    glue: &Path,
+    log: &mut Vec<String>,
+) -> Result<(), String> {
+    let (raw_before, gzip_before) = measure_wasm_size(glue)?;
+    let mut args = esbuild.args.clone();
+    args.push(glue.as_os_str().to_os_string());
+    for flag in ["--minify", "--format=esm", "--allow-overwrite"] {
+        args.push(OsString::from(flag));
+    }
+    // A sibling first and a rename after: esbuild writing over its own input
+    // is safe as far as its docs go, and the rename makes it not matter. The
+    // esbuild CLI takes flag values only in the `=` form.
+    let minified = glue.with_extension("js.min");
+    let mut outfile = OsString::from("--outfile=");
+    outfile.push(&minified);
+    args.push(outfile);
+    run_command(
+        &esbuild.program,
+        &args,
+        glue.parent().unwrap_or(Path::new(".")),
+        log,
+    )?;
+    fs::rename(&minified, glue).map_err(|error| {
+        format!(
+            "failed to put {} over {}: {error}",
+            minified.display(),
+            glue.display()
+        )
+    })?;
+    let (raw_after, gzip_after) = measure_wasm_size(glue)?;
+    log.push(format!(
+        "Minified the JS glue with esbuild: {gzip_before} -> {gzip_after} bytes gzip \
+         ({raw_before} -> {raw_after} raw)"
+    ));
+    Ok(())
 }
 
 fn unique_suffix() -> String {

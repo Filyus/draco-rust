@@ -8,6 +8,13 @@ has changed in them; each package version has a section of its own.
 
 ## Unreleased
 
+- **The JavaScript glue every module ships is minified.** wasm-bindgen's glue
+  is what a page downloads beside the wasm, and it went out as the generator
+  wrote it: the glTF module's 6.7 kB of glue is 3.9 minified, with the module
+  untouched and every export name kept. The build tool runs the esbuild the
+  Node dependencies carry over it on the way out; a module build without
+  those dependencies logs and skips, the `--npm` build refuses, and
+  `--no-optimize` skips it with the wasm-opt step.
 - **A point cloud exported to `.drc` is written through the point-cloud coder.**
   The mesh coder writes faces, and a faceless mesh writes none of the points
   with them: the file came out a header with no geometry in it, and a cloud

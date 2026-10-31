@@ -16,8 +16,8 @@ use std::fs;
 use std::path::Path;
 
 use super::{
-    find_wasm_opt, measure_wasm_size, run_command, run_command_with_env, unique_suffix,
-    wasm_opt_version, Config, WASM_OPT_ARGS, WASM_OPT_VERSION,
+    find_esbuild, find_wasm_opt, measure_wasm_size, minify_glue, run_command, run_command_with_env,
+    unique_suffix, wasm_opt_version, Config, WASM_OPT_ARGS, WASM_OPT_VERSION,
 };
 
 struct Entry {
@@ -275,6 +275,16 @@ fn build_entry(
         opt_args.push("-o".into());
         opt_args.push(wasm.into_os_string());
         run_command(wasm_opt, &opt_args, &config.web_dir, &mut log)
+            .map_err(|error| format!("{error}\n{}", log.join("\n")))?;
+
+        // Published glue is minified, so --npm refuses without esbuild the
+        // way it refuses without wasm-opt.
+        let esbuild = find_esbuild(&config.web_dir).ok_or_else(|| {
+            "--npm builds what is published, so it needs esbuild; install the Node \
+             dependencies (npm ci) or point ESBUILD at the CLI"
+                .to_string()
+        })?;
+        minify_glue(&esbuild, &scratch.join("index.js"), &mut log)
             .map_err(|error| format!("{error}\n{}", log.join("\n")))?;
 
         fs::create_dir_all(target)
