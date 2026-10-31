@@ -1,0 +1,9 @@
+# The web modules build on a pinned nightly (dated, so a toolchain update
+# cannot move the artifacts under us) with the standard library built from
+# source: -Zbuild-std is enabled by the CARGO_UNSTABLE_BUILD_STD environment
+# in the workflows that build modules. rust-src is what build-std compiles
+# from; wasm32-unknown-unknown is the target every module ships for.
+[toolchain]
+channel = "nightly-2026-10-10"
+components = ["rust-src"]
+targets = ["wasm32-unknown-unknown"]

@@ -109,7 +109,6 @@ struct Config {
     record_sizes: bool,
     web_dir: PathBuf,
     output_dir: PathBuf,
-    rustflags: OsString,
     npm: bool,
     npm_packages: Vec<String>,
 }
@@ -135,7 +134,6 @@ fn run() -> Result<(), String> {
     let mut config = parse_args()?;
     config.web_dir = executable_web_dir()?;
     config.output_dir = config.web_dir.join("www").join("pkg");
-    config.rustflags = remapped_rustflags(&config.web_dir);
     if config.npm {
         return npm::build_packages(&config, &config.npm_packages);
     }
@@ -417,7 +415,6 @@ fn parse_args() -> Result<Config, String> {
         record_sizes: false,
         web_dir: PathBuf::new(),
         output_dir: PathBuf::new(),
-        rustflags: OsString::new(),
         npm: false,
         npm_packages: Vec::new(),
     };
@@ -505,63 +502,6 @@ fn print_help() {
     println!("  --package <name>         With --npm, build one package; may be repeated");
 }
 
-/// The caller's rustflags plus a `--remap-path-prefix` for the toolchain, the
-/// cargo registry and this repository, encoded for `CARGO_ENCODED_RUSTFLAGS`
-/// so that a path with a space in it survives.
-///
-/// Every panic location in a module names the source file it points into, so
-/// without this a module carries the build machine's own directories, its
-/// user name among them, and differs from a build on another machine by their
-/// lengths. Remapped, the toolchain's files read as `/rustc/<commit>/...`,
-/// the registry's as `/cargo/...` and the repository's relative to its root.
-fn remapped_rustflags(web_dir: &Path) -> OsString {
-    let mut flags: Vec<OsString> = match env::var_os("CARGO_ENCODED_RUSTFLAGS") {
-        Some(encoded) if !encoded.is_empty() => encoded
-            .to_string_lossy()
-            .split('\u{1f}')
-            .map(OsString::from)
-            .collect(),
-        _ => env::var("RUSTFLAGS")
-            .unwrap_or_default()
-            .split_whitespace()
-            .map(OsString::from)
-            .collect(),
-    };
-    let mut remap = |from: &Path, to: &str| {
-        let mut flag = OsString::from("--remap-path-prefix=");
-        flag.push(from.as_os_str());
-        flag.push("=");
-        flag.push(to);
-        flags.push(flag);
-    };
-    let cargo_home = env::var_os("CARGO_HOME").map(PathBuf::from).or_else(|| {
-        env::var_os("USERPROFILE")
-            .or_else(|| env::var_os("HOME"))
-            .map(|home| PathBuf::from(home).join(".cargo"))
-    });
-    if let Some(cargo_home) = cargo_home {
-        remap(&cargo_home.join("registry").join("src"), "/cargo");
-    }
-    if let Some(repository) = web_dir.parent() {
-        remap(repository, ".");
-    }
-    let sysroot = Command::new("rustc").args(["--print", "sysroot"]).output();
-    if let Some(output) = sysroot.ok().filter(|output| output.status.success()) {
-        let sysroot = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        if !sysroot.is_empty() {
-            remap(Path::new(&sysroot), "/rustc");
-        }
-    }
-    let mut encoded = OsString::new();
-    for (index, flag) in flags.iter().enumerate() {
-        if index > 0 {
-            encoded.push("\u{1f}");
-        }
-        encoded.push(flag);
-    }
-    encoded
-}
-
 fn executable_web_dir() -> Result<PathBuf, String> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     manifest_dir
@@ -632,11 +572,19 @@ fn build_module(config: &Config, module: &str) -> BuildResult {
             .join(" ")
     ));
 
+    // build-std goes to the wasm-pack children explicitly: a [unstable]
+    // build-std in the committed config would apply it to every cargo
+    // invocation under web/, including the host-side build tool's own
+    // compile, which dies linking a build-std host core against the
+    // precompiled one (E0152, seen on the fresh pages runner).
     let build_status = run_command_with_env(
         "wasm-pack",
         &wasm_pack_args,
         &module_path,
-        &[("CARGO_ENCODED_RUSTFLAGS", &config.rustflags)],
+        &[
+            ("CARGO_UNSTABLE_BUILD_STD", OsStr::new("std,panic_abort")),
+            ("CARGO_UNSTABLE_BUILD_STD_FEATURES", OsStr::new("")),
+        ],
         &mut log,
     );
     if let Err(error) = build_status {

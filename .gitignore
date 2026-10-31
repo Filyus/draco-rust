@@ -61,6 +61,7 @@ enhanced_io_test_backup.cpp
 # Rust build artifacts (contains .fingerprint, incremental builds, etc.)
 **/target/
 Cargo.lock
+!web/Cargo.lock
 .cargo/config.toml
 
 # WASM build output

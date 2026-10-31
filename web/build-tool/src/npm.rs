@@ -15,6 +15,8 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
 
+use std::ffi::OsStr;
+
 use super::{
     find_esbuild, find_wasm_opt, measure_wasm_size, minify_glue, run_command, run_command_with_env,
     unique_suffix, wasm_opt_version, Config, WASM_OPT_ARGS, WASM_OPT_VERSION,
@@ -264,7 +266,10 @@ fn build_entry(
             "wasm-pack",
             &args,
             &config.web_dir.join(package.module),
-            &[("CARGO_ENCODED_RUSTFLAGS", &config.rustflags)],
+            &[
+                ("CARGO_UNSTABLE_BUILD_STD", OsStr::new("std,panic_abort")),
+                ("CARGO_UNSTABLE_BUILD_STD_FEATURES", OsStr::new("")),
+            ],
             &mut log,
         )
         .map_err(|error| format!("{error}\n{}", log.join("\n")))?;

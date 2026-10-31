@@ -19,8 +19,11 @@ js-sys = "0.3"
 web-sys = { version = "0.3", features = ["console", "Blob", "Url", "Document", "Window", "Element", "HtmlElement", "HtmlAnchorElement", "HtmlInputElement", "FileReader", "File", "FileList"] }
 console_error_panic_hook = "0.1.7"
 
-# Aggressive size optimization for release builds
+# Aggressive size optimization for release builds. Keep the panic strategy at
+# abort: immediate-abort did not apply consistently to the build-std sysroot
+# and wasm crates on the pinned nightly.
 [profile.release]
+panic = "abort"
 opt-level = "z"          # Optimize for size (smallest binary)
 lto = true               # Enable Link-Time Optimization
 # Cargo passes LTO only to a crate every one of whose crate types can take it,
@@ -28,7 +31,6 @@ lto = true               # Enable Link-Time Optimization
 # with no `-C lto` and no warning. That is why each is a bare cdylib -- the
 # rlib had no user, and it cost 2-10% of every module's gzip.
 codegen-units = 1        # Reduce parallelism for better optimization
-panic = "abort"          # Smaller panic handling
 strip = true             # Strip symbols from binary
 
 # The codec is the exception, and it is worth 1.7x. At "z" there is no
