@@ -48,14 +48,21 @@ pub(crate) const PIECE: usize = 16;
 pub(crate) const PASS_MIN_VALUES: usize = MAX_THREADS * PIECE;
 
 /// How many threads to run for a request of `requested`: `0` is "as many as the
-/// machine has", anything else is taken as given, both up to `MAX_THREADS`, and
-/// WebAssembly, which has no thread to spawn whatever is asked, is always one.
+/// machine has", anything else is taken as a wish capped at what the machine
+/// has, and WebAssembly, which has no thread to spawn whatever is asked, is
+/// always one.
+///
+/// The cap is what the machine has, not only [`MAX_THREADS`]: asking a
+/// four-core machine for sixteen threads measured a third slower again on the
+/// encode and a half slower on the decode, the oversubscribed threads taking
+/// each other's caches apart. A caller who wants fewer threads than the
+/// machine has still gets exactly what it asked for.
 pub(crate) fn resolve(requested: i32) -> usize {
     if cfg!(target_arch = "wasm32") {
         return 1;
     }
     if requested > 0 {
-        return (requested as usize).min(MAX_THREADS);
+        return (requested as usize).min(available());
     }
     available()
 }
@@ -257,8 +264,15 @@ mod tests {
         assert!((1..=MAX_THREADS).contains(&resolve(0)));
         assert_eq!(resolve(1), 1);
         if !cfg!(target_arch = "wasm32") {
-            assert_eq!(resolve(3), 3);
-            assert_eq!(resolve(100_000), MAX_THREADS, "a request past the most");
+            // A wish within the machine's cores is taken as given; past them
+            // it stops at what the machine has, the count a request of zero
+            // asks for.
+            assert_eq!(resolve(3), 3.min(resolve(0)));
+            assert_eq!(
+                resolve(i32::MAX),
+                resolve(0),
+                "a request past the machine's cores"
+            );
         }
     }
 
