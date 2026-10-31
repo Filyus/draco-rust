@@ -313,6 +313,16 @@ jobs:
     name: WASM runtime and browser smoke
     runs-on: ubuntu-latest
 
+    # The 26.04 runner image is the amd64v3 cloud variant and its compiler
+    # defaults to x86-64-v3 (the parity job's march probe prints it), and the
+    # reference oracle compiled on the image moved a byte away from the
+    # committed goldens. The env pins every C++ compilation in the job --
+    # the oracle build and the test steps' cargo-driven rebuild alike -- to
+    # the baseline rounding the goldens and the port agree with.
+    env:
+      CXXFLAGS: -march=x86-64
+
+
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -441,8 +451,18 @@ jobs:
       # tree (K17): the binary these tests spawn, so they run byte-exact
       # checks here rather than skipping as they did when the reference lived
       # outside this repository.
+      # The oracle compiles under the job's pinned CXXFLAGS, and the bake step
+      # re-derives the golden manifest right here and diffs it against the
+      # committed one: the moved lines name the drifted fixtures in the very
+      # run that breaks, instead of a bare byte count.
       - name: Build the reference oracle
-        run: cargo build --release --manifest-path tools/basis-cpp-oracle/Cargo.toml --bins
+        run: >-
+          cargo build --release --manifest-path tools/basis-cpp-oracle/Cargo.toml --bins &&
+          ldd --version | head -1 &&
+          grep -m1 'model name' /proc/cpuinfo || true &&
+          cp testdata/ktx2/goldens.tsv tools/basis-cpp-oracle/target/goldens-committed.tsv &&
+          cargo run --release --manifest-path tools/basis-cpp-oracle/Cargo.toml --bin bake_goldens >/dev/null &&
+          diff tools/basis-cpp-oracle/target/goldens-committed.tsv testdata/ktx2/goldens.tsv || true
 
       - name: Build and smoke the KTX2 transcoder
         run: |
@@ -602,9 +622,20 @@ jobs:
           ref: '1.5.7'
           path: draco-cpp
 
+      # The ubuntu-26.04 runner image is the amd64v3 cloud variant: its apt
+      # pulls the amd64v3 package indexes (runner-images #14297) and its
+      # compiler defaults to x86-64-v3 -- the march probe below prints it --
+      # where FMA contraction moves the decoder's reconstructed normals a few
+      # ULP away from what this port and the goldens were checked against.
+      # The explicit baseline march is what the reference must be compiled
+      # for, like the era the streams were written in; the probe and the
+      # cache grep keep that visible in every run's log.
       - name: Build the upstream encoder, decoder and library
         run: >-
-          cmake -S draco-cpp -B draco-cpp/build -DCMAKE_BUILD_TYPE=Release &&
+          g++ -Q --help=target | grep -m1 '^  -march=' || true &&
+          cmake -S draco-cpp -B draco-cpp/build -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_CXX_FLAGS=-march=x86-64 &&
+          grep CMAKE_CXX_FLAGS draco-cpp/build/CMakeCache.txt &&
           cmake --build draco-cpp/build --parallel
           --target draco_decoder draco_encoder draco
 
