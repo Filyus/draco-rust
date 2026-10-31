@@ -76,6 +76,10 @@ same machine differ by a byte, but Windows and Linux differ by about 875, so \
 re-record on one machine before reading a difference smaller than that as a \
 change in the code.
 
+A row whose profile ends in `glue` is the module's JavaScript glue as \
+shipped, minified by the build. The profile before `glue` identifies the \
+feature profile that produced that artifact.
+
 | module | profile | raw | gzip |
 | --- | --- | ---: | ---: |
 ";
@@ -147,6 +151,13 @@ fn run() -> Result<(), String> {
              and found {}; point WASM_OPT at a Binaryen {WASM_OPT_VERSION} wasm-opt",
             wasm_opt_version.as_deref().unwrap_or("none")
         ));
+    }
+    if config.record_sizes && find_esbuild(&config.web_dir).is_none() {
+        return Err(
+            "--record-sizes records the shipped forms, and the shipped glue is minified, so it \
+             needs esbuild; install the Node dependencies or point ESBUILD at the CLI"
+                .to_string(),
+        );
     }
 
     println!("Building Draco Web WASM Modules");
@@ -225,6 +236,24 @@ fn run() -> Result<(), String> {
                 Err(error) => {
                     eprintln!("Error: {error}");
                     failed.push(format!("{module}-size"));
+                }
+            }
+            // The glue row keeps the feature profile that produced it, since
+            // wasm-bindgen's exports can differ between profiles. The `glue`
+            // suffix identifies this as the JavaScript artifact beside wasm.
+            let glue = config
+                .output_dir
+                .join(format!("{}.js", output_name(module)));
+            match measure_wasm_size(&glue) {
+                Ok((raw, gzip)) => measured.push(SizeRow {
+                    module: (*module).to_string(),
+                    profile: format!("{} glue", profile_name(&config, module)),
+                    raw,
+                    gzip,
+                }),
+                Err(error) => {
+                    eprintln!("Error: {error}");
+                    failed.push(format!("{module}-glue-size"));
                 }
             }
         }
@@ -641,7 +670,7 @@ fn build_module(config: &Config, module: &str) -> BuildResult {
     }
 
     let glue_file = module_output_dir.join(format!("{output_name}.js"));
-    if !config.debug && !config.no_optimize && glue_file.exists() {
+    if glue_file.exists() && !config.debug && !config.no_optimize {
         match find_esbuild(&config.web_dir) {
             Some(esbuild) => {
                 if let Err(error) = minify_glue(&esbuild, &glue_file, &mut log) {
@@ -962,12 +991,22 @@ fn write_build_stamp(
 
 fn config_key(config: &Config, module: &str) -> String {
     format!(
-        "debug={};no_optimize={};features={};wasm_opt_args={}",
+        "debug={};no_optimize={};features={};wasm_opt_args={};glue_minified={}",
         config.debug,
         config.no_optimize,
         effective_features(config, module).join(","),
-        WASM_OPT_ARGS.join(",")
+        WASM_OPT_ARGS.join(","),
+        glue_minification_applies(config),
     )
+}
+
+/// Whether this build would minify the JS glue: the release profile with the
+/// esbuild the Node dependencies carry. It is part of the config key, so a
+/// module built before those dependencies were installed does not stand as up
+/// to date once they are: the glue it left unminified is not the glue the next
+/// build would write, and the other way around.
+fn glue_minification_applies(config: &Config) -> bool {
+    !config.debug && !config.no_optimize && find_esbuild(&config.web_dir).is_some()
 }
 
 fn stamp_path(output_dir: &Path, output_name: &str) -> PathBuf {

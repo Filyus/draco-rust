@@ -14,7 +14,11 @@ has changed in them; each package version has a section of its own.
   untouched and every export name kept. The build tool runs the esbuild the
   Node dependencies carry over it on the way out; a module build without
   those dependencies logs and skips, the `--npm` build refuses, and
-  `--no-optimize` skips it with the wasm-opt step.
+  `--no-optimize` skips it with the wasm-opt step. Whether the glue was
+  minified is part of a module's build stamp, so installing the Node
+  dependencies after a build without them rebuilds the modules rather than
+  leaving unminified glue standing; `--record-sizes` needs esbuild and
+  records the glue in its own row for each module feature profile.
 - **A point cloud exported to `.drc` is written through the point-cloud coder.**
   The mesh coder writes faces, and a faceless mesh writes none of the points
   with them: the file came out a header with no geometry in it, and a cloud
