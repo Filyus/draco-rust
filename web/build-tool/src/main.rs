@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
@@ -1160,22 +1160,34 @@ pub(crate) struct Esbuild {
     args: Vec<OsString>,
 }
 
+/// How to run the esbuild CLI at `path`. npm ships it as a JavaScript shim,
+/// and esbuild's own postinstall -- which runs wherever npm ci is not given
+/// `--ignore-scripts`, as on the pages runner -- replaces that shim with the
+/// platform's native binary. Node runs the shim; a native binary (ELF on
+/// Linux, PE on Windows) runs as it is. The file's first bytes tell which
+/// one is there.
+pub(crate) fn esbuild_command(path: &Path) -> Option<Esbuild> {
+    let mut magic = [0u8; 4];
+    let native = fs::File::open(path)
+        .and_then(|mut file| file.read_exact(&mut magic))
+        .is_ok()
+        && (magic == [0x7f, b'E', b'L', b'F'] || magic[..2] == *b"MZ");
+    if native {
+        Some(Esbuild {
+            program: path.as_os_str().to_os_string(),
+            args: Vec::new(),
+        })
+    } else {
+        Some(Esbuild {
+            program: OsString::from("node"),
+            args: vec![path.as_os_str().to_os_string()],
+        })
+    }
+}
+
 pub(crate) fn find_esbuild(web_dir: &Path) -> Option<Esbuild> {
     if let Some(path) = env::var_os("ESBUILD") {
-        let path = PathBuf::from(path);
-        // The CLI JavaScript runs through `node`; an explicit binary runs as
-        // it is.
-        return Some(if path.extension().is_some_and(|ext| ext == "js") {
-            Esbuild {
-                program: OsString::from("node"),
-                args: vec![path.into_os_string()],
-            }
-        } else {
-            Esbuild {
-                program: path.into_os_string(),
-                args: Vec::new(),
-            }
-        });
+        return esbuild_command(&PathBuf::from(path));
     }
     let cli = web_dir
         .join("node_modules")
@@ -1183,10 +1195,7 @@ pub(crate) fn find_esbuild(web_dir: &Path) -> Option<Esbuild> {
         .join("bin")
         .join("esbuild");
     if cli.exists() {
-        return Some(Esbuild {
-            program: OsString::from("node"),
-            args: vec![cli.into_os_string()],
-        });
+        return esbuild_command(&cli);
     }
     find_on_path("esbuild").map(|path| Esbuild {
         program: path.into_os_string(),
