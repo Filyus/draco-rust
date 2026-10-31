@@ -172,6 +172,14 @@ pub enum PlyDroppedItem {
         /// How many of them the header declares.
         count: usize,
     },
+    /// x/y/z are declared as a type the position attribute does not take --
+    /// `double`, most often, which a georeferenced capture writes -- so every
+    /// coordinate is narrowed to float32 on the way in. Nothing is dropped,
+    /// but the file's own precision does not survive the read.
+    PositionsNarrowed {
+        /// The declared type the coordinates are narrowed from.
+        from: DataType,
+    },
 }
 
 impl std::fmt::Display for PlyDroppedItem {
@@ -198,6 +206,10 @@ impl std::fmt::Display for PlyDroppedItem {
             PlyDroppedItem::Element { name, count } => write!(
                 formatter,
                 "element {name:?} and its {count} entries are skipped entirely"
+            ),
+            PlyDroppedItem::PositionsNarrowed { from } => write!(
+                formatter,
+                "positions are declared {from:?} and read as float32, which narrows them"
             ),
         }
     }
@@ -858,9 +870,19 @@ fn build_read_schema(header: &PlyHeader) -> io::Result<PlyReadSchema> {
     let color_types = [prop_r_type, prop_g_type, prop_b_type, prop_a_type];
     let color_components = color_types.iter().flatten().count() as u8;
     if color_components > 0 {
-        for color_type in color_types.into_iter().flatten() {
+        for (color_type, name) in [
+            (prop_r_type, "red"),
+            (prop_g_type, "green"),
+            (prop_b_type, "blue"),
+            (prop_a_type, "alpha"),
+        ]
+        .into_iter()
+        .filter_map(|(color_type, name)| color_type.map(|color_type| (color_type, name)))
+        {
             if color_type != DataType::Uint8 {
-                return Err(invalid_ply("Color properties must be uint8"));
+                return Err(invalid_ply(format!(
+                    "color property {name} must be uint8, is {color_type:?}"
+                )));
             }
         }
     }
@@ -975,6 +997,28 @@ fn build_loss_report(
     carried_generics: bool,
 ) -> PlyLossReport {
     let mut dropped = Vec::new();
+
+    // A position property the position attribute narrows -- a `double` x/y/z,
+    // which upstream refuses outright and this reader takes at float32 width.
+    // The read carries every value, so it is not a drop; naming it here is
+    // what keeps the narrowing from being silent.
+    //
+    // The two types named below are the ones whose width float32 cannot hold:
+    // a float64 always, a uint32 past 2^24. The smaller integers are exact in
+    // a 24-bit mantissa, so reading them as float32 narrows nothing and is
+    // none of the report's business, and an int32 position stays int32 --
+    // `position_data_type_for_scalar` is what maps the declaration onto the
+    // attribute, so a change there wants this list re-read.
+    let mut position_types = header.vertex_properties.iter().filter_map(|property| {
+        matches!(property.name.as_str(), "x" | "y" | "z")
+            .then_some(property)
+            .and_then(|property| property.scalar_type())
+    });
+    if let Some(from) =
+        position_types.find(|declared| matches!(declared, DataType::Uint32 | DataType::Float64))
+    {
+        dropped.push(PlyDroppedItem::PositionsNarrowed { from });
+    }
 
     let declares_normals = header
         .vertex_properties
@@ -2092,11 +2136,9 @@ element vertex 1
 property float x
 property float y
 property float z
-property int red
 property int green
-property int blue
 end_header
-0 0 0 1 2 3
+0 0 0 2
 "#;
 
         std::fs::write(file.path(), ply).unwrap();
@@ -2104,7 +2146,12 @@ end_header
         let mut reader = PlyReader::open(file.path()).unwrap();
         let error = reader.read_mesh().unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-        assert!(error.to_string().contains("Color properties must be uint8"));
+        assert!(
+            error
+                .to_string()
+                .contains("color property green must be uint8, is Int32"),
+            "{error}"
+        );
     }
 
     /// Per-corner texture coordinates sit next to the indices on the face
@@ -2430,6 +2477,88 @@ end_header
             .loss_report()
             .unwrap();
         assert!(report.is_lossless(), "{:?}", report.dropped());
+    }
+
+    /// A `double` position is carried whole in value but not in width: the
+    /// reader narrows every coordinate to float32, and the report says so
+    /// rather than letting the file's own precision go quietly. Upstream
+    /// refuses such a file outright, so nothing that reads there loses here.
+    #[test]
+    fn test_loss_report_names_narrowed_double_positions() {
+        let ply = r#"ply
+format ascii 1.0
+element vertex 1
+property double x
+property double y
+property double z
+end_header
+0.1 0.2 0.3
+"#;
+
+        let (mesh, report) = PlyReader::from_bytes(ply.as_bytes().to_vec())
+            .read_mesh_reporting_loss()
+            .expect("a double position reads at float32 width");
+        assert_eq!(mesh.num_points(), 1);
+        assert_eq!(
+            report.dropped(),
+            [PlyDroppedItem::PositionsNarrowed {
+                from: DataType::Float64
+            }],
+            "{:?}",
+            report.dropped()
+        );
+    }
+
+    #[test]
+    fn test_loss_report_does_not_flag_exact_integer_positions_as_narrowed() {
+        let ply = r#"ply
+format ascii 1.0
+element vertex 1
+property short x
+property ushort y
+property uchar z
+end_header
+123 456 78
+"#;
+
+        let (mesh, report) = PlyReader::from_bytes(ply.as_bytes().to_vec())
+            .read_mesh_reporting_loss()
+            .expect("small integer positions are exactly representable in float32");
+        assert_eq!(mesh.num_points(), 1);
+        assert!(report.is_lossless(), "{:?}", report.dropped());
+    }
+
+    /// A `uint` position is the other side of the same check: float32 cannot
+    /// hold one past 2^24, so the read narrows it and the report names it. The
+    /// header alone cannot say whether this file's values are past the
+    /// mantissa, so the report flags the width, not the loss.
+    #[test]
+    fn test_loss_report_names_narrowed_uint_positions() {
+        let ply = r#"ply
+format ascii 1.0
+element vertex 1
+property uint x
+property uint y
+property uint z
+end_header
+4000000000 3999999999 1
+"#;
+
+        let (mesh, report) = PlyReader::from_bytes(ply.as_bytes().to_vec())
+            .read_mesh_reporting_loss()
+            .expect("a uint position reads at float32 width");
+        assert_eq!(mesh.num_points(), 1);
+        assert_eq!(
+            report.dropped(),
+            [PlyDroppedItem::PositionsNarrowed {
+                from: DataType::Uint32
+            }],
+            "{:?}",
+            report.dropped()
+        );
+        let positions = mesh.named_attribute_id(GeometryAttributeType::Position);
+        assert!(positions >= 0);
+        assert_eq!(mesh.attribute(positions).data_type(), DataType::Float32);
     }
 
     // The set of properties a read consumes is decided by `build_read_schema`

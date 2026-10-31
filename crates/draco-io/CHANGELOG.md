@@ -9,6 +9,17 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **The PLY loss report names narrowed positions.** A `double` x/y/z -- what a
+  georeferenced capture writes -- is carried whole in value but narrowed to
+  float32 by the position attribute, and the read stayed silent about it. The
+  report now carries a `PositionsNarrowed` item, so the caller can tell the
+  user the file's own precision does not survive the read. Upstream refuses
+  such a file outright, so nothing that reads there reads here without the
+  same narrowing. The non-uint8 color error also names the property and the
+  type it found instead of stating the rule alone.
+
 ## [0.6.0](https://github.com/Filyus/draco-rust/compare/draco-io-v0.5.2...draco-io-v0.6.0) - 2026-10-10
 
 ### Added
