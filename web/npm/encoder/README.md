@@ -24,12 +24,16 @@ const drc = result.bytes; // Uint8Array
 
 `positions` is a `Float32Array` of xyz triples and `indices` a `Uint32Array` of
 triangle corners. Leave `indices` out, or set `point_cloud: true`, to write a
-point cloud. Two options act on point clouds only:
+point cloud. Three options act on point clouds only:
 - `prediction_search` chooses each attribute's prediction by its estimated cost.
 - `spatial_point_order` orders the points along a Hilbert curve.
+- `point_order_search` runs that curve through a refinement and keeps it only
+  when the coder prices it under the order the points came in, so a
+  scan-ordered capture keeps its order and a scrambled one is reordered.
 
-Both write smaller files, at the cost of output no longer byte-identical to
-Google's encoder.
+They write smaller files, at the cost of output no longer byte-identical to
+Google's encoder. `point_order_search` also costs encode time to measure, and
+`spatial_point_order` reorders the decoded points whatever the price.
 
 ## On workers
 

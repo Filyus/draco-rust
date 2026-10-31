@@ -642,6 +642,20 @@ pub struct ExportOptions {
     /// Acts on the point-cloud coder only, so it does nothing unless
     /// `point_cloud` is on.
     pub spatial_point_order: Option<bool>,
+    /// Runs the order search before the points are written: a Hilbert curve
+    /// refined where the other attributes disagree with the positions, kept
+    /// only when the coder's own plan prices it under the order the points
+    /// came in.
+    ///
+    /// The difference from [`Self::spatial_point_order`] is the keeping: the
+    /// curve option always reorders, this one measures first and declines on a
+    /// capture whose own order already prices better -- a scan-line LiDAR
+    /// frame, most of the time. Like the curve option it reorders the decoded
+    /// points when it does fire, and it costs encode time to measure.
+    ///
+    /// Acts on the point-cloud coder only, so it does nothing unless
+    /// `point_cloud` is on.
+    pub point_order_search: Option<bool>,
 }
 
 /// Export result. `binary_data` is the stream, which reaches JavaScript as `bytes`.
@@ -887,6 +901,7 @@ fn export_options_from_js(value: &JsValue) -> ExportOptions {
         point_cloud: opt_bool_from_js(value, "point_cloud"),
         prediction_search: opt_bool_from_js(value, "prediction_search"),
         spatial_point_order: opt_bool_from_js(value, "spatial_point_order"),
+        point_order_search: opt_bool_from_js(value, "point_order_search"),
     }
 }
 
@@ -923,11 +938,12 @@ fn create_drc_internal(input: &MeshInput, options: &ExportOptions) -> ExportResu
     for (attribute_id, bits) in quantization {
         settings.set_attribute_int(attribute_id, "quantization_bits", bits);
     }
-    // Both are read only by the point-cloud coder, so setting them on the way
-    // past costs a mesh encode nothing and keeps the one place options are
-    // assembled from the caller's in one piece.
+    // All three are read only by the point-cloud coder, so setting them on
+    // the way past costs a mesh encode nothing and keeps the one place
+    // options are assembled from the caller's in one piece.
     settings.set_prediction_search(options.prediction_search.unwrap_or(false));
     settings.set_spatial_point_order(options.spatial_point_order.unwrap_or(false));
+    settings.set_point_order_search(options.point_order_search.unwrap_or(false));
 
     if options.point_cloud.unwrap_or(false) {
         return encode_as_point_cloud(mesh, &settings, speed);
@@ -1574,6 +1590,46 @@ mod tests {
             plain,
             encode(|options| options.prediction_search = Some(true)),
             "the search changed a stream it had nothing to improve"
+        );
+    }
+
+    /// `point_order_search` behaves like its two siblings: on a cloud too
+    /// small for anything to be found it writes what asking for nothing
+    /// writes, and on a mesh, which the option does not act on, it changes
+    /// nothing at all.
+    #[test]
+    fn test_point_order_search_leaves_small_clouds_and_meshes_alone() {
+        let cloud = |configure: fn(&mut ExportOptions)| {
+            let mut options = ExportOptions {
+                point_cloud: Some(true),
+                encoding_method: Some(1),
+                ..Default::default()
+            };
+            configure(&mut options);
+            let exported = create_drc_internal(&splat_points(), &options);
+            assert!(exported.success, "{:?}", exported.error);
+            exported.binary_data.expect("a payload")
+        };
+        let plain = cloud(|_| {});
+        assert_eq!(
+            plain,
+            cloud(|options| options.point_order_search = Some(true)),
+            "the order search changed a stream it had nothing to improve"
+        );
+
+        // A mesh with faces: a stream worth protecting from an option that
+        // has no business in it.
+        let mesh = |configure: fn(&mut ExportOptions)| {
+            let mut options = ExportOptions::default();
+            configure(&mut options);
+            let exported = create_drc_internal(&quad(), &options);
+            assert!(exported.success, "{:?}", exported.error);
+            exported.binary_data.expect("a payload")
+        };
+        assert_eq!(
+            mesh(|_| {}),
+            mesh(|options| options.point_order_search = Some(true)),
+            "the order search reached the mesh coder"
         );
     }
 

@@ -793,6 +793,40 @@ export async function exportToDrc(
       include_colors: false,
     });
   }
+  if (!merged.indices.length) {
+    // A cloud. The mesh coder writes faces, and a faceless mesh writes none
+    // of the points with them: the file would come out a header with no
+    // geometry in it. The point-cloud coder is what a scan actually is.
+    //
+    // Sequential, as measured: with the order search it is smaller than the
+    // kd-tree coder on every capture tried -- 8% on an airborne-style urban
+    // scan, far more where the attributes are rich -- and decodes faster
+    // everywhere, for roughly twice the encode time. The search keeps the
+    // points in the order they came in whenever that already prices better,
+    // so a scan-line capture is not reordered against its will; when it does
+    // reorder, the warning below says so.
+    warnings.push(
+      'A point cloud is written through the point-cloud coder. The order search '
+      + 'may reorder the points to shrink the file: nothing outside it indexes '
+      + 'them by number, but a round trip no longer returns them in the order '
+      + 'they arrived',
+    );
+    return modules.drc.module.encode_draco(merged, {
+      encoding_speed: settings.encodingSpeed,
+      // Sequential unless the user picked the other coder by hand; the wasm
+      // passes a method of 2 to the point-cloud coder, where the only other
+      // coder is the kd-tree one.
+      encoding_method: settings.encodingMethod === 2 ? 2 : 1,
+      point_cloud: true,
+      point_order_search: true,
+      position_bits: settings.positionBits,
+      normal_bits: settings.normalBits,
+      texcoord_bits: settings.texcoordBits,
+      include_normals: settings.includeNormals,
+      include_uvs: settings.includeUvs,
+      include_colors: true,
+    });
+  }
   return modules.drc.module.encode_draco(merged, {
     encoding_speed: settings.encodingSpeed,
     encoding_method: settings.encodingMethod,

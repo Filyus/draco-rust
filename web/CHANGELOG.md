@@ -8,6 +8,19 @@ has changed in them; each package version has a section of its own.
 
 ## Unreleased
 
+- **A point cloud exported to `.drc` is written through the point-cloud coder.**
+  The mesh coder writes faces, and a faceless mesh writes none of the points
+  with them: the file came out a header with no geometry in it, and a cloud
+  round-tripped through the converter came back empty. The export now takes the
+  point-cloud route the splat branch already took, sequential with the order
+  search -- smaller than the kd-tree coder on every capture measured and faster
+  to decode, for roughly twice the encode time -- and warns that the search may
+  reorder the points.
+- `@draco-rust/encoder` takes a `point_order_search` option: the Hilbert curve
+  refined against the other attributes, kept only when the coder prices it
+  under the order the points came in, so a scan-ordered capture keeps its
+  order. Like the other two point-cloud options it needs `point_cloud` on.
+
 ## [0.3.0] - 2026-10-16
 
 - **One naming scheme across the packages, and one result shape for writing.**
