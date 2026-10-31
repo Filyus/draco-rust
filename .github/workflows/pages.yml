@@ -159,7 +159,7 @@ jobs:
       - name: Install wasm-pack
         uses: taiki-e/install-action@v2
         with:
-          tool: wasm-pack
+          tool: wasm-pack@0.15.1
 
       # A pinned Binaryen release rather than the distribution's package:
       # ubuntu-24.04 ships version 108, and the sizes web/wasm-sizes.md

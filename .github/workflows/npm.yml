@@ -82,7 +82,7 @@ jobs:
       - name: Install wasm-pack
         uses: taiki-e/install-action@v2
         with:
-          tool: wasm-pack
+          tool: wasm-pack@0.15.1
 
       # The same pinned Binaryen as ci.yml and pages.yml: build-tool refuses
       # --npm with any other wasm-opt, so the published sizes are the recorded
