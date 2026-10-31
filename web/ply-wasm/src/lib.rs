@@ -291,8 +291,8 @@ fn parse_ply_with_core(data: Vec<u8>) -> Result<ParseResult, String> {
     // this the caller is told only that it succeeded.
     //
     // Unnamed properties are carried rather than dropped, and the loss report
-    // stops naming what is carried, so the warnings below list only what
-    // really did not survive -- list properties, which have no fixed width.
+    // stops naming what is carried. The warnings also describe position
+    // conversions whose destination type may not represent every value.
     let (mesh, loss) = PlyReader::from_bytes(data)
         .with_generic_attributes(true)
         .read_mesh_reporting_loss()
@@ -302,7 +302,12 @@ fn parse_ply_with_core(data: Vec<u8>) -> Result<ParseResult, String> {
         success: true,
         meshes: vec![mesh_data],
         error: None,
-        warnings: loss.dropped().iter().map(ToString::to_string).collect(),
+        warnings: loss
+            .dropped()
+            .iter()
+            .map(ToString::to_string)
+            .chain(loss.position_conversions().iter().map(ToString::to_string))
+            .collect(),
         header,
     })
 }
@@ -1253,6 +1258,20 @@ end_header
 
         let result = parse_ply_with_core(ply.as_bytes().to_vec()).expect("parses");
         assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    }
+
+    #[test]
+    fn test_parse_warns_about_dropped_data_and_position_conversion() {
+        let ply = b"ply\nformat ascii 1.0\nelement vertex 1\nproperty double x\nproperty float y\nproperty float z\nproperty list uchar float extra\nend_header\n1 2 3 0\n";
+        let result = parse_ply_with_core(ply.to_vec()).expect("parses");
+        assert_eq!(result.warnings.len(), 2);
+        assert!(result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("extra")));
+        assert!(result.warnings.iter().any(
+            |warning| warning.contains("position x") && warning.contains("may lose precision")
+        ));
     }
 
     #[test]

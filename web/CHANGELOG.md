@@ -8,6 +8,10 @@ has changed in them; each package version has a section of its own.
 
 ## Unreleased
 
+- **PLY position warnings identify each affected component.** When the
+  declared type cannot always be represented by the position attribute, the
+  warning names the source and destination types and says precision may be
+  lost or values rejected. Dropped-property warnings are still reported.
 - **The JavaScript glue every module ships is minified.** wasm-bindgen's glue
   is what a page downloads beside the wasm, and it went out as the generator
   wrote it: the glTF module's 6.7 kB of glue is 3.9 minified, with the module

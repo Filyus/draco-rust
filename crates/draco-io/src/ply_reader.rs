@@ -172,14 +172,6 @@ pub enum PlyDroppedItem {
         /// How many of them the header declares.
         count: usize,
     },
-    /// x/y/z are declared as a type the position attribute does not take --
-    /// `double`, most often, which a georeferenced capture writes -- so every
-    /// coordinate is narrowed to float32 on the way in. Nothing is dropped,
-    /// but the file's own precision does not survive the read.
-    PositionsNarrowed {
-        /// The declared type the coordinates are narrowed from.
-        from: DataType,
-    },
 }
 
 impl std::fmt::Display for PlyDroppedItem {
@@ -207,15 +199,36 @@ impl std::fmt::Display for PlyDroppedItem {
                 formatter,
                 "element {name:?} and its {count} entries are skipped entirely"
             ),
-            PlyDroppedItem::PositionsNarrowed { from } => write!(
-                formatter,
-                "positions are declared {from:?} and read as float32, which narrows them"
-            ),
         }
     }
 }
 
-/// What a read of a PLY file leaves behind.
+/// A position component whose declared range or precision may not fit when read.
+///
+/// This is inferred from the header, not the values: a particular value may
+/// still be represented exactly in the destination type. Some unsupported or
+/// out-of-range values are rejected rather than converted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlyPositionConversion {
+    /// Position component: `x`, `y`, or `z`.
+    pub component: char,
+    /// Type declared by the PLY property.
+    pub from: DataType,
+    /// Type used by the resulting position attribute.
+    pub to: DataType,
+}
+
+impl std::fmt::Display for PlyPositionConversion {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "position {} is declared {:?} and read as {:?}; values may lose precision or be rejected",
+            self.component, self.from, self.to
+        )
+    }
+}
+
+/// What a PLY read drops or may not represent exactly.
 ///
 /// The reader maps a fixed set of property names onto Draco's attribute types
 /// and ignores the rest without failing, so a file whose payload lives in
@@ -226,6 +239,7 @@ impl std::fmt::Display for PlyDroppedItem {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PlyLossReport {
     dropped: Vec<PlyDroppedItem>,
+    position_conversions: Vec<PlyPositionConversion>,
 }
 
 impl PlyLossReport {
@@ -234,9 +248,15 @@ impl PlyLossReport {
         &self.dropped
     }
 
-    /// Whether the read carries the file's whole declared content.
+    /// Position conversions that may lose precision or reject values, in header order.
+    pub fn position_conversions(&self) -> &[PlyPositionConversion] {
+        &self.position_conversions
+    }
+
+    /// Whether the header guarantees that all declared content is carried
+    /// without precision loss. Individual converted values may still be exact.
     pub fn is_lossless(&self) -> bool {
-        self.dropped.is_empty()
+        self.dropped.is_empty() && self.position_conversions.is_empty()
     }
 }
 
@@ -312,7 +332,7 @@ impl PlyReader {
         reader.read_mesh()
     }
 
-    /// Report what a read of this file would not carry into the mesh.
+    /// Report dropped content and possible position conversion loss.
     ///
     /// Reads and validates the header only, so it answers for the same file a
     /// following [`read_mesh`](Self::read_mesh) would parse, and fails on the
@@ -338,7 +358,7 @@ impl PlyReader {
         Ok(self.read_mesh_reporting_loss()?.0)
     }
 
-    /// Read a mesh, and what the read did not carry into it.
+    /// Read a mesh and report dropped content and possible position conversion loss.
     ///
     /// The report answers for the bytes this mesh came from.
     /// [`loss_report`](Self::loss_report) parses on its own, so for a reader
@@ -998,27 +1018,37 @@ fn build_loss_report(
 ) -> PlyLossReport {
     let mut dropped = Vec::new();
 
-    // A position property the position attribute narrows -- a `double` x/y/z,
-    // which upstream refuses outright and this reader takes at float32 width.
-    // The read carries every value, so it is not a drop; naming it here is
-    // what keeps the narrowing from being silent.
-    //
-    // The two types named below are the ones whose width float32 cannot hold:
-    // a float64 always, a uint32 past 2^24. The smaller integers are exact in
-    // a 24-bit mantissa, so reading them as float32 narrows nothing and is
-    // none of the report's business, and an int32 position stays int32 --
-    // `position_data_type_for_scalar` is what maps the declaration onto the
-    // attribute, so a change there wants this list re-read.
-    let mut position_types = header.vertex_properties.iter().filter_map(|property| {
-        matches!(property.name.as_str(), "x" | "y" | "z")
-            .then_some(property)
-            .and_then(|property| property.scalar_type())
-    });
-    if let Some(from) =
-        position_types.find(|declared| matches!(declared, DataType::Uint32 | DataType::Float64))
-    {
-        dropped.push(PlyDroppedItem::PositionsNarrowed { from });
-    }
+    // The schema selects one destination type for all three components, even
+    // when their declarations differ. Report each potentially lossy conversion.
+    let position_conversions = header
+        .vertex_properties
+        .iter()
+        .filter_map(|property| {
+            let component = match property.name.as_str() {
+                "x" => 'x',
+                "y" => 'y',
+                "z" => 'z',
+                _ => return None,
+            };
+            let from = property.scalar_type()?;
+            let to = schema.position_data_type;
+            let may_lose = match to {
+                DataType::Float32 => {
+                    matches!(from, DataType::Int32 | DataType::Uint32 | DataType::Float64)
+                }
+                DataType::Int32 => matches!(
+                    from,
+                    DataType::Uint32 | DataType::Float32 | DataType::Float64
+                ),
+                _ => false,
+            };
+            may_lose.then_some(PlyPositionConversion {
+                component,
+                from,
+                to,
+            })
+        })
+        .collect();
 
     let declares_normals = header
         .vertex_properties
@@ -1062,7 +1092,10 @@ fn build_loss_report(
         }
     }
 
-    PlyLossReport { dropped }
+    PlyLossReport {
+        dropped,
+        position_conversions,
+    }
 }
 
 fn triangulate_vertex_indices(indices: &[u32], faces: &mut Vec<[u32; 3]>) {
@@ -2479,10 +2512,7 @@ end_header
         assert!(report.is_lossless(), "{:?}", report.dropped());
     }
 
-    /// A `double` position is carried whole in value but not in width: the
-    /// reader narrows every coordinate to float32, and the report says so
-    /// rather than letting the file's own precision go quietly. Upstream
-    /// refuses such a file outright, so nothing that reads there loses here.
+    /// The header identifies possible precision loss, even for exact values.
     #[test]
     fn test_loss_report_names_narrowed_double_positions() {
         let ply = r#"ply
@@ -2492,20 +2522,22 @@ property double x
 property double y
 property double z
 end_header
-0.1 0.2 0.3
+1 2 3
 "#;
 
         let (mesh, report) = PlyReader::from_bytes(ply.as_bytes().to_vec())
             .read_mesh_reporting_loss()
             .expect("a double position reads at float32 width");
         assert_eq!(mesh.num_points(), 1);
+        assert!(report.dropped().is_empty());
+        assert!(!report.is_lossless());
         assert_eq!(
-            report.dropped(),
-            [PlyDroppedItem::PositionsNarrowed {
-                from: DataType::Float64
-            }],
-            "{:?}",
-            report.dropped()
+            report.position_conversions(),
+            ['x', 'y', 'z'].map(|component| PlyPositionConversion {
+                component,
+                from: DataType::Float64,
+                to: DataType::Float32,
+            })
         );
     }
 
@@ -2548,17 +2580,62 @@ end_header
             .read_mesh_reporting_loss()
             .expect("a uint position reads at float32 width");
         assert_eq!(mesh.num_points(), 1);
+        assert!(report.dropped().is_empty());
+        assert!(!report.is_lossless());
         assert_eq!(
-            report.dropped(),
-            [PlyDroppedItem::PositionsNarrowed {
-                from: DataType::Uint32
-            }],
-            "{:?}",
-            report.dropped()
+            report.position_conversions(),
+            ['x', 'y', 'z'].map(|component| PlyPositionConversion {
+                component,
+                from: DataType::Uint32,
+                to: DataType::Float32,
+            })
         );
         let positions = mesh.named_attribute_id(GeometryAttributeType::Position);
         assert!(positions >= 0);
         assert_eq!(mesh.attribute(positions).data_type(), DataType::Float32);
+    }
+
+    #[test]
+    fn test_loss_report_uses_the_shared_destination_for_mixed_position_types() {
+        let ply = b"ply\nformat ascii 1.0\nelement vertex 1\nproperty double x\nproperty uint y\nproperty int z\nend_header\n1 2 3\n";
+        let mut reader = PlyReader::from_bytes(ply.to_vec());
+        let header_report = reader.loss_report().unwrap();
+        let (_, read_report) = reader.read_mesh_reporting_loss().unwrap();
+        assert_eq!(header_report, read_report);
+        assert!(read_report.dropped().is_empty());
+        assert!(!read_report.is_lossless());
+        assert_eq!(
+            read_report.position_conversions(),
+            [
+                PlyPositionConversion {
+                    component: 'x',
+                    from: DataType::Float64,
+                    to: DataType::Int32
+                },
+                PlyPositionConversion {
+                    component: 'y',
+                    from: DataType::Uint32,
+                    to: DataType::Int32
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_loss_report_names_int_to_float_conversion_in_mixed_positions() {
+        let ply = b"ply\nformat ascii 1.0\nelement vertex 1\nproperty int x\nproperty short y\nproperty float z\nend_header\n16777217 2 3\n";
+        let mut reader = PlyReader::from_bytes(ply.to_vec());
+        let header_report = reader.loss_report().unwrap();
+        let (_, report) = reader.read_mesh_reporting_loss().unwrap();
+        assert_eq!(header_report, report);
+        assert_eq!(
+            report.position_conversions(),
+            [PlyPositionConversion {
+                component: 'x',
+                from: DataType::Int32,
+                to: DataType::Float32,
+            }]
+        );
     }
 
     // The set of properties a read consumes is decided by `build_read_schema`
