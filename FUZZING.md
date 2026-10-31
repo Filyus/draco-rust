@@ -480,20 +480,45 @@ needed. Two layers run there:
   series. The nightly run also keeps every corpus cache entry warm, where a
   manual cadence let them lapse past GitHub's seven-day eviction.
 - The README badge is pinned to `?event=push`, so it reports the smoke gate and
-  not the soaks: a campaign that runs for an hour per target is expected to
-  find things, and a finding is not a broken build. Read a soak's conclusion
-  from the run list. GitHub attributes a scheduled run to whoever last touched
-  the workflow file and notifies them when it fails, and suspends the schedule
-  after sixty days without a commit.
+  not the soaks: a long campaign is expected to find things, and a finding is
+  not a broken build. Read a soak's conclusion from the run list. GitHub
+  attributes a scheduled run to whoever last touched the workflow file and
+  notifies them when it fails, and suspends the schedule after sixty days
+  without a commit.
 - **One job per target**, running concurrently, so the run costs the
   wall-clock of the longest budget rather than the sum, and no target competes
-  with six others for the six-hour job limit. Budgets are set per target from
-  its own coverage curve rather than by symmetry: `encode_drc` gets two hours
-  as the slowest, widest target and the one carrying the round-trip oracle;
-  every other target, `decode_drc` included, gets thirty minutes, which is
-  where their coverage stops moving. A four-hour `encode_drc` run was measured
-  once to price the tail -- its second half bought four edges out of 13,124 --
-  so the extra time buys executions, not reach.
+  with others for the six-hour job limit. The current budgets are 30 minutes
+  for `decode_drc`, the OBJ/PLY/STL readers and round trip, `fbx_read_scene`,
+  `fbx_roundtrip`, and `draco_gltf_import`; `encode_drc`, `compress_gltf`, and
+  `ktx2_transcode` get one hour each.
+- **Coverage check, 2026-10-22 through 2026-10-31.** Across the ten most recent
+  nightly soaks, the campaign's edge gain was measured from its initial corpus
+  coverage to its final coverage, before corpus minimization. The table gives
+  the mean gain in the first five runs and last five runs, respectively:
+
+  | target | budget | edges/run, first 5 -> last 5 |
+  | --- | ---: | ---: |
+  | `decode_drc` | 30 min | 20.2 -> 10.4 |
+  | `encode_drc` | 60 min | 21.0 -> 16.2 |
+  | `mesh_text_readers` | 30 min | 9.4 -> 9.6 |
+  | `mesh_text_roundtrip` | 30 min | 8.2 -> 8.2 |
+  | `fbx_read_scene` | 30 min | 60.4 -> 60.6 |
+  | `fbx_roundtrip` | 30 min | 69.0 -> 55.8 |
+  | `compress_gltf` | 60 min | 4.8 -> 10.0 |
+  | `draco_gltf_import` | 30 min | 12.0 -> 10.2 |
+  | `ktx2_transcode` | 60 min | 7.8 -> 5.2 |
+
+  Every target gained edges in at least some runs; the size varied sharply by
+  target and from night to night. `fbx_read_scene` kept gaining about 60 edges
+  per run, while `compress_gltf` ranged from zero to 23 in the last five.
+  `ktx2_transcode` had four zero-gain runs in the ten but also gained 16 in
+  one recent run. These ten runs do not support a broad reduction in soak
+  time. Treat targets with repeated zero-gain runs as candidates for another
+  measurement, not as established plateaus: libFuzzer's corpus and seed state
+  make a single quiet run weak evidence. A four-hour `encode_drc` run was
+  measured earlier to price the tail -- its second half bought four edges
+  out of 13,124 -- and four later two-hour soaks bought only +4, +2, and +2
+  edges between runs; that evidence is why its budget is one hour now.
 - Each target caches its own corpus under its own key. One shared key across
   concurrent jobs would have them overwrite each other's entry, and one shared
   path would have every entry carry every corpus.
