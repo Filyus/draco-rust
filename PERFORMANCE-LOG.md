@@ -128,6 +128,8 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [The Same Lookups, On The Encoder And In The UV Predictor](#the-same-lookups-on-the-encoder-and-in-the-uv-predictor) | landed | `-6.5% encode, -6.3% UV decode` |
 | [glTF Scenes Against three.js: Validation, JSON, Allocator](#gltf-scenes-against-threejs-validation-json-allocator) | landed | `64 -> 5.6 ms one-at-a-time reads` |
 | [glTF JSON As A Flat Tape](#gltf-json-as-a-flat-tape) | landed | `1.86 -> 1.20 ms WASM open` |
+| [A Faceless Mesh Encodes To Nothing](#a-faceless-mesh-encodes-to-nothing) | landed | `85 bytes -> the whole cloud` |
+| [The Point-Cloud Heuristics, Re-Verified](#the-point-cloud-heuristics-re-verified) | null | `order search at the oracle; bucket rule stands` |
 | [Lazy Subtrees, Priced Before Built](#lazy-subtrees-priced-before-built) | landed | `1.20 -> 1.10 ms WASM open` |
 | [The Tape's Size, Taken Back](#the-tapes-size-taken-back) | landed | `147.2 -> 142.4 kB gzip` |
 | [The glTF Reader Against Upstream's, By Size](#the-gltf-reader-against-upstreams-by-size) | landed | `142.4 -> 125.2 kB gzip` |
@@ -5729,6 +5731,83 @@ The fan's `O(valence^2)` stage is fixed; what it touched on the way is not.
   swapping too, which would say whether the reference's own allocator is
   better than the platform's -- interesting, but no longer load-bearing for
   any decision here.
+
+### A Faceless Mesh Encodes To Nothing
+
+2026-10-31, the audit round's machine (Ryzen AI 7 350, 16 threads), one
+thread, the converter's own defaults, positions at 14 bits and every generic
+at 12. The converter's `.drc` export took a point cloud through the mesh
+coder: `exportToDrc` passed no `point_cloud` flag, so a cloud went to the
+wasm's `MeshEncoder` as a faceless mesh, and the mesh coder writes faces --
+with none of the points they would have carried. The same file, the same
+options, through the point-cloud coder:
+
+| cloud | faceless mesh | point cloud, kd-tree | point cloud, sequential | sequential + order search |
+| --- | ---: | ---: | ---: | ---: |
+| urban scan, 10.65M points, RGB + intensity | **85 bytes** | 35.4 MB (26.6 bits/pt) | 41.2 MB (30.9) | 32.6 MB (24.5) |
+| synthetic aerial, 1M | 85 | 3.35 MB (26.8) | 6.91 MB (55.3) | 1.71 MB (13.7) |
+| synthetic spinning frame, 1M, shuffled | 61 | 1.49 MB (11.9) | 4.88 MB (39.1) | 1.48 MB (11.9) |
+| synthetic terrestrial, 1M, shuffled | 85 | 6.46 MB (51.7) | 8.04 MB (64.3) | 3.85 MB (30.8) |
+| synthetic splat, 1M, shuffled | 86 | 5.31 MB (42.5) | 5.18 MB (41.5) | 2.88 MB (23.0) |
+| scan-line lidar frame, 17,238 points | 61 | 38.6 KB (17.9) | 40.2 KB (18.7) | 38.2 KB (17.7) |
+
+The 85-byte stream is a header and an empty attribute list: decoded, it is a
+mesh with no points at all, so a cloud round-tripped through the converter
+came back empty. The fix routes clouds through the point-cloud coder, the
+route the splat branch already took, sequential with the order search -- the
+smaller of the two coders on every capture measured above and the faster
+decode on all of them (0.41 s against 0.69 s on the urban scan), for roughly
+twice the encode time. The order search kept a scan-ordered frame's own order
+where the unconditional curve option grew that frame by 3.3%, which is why
+the export asks for the search rather than the curve. Landed in the web
+converter and as the encoder's `point_order_search` option; the CHANGELOG
+carries the user-facing half.
+
+### The Point-Cloud Heuristics, Re-Verified
+
+2026-10-31, same machine, one thread. The audit's questions and what the
+measurements answered.
+
+**The order search's choice of order.** A trial-encode choice of order
+("pick") had been proposed -- the estimate that picks between the input order
+and the curve was measured missing the better order by `0.3-0.8%` on uniform,
+splat and far-away clouds. Every miss pre-dates the trial refinement landing.
+On the tree as it stands, the search returns the oracle order -- the cheapest
+of input, curve and refined -- on all nine clouds tried: the five synthetics
+above plus far-away, skewed, the urban scan and the scan-line frame. The
+refined order wins where it can (the urban scan takes the curve's 37.6 MB
+down to 32.6 MB), the estimate keeps the input order where the curve is
+worse. Null result: nothing to change.
+
+**The rANS bucket rule.** The rule -- buckets past 512 KiB of slot table, or
+from two thirds of the slots owned -- was re-checked on a Zen 5 consumer part
+(one of the seven the rule was measured on), by decoding a 10.65M-point scan
+with the rule as written, with buckets forced off, and with the outputs
+compared. The bucket path and the slot-table path read back identical
+symbols. At 17 bits of position precision, where the table sits at 512 KiB
+and the owned share decides, the rule's buckets decode `-30%` (0.48 s against
+0.68 s). At 20 bits -- a 4 MiB table, buckets kept whatever the share -- the
+two forms tie (0.330 s against 0.334 s): a near-uniform histogram over 2^20
+slots owns almost no bucket whole, which is the case the rule's own comment
+calls "decodes the same either way". The rule stands as written.
+
+**Threads past the machine's cores.** A request for more threads than the
+machine has is now capped at what the machine has, which the four-core
+measurement that proposed it (`+62%` encode, `+44%` decode at 16 threads on 4
+cores) asked for. On this machine the capped request is indistinguishable
+from the uncapped one on a two-attribute cloud (0.62 s both ways at a
+4-core affinity), so the change is carried by the earlier measurement and
+verified harmless here, not re-measured. Stream bytes do not depend on the
+thread count, as before.
+
+**The KD-tree coder's parallelizable share.** A phase timing on the urban
+scan: quantizing the attributes, building the point vector and scanning the
+bit lengths take 94 ms of a 1.9 s encode; the recursive walk and its entropy
+coder take the rest, and each partition level depends on the one before it.
+Parallelizing the coder therefore means parallelizing inside the walk --
+per-level scans and median selection -- which is an architectural project on
+a path upstream also runs single-threaded. Recorded as a candidate, not
+attempted.
 
 ### Owed to the document itself
 
