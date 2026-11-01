@@ -9,6 +9,8 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.1](https://github.com/Filyus/draco-rust/compare/draco-io-v0.6.0...draco-io-v0.6.1) - 2026-11-01
+
 ### Changed
 
 - **The PLY loss report identifies position conversions that may lose
