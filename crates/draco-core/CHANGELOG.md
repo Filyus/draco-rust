@@ -8,6 +8,15 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.3.3](https://github.com/Filyus/draco-rust/compare/draco-core-v2.3.2...draco-core-v2.3.3) - 2026-11-01
+
+### Changed
+
+- **Explicit thread requests no longer oversubscribe the machine.** Requests
+  above the available parallelism are capped to that count, while smaller
+  requests are still honored. This avoids slower encoding and decoding from
+  running more workers than the machine can use; encoded bytes are unchanged.
+
 ## [2.3.2](https://github.com/Filyus/draco-rust/compare/draco-core-v2.3.1...draco-core-v2.3.2) - 2026-10-11
 
 ### Fixed
