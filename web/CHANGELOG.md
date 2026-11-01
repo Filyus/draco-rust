@@ -8,6 +8,8 @@ has changed in them; each package version has a section of its own.
 
 ## Unreleased
 
+## [0.3.1] - 2026-11-01
+
 - **PLY position warnings identify each affected component.** When the
   declared type cannot always be represented by the position attribute, the
   warning names the source and destination types and says precision may be
@@ -28,10 +30,11 @@ has changed in them; each package version has a section of its own.
   The mesh coder writes faces, and a faceless mesh writes none of the points
   with them: the file came out a header with no geometry in it, and a cloud
   round-tripped through the converter came back empty. The export now takes the
-  point-cloud route the splat branch already took, sequential with the order
-  search -- smaller than the kd-tree coder on every capture measured and faster
-  to decode, for roughly twice the encode time -- and warns that the search may
-  reorder the points.
+  point-cloud route the splat branch already took. By default it uses
+  sequential encoding with the order search; an explicit KD-tree choice is
+  preserved. In the captures measured, the default made smaller files and
+  decoded faster than KD-tree, at roughly twice its encode time. The warning
+  says point order may change.
 - `@draco-rust/encoder` takes a `point_order_search` option: the Hilbert curve
   refined against the other attributes, kept only when the coder prices it
   under the order the points came in, so a scan-ordered capture keeps its
