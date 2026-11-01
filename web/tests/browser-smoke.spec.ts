@@ -2173,6 +2173,48 @@ test('a flattened export keeps each node where the scene put it', async ({ page 
 });
 
 /**
+ * A PLY vertex list with no faces is a point cloud, not an empty mesh.
+ *
+ * The mesh coder used to write only its header for this input, so exporting a
+ * scan to `.drc` succeeded but threw all four points away. Read the downloaded
+ * stream back through the app and check the point cloud survived.
+ */
+test('an ordinary point cloud survives a .drc export', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  await page.locator('#file-input').setInputFiles({
+    name: 'point-cloud.ply',
+    mimeType: 'application/octet-stream',
+    buffer: await readFile(path.join(repoRoot, 'testdata', 'point_cloud_test_pos.ply')),
+  });
+  await expect(page.locator('#console')).toContainText('Successfully parsed point-cloud.ply');
+  await expect(page.locator('#console')).toContainText('Preview ready');
+
+  const geometry = () => page.evaluate(async () => {
+    const { state } = await import('/app/state.js' as string);
+    const mesh = state.currentMeshData?.meshes?.[0];
+    return {
+      points: (mesh?.positions?.length ?? 0) / 3,
+      indices: mesh?.indices?.length ?? 0,
+    };
+  });
+  await expect.poll(geometry).toEqual({ points: 4, indices: 0 });
+
+  await page.locator('[data-choice-for="export-format"] [data-value="drc"]').click();
+  const downloadPromise = page.waitForEvent('download');
+  await page.locator('#export-btn').click();
+  const payload = await readFile((await (await downloadPromise).path())!);
+
+  await page.locator('#file-input').setInputFiles({
+    name: 'point-cloud.drc',
+    mimeType: 'application/octet-stream',
+    buffer: payload,
+  });
+  await expect(page.locator('#console')).toContainText('Successfully parsed point-cloud.drc');
+  await expect.poll(geometry).toEqual({ points: 4, indices: 0 });
+});
+
+/**
  * `.drc` in, `.drc` out, twice: every channel has to make the whole loop.
  *
  * Import and export are separate code paths that meet only here, and a channel
