@@ -17,6 +17,10 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   The report inspects the header, so an individual value may still be exact.
   `is_lossless()` is false when the header cannot guarantee exact conversion.
   The non-uint8 color error also names the property and the type it found.
+- **Mixed PLY coordinate types no longer depend on property order.** The
+  position attribute remains int32 when an int32 component is combined with
+  smaller integers. A floating or uint32 component selects float32 for all
+  coordinates; possible rounding is listed in `position_conversions()`.
 
 ## [0.6.0](https://github.com/Filyus/draco-rust/compare/draco-io-v0.5.2...draco-io-v0.6.0) - 2026-10-10
 

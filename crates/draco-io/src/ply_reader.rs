@@ -203,11 +203,10 @@ impl std::fmt::Display for PlyDroppedItem {
     }
 }
 
-/// A position component whose declared range or precision may not fit when read.
+/// A position component whose conversion may round a value during a successful read.
 ///
 /// This is inferred from the header, not the values: a particular value may
-/// still be represented exactly in the destination type. Some unsupported or
-/// out-of-range values are rejected rather than converted.
+/// still be represented exactly in the destination type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlyPositionConversion {
     /// Position component: `x`, `y`, or `z`.
@@ -222,7 +221,7 @@ impl std::fmt::Display for PlyPositionConversion {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,
-            "position {} is declared {:?} and read as {:?}; values may lose precision or be rejected",
+            "position {} is declared {:?} and read as {:?}; values may lose precision",
             self.component, self.from, self.to
         )
     }
@@ -248,7 +247,7 @@ impl PlyLossReport {
         &self.dropped
     }
 
-    /// Position conversions that may lose precision or reject values, in header order.
+    /// Position conversions that may round values, in header order.
     pub fn position_conversions(&self) -> &[PlyPositionConversion] {
         &self.position_conversions
     }
@@ -787,13 +786,6 @@ fn split_ascii_vertex_lines<'a>(
     Ok((vertex_lines, face_lines))
 }
 
-fn position_data_type_for_scalar(data_type: DataType) -> DataType {
-    match data_type {
-        DataType::Int32 => DataType::Int32,
-        _ => DataType::Float32,
-    }
-}
-
 fn scalar_property_type(header: &PlyHeader, name: &str) -> Option<DataType> {
     header.vertex_properties.iter().find_map(|property| {
         (property.name == name)
@@ -835,7 +827,6 @@ fn build_read_schema(header: &PlyHeader) -> io::Result<PlyReadSchema> {
     let mut has_x = false;
     let mut has_y = false;
     let mut has_z = false;
-    let mut position_data_type = DataType::Float32;
     let mut prop_nx_type = None;
     let mut prop_ny_type = None;
     let mut prop_nz_type = None;
@@ -852,15 +843,12 @@ fn build_read_schema(header: &PlyHeader) -> io::Result<PlyReadSchema> {
         match property.name.as_str() {
             "x" => {
                 has_x = true;
-                position_data_type = position_data_type_for_scalar(data_type);
             }
             "y" => {
                 has_y = true;
-                position_data_type = position_data_type_for_scalar(data_type);
             }
             "z" => {
                 has_z = true;
-                position_data_type = position_data_type_for_scalar(data_type);
             }
             "nx" => prop_nx_type = Some(data_type),
             "ny" => prop_ny_type = Some(data_type),
@@ -882,6 +870,26 @@ fn build_read_schema(header: &PlyHeader) -> io::Result<PlyReadSchema> {
     if !has_z {
         return Err(invalid_ply("No z property"));
     }
+
+    // Preserve int32 coordinates when every component fits that representation.
+    // Float or uint32 components require the floating representation. Decide
+    // from all three declarations so property order cannot change the result.
+    let position_types = ["x", "y", "z"].map(|name| scalar_property_type(header, name).unwrap());
+    let position_data_type = if position_types.contains(&DataType::Int32)
+        && position_types.iter().all(|data_type| {
+            matches!(
+                data_type,
+                DataType::Int8
+                    | DataType::Uint8
+                    | DataType::Int16
+                    | DataType::Uint16
+                    | DataType::Int32
+            )
+        }) {
+        DataType::Int32
+    } else {
+        DataType::Float32
+    };
 
     let has_normals = prop_nx_type == Some(DataType::Float32)
         && prop_ny_type == Some(DataType::Float32)
@@ -1036,10 +1044,6 @@ fn build_loss_report(
                 DataType::Float32 => {
                     matches!(from, DataType::Int32 | DataType::Uint32 | DataType::Float64)
                 }
-                DataType::Int32 => matches!(
-                    from,
-                    DataType::Uint32 | DataType::Float32 | DataType::Float64
-                ),
                 _ => false,
             };
             may_lose.then_some(PlyPositionConversion {
@@ -2610,12 +2614,17 @@ end_header
                 PlyPositionConversion {
                     component: 'x',
                     from: DataType::Float64,
-                    to: DataType::Int32
+                    to: DataType::Float32
                 },
                 PlyPositionConversion {
                     component: 'y',
                     from: DataType::Uint32,
-                    to: DataType::Int32
+                    to: DataType::Float32
+                },
+                PlyPositionConversion {
+                    component: 'z',
+                    from: DataType::Int32,
+                    to: DataType::Float32
                 },
             ]
         );
@@ -2636,6 +2645,71 @@ end_header
                 to: DataType::Float32,
             }]
         );
+    }
+
+    #[test]
+    fn test_mixed_position_types_are_independent_of_property_order() {
+        for order in [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ] {
+            for binary in [false, true] {
+                for floating in [false, true] {
+                    let types = ["int", "short", if floating { "double" } else { "uchar" }];
+                    let names = ["x", "y", "z"];
+                    let format = if binary {
+                        "binary_little_endian"
+                    } else {
+                        "ascii"
+                    };
+                    let mut header = format!("ply\nformat {format} 1.0\nelement vertex 1\n");
+                    for index in order {
+                        header.push_str(&format!("property {} {}\n", types[index], names[index]));
+                    }
+                    header.push_str("end_header\n");
+                    let mut bytes = header.into_bytes();
+                    for index in order {
+                        if binary {
+                            match index {
+                                0 => bytes.extend_from_slice(&16777217i32.to_le_bytes()),
+                                1 => bytes.extend_from_slice(&2i16.to_le_bytes()),
+                                _ if floating => bytes.extend_from_slice(&0.5f64.to_le_bytes()),
+                                _ => bytes.push(3),
+                            }
+                        } else {
+                            bytes.extend_from_slice(match index {
+                                0 => b"16777217 ",
+                                1 => b"2 ",
+                                _ if floating => b"0.5 ",
+                                _ => b"3 ",
+                            });
+                        }
+                    }
+                    let mut reader = PlyReader::from_bytes(bytes);
+                    let preview = reader.loss_report().unwrap();
+                    let (mesh, report) = reader.read_mesh_reporting_loss().unwrap();
+                    assert_eq!(preview, report);
+                    let id = mesh.named_attribute_id(GeometryAttributeType::Position);
+                    assert_eq!(
+                        mesh.attribute(id).data_type(),
+                        if floating {
+                            DataType::Float32
+                        } else {
+                            DataType::Int32
+                        }
+                    );
+                    assert_eq!(
+                        report.position_conversions().len(),
+                        if floating { 2 } else { 0 }
+                    );
+                    assert_eq!(report.is_lossless(), !floating);
+                }
+            }
+        }
     }
 
     // The set of properties a read consumes is decided by `build_read_schema`
