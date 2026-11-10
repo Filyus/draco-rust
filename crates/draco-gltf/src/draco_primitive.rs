@@ -106,7 +106,7 @@ impl DracoPrimitiveExtension {
         contract: &DracoPrimitiveContract,
     ) -> Result<PackedGeometry> {
         let mesh = decode_payload(payload, &contract.decode)?;
-        self.pack(&mesh, contract)
+        self.pack(&mesh, contract, Vec::new())
     }
 
     /// Checks a decoded mesh against `contract` and packs it.
@@ -114,6 +114,7 @@ impl DracoPrimitiveExtension {
         &self,
         mesh: &Mesh,
         contract: &DracoPrimitiveContract,
+        ordinary: Vec<crate::PackedAttribute>,
     ) -> Result<PackedGeometry> {
         validate_decoded_counts(mesh, contract)?;
         let normalized = |semantic: &str| {
@@ -122,8 +123,13 @@ impl DracoPrimitiveExtension {
                 .get(semantic)
                 .map(|declared| declared.normalized)
         };
-        let geometry = PackedGeometry::from_draco_mesh(mesh, &self.attributes, &normalized)?;
-        geometry.validate(contract.profile)?;
+        let geometry = PackedGeometry::from_draco_mesh_with_attributes(
+            mesh,
+            &self.attributes,
+            &normalized,
+            ordinary,
+        )?;
+        geometry.validate_with_quantization(contract.profile, contract.mesh_quantization)?;
         Ok(geometry)
     }
 }
@@ -139,6 +145,7 @@ pub struct DracoPrimitiveContract {
     mode: PrimitiveMode,
     decode: crate::DracoDecodeOptions,
     profile: ValidationProfile,
+    mesh_quantization: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -162,6 +169,7 @@ impl DracoPrimitiveContract {
             mode: PrimitiveMode::Triangles,
             decode: crate::DracoDecodeOptions::default(),
             profile: ValidationProfile::Gltf21Draft,
+            mesh_quantization: false,
         }
     }
 
@@ -213,6 +221,13 @@ impl DracoPrimitiveContract {
     #[must_use]
     pub const fn with_profile(mut self, profile: ValidationProfile) -> Self {
         self.profile = profile;
+        self
+    }
+
+    /// Enables the attribute types allowed by a required `KHR_mesh_quantization` declaration.
+    #[must_use]
+    pub const fn with_mesh_quantization(mut self, enabled: bool) -> Self {
+        self.mesh_quantization = enabled;
         self
     }
 }

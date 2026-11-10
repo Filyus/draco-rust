@@ -9,7 +9,7 @@ use crate::{
 /// Storage selected for newly written primitive geometry.
 #[derive(Clone, Copy, Debug, Default)]
 pub enum GeometryEncoding {
-    /// Store geometry in ordinary tightly packed glTF accessors.
+    /// Store geometry in ordinary glTF accessors.
     #[default]
     Raw,
     /// Encode geometry with `KHR_draco_mesh_compression`.
@@ -63,7 +63,7 @@ impl Import {
         geometry: &PackedGeometry,
         options: GeometryWriteOptions,
     ) -> Result<GeometryWriteReport> {
-        geometry.validate(self.validation_profile())?;
+        geometry.validate_with_quantization(self.validation_profile(), self.mesh_quantization())?;
         let mut candidate = self.clone();
         let source_bytes = total_bytes(&candidate)?;
         let raw_bytes = candidate.write_raw_primitive_inner(primitive, geometry)?;
@@ -107,7 +107,6 @@ impl Import {
         geometry: &PackedGeometry,
         options: GeometryWriteOptions,
     ) -> Result<PrimitiveIndex> {
-        geometry.validate(self.validation_profile())?;
         let mut candidate = self.clone();
         let primitives = candidate
             .document_mut()
@@ -150,7 +149,15 @@ impl Import {
         profile: ValidationProfile,
         options: GeometryWriteOptions,
     ) -> Result<Self> {
-        geometry.validate(profile)?;
+        let quantized = match geometry.validate(profile) {
+            Ok(()) => false,
+            Err(core_error) => {
+                geometry
+                    .validate_with_quantization(profile, true)
+                    .map_err(|_| core_error)?;
+                true
+            }
+        };
         let version = match profile {
             ValidationProfile::Gltf20 => "2.0",
             ValidationProfile::Gltf21Draft => "2.1",
@@ -159,6 +166,13 @@ impl Import {
             "{{\"asset\":{{\"version\":\"{version}\"}},\"buffers\":[],\"bufferViews\":[],\"accessors\":[],\"meshes\":[{{\"primitives\":[]}}],\"nodes\":[{{\"mesh\":0}}],\"scenes\":[{{\"nodes\":[0]}}],\"scene\":0}}"
         );
         let mut import = crate::parse(document.as_bytes(), profile)?;
+        if quantized {
+            let root = import.document_mut().as_value_mut();
+            for field in ["extensionsUsed", "extensionsRequired"] {
+                root[field] =
+                    Value::Array(vec![Value::from(crate::attribute_rules::MESH_QUANTIZATION)]);
+            }
+        }
         import.push_primitive(MeshIndex(0), geometry, options)?;
         Ok(import)
     }
@@ -180,14 +194,27 @@ impl Import {
         for attribute in geometry.attributes() {
             pad_to_four(&mut bytes);
             let offset = bytes.len();
-            bytes.extend_from_slice(attribute.bytes());
-            views.push((offset, attribute.bytes().len(), 34962u32));
+            let width = attribute.component_type().byte_width();
+            let element = width * usize::from(attribute.components());
+            let stride = element.next_multiple_of(4);
+            if stride == element {
+                bytes.extend_from_slice(attribute.bytes());
+            } else {
+                for value in attribute.bytes().chunks_exact(element) {
+                    bytes.extend_from_slice(value);
+                    pad_to_four(&mut bytes);
+                }
+            }
+            let byte_stride = (stride != element
+                || width < 4 && self.validation_profile() == ValidationProfile::Gltf21Draft)
+                .then_some(stride);
+            views.push((offset, bytes.len() - offset, 34962u32, byte_stride));
         }
         let index_view = if let Some(indices) = geometry.indices() {
             pad_to_four(&mut bytes);
             let offset = bytes.len();
             bytes.extend_from_slice(indices.bytes());
-            views.push((offset, indices.bytes().len(), 34963u32));
+            views.push((offset, indices.bytes().len(), 34963u32, None));
             Some(views.len() - 1)
         } else {
             None
@@ -198,13 +225,17 @@ impl Import {
         ensure_root_array(root, "buffers")?
             .push(Value::object([("byteLength", Value::from(bytes.len()))]));
         let first_view = ensure_root_array(root, "bufferViews")?.len();
-        for (offset, length, target) in &views {
-            ensure_root_array(root, "bufferViews")?.push(Value::object([
+        for (offset, length, target, stride) in &views {
+            let mut view = Value::object([
                 ("buffer", Value::from(buffer_index)),
                 ("byteOffset", Value::from(*offset)),
                 ("byteLength", Value::from(*length)),
                 ("target", Value::from(*target as u64)),
-            ]));
+            ]);
+            if let Some(stride) = stride {
+                view["byteStride"] = Value::from(*stride);
+            }
+            ensure_root_array(root, "bufferViews")?.push(view);
         }
 
         let first_accessor = ensure_root_array(root, "accessors")?.len();

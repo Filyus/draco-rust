@@ -417,7 +417,7 @@ impl GltfAsset {
         geometry: &PackedGeometry,
         options: &GeometryWriteOptions,
     ) -> Result<(), JsValue> {
-        let geometry = geometry.to_inner(ValidationProfile::Gltf21Draft)?;
+        let geometry = geometry.to_inner()?;
         self.import
             .write_primitive(
                 PrimitiveIndex::new(draco_gltf::MeshIndex(mesh), primitive),
@@ -437,7 +437,7 @@ impl GltfAsset {
         geometry: &PackedGeometry,
         options: &GeometryWriteOptions,
     ) -> Result<usize, JsValue> {
-        let geometry = geometry.to_inner(ValidationProfile::Gltf21Draft)?;
+        let geometry = geometry.to_inner()?;
         self.import
             .push_primitive(draco_gltf::MeshIndex(mesh), &geometry, options.inner)
             .map(|index| index.primitive)
@@ -453,7 +453,7 @@ impl GltfAsset {
         options: &GeometryWriteOptions,
     ) -> Result<GltfAsset, JsValue> {
         let profile = profile(validation_profile)?;
-        let geometry = geometry.to_inner(profile)?;
+        let geometry = geometry.to_inner()?;
         Import::from_geometry(&geometry, profile, options.inner)
             .map(|import| Self {
                 import,
@@ -734,7 +734,8 @@ impl PackedGeometry {
 
     /// Validates this value for glTF 2.0 or the pinned 2.1 profile.
     pub fn validate(&self, validation_profile: &str) -> Result<(), JsValue> {
-        self.to_inner(profile(validation_profile)?).map(|_| ())
+        let profile = profile(validation_profile)?;
+        self.to_inner()?.validate(profile).map_err(wasm_error)
     }
 
     /// Returns the glTF primitive mode code.
@@ -849,15 +850,9 @@ impl PackedGeometry {
         }
     }
 
-    fn to_inner(&self, profile: ValidationProfile) -> Result<draco_gltf::PackedGeometry, JsValue> {
-        let geometry = draco_gltf::PackedGeometry::new(
-            self.mode,
-            self.attributes.clone(),
-            self.indices.clone(),
-        )
-        .map_err(wasm_error)?;
-        geometry.validate(profile).map_err(wasm_error)?;
-        Ok(geometry)
+    fn to_inner(&self) -> Result<draco_gltf::PackedGeometry, JsValue> {
+        draco_gltf::PackedGeometry::new(self.mode, self.attributes.clone(), self.indices.clone())
+            .map_err(wasm_error)
     }
 
     fn attribute(&self, index: usize) -> Result<&PackedAttribute, JsValue> {

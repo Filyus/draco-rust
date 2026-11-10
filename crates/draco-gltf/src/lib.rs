@@ -20,6 +20,11 @@ use thiserror::Error;
 
 #[cfg(feature = "geometry")]
 mod accessor;
+#[cfg(all(
+    feature = "document",
+    any(feature = "geometry", feature = "strict-validation")
+))]
+mod attribute_rules;
 #[cfg(feature = "draco-encode")]
 mod compression;
 /// Lossless document model and typed views for glTF scenes.

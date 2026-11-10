@@ -506,6 +506,11 @@ impl Document {
 
 #[cfg(feature = "strict-validation")]
 fn validate_references(root: JsonRef<'_>, profile: ValidationProfile) -> Result<()> {
+    let mesh_quantization = crate::attribute_rules::mesh_quantization(root);
+    let accessors = root
+        .get("accessors")
+        .and_then(JsonRef::as_array)
+        .unwrap_or_default();
     // Every reference is checked against the length of the root array it
     // points into, and a document makes thousands of references into a dozen
     // arrays, so the lengths are taken once. The first member of a name is
@@ -709,11 +714,17 @@ fn validate_references(root: JsonRef<'_>, profile: ValidationProfile) -> Result<
                             "attribute {semantic} references missing accessors[{index}]"
                         )]));
                     }
-                    if semantic == "POSITION" {
-                        validate_position_accessor(
-                            root,
-                            usize::try_from(index).expect("accessor index was range checked"),
+                    let index = usize::try_from(index).expect("accessor index was range checked");
+                    if profile == ValidationProfile::Gltf20 {
+                        validate_attribute_accessor(
+                            accessors.get(index).unwrap(),
+                            semantic,
+                            false,
+                            mesh_quantization,
                         )?;
+                    }
+                    if semantic == "POSITION" {
+                        validate_position_accessor(root, index)?;
                     }
                 }
             }
@@ -822,14 +833,22 @@ fn validate_references(root: JsonRef<'_>, profile: ValidationProfile) -> Result<
             {
                 if let Some(attributes) = target.as_object() {
                     for (semantic, index) in attributes {
-                        if index.as_u64().is_none_or(|index| {
-                            usize::try_from(index)
-                                .ok()
-                                .is_none_or(|index| index >= len("accessors"))
-                        }) {
-                            return Err(Error::Validation(vec![format!(
+                        let accessor = index
+                            .as_u64()
+                            .and_then(|index| usize::try_from(index).ok())
+                            .and_then(|index| accessors.get(index))
+                            .ok_or_else(|| {
+                                Error::Validation(vec![format!(
                                 "morph target attribute {semantic} references a missing accessor"
-                            )]));
+                            )])
+                            })?;
+                        if profile == ValidationProfile::Gltf20 {
+                            validate_attribute_accessor(
+                                accessor,
+                                semantic,
+                                true,
+                                mesh_quantization,
+                            )?;
                         }
                     }
                 }
@@ -906,6 +925,46 @@ fn validate_references(root: JsonRef<'_>, profile: ValidationProfile) -> Result<
     if profile == ValidationProfile::Gltf21Draft {
         validate_shapes(root)?;
         validate_uids(root)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "strict-validation")]
+fn validate_attribute_accessor(
+    accessor: JsonRef<'_>,
+    name: &str,
+    morph: bool,
+    quantized: bool,
+) -> Result<()> {
+    let Some(semantic) = crate::attribute_rules::Semantic::from_name(name) else {
+        return Ok(());
+    };
+    let kind = accessor.get("type").and_then(JsonRef::as_str);
+    let components = match kind {
+        Some("VEC2") => 2,
+        Some("VEC3") => 3,
+        Some("VEC4") => 4,
+        _ => 0,
+    };
+    let ty = accessor
+        .get("componentType")
+        .and_then(JsonRef::as_u64)
+        .and_then(ComponentType::from_gltf);
+    let normalized = accessor
+        .get("normalized")
+        .and_then(JsonRef::as_bool)
+        .unwrap_or(false);
+    if !semantic.components(morph).contains(&components)
+        || !ty.is_some_and(|ty| semantic.allows(ty, normalized, morph, quantized))
+    {
+        let usage = if morph {
+            "morph target"
+        } else {
+            "vertex attribute"
+        };
+        return Err(Error::Validation(vec![format!(
+            "{usage} {name} has invalid accessor format {kind:?}/{ty:?}/normalized={normalized}"
+        )]));
     }
     Ok(())
 }

@@ -8,7 +8,7 @@ use draco_core::draco_types::DataType;
 use draco_core::mesh::Mesh;
 use thiserror::Error as ThisError;
 
-use crate::{ComponentType, ValidationProfile};
+use crate::{attribute_rules::Semantic, ComponentType, ValidationProfile};
 #[cfg(feature = "draco-decode")]
 use crate::{Error, Result};
 
@@ -390,7 +390,7 @@ impl PackedGeometry {
             indices,
             attributes,
         };
-        geometry.validate(ValidationProfile::Gltf21Draft)?;
+        geometry.validate_structure()?;
         Ok(geometry)
     }
 
@@ -414,14 +414,29 @@ impl PackedGeometry {
         self.indices.as_ref()
     }
 
-    /// Validates the geometry against a glTF profile.
+    /// Validates the geometry against a glTF profile's core attribute rules.
     pub fn validate(&self, profile: ValidationProfile) -> std::result::Result<(), GeometryError> {
+        self.validate_with_quantization(profile, false)
+    }
+
+    pub(crate) fn validate_with_quantization(
+        &self,
+        profile: ValidationProfile,
+        quantized: bool,
+    ) -> std::result::Result<(), GeometryError> {
+        self.validate_structure()?;
+        for attribute in &self.attributes {
+            validate_component_profile(attribute.component_type, profile)?;
+            validate_attribute_profile(attribute, profile, quantized)?;
+        }
+        Ok(())
+    }
+
+    fn validate_structure(&self) -> std::result::Result<(), GeometryError> {
         let mut semantics = BTreeSet::new();
         let mut vertex_count = None;
         for attribute in &self.attributes {
-            validate_component_profile(attribute.component_type, profile)?;
             validate_attribute_components(attribute)?;
-            validate_attribute_profile(attribute, profile)?;
             if !semantics.insert(attribute.semantic.as_str()) {
                 return Err(GeometryError::DuplicateSemantic(attribute.semantic.clone()));
             }
@@ -445,7 +460,6 @@ impl PackedGeometry {
             return Err(GeometryError::EmptyGeometry);
         }
         if let Some(indices) = &self.indices {
-            validate_component_profile(indices.component_type, profile)?;
             for index in index_values(indices) {
                 let index = index?;
                 if index >= vertex_count as u64 {
@@ -477,13 +491,23 @@ impl PackedGeometry {
     /// Draco primitive for exactly this reason; trusting it here would tag
     /// an ordinary triangle list as a strip, which is wrong for any caller
     /// that takes `mode` at its word instead of also ignoring it.
-    #[cfg(feature = "draco-decode")]
+    #[cfg(all(feature = "draco-decode", any(feature = "draco-encode", test)))]
     pub(crate) fn from_draco_mesh(
         mesh: &Mesh,
         attributes: &[(String, u32)],
         normalized: &dyn Fn(&str) -> Option<bool>,
     ) -> Result<Self> {
-        let attributes = attributes
+        Self::from_draco_mesh_with_attributes(mesh, attributes, normalized, Vec::new())
+    }
+
+    #[cfg(feature = "draco-decode")]
+    pub(crate) fn from_draco_mesh_with_attributes(
+        mesh: &Mesh,
+        attributes: &[(String, u32)],
+        normalized: &dyn Fn(&str) -> Option<bool>,
+        ordinary: Vec<PackedAttribute>,
+    ) -> Result<Self> {
+        let mut attributes = attributes
             .iter()
             .map(|(semantic, unique_id)| {
                 let attribute = mesh.attribute_by_unique_id(*unique_id).ok_or_else(|| {
@@ -505,6 +529,7 @@ impl PackedGeometry {
                 .map_err(Error::Geometry)
             })
             .collect::<Result<Vec<_>>>()?;
+        attributes.extend(ordinary);
         let count = mesh
             .num_faces()
             .checked_mul(3)
@@ -536,33 +561,19 @@ fn validate_element_count(
 fn validate_attribute_components(
     attribute: &PackedAttribute,
 ) -> std::result::Result<(), GeometryError> {
-    let expected = if attribute.semantic == "POSITION" || attribute.semantic == "NORMAL" {
-        Some("3")
-    } else if attribute.semantic == "TANGENT"
-        || attribute.semantic.starts_with("JOINTS_")
-        || attribute.semantic.starts_with("WEIGHTS_")
-    {
-        Some("4")
-    } else if attribute.semantic.starts_with("TEXCOORD_") {
-        Some("2")
-    } else if attribute.semantic.starts_with("COLOR_") && !matches!(attribute.components, 3 | 4) {
-        Some("3 or 4")
-    } else {
-        None
-    };
-    if let Some(expected) = expected {
-        let valid = match expected {
-            "2" => attribute.components == 2,
-            "3" => attribute.components == 3,
-            "4" => attribute.components == 4,
-            "3 or 4" => matches!(attribute.components, 3 | 4),
-            _ => unreachable!("known component requirement"),
-        };
-        if !valid {
+    if let Some(semantic) = Semantic::from_name(&attribute.semantic) {
+        let components = semantic.components(false);
+        if !components.contains(&attribute.components) {
             return Err(GeometryError::AttributeComponents {
                 semantic: attribute.semantic.clone(),
                 actual: attribute.components,
-                expected,
+                expected: match components {
+                    [2] => "2",
+                    [3] => "3",
+                    [4] => "4",
+                    [3, 4] => "3 or 4",
+                    _ => unreachable!("known component requirement"),
+                },
             });
         }
     }
@@ -572,33 +583,19 @@ fn validate_attribute_components(
 fn validate_attribute_profile(
     attribute: &PackedAttribute,
     profile: ValidationProfile,
+    quantized: bool,
 ) -> std::result::Result<(), GeometryError> {
     if profile != ValidationProfile::Gltf20 {
         return Ok(());
     }
-    let float = attribute.component_type == ComponentType::F32 && !attribute.normalized;
-    let normalized_unsigned = matches!(
-        attribute.component_type,
-        ComponentType::U8 | ComponentType::U16
-    ) && attribute.normalized;
-    let valid = if matches!(
-        attribute.semantic.as_str(),
-        "POSITION" | "NORMAL" | "TANGENT"
-    ) {
-        float
-    } else if attribute.semantic.starts_with("TEXCOORD_")
-        || attribute.semantic.starts_with("COLOR_")
-        || attribute.semantic.starts_with("WEIGHTS_")
-    {
-        float || normalized_unsigned
-    } else if attribute.semantic.starts_with("JOINTS_") {
-        matches!(
+    let valid = Semantic::from_name(&attribute.semantic).is_none_or(|semantic| {
+        semantic.allows(
             attribute.component_type,
-            ComponentType::U8 | ComponentType::U16
-        ) && !attribute.normalized
-    } else {
-        true
-    };
+            attribute.normalized,
+            false,
+            quantized,
+        )
+    });
     if !valid {
         return Err(GeometryError::AttributeComponentType {
             semantic: attribute.semantic.clone(),

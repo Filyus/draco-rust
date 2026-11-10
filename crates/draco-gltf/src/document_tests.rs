@@ -845,6 +845,86 @@ mod compression_tests {
     }
 
     #[test]
+    fn draco_reads_quantized_normals_in_and_outside_the_stream() {
+        use crate::container::{build_glb_from_json, GltfContainerFormat};
+        use draco_core::{
+            DataType, EncoderBuffer, EncoderOptions, GeometryAttributeType, Mesh, MeshEncoder,
+            PointAttribute,
+        };
+
+        let normals = [0, 0, 127].repeat(3);
+        for compressed in [false, true] {
+            let mut mesh = Mesh::new();
+            mesh.set_num_points(3);
+            mesh.set_num_faces(1);
+            mesh.set_face_from_indices(0, [0, 1, 2]);
+            let mut position = PointAttribute::new();
+            position.init(
+                GeometryAttributeType::Position,
+                3,
+                DataType::Float32,
+                false,
+                3,
+            );
+            let position_id = mesh.add_attribute(position);
+            let position_uid = mesh.attribute(position_id).unique_id();
+            let normal_mapping = if compressed {
+                let mut normal = PointAttribute::new();
+                normal.init(GeometryAttributeType::Normal, 3, DataType::Int8, false, 3);
+                assert!(normal.buffer_mut().try_write(0, &normals));
+                let id = mesh.add_attribute(normal);
+                format!(",\"NORMAL\":{}", mesh.attribute(id).unique_id())
+            } else {
+                String::new()
+            };
+            let mut options = EncoderOptions::new();
+            options.set_global_int("encoding_method", 0);
+            let mut encoder = MeshEncoder::new();
+            encoder.set_mesh(mesh);
+            let mut payload = EncoderBuffer::new();
+            encoder.encode(&options, &mut payload).ok().unwrap();
+            let mut bin = payload.data().to_vec();
+            let payload_len = bin.len();
+            bin.resize(payload_len.next_multiple_of(4), 0);
+            let offset = bin.len();
+            bin.extend_from_slice(&[0, 0, 127, 0].repeat(3));
+            let view = if compressed { "" } else { r#""bufferView":1,"# };
+            let json = format!(
+                r#"{{
+                "asset":{{"version":"2.0"}},
+                "extensionsUsed":["KHR_draco_mesh_compression","KHR_mesh_quantization"],
+                "extensionsRequired":["KHR_draco_mesh_compression","KHR_mesh_quantization"],
+                "buffers":[{{"byteLength":{}}}],
+                "bufferViews":[{{"buffer":0,"byteLength":{payload_len}}},
+                    {{"buffer":0,"byteOffset":{offset},"byteLength":12,"byteStride":4}}],
+                "accessors":[
+                    {{"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[0,0,0]}},
+                    {{{view}"componentType":5120,"normalized":true,"count":3,"type":"VEC3"}}
+                ],
+                "meshes":[{{"primitives":[{{"attributes":{{"POSITION":0,"NORMAL":1}},
+                    "extensions":{{"KHR_draco_mesh_compression":{{"bufferView":0,"attributes":{{"POSITION":{position_uid}{normal_mapping}}}}}}}
+                }}]}}]}} "#,
+                bin.len()
+            );
+            let glb =
+                build_glb_from_json(json.as_bytes(), &bin, GltfContainerFormat::GlbV2).unwrap();
+            let mut import = parse(&glb, ValidationProfile::Gltf20).unwrap();
+            let location = crate::PrimitiveIndex::new(crate::MeshIndex(0), 0);
+            let geometry = import.read_primitive(location).unwrap();
+            let normal = geometry
+                .attributes()
+                .iter()
+                .find(|attr| attr.semantic() == "NORMAL")
+                .unwrap();
+            assert_eq!(normal.component_type(), crate::ComponentType::I8);
+            assert!(normal.normalized());
+            assert_eq!(normal.bytes(), normals);
+            import.decompress_in_place().unwrap();
+            assert_eq!(import.read_primitive(location).unwrap(), geometry);
+        }
+    }
+
+    #[test]
     fn compression_appends_a_decodable_draco_payload() {
         let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
         let mut import = parse(input, ValidationProfile::Gltf20).unwrap();
@@ -2513,6 +2593,96 @@ fn write_primitive_preserves_non_geometry_fields_and_is_atomic() {
     assert_eq!(field(&["material"]), Some(0));
     assert_eq!(field(&["extras", "tag"]), Some(7));
     assert_eq!(field(&["extensions", "VENDOR_keep", "value"]), Some(9));
+}
+
+#[cfg(feature = "write")]
+#[test]
+fn quantized_normal_roundtrips_through_glb() {
+    for (ty, stride, normals) in [
+        (crate::ComponentType::I8, 4, vec![0, 0, 127].repeat(3)),
+        (
+            crate::ComponentType::I16,
+            8,
+            [0, 0, 0, 0, 255, 127].repeat(3),
+        ),
+    ] {
+        let mut attributes = packed_triangle(crate::ComponentType::F32)
+            .attributes()
+            .to_vec();
+        attributes.push(crate::PackedAttribute::new("NORMAL", 3, 3, ty, true, normals).unwrap());
+        let geometry =
+            crate::PackedGeometry::new(crate::PrimitiveMode::Triangles, attributes, None).unwrap();
+        assert!(geometry.validate(ValidationProfile::Gltf20).is_err());
+        let scene = crate::Import::from_geometry(
+            &geometry,
+            ValidationProfile::Gltf20,
+            crate::GeometryWriteOptions::default(),
+        )
+        .unwrap();
+        let bytes = scene.to_bytes(crate::OutputFormat::GlbV2).unwrap();
+        let scene = parse(&bytes, ValidationProfile::Gltf20).unwrap();
+        let location = crate::PrimitiveIndex::new(crate::MeshIndex(0), 0);
+        assert_eq!(
+            scene.document().as_value()["bufferViews"][1]["byteStride"].as_u64(),
+            Some(stride)
+        );
+        assert_eq!(scene.read_primitive(location).unwrap(), geometry);
+        assert_eq!(scene.read_primitives(&[location]).unwrap(), [geometry]);
+    }
+}
+
+#[cfg(feature = "read")]
+#[test]
+fn quantized_normal_requires_valid_type_and_extension_declaration() {
+    use crate::container::{build_glb_from_json, GltfContainerFormat};
+
+    let location = crate::PrimitiveIndex::new(crate::MeshIndex(0), 0);
+    let mut bin = vec![0; 36];
+    bin.extend_from_slice(&[0, 0, 127, 0].repeat(3));
+    for (used, required, ty, normalized, valid) in [
+        (true, true, 5120, true, true),
+        (false, false, 5120, true, false),
+        (true, false, 5120, true, false),
+        (false, true, 5120, true, false),
+        (true, true, 5120, false, false),
+        (true, true, 5121, true, false),
+    ] {
+        let declared = |enabled| {
+            if enabled {
+                r#"["KHR_mesh_quantization"]"#
+            } else {
+                "[]"
+            }
+        };
+        let (used, required) = (declared(used), declared(required));
+        let json = format!(
+            r#"{{
+            "asset":{{"version":"2.0"}},
+            "extensionsUsed":{used},"extensionsRequired":{required},
+            "buffers":[{{"byteLength":48}}],
+            "bufferViews":[{{"buffer":0,"byteLength":36}},{{"buffer":0,"byteOffset":36,"byteLength":12,"byteStride":4}}],
+            "accessors":[
+                {{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[0,0,0]}},
+                {{"bufferView":1,"componentType":{ty},"normalized":{normalized},"count":3,"type":"VEC3"}}
+            ],
+            "meshes":[{{"primitives":[{{"attributes":{{"POSITION":0,"NORMAL":1}}}}]}}]
+        }}"#
+        );
+        let bytes = build_glb_from_json(json.as_bytes(), &bin, GltfContainerFormat::GlbV2).unwrap();
+        let result = parse(&bytes, ValidationProfile::Gltf20)
+            .and_then(|scene| scene.read_primitive(location));
+        assert_eq!(result.is_ok(), valid, "{json}: {result:?}");
+        if let Ok(geometry) = result {
+            let normal = geometry
+                .attributes()
+                .iter()
+                .find(|attr| attr.semantic() == "NORMAL")
+                .unwrap();
+            assert_eq!(normal.component_type(), crate::ComponentType::I8);
+            assert!(normal.normalized());
+            assert_eq!(normal.bytes(), [0, 0, 127].repeat(3));
+        }
+    }
 }
 
 #[cfg(feature = "write")]

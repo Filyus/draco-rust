@@ -215,6 +215,11 @@ impl Import {
         self.profile
     }
 
+    #[cfg(feature = "geometry")]
+    pub(crate) fn mesh_quantization(&self) -> bool {
+        crate::attribute_rules::mesh_quantization(self.document().as_json())
+    }
+
     #[cfg(feature = "write")]
     pub(crate) fn validate_after_write(&self) -> Result<()> {
         self.document().validate(self.profile)?;
@@ -361,7 +366,8 @@ impl Import {
         let mut contract = crate::DracoPrimitiveContract::new()
             .with_limits(self.draco_decode.limits)
             .with_threads(self.draco_decode.threads)
-            .with_profile(self.profile);
+            .with_profile(self.profile)
+            .with_mesh_quantization(self.mesh_quantization());
         for (semantic, index) in primitive.attribute_indices() {
             let accessor = self.document().accessor(index);
             let count = accessor.and_then(crate::Accessor::count).ok_or_else(|| {
@@ -484,26 +490,16 @@ impl Import {
                 .ok_or_else(|| Error::Extension("missing Draco extension".into()))?;
                 let (decoded, contract) =
                     self.decode_draco_mesh_with(reference, draco, validated)?;
-                let compressed = extension.pack(&decoded, &contract)?;
                 // The spec: attributes the extension does not list "must be
                 // processed as usual". Their count must match the stream.
                 let source = self.accessor_source();
-                let mut attributes = compressed.attributes().to_vec();
+                let mut attributes = Vec::new();
                 for (semantic, index) in reference.attribute_indices() {
                     if extension.unique_id(semantic).is_none() {
                         attributes.push(read_packed_attribute(&source, semantic, index)?);
                     }
                 }
-                if attributes.len() == compressed.attributes().len() {
-                    return Ok(compressed);
-                }
-                let geometry = crate::PackedGeometry::new(
-                    compressed.mode(),
-                    attributes,
-                    compressed.indices().cloned(),
-                )?;
-                geometry.validate(self.profile)?;
-                return Ok(geometry);
+                return extension.pack(&decoded, &contract, attributes);
             }
             #[cfg(not(feature = "draco-decode"))]
             return Err(Error::Extension(
@@ -533,7 +529,7 @@ impl Import {
             })
             .transpose()?;
         let geometry = crate::PackedGeometry::new(mode, attributes, indices)?;
-        geometry.validate(self.profile)?;
+        geometry.validate_with_quantization(self.profile, self.mesh_quantization())?;
         Ok(geometry)
     }
 
