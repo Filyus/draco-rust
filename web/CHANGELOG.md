@@ -8,6 +8,24 @@ has changed in them; each package version has a section of its own.
 
 ## Unreleased
 
+## [0.4.0] - 2026-11-12
+
+- **Breaking: glTF validation now follows the pinned 2.1 draft more closely.**
+  Draft validation rejects accessor component types and indexed attribute
+  semantics that are not in the snapshot, and checks asset version fields,
+  mesh structure, and external asset MIME types. The lossless document model
+  still preserves unknown component codes in the original JSON.
+- `@draco-rust/gltf` now reads and writes quantized mesh attributes when
+  `KHR_mesh_quantization` is declared. This includes normalized byte and short
+  normals in ordinary and Draco-compressed primitives.
+- Raw glTF geometry writes align each attribute element and keep integer
+  `POSITION` bounds. `Import::from_geometry` declares
+  `KHR_mesh_quantization` when its geometry needs it.
+- GLB v3 buffer references can select any plain chunk type. Imports accept a
+  buffer that uses a prefix of its chunk, skip unused encoded chunks, and
+  enforce the chunk encoding when reading payloads. GLB v3 writers place
+  alignment padding outside chunk lengths.
+
 ## [0.3.1] - 2026-11-01
 
 - **PLY position warnings identify each affected component.** When the
