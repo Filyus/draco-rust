@@ -112,9 +112,142 @@ fn document_serializes_after_mutation() {
 }
 
 #[test]
-fn draft_profile_accepts_files_shapes_and_nonsequential_semantics() {
-    let document = Document::from_json_bytes(br#"{"asset":{"version":"2.1"},"files":[{"uri":"child.gltf","mimeType":"model/gltf+json"}],"shapes":[{"type":"box","box":{"size":[2,3,4]}}],"accessors":[{"componentType":5126,"count":0,"type":"VEC3","min":[0,0,0],"max":[0,0,0]},{"componentType":5126,"count":0,"type":"VEC2"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0,"TEXCOORD_4":1}}]}]}"#).unwrap();
+fn draft_profile_accepts_files_shapes_and_core_attributes() {
+    let document = Document::from_json_bytes(br#"{"asset":{"version":"2.1"},"files":[{"uri":"child.gltf","mimeType":"model/gltf+json"}],"shapes":[{"type":"box","box":{"size":[2,3,4]}}],"accessors":[{"componentType":5126,"count":0,"type":"VEC3","min":[0,0,0],"max":[0,0,0]},{"componentType":5126,"count":0,"type":"VEC2"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0,"TEXCOORD_0":1}}]}]}"#).unwrap();
     document.validate(ValidationProfile::Gltf21Draft).unwrap();
+}
+
+#[test]
+fn profiles_validate_asset_versions_and_minimum_versions() {
+    for (version, minimum, valid) in [
+        ("2.1", None, true),
+        ("2.1", Some("2.1"), true),
+        ("2.10", Some("2.1"), true),
+        ("2.1", Some("2.2"), false),
+        ("2.0", Some("2.1"), false),
+        ("2.1", Some("2.01"), false),
+        ("2.1", Some("2.1.0"), false),
+        ("2.01", None, false),
+        ("2.1.0", None, false),
+        ("2.1suffix", None, false),
+        ("3.0", None, false),
+    ] {
+        let minimum = minimum.map_or(String::new(), |value| format!(r#","minVersion":"{value}""#));
+        let json = format!(r#"{{"asset":{{"version":"{version}"{minimum}}}}}"#);
+        let document = Document::from_json_bytes(json.as_bytes()).unwrap();
+        assert_eq!(
+            document.validate(ValidationProfile::Gltf21Draft).is_ok(),
+            valid,
+            "{json}"
+        );
+    }
+    let document =
+        Document::from_json_bytes(br#"{"asset":{"version":"2.0","minVersion":"2.1"}}"#).unwrap();
+    assert!(document.validate(ValidationProfile::Gltf20).is_err());
+}
+
+#[cfg(feature = "strict-validation")]
+#[test]
+fn snapshot_validates_indexed_semantics_and_mesh_shapes() {
+    let source = r#"{"asset":{"version":"2.1"},"accessors":[{"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[0,0,0]},{"componentType":5126,"count":3,"type":"VEC2"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0,"TEXCOORD_0":1,"TEXCOORD_1":1}}]}],"shapes":[{"type":"mesh","mesh":{"mesh":0}},{"type":"convexMesh","convexMesh":{"mesh":0}}]}"#;
+    let document = Document::from_json_bytes(source.as_bytes()).unwrap();
+    document.validate(ValidationProfile::Gltf21Draft).unwrap();
+    for json in [
+        source.replace(r#","TEXCOORD_0":1"#, ""),
+        source.replace("TEXCOORD_1", "TEXCOORD_01"),
+        source.replace("TEXCOORD_1", "TEXCOORD_1000000000"),
+        source.replace(r#""mesh":{"mesh":0}"#, r#""mesh":{"mesh":1}"#),
+        source.replace(r#","convexMesh":{"mesh":0}"#, ""),
+        source.replace(
+            r#""primitives":[{"attributes""#,
+            r#""primitives":[{},{"attributes""#,
+        ),
+        source.replace(
+            r#""attributes":{"POSITION":0"#,
+            r#""mode":1,"attributes":{"POSITION":0"#,
+        ),
+        source.replace(r#""attributes":{"POSITION":0,"#, r#""attributes":{"#),
+        source.replace(
+            r#""convexMesh":{"mesh":0}"#,
+            r#""convexMesh":{"mesh":0},"sphere":{}"#,
+        ),
+    ] {
+        let document = Document::from_json_bytes(json.as_bytes()).unwrap();
+        assert!(
+            document.validate(ValidationProfile::Gltf21Draft).is_err(),
+            "{json}"
+        );
+    }
+    let invalid = Document::from_json_bytes(br#"{"asset":{"version":"2.1"},"files":[{"uri":"a.png","mimeType":"image/png"}],"externalAssets":[{"file":0}]}"#).unwrap();
+    assert!(invalid.validate(ValidationProfile::Gltf21Draft).is_err());
+}
+
+#[cfg(feature = "strict-validation")]
+#[test]
+fn attribute_declarations_use_distinct_vertex_and_morph_tables() {
+    for profile in [ValidationProfile::Gltf20, ValidationProfile::Gltf21Draft] {
+        for (semantic, kind, component, normalized, morph, quantized, valid) in [
+            ("NORMAL", "VEC3", 5120, true, false, true, true),
+            ("NORMAL", "VEC3", 5122, true, false, true, true),
+            ("NORMAL", "VEC3", 5120, false, false, true, false),
+            ("NORMAL", "VEC3", 5121, true, false, true, false),
+            ("POSITION", "VEC3", 5123, false, false, true, true),
+            ("TEXCOORD_0", "VEC2", 5122, false, false, true, true),
+            ("COLOR_0", "VEC4", 5120, true, false, true, false),
+            ("TANGENT", "VEC3", 5120, true, true, true, true),
+            ("TANGENT", "VEC4", 5120, true, true, true, false),
+            ("POSITION", "VEC3", 5123, true, true, true, false),
+            ("POSITION", "VEC3", 5122, false, true, true, true),
+            ("TEXCOORD_0", "VEC2", 5120, false, true, true, true),
+            ("COLOR_0", "VEC4", 5120, true, true, false, true),
+            ("NORMAL", "VEC3", 5120, true, false, false, false),
+        ] {
+            let version = if profile == ValidationProfile::Gltf20 {
+                "2.0"
+            } else {
+                "2.1"
+            };
+            let extension = if quantized {
+                r#","extensionsUsed":["KHR_mesh_quantization"],"extensionsRequired":["KHR_mesh_quantization"]"#
+            } else {
+                ""
+            };
+            let parent_kind = match semantic {
+                "TANGENT" | "COLOR_0" => "VEC4",
+                "TEXCOORD_0" => "VEC2",
+                _ => "VEC3",
+            };
+            let target = if morph {
+                format!(r#","targets":[{{"{semantic}":2}}]"#)
+            } else {
+                String::new()
+            };
+            let accessor = if morph { 1 } else { 2 };
+            let attributes = if semantic == "POSITION" {
+                format!(r#"{{"POSITION":{accessor}}}"#)
+            } else {
+                format!(r#"{{"POSITION":0,"{semantic}":{accessor}}}"#)
+            };
+            let bounds = if semantic == "POSITION" {
+                r#","min":[0,0,0],"max":[0,0,0]"#
+            } else {
+                ""
+            };
+            let json = format!(
+                r#"{{
+                "asset":{{"version":"{version}","minVersion":"{version}"}}{extension},
+                "accessors":[
+                    {{"componentType":5126,"count":1,"type":"VEC3","min":[0,0,0],"max":[0,0,0]}},
+                    {{"componentType":5126,"count":1,"type":"{parent_kind}"{bounds}}},
+                    {{"componentType":{component},"normalized":{normalized},"count":1,"type":"{kind}"{bounds}}}
+                ],
+                "meshes":[{{"primitives":[{{"attributes":{attributes}{target}}}]}}]
+            }}"#
+            );
+            let document = Document::from_json_bytes(json.as_bytes()).unwrap();
+            assert_eq!(document.validate(profile).is_ok(), valid, "{json}");
+        }
+    }
 }
 
 #[cfg(feature = "strict-validation")]
@@ -405,29 +538,22 @@ fn validation_rejects_malformed_file_aliases() {
 
 #[cfg(feature = "strict-validation")]
 #[test]
-fn validation_rejects_dangling_core_references_and_draft_types_in_20() {
+fn validation_rejects_dangling_core_references_and_proposed_accessor_types() {
     let dangling = Document::from_json_bytes(
         br#"{"asset":{"version":"2.0"},"meshes":[{"primitives":[{"attributes":{"POSITION":1}}]}]}"#,
     )
     .unwrap();
     assert!(dangling.validate(ValidationProfile::Gltf20).is_err());
 
-    let draft_component = Document::from_json_bytes(
-        br#"{"asset":{"version":"2.0"},"accessors":[{"componentType":5130,"count":0,"type":"SCALAR"}]}"#,
-    )
-    .unwrap();
-    assert!(draft_component.validate(ValidationProfile::Gltf20).is_err());
-    assert!(draft_component
-        .validate(ValidationProfile::Gltf21Draft)
-        .is_ok());
-
-    let draft_components = Document::from_json_bytes(
-        br#"{"asset":{"version":"2.1"},"accessors":[{"componentType":5124,"count":0,"type":"SCALAR"},{"componentType":5130,"count":0,"type":"SCALAR"},{"componentType":5131,"count":0,"type":"SCALAR"},{"componentType":5134,"count":0,"type":"SCALAR"},{"componentType":5135,"count":0,"type":"SCALAR"}]}"#,
-    )
-    .unwrap();
-    assert!(draft_components
-        .validate(ValidationProfile::Gltf21Draft)
-        .is_ok());
+    for code in [5124, 5130, 5131, 5134, 5135] {
+        let json = format!(
+            r#"{{"asset":{{"version":"2.0"}},"accessors":[{{"componentType":{code},"count":1,"type":"SCALAR"}}]}}"#
+        );
+        let document = Document::from_json_bytes(json.as_bytes()).unwrap();
+        assert_eq!(document.to_json_bytes().unwrap(), json.as_bytes());
+        assert!(document.validate(ValidationProfile::Gltf20).is_err());
+        assert!(document.validate(ValidationProfile::Gltf21Draft).is_err());
+    }
 }
 
 #[cfg(feature = "strict-validation")]
@@ -919,6 +1045,23 @@ mod compression_tests {
             assert_eq!(normal.component_type(), crate::ComponentType::I8);
             assert!(normal.normalized());
             assert_eq!(normal.bytes(), normals);
+            if compressed {
+                let json = crate::JsonValue::parse(
+                    format!(r#"{{"bufferView":0,"attributes":{{"POSITION":{position_uid}{normal_mapping}}}}}"#).as_bytes(),
+                ).unwrap();
+                let extension = crate::DracoPrimitiveExtension::from_json(&json).unwrap();
+                let contract = crate::DracoPrimitiveContract::new()
+                    .with_profile(ValidationProfile::Gltf20)
+                    .with_attribute("POSITION", 3, false)
+                    .with_attribute("NORMAL", 3, true);
+                assert!(extension.decode(payload.data(), &contract).is_err());
+                assert_eq!(
+                    extension
+                        .decode(payload.data(), &contract.with_mesh_quantization(true))
+                        .unwrap(),
+                    geometry,
+                );
+            }
             import.decompress_in_place().unwrap();
             assert_eq!(import.read_primitive(location).unwrap(), geometry);
         }
@@ -2191,13 +2334,13 @@ fn a_sparse_accessor_without_a_view_is_held_to_the_import_limits() {
 
 #[cfg(feature = "geometry")]
 #[test]
-fn import_preserves_draft_half_float_accessors() {
+fn import_rejects_proposed_half_float_positions() {
     let input = br#"{"asset":{"version":"2.1"},"buffers":[{"byteLength":12,"uri":"mesh.bin"}],"bufferViews":[{"buffer":0,"byteLength":12}],"accessors":[{"bufferView":0,"componentType":5131,"count":2,"type":"VEC3","min":[0,0,0],"max":[1,1,1]}],"meshes":[{"primitives":[{"mode":0,"attributes":{"POSITION":0}}]}]}"#;
     let resolver = |uri: &str| match uri {
         "mesh.bin" => Ok(vec![0, 60, 0, 64, 0, 66, 0, 68, 0, 69, 0, 70]),
         _ => Err(crate::GltfError::ExternalResourceDenied(uri.into())),
     };
-    let import = crate::parse_with_options(
+    let result = crate::parse_with_options(
         input,
         None,
         Some(&resolver),
@@ -2206,14 +2349,8 @@ fn import_preserves_draft_half_float_accessors() {
         ValidationProfile::Gltf21Draft,
         &crate::ExtensionRegistry::default(),
     )
-    .unwrap();
-
-    let primitive = import
-        .read_primitive(crate::PrimitiveIndex::new(crate::MeshIndex(0), 0))
-        .unwrap();
-    let half = &primitive.attributes()[0];
-    assert_eq!(half.component_type(), crate::ComponentType::F16);
-    assert_eq!(half.bytes(), [0, 60, 0, 64, 0, 66, 0, 68, 0, 69, 0, 70]);
+    .and_then(|import| import.read_primitive(crate::PrimitiveIndex::new(crate::MeshIndex(0), 0)));
+    assert!(result.is_err_and(|error| error.to_string().contains("F16")));
 }
 
 #[cfg(feature = "draco-encode")]
@@ -2599,7 +2736,7 @@ fn write_primitive_preserves_non_geometry_fields_and_is_atomic() {
 #[test]
 fn quantized_normal_roundtrips_through_glb() {
     for (ty, stride, normals) in [
-        (crate::ComponentType::I8, 4, vec![0, 0, 127].repeat(3)),
+        (crate::ComponentType::I8, 4, [0, 0, 127].repeat(3)),
         (
             crate::ComponentType::I16,
             8,
@@ -2612,22 +2749,27 @@ fn quantized_normal_roundtrips_through_glb() {
         attributes.push(crate::PackedAttribute::new("NORMAL", 3, 3, ty, true, normals).unwrap());
         let geometry =
             crate::PackedGeometry::new(crate::PrimitiveMode::Triangles, attributes, None).unwrap();
-        assert!(geometry.validate(ValidationProfile::Gltf20).is_err());
-        let scene = crate::Import::from_geometry(
-            &geometry,
-            ValidationProfile::Gltf20,
-            crate::GeometryWriteOptions::default(),
-        )
-        .unwrap();
-        let bytes = scene.to_bytes(crate::OutputFormat::GlbV2).unwrap();
-        let scene = parse(&bytes, ValidationProfile::Gltf20).unwrap();
-        let location = crate::PrimitiveIndex::new(crate::MeshIndex(0), 0);
-        assert_eq!(
-            scene.document().as_value()["bufferViews"][1]["byteStride"].as_u64(),
-            Some(stride)
-        );
-        assert_eq!(scene.read_primitive(location).unwrap(), geometry);
-        assert_eq!(scene.read_primitives(&[location]).unwrap(), [geometry]);
+        for profile in [ValidationProfile::Gltf20, ValidationProfile::Gltf21Draft] {
+            assert!(geometry.validate(profile).is_err());
+            let scene = crate::Import::from_geometry(
+                &geometry,
+                profile,
+                crate::GeometryWriteOptions::default(),
+            )
+            .unwrap();
+            let bytes = scene.to_bytes(crate::OutputFormat::GlbV2).unwrap();
+            let scene = parse(&bytes, profile).unwrap();
+            let location = crate::PrimitiveIndex::new(crate::MeshIndex(0), 0);
+            assert_eq!(
+                scene.document().as_value()["bufferViews"][1]["byteStride"].as_u64(),
+                Some(stride)
+            );
+            assert_eq!(scene.read_primitive(location).unwrap(), geometry);
+            assert_eq!(
+                scene.read_primitives(&[location]).unwrap().as_slice(),
+                std::slice::from_ref(&geometry)
+            );
+        }
     }
 }
 
@@ -2639,25 +2781,31 @@ fn quantized_normal_requires_valid_type_and_extension_declaration() {
     let location = crate::PrimitiveIndex::new(crate::MeshIndex(0), 0);
     let mut bin = vec![0; 36];
     bin.extend_from_slice(&[0, 0, 127, 0].repeat(3));
-    for (used, required, ty, normalized, valid) in [
-        (true, true, 5120, true, true),
-        (false, false, 5120, true, false),
-        (true, false, 5120, true, false),
-        (false, true, 5120, true, false),
-        (true, true, 5120, false, false),
-        (true, true, 5121, true, false),
-    ] {
-        let declared = |enabled| {
-            if enabled {
-                r#"["KHR_mesh_quantization"]"#
-            } else {
-                "[]"
-            }
+    for profile in [ValidationProfile::Gltf20, ValidationProfile::Gltf21Draft] {
+        let version = if profile == ValidationProfile::Gltf20 {
+            "2.0"
+        } else {
+            "2.1"
         };
-        let (used, required) = (declared(used), declared(required));
-        let json = format!(
-            r#"{{
-            "asset":{{"version":"2.0"}},
+        for (used, required, ty, normalized, valid) in [
+            (true, true, 5120, true, true),
+            (false, false, 5120, true, false),
+            (true, false, 5120, true, false),
+            (false, true, 5120, true, false),
+            (true, true, 5120, false, false),
+            (true, true, 5121, true, false),
+        ] {
+            let declared = |enabled| {
+                if enabled {
+                    r#"["KHR_mesh_quantization"]"#
+                } else {
+                    "[]"
+                }
+            };
+            let (used, required) = (declared(used), declared(required));
+            let json = format!(
+                r#"{{
+            "asset":{{"version":"{version}","minVersion":"{version}"}},
             "extensionsUsed":{used},"extensionsRequired":{required},
             "buffers":[{{"byteLength":48}}],
             "bufferViews":[{{"buffer":0,"byteLength":36}},{{"buffer":0,"byteOffset":36,"byteLength":12,"byteStride":4}}],
@@ -2667,42 +2815,122 @@ fn quantized_normal_requires_valid_type_and_extension_declaration() {
             ],
             "meshes":[{{"primitives":[{{"attributes":{{"POSITION":0,"NORMAL":1}}}}]}}]
         }}"#
-        );
-        let bytes = build_glb_from_json(json.as_bytes(), &bin, GltfContainerFormat::GlbV2).unwrap();
-        let result = parse(&bytes, ValidationProfile::Gltf20)
-            .and_then(|scene| scene.read_primitive(location));
-        assert_eq!(result.is_ok(), valid, "{json}: {result:?}");
-        if let Ok(geometry) = result {
-            let normal = geometry
-                .attributes()
-                .iter()
-                .find(|attr| attr.semantic() == "NORMAL")
-                .unwrap();
-            assert_eq!(normal.component_type(), crate::ComponentType::I8);
-            assert!(normal.normalized());
-            assert_eq!(normal.bytes(), [0, 0, 127].repeat(3));
+            );
+            let bytes =
+                build_glb_from_json(json.as_bytes(), &bin, GltfContainerFormat::GlbV2).unwrap();
+            let result = parse(&bytes, profile).and_then(|scene| scene.read_primitive(location));
+            assert_eq!(result.is_ok(), valid, "{json}: {result:?}");
+            if let Ok(geometry) = result {
+                let normal = geometry
+                    .attributes()
+                    .iter()
+                    .find(|attr| attr.semantic() == "NORMAL")
+                    .unwrap();
+                assert_eq!(normal.component_type(), crate::ComponentType::I8);
+                assert!(normal.normalized());
+                assert_eq!(normal.bytes(), [0, 0, 127].repeat(3));
+            }
         }
     }
 }
 
 #[cfg(feature = "write")]
 #[test]
-fn raw_writer_preserves_draft_64_bit_components() {
+fn quantized_geometry_write_requires_the_destination_extension_and_is_atomic() {
+    let core = packed_triangle(crate::ComponentType::F32);
+    let geometry = crate::PackedGeometry::new(
+        crate::PrimitiveMode::Triangles,
+        vec![crate::PackedAttribute::new(
+            "POSITION",
+            3,
+            3,
+            crate::ComponentType::I16,
+            false,
+            [
+                (-2i16).to_le_bytes(),
+                0i16.to_le_bytes(),
+                4i16.to_le_bytes(),
+            ]
+            .concat()
+            .repeat(3),
+        )
+        .unwrap()],
+        None,
+    )
+    .unwrap();
+    let options = crate::GeometryWriteOptions::default();
+    let location = crate::PrimitiveIndex::new(crate::MeshIndex(0), 0);
+    let mut destination =
+        crate::Import::from_geometry(&core, ValidationProfile::Gltf20, options).unwrap();
+    let before = destination.to_bytes(crate::OutputFormat::GlbV2).unwrap();
+    assert!(destination
+        .write_primitive(location, &geometry, options)
+        .is_err());
+    assert!(destination
+        .push_primitive(crate::MeshIndex(0), &geometry, options)
+        .is_err());
+    assert_eq!(
+        destination.to_bytes(crate::OutputFormat::GlbV2).unwrap(),
+        before
+    );
+
+    let mut quantized =
+        crate::Import::from_geometry(&geometry, ValidationProfile::Gltf20, options).unwrap();
+    quantized
+        .write_primitive(location, &geometry, options)
+        .unwrap();
+    let appended = quantized
+        .push_primitive(crate::MeshIndex(0), &geometry, options)
+        .unwrap();
+    assert_eq!(quantized.read_primitive(appended).unwrap(), geometry);
+    let position = quantized
+        .document()
+        .accessor(crate::AccessorIndex(1))
+        .unwrap();
+    assert_eq!(
+        position
+            .value()
+            .get("min")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .get(0)
+            .unwrap()
+            .as_f64(),
+        Some(-2.0)
+    );
+    assert_eq!(quantized.read_primitive(location).unwrap(), geometry);
+    #[cfg(feature = "draco-encode")]
+    {
+        let before = quantized.to_bytes(crate::OutputFormat::GlbV2).unwrap();
+        assert!(quantized
+            .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default(),)
+            .is_err());
+        assert_eq!(
+            quantized.to_bytes(crate::OutputFormat::GlbV2).unwrap(),
+            before
+        );
+    }
+}
+
+#[cfg(feature = "write")]
+#[test]
+fn raw_writer_rejects_proposed_64_bit_components() {
     let geometry = packed_triangle(crate::ComponentType::F64);
-    let import = crate::Import::from_geometry(
+    let result = crate::Import::from_geometry(
         &geometry,
         ValidationProfile::Gltf21Draft,
         crate::GeometryWriteOptions::default(),
-    )
-    .unwrap();
-    let read = import
-        .read_primitive(crate::PrimitiveIndex::new(crate::MeshIndex(0), 0))
-        .unwrap();
-    assert_eq!(read, geometry);
-    assert_eq!(
-        import.document().as_value()["accessors"][0]["componentType"].as_u64(),
-        Some(5130)
     );
+    assert!(matches!(
+        result,
+        Err(crate::Error::Geometry(
+            crate::GeometryError::ComponentTypeProfile {
+                component_type: crate::ComponentType::F64,
+                profile: ValidationProfile::Gltf21Draft,
+            }
+        ))
+    ));
 }
 
 #[cfg(feature = "draco-encode")]

@@ -1,6 +1,42 @@
-use crate::{json::JsonRef, ComponentType};
+use std::collections::BTreeMap;
+
+use crate::{json::JsonRef, ComponentType, ValidationProfile};
 
 pub(crate) const MESH_QUANTIZATION: &str = "KHR_mesh_quantization";
+
+pub(crate) fn core_component_type(ty: ComponentType) -> bool {
+    use ComponentType::{F32, I16, I8, U16, U32, U8};
+    matches!(ty, I8 | U8 | I16 | U16 | U32 | F32)
+}
+
+pub(crate) fn invalid_attribute_semantic<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+    profile: ValidationProfile,
+) -> Option<&'a str> {
+    let mut indices = BTreeMap::new();
+    for name in names {
+        let Some((prefix, suffix)) = name.split_once('_') else {
+            continue;
+        };
+        if !matches!(prefix, "TEXCOORD" | "COLOR" | "JOINTS" | "WEIGHTS") {
+            continue;
+        }
+        if suffix.is_empty()
+            || suffix.len() > 1 && suffix.starts_with('0')
+            || !suffix.bytes().all(|byte| byte.is_ascii_digit())
+            || profile == ValidationProfile::Gltf21Draft && suffix.len() > 9
+        {
+            return Some(name);
+        }
+        let Ok(index) = suffix.parse::<usize>() else {
+            return Some(name);
+        };
+        indices.insert((prefix, index), name);
+    }
+    indices.iter().find_map(|(&(prefix, index), &name)| {
+        (index != 0 && !indices.contains_key(&(prefix, index - 1))).then_some(name)
+    })
+}
 
 pub(crate) fn mesh_quantization(root: JsonRef<'_>) -> bool {
     ["extensionsUsed", "extensionsRequired"]

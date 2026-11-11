@@ -111,6 +111,9 @@ pub enum GeometryError {
         /// Active validation profile.
         profile: ValidationProfile,
     },
+    /// A core indexed attribute has a malformed index or a missing predecessor.
+    #[error("invalid indexed attribute semantic {0:?}")]
+    InvalidAttributeSemantic(String),
     /// A floating-point POSITION value cannot be represented in JSON bounds.
     #[cfg(feature = "write")]
     #[error("POSITION contains a non-finite floating-point value")]
@@ -379,7 +382,10 @@ pub struct PackedGeometry {
 }
 
 impl PackedGeometry {
-    /// Creates and validates one materialized primitive.
+    /// Creates a primitive and checks its structure and attribute dimensions.
+    ///
+    /// Use `validate` for core profile rules. Import operations also account
+    /// for extensions declared by their document.
     pub fn new(
         mode: PrimitiveMode,
         attributes: Vec<PackedAttribute>,
@@ -425,6 +431,12 @@ impl PackedGeometry {
         quantized: bool,
     ) -> std::result::Result<(), GeometryError> {
         self.validate_structure()?;
+        if let Some(name) = crate::attribute_rules::invalid_attribute_semantic(
+            self.attributes.iter().map(PackedAttribute::semantic),
+            profile,
+        ) {
+            return Err(GeometryError::InvalidAttributeSemantic(name.into()));
+        }
         for attribute in &self.attributes {
             validate_component_profile(attribute.component_type, profile)?;
             validate_attribute_profile(attribute, profile, quantized)?;
@@ -491,7 +503,7 @@ impl PackedGeometry {
     /// Draco primitive for exactly this reason; trusting it here would tag
     /// an ordinary triangle list as a strip, which is wrong for any caller
     /// that takes `mode` at its word instead of also ignoring it.
-    #[cfg(all(feature = "draco-decode", any(feature = "draco-encode", test)))]
+    #[cfg(feature = "draco-encode")]
     pub(crate) fn from_draco_mesh(
         mesh: &Mesh,
         attributes: &[(String, u32)],
@@ -585,17 +597,23 @@ fn validate_attribute_profile(
     profile: ValidationProfile,
     quantized: bool,
 ) -> std::result::Result<(), GeometryError> {
-    if profile != ValidationProfile::Gltf20 {
-        return Ok(());
-    }
-    let valid = Semantic::from_name(&attribute.semantic).is_none_or(|semantic| {
-        semantic.allows(
-            attribute.component_type,
-            attribute.normalized,
-            false,
-            quantized,
-        )
-    });
+    let valid = Semantic::from_name(&attribute.semantic).map_or_else(
+        || {
+            !attribute.normalized
+                || matches!(
+                    attribute.component_type,
+                    ComponentType::I8 | ComponentType::U8 | ComponentType::I16 | ComponentType::U16
+                )
+        },
+        |semantic| {
+            semantic.allows(
+                attribute.component_type,
+                attribute.normalized,
+                false,
+                quantized,
+            )
+        },
+    );
     if !valid {
         return Err(GeometryError::AttributeComponentType {
             semantic: attribute.semantic.clone(),
@@ -611,17 +629,7 @@ fn validate_component_profile(
     component_type: ComponentType,
     profile: ValidationProfile,
 ) -> std::result::Result<(), GeometryError> {
-    if profile == ValidationProfile::Gltf20
-        && !matches!(
-            component_type,
-            ComponentType::I8
-                | ComponentType::U8
-                | ComponentType::I16
-                | ComponentType::U16
-                | ComponentType::U32
-                | ComponentType::F32
-        )
-    {
+    if !crate::attribute_rules::core_component_type(component_type) {
         return Err(GeometryError::ComponentTypeProfile {
             component_type,
             profile,

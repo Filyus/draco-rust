@@ -47,9 +47,12 @@ let glb = scene.to_bytes(OutputFormat::GlbV2)?;
 # Ok::<(), draco_gltf::Error>(())
 ```
 
-Raw writing preserves profile-valid glTF 2.1 scalar storage such as `f16`,
-`f64`, `i64`, and `u64`. Draco encoding never normalizes or casts unsupported
-types: it returns a typed error instead. Primitive writes are atomic, do not
+Raw writing preserves the types and normalization allowed by the selected
+profile and a required `KHR_mesh_quantization` declaration. `from_geometry`
+declares that extension when the supplied geometry requires it. The pinned
+draft rejects proposed `f16`, `f64`, `i32`, `i64`, and `u64` storage during
+strict validation and primitive reads and writes. Draco encoding reports
+unsupported layouts with an error. Primitive writes are atomic, do not
 mutate shared accessors in place, and preserve material, extras, morph targets
 with compatible counts, and unrelated extensions. Generated `POSITION`
 accessors include exact `min`/`max` bounds for every supported scalar type.

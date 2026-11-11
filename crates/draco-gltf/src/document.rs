@@ -51,7 +51,9 @@ pub enum ValidationProfile {
     Gltf21Draft,
 }
 
-/// Core accessor component type definitions, including the glTF 2.1 draft.
+/// Accessor storage types recognized by the data model.
+///
+/// The selected validation profile determines which types are in scope.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ComponentType {
     /// Signed 8-bit integer.
@@ -68,13 +70,13 @@ pub enum ComponentType {
     F32 = 5126,
     /// Signed 32-bit integer.
     I32 = 5124,
-    /// 16-bit floating-point value from the draft profile.
+    /// 16-bit floating-point value.
     F16 = 5131,
-    /// 64-bit floating-point value from the draft profile.
+    /// 64-bit floating-point value.
     F64 = 5130,
-    /// Signed 64-bit integer from the draft profile.
+    /// Signed 64-bit integer.
     I64 = 5134,
-    /// Unsigned 64-bit integer from the draft profile.
+    /// Unsigned 64-bit integer.
     U64 = 5135,
 }
 
@@ -268,7 +270,7 @@ impl Document {
     /// Performs basic structural checks, plus strict graph checks when enabled.
     ///
     /// Enable the `strict-validation` feature to additionally check core
-    /// references, node trees, and finite ordered `POSITION` bounds. Compact
+    /// references, attribute formats, node trees, and finite ordered `POSITION` bounds. Compact
     /// readers retain local bounds checks while materializing individual data.
     pub fn validate(&self, profile: ValidationProfile) -> Result<()> {
         let root = self.as_json();
@@ -281,18 +283,36 @@ impl Document {
             .ok_or_else(|| {
                 Error::Validation(vec!["asset.version is missing or not a string".into()])
             })?;
+        let parsed = parse_asset_version(version).ok_or_else(|| {
+            Error::Validation(vec![format!("asset.version {version:?} is invalid")])
+        })?;
         match profile {
-            ValidationProfile::Gltf20 if !version.starts_with("2.0") => {
+            ValidationProfile::Gltf20 if parsed != (2, 0) => {
                 return Err(Error::Validation(vec![format!(
                     "asset.version {version:?} is not glTF 2.0"
                 )]))
             }
-            ValidationProfile::Gltf21Draft if !version.starts_with("2.") => {
+            ValidationProfile::Gltf21Draft if parsed.0 != 2 => {
                 return Err(Error::Validation(vec![format!(
                     "asset.version {version:?} is not glTF 2.x"
                 )]))
             }
             _ => {}
+        }
+        if let Some(minimum) = asset.get("minVersion") {
+            let minimum = minimum
+                .as_str()
+                .and_then(parse_asset_version)
+                .ok_or_else(|| Error::Validation(vec!["asset.minVersion is invalid".into()]))?;
+            let supported = match profile {
+                ValidationProfile::Gltf20 => (2, 0),
+                ValidationProfile::Gltf21Draft => (2, 1),
+            };
+            if minimum > parsed || minimum > supported {
+                return Err(Error::Validation(vec![
+                    "asset.minVersion exceeds the asset version or selected profile".into(),
+                ]));
+            }
         }
         for name in [
             "accessors",
@@ -504,6 +524,21 @@ impl Document {
     }
 }
 
+fn parse_asset_version(value: &str) -> Option<(u32, u32)> {
+    fn part(value: &str) -> Option<u32> {
+        if value.is_empty()
+            || value.len() > 9
+            || value.len() > 1 && value.starts_with('0')
+            || !value.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return None;
+        }
+        value.parse().ok()
+    }
+    let (major, minor) = value.split_once('.')?;
+    Some((part(major)?, part(minor)?))
+}
+
 #[cfg(feature = "strict-validation")]
 fn validate_references(root: JsonRef<'_>, profile: ValidationProfile) -> Result<()> {
     let mesh_quantization = crate::attribute_rules::mesh_quantization(root);
@@ -571,20 +606,22 @@ fn validate_references(root: JsonRef<'_>, profile: ValidationProfile) -> Result<
                 "unsupported accessor componentType {component}"
             )])
         })?;
-        if profile == ValidationProfile::Gltf20
-            && !matches!(
-                component,
-                ComponentType::I8
-                    | ComponentType::U8
-                    | ComponentType::I16
-                    | ComponentType::U16
-                    | ComponentType::U32
-                    | ComponentType::F32
-            )
-        {
+        if !crate::attribute_rules::core_component_type(component) {
             return Err(Error::Validation(vec![format!(
-                "accessor componentType {component:?} requires the glTF 2.1 draft profile"
+                "accessor componentType {component:?} is not permitted by {profile:?}"
             )]));
+        }
+        if let Some(normalized) = accessor.get("normalized") {
+            let valid = match normalized.as_bool() {
+                Some(false) => true,
+                Some(true) => !matches!(component, ComponentType::F32 | ComponentType::U32),
+                None => false,
+            };
+            if !valid {
+                return Err(Error::Validation(vec![format!(
+                    "accessor normalized is invalid for {component:?}"
+                )]));
+            }
         }
         let kind = accessor
             .get("type")
@@ -678,6 +715,15 @@ fn validate_references(root: JsonRef<'_>, profile: ValidationProfile) -> Result<
             ]));
         }
         check(asset, "file", "files")?;
+        let mime = index_value(asset, "file")
+            .and_then(|index| root.get("files")?.as_array()?.get(index))
+            .and_then(|file| file.get("mimeType"))
+            .and_then(JsonRef::as_str);
+        if !matches!(mime, Some("model/gltf+json" | "model/gltf-binary")) {
+            return Err(Error::Validation(vec![
+                "external asset file must use a glTF media type".into(),
+            ]));
+        }
     }
     for texture in root
         .get("textures")
@@ -700,6 +746,14 @@ fn validate_references(root: JsonRef<'_>, profile: ValidationProfile) -> Result<
             check(primitive, "indices", "accessors")?;
             check(primitive, "material", "materials")?;
             if let Some(attributes) = primitive.get("attributes").and_then(JsonRef::as_object) {
+                if let Some(name) = crate::attribute_rules::invalid_attribute_semantic(
+                    attributes.iter().map(|(name, _)| name),
+                    profile,
+                ) {
+                    return Err(Error::Validation(vec![format!(
+                        "invalid indexed attribute semantic {name:?}"
+                    )]));
+                }
                 for (semantic, index) in attributes {
                     let index = index.as_u64().ok_or_else(|| {
                         Error::Validation(vec![format!(
@@ -715,14 +769,12 @@ fn validate_references(root: JsonRef<'_>, profile: ValidationProfile) -> Result<
                         )]));
                     }
                     let index = usize::try_from(index).expect("accessor index was range checked");
-                    if profile == ValidationProfile::Gltf20 {
-                        validate_attribute_accessor(
-                            accessors.get(index).unwrap(),
-                            semantic,
-                            false,
-                            mesh_quantization,
-                        )?;
-                    }
+                    validate_attribute_accessor(
+                        accessors.get(index).unwrap(),
+                        semantic,
+                        false,
+                        mesh_quantization,
+                    )?;
                     if semantic == "POSITION" {
                         validate_position_accessor(root, index)?;
                     }
@@ -842,14 +894,7 @@ fn validate_references(root: JsonRef<'_>, profile: ValidationProfile) -> Result<
                                 "morph target attribute {semantic} references a missing accessor"
                             )])
                             })?;
-                        if profile == ValidationProfile::Gltf20 {
-                            validate_attribute_accessor(
-                                accessor,
-                                semantic,
-                                true,
-                                mesh_quantization,
-                            )?;
-                        }
+                        validate_attribute_accessor(accessor, semantic, true, mesh_quantization)?;
                     }
                 }
             }
@@ -1228,7 +1273,15 @@ fn validate_draco_extension(
 }
 
 #[cfg(feature = "strict-validation")]
-const CORE_SHAPE_TYPES: [&str; 5] = ["box", "capsule", "cylinder", "plane", "sphere"];
+const CORE_SHAPE_TYPES: [&str; 7] = [
+    "box",
+    "capsule",
+    "convexMesh",
+    "cylinder",
+    "mesh",
+    "plane",
+    "sphere",
+];
 
 /// Checks each shape against the draft's schema and its rule against
 /// degenerate shapes. A core shape's own object is optional, and its
@@ -1256,7 +1309,30 @@ fn validate_shapes(root: JsonRef<'_>) -> Result<()> {
                 "shapes[{index}] is a {kind:?} and must not define a {other:?} object"
             )]));
         }
-        if let Some(definition) = shape.get(kind) {
+        if matches!(kind, "mesh" | "convexMesh") {
+            let fail = |reason| Error::Validation(vec![format!("shapes[{index}].{kind} {reason}")]);
+            let mesh = shape
+                .get(kind)
+                .and_then(|definition| index_value(definition, "mesh"))
+                .and_then(|mesh| root.get("meshes")?.as_array()?.get(mesh))
+                .ok_or_else(|| fail("must reference an existing mesh"))?;
+            let primitive = mesh
+                .get("primitives")
+                .and_then(JsonRef::as_array)
+                .filter(|primitives| primitives.len() == 1)
+                .and_then(|primitives| primitives.get(0))
+                .ok_or_else(|| fail("must reference a mesh with exactly one primitive"))?;
+            if !matches!(
+                primitive.get("mode").map_or(Some(4), JsonRef::as_u64),
+                Some(4..=6)
+            ) || primitive
+                .get("attributes")
+                .and_then(|attributes| attributes.get("POSITION"))
+                .is_none()
+            {
+                return Err(fail("requires a triangle primitive with POSITION"));
+            }
+        } else if let Some(definition) = shape.get(kind) {
             validate_shape_parameters(index, kind, definition)?;
         }
     }

@@ -1,10 +1,10 @@
 # glTF 2.1 draft support status
 
-Status as of 2026-09-29 for `draco-gltf`.
+Status as of 2026-11-11 for `draco-gltf`.
 
 glTF 2.1 is still a draft. This implementation targets the Khronos glTF
 repository's `draft-2.1` branch at commit
-[`8e4bd40310d84bfb34f454fc696eafb2c20d8e51`](https://github.com/KhronosGroup/glTF/commit/8e4bd40310d84bfb34f454fc696eafb2c20d8e51).
+[`fab13e27aa347f22b57a829e76401b760a25cbe7`](https://github.com/KhronosGroup/glTF/commit/fab13e27aa347f22b57a829e76401b760a25cbe7).
 It does not claim conformance with a future final glTF 2.1 specification.
 Updating the snapshot is an explicit compatibility change, not an automatic
 dependency update.
@@ -16,17 +16,18 @@ dependency update.
 | glTF 2.0 core | Supported | Lossless JSON document, typed root views, resources, accessors, scenes, animations, skins and materials. Complete cross-reference validation is available with `strict-validation`. |
 | Unknown JSON and extensions | Supported | Unknown properties, `extras`, number lexemes and unregistered extension payloads survive parse/edit/write. Untouched JSON is returned byte-for-byte. |
 | GLB v2 | Supported | Read, write and validation. |
-| GLB v3 draft | Supported | The chunk layout of the `draft-2.1` branch (#2628): chunk header `type`, `encoding`, `u64 length`, chunks starting on 8-byte boundaries, several BIN chunks named by `buffer.chunk`, unknown chunks skipped. Only plain (zero) chunk encoding is read, and any other is refused as the draft requires. Writing puts every buffer in one BIN chunk. Checked range descriptors and seekable input; slice APIs remain available for small files. |
+| GLB v3 draft | Supported | Chunk headers carry `type`, `encoding`, and a 63-bit length in a `u64` field. Chunk starts are aligned to eight bytes; inter-chunk padding is outside the payload length. Import resolves `buffer.chunk` to any plain chunk type and reads the declared buffer prefix. Inspection exposes encoded chunks, while loading their payload requires a known encoding. Writing consolidates buffers into one BIN chunk, explicitly referenced by glTF 2.1 output. |
 | Unified `files` references | Supported | URI and buffer-view payloads, `aliases` that redirect the URIs of a nested file, explicit loading, quotas, provenance, chain-depth limits and cycle rejection. |
-| External assets | Supported | References are exposed by typed views and loaded explicitly. Automatic recursive scene composition is intentionally left to the caller. |
-| Shapes | Supported | Typed shape views and root references. With `strict-validation`, the box, capsule, cylinder, plane and sphere parameters are checked against the draft schema, degenerate shapes are refused, and a core shape may not carry another core shape's parameters. Shapes of other types are left to their extension. |
+| External assets | Supported | Typed references and explicit loading, with glTF MIME types checked under `strict-validation`. The caller composes scenes. |
+| Shapes | Partial validation | Typed views and root references. Strict checks cover primitive shape parameters and the mesh index, single triangle primitive, and POSITION requirements of `mesh` and `convexMesh`. Geometric convexity, non-zero volume, outward winding, and morphed shape evaluation are caller responsibilities. |
 | Bounding volumes / BVH links | Supported | `node.boundingVolume.shape` is typed and range-checked, and `rotation`, `scale` and `translation` are checked for length and numeric form. Whether a volume encloses its geometry is not checked. |
 | UIDs | Partial semantic support | UIDs are exposed, must be strings, are file-wide unique and may not equal the name of any other object. Only the explainer ([#2597](https://github.com/KhronosGroup/glTF/issues/2597)) defines them: the `draft-2.1` branch has no text or schema for `uid`, and the explainer leaves the character set to be chosen, so it is not checked. |
 | Asset thumbnail | Supported | `asset.thumbnail` is exposed and validated as an image index. Image pixel decoding is outside this crate. |
 | Single preferred scene | Supported | New assets use one preferred scene; readers retain glTF 2.0 multiple-scene compatibility. |
-| Non-sequential attributes | Supported | `TEXCOORD_n` and `COLOR_n` no longer need to start at zero or be consecutive under the draft profile. |
-| Expanded component definitions | Supported in the document/raw path | `i32`, `f16`, `f64`, `i64` and `u64` definitions are parsed and written without normalization or conversion. Individual consumers still enforce their allowed types. |
-| Promoted 2.0 extension functionality | Pass-through | Unknown syntax is preserved, but there is no dedicated typed API or required-consumer conformance claim yet for WebP, emissive strength, mesh quantization or node visibility in their future core form. |
+| Indexed attributes | Supported | Indices start at zero, are consecutive, have no leading zeroes, and contain at most nine digits under the pinned draft profile. |
+| Proposed component definitions | JSON preservation | The data model represents `i32`, `f16`, `f64`, `i64` and `u64`. Strict validation and primitive reads and writes reject them according to this snapshot's accessor table. |
+| Mesh quantization | Supported with extension declaration | Ordinary and Draco primitive reads and raw writes accept the extension's formats when `KHR_mesh_quantization` is listed in both root extension arrays. New scenes declare it automatically when their geometry requires it. |
+| Promoted 2.0 extension functionality | Follows pinned syntax | Extension promotion remains under discussion. Geometry validation uses the existing required extension declaration, including for assets with `minVersion: "2.1"`. Other unknown promoted syntax is preserved in JSON. |
 | Full final 2.1 schema validation | Not available | The `draft-2.1` branch carries a schema that Khronos still changes and that defines nothing for UIDs. Validation follows it where this table says so and avoids speculative rules elsewhere. |
 
 ## Draco behavior
@@ -36,8 +37,9 @@ contract. Ordinary and Draco primitives both read into `PackedGeometry`.
 
 - Draco decode validates the extension mapping and bitstream before exposing
   geometry.
-- Raw writes preserve draft component storage, including 64-bit and floating
-  component definitions.
+- Raw writes preserve supported component storage and normalization, add
+  per-element padding where required, and calculate bounds in the stored
+  component domain.
 - Draco encode accepts `TRIANGLES`, `TRIANGLE_STRIP` and `TRIANGLE_FAN` source
   primitives -- a strip or fan is unwound into an ordinary triangle list first,
   since Draco's connectivity has no notion of either, and the output
@@ -133,7 +135,7 @@ it ever changed.
 
 - [Khronos: Introducing glTF 2.1 with Complex Scenes](https://www.khronos.org/blog/introducing-gltf-2.1-with-complex-scenes)
 - [Khronos glTF repository](https://github.com/KhronosGroup/glTF)
-- [Pinned upstream commit](https://github.com/KhronosGroup/glTF/commit/8e4bd40310d84bfb34f454fc696eafb2c20d8e51)
+- [Pinned upstream commit](https://github.com/KhronosGroup/glTF/commit/fab13e27aa347f22b57a829e76401b760a25cbe7)
 - [glTF 2.0 specification](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html)
 - [`KHR_draco_mesh_compression` specification](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_draco_mesh_compression)
 - [Snapshot and update policy](GLTF_2_1_SNAPSHOT.md)

@@ -1,13 +1,14 @@
 use std::path::Path;
 
+use crate::container::{parse_gltf_container_with_layout, resolve_glb_v3_buffers};
 use crate::json::{JsonRef, Patches, Value};
 
 use crate::extensions::meshopt_extension;
 #[cfg(feature = "draco-decode")]
 use crate::PrimitiveRef;
 use crate::{
-    meshopt, parse_gltf_container, resolve_gltf_buffers, GltfBufferReference, GltfContainerFormat,
-    MeshoptFilter, MeshoptMode, ResourceLimits, ResourceResolver,
+    meshopt, resolve_gltf_buffers, GltfBufferReference, GltfContainerFormat, MeshoptFilter,
+    MeshoptMode, ResourceLimits, ResourceResolver,
 };
 use crate::{Document, Error, ExtensionRegistry, ResourceStore, Result, ValidationProfile};
 #[cfg(feature = "resources")]
@@ -612,7 +613,7 @@ impl Import {
             crate::OutputFormat::GlbV3 => crate::GltfContainerFormat::GlbV3,
         };
         if format.is_glb() {
-            let (json, bin) = self.consolidated_glb_payload()?;
+            let (json, bin) = self.consolidated_glb_payload(format)?;
             return Ok(crate::container::build_glb_from_json(&json, &bin, format)?);
         }
         self.document().to_json_bytes()
@@ -678,7 +679,7 @@ impl Import {
 
     /// Creates a GLB payload by consolidating resolved buffers while retaining
     /// every bufferView index and all non-resource JSON verbatim.
-    fn consolidated_glb_payload(&self) -> Result<(Vec<u8>, Vec<u8>)> {
+    fn consolidated_glb_payload(&self, format: GltfContainerFormat) -> Result<(Vec<u8>, Vec<u8>)> {
         let declared = self.document().buffers().len();
         if declared != self.resources.buffers.len() {
             return Err(Error::ResourceLimit(format!(
@@ -697,8 +698,16 @@ impl Import {
                 .map_err(|_| Error::ResourceLimit("GLB consolidation allocation failed".into()))?;
             bin.extend_from_slice(resource);
         }
+        let version = self
+            .document()
+            .as_json()
+            .get("asset")
+            .and_then(|asset| asset.get("version"))
+            .and_then(JsonRef::as_str);
+        let explicit_chunk =
+            format == GltfContainerFormat::GlbV3 && version == Some("2.1") && !bin.is_empty();
         Ok((
-            consolidated_glb_json(self.document(), &offsets, bin.len())?,
+            consolidated_glb_json(self.document(), &offsets, bin.len(), explicit_chunk)?,
             bin,
         ))
     }
@@ -912,6 +921,7 @@ fn consolidated_glb_json(
     document: &Document,
     offsets: &[usize],
     bin_len: usize,
+    explicit_chunk: bool,
 ) -> Result<Vec<u8>> {
     let root = document.as_json();
     let mut patches = Patches::default();
@@ -935,7 +945,8 @@ fn consolidated_glb_json(
             )?;
         }
     }
-    let buffers = format!(r#"[{{"byteLength":{bin_len}}}]"#);
+    let chunk = if explicit_chunk { r#","chunk":1"# } else { "" };
+    let buffers = format!(r#"[{{"byteLength":{bin_len}{chunk}}}]"#);
     match root.get("buffers") {
         Some(value) => patches.replace(value, buffers.into_bytes()),
         None => patches.append(root, format!(r#""buffers":{buffers}"#).into_bytes()),
@@ -1103,7 +1114,7 @@ pub fn parse_with_options(
     profile: ValidationProfile,
     extensions: &ExtensionRegistry,
 ) -> Result<Import> {
-    let container = parse_gltf_container(bytes)?;
+    let (container, layout) = parse_gltf_container_with_layout(bytes)?;
     let document = Document::from_json_bytes(container.json)?;
     document.validate(profile)?;
     extensions.validate(&document)?;
@@ -1145,13 +1156,17 @@ pub fn parse_with_options(
             meshopt_fallback,
         });
     }
-    let mut buffers = resolve_gltf_buffers(
-        &references,
-        container.format,
-        &container.bin_chunks,
-        resolver,
-        limits,
-    )?;
+    let mut buffers = if let Some(layout) = layout {
+        resolve_glb_v3_buffers(&references, bytes, &layout, resolver, limits)?
+    } else {
+        resolve_gltf_buffers(
+            &references,
+            container.format,
+            &container.bin_chunks,
+            resolver,
+            limits,
+        )?
+    };
     decode_meshopt_buffer_views(&document, &mut buffers)?;
     Ok(Import {
         // Validated above, against the same profile and registry the import
@@ -1260,7 +1275,7 @@ mod tests {
         for source in documents {
             let document = Document::from_json_bytes(source.as_bytes()).unwrap();
             let tree = consolidated_glb_json_on_a_tree(&document, &offsets, 5000).unwrap();
-            let tape = consolidated_glb_json(&document, &offsets, 5000).unwrap();
+            let tape = consolidated_glb_json(&document, &offsets, 5000, false).unwrap();
             assert_eq!(
                 String::from_utf8_lossy(&tape),
                 String::from_utf8_lossy(&tree),
@@ -1369,9 +1384,8 @@ mod tests {
         );
     }
 
-    /// A version 3 file whose buffers name their chunks reads, and writes back
-    /// without the `chunk` property, which no longer means anything once the
-    /// bytes have moved into one chunk or a companion file.
+    /// Consolidation rewrites explicit chunk references to the new BIN chunk.
+    /// Companion files replace chunk references with URIs.
     #[test]
     fn buffers_that_name_glb_chunks_survive_a_rewrite() {
         let json = br#"{"asset":{"version":"2.1"},
@@ -1403,6 +1417,10 @@ mod tests {
 
         let rewritten = import.to_bytes(crate::OutputFormat::GlbV3).unwrap();
         let reread = parse(&rewritten, ValidationProfile::Gltf21Draft).unwrap();
+        assert_eq!(
+            reread.document().as_value()["buffers"][0]["chunk"].as_u64(),
+            Some(1)
+        );
         assert_eq!(reread.resources.buffers.len(), 1);
         assert_eq!(reread.resources.buffers[0][..8], [1, 2, 3, 4, 5, 6, 7, 8]);
 

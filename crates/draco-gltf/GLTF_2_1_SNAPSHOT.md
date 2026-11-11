@@ -1,10 +1,10 @@
 # glTF 2.1 draft snapshot
 
-`draco-gltf` targets the glTF 2.1 draft at the tip of the `draft-2.1` branch of
-KhronosGroup/glTF, commit
-[`8e4bd40310d84bfb34f454fc696eafb2c20d8e51`](https://github.com/KhronosGroup/glTF/commit/8e4bd40310d84bfb34f454fc696eafb2c20d8e51),
-resolved on 2026-09-29. It replaces the earlier snapshot, `77b44be7`, resolved
-on 2026-07-18, which predates the draft's specification text and schemas.
+`draco-gltf` targets the glTF 2.1 draft on KhronosGroup/glTF's `draft-2.1`
+branch at commit
+[`fab13e27aa347f22b57a829e76401b760a25cbe7`](https://github.com/KhronosGroup/glTF/commit/fab13e27aa347f22b57a829e76401b760a25cbe7),
+resolved on 2026-11-10. It replaces `8e4bd403`, resolved on 2026-09-29.
+The compatibility update was implemented on 2026-11-11.
 
 The draft is not a moving build dependency. Updating this snapshot requires a
 dedicated compatibility change: update this file, add/adjust fixtures and
@@ -23,15 +23,40 @@ example the GLB version 3 chunk header. Compare a new snapshot against
 
 ## Targeted draft surface
 
-- GLB version 3: 64-bit file and chunk lengths plus zero-valued reserved chunk
-  encodings, while retaining GLB version 2 support.
+- GLB version 3: 63-bit lengths in 64-bit fields, chunks starting on 8-byte
+  boundaries, and padding outside chunk lengths. Import resolves explicit
+  buffer references to any plain chunk type and reads the declared buffer
+  prefix. Inspection exposes encoding metadata; payload loading requires a
+  known encoding. The writer consolidates buffers into one BIN chunk.
 - `files` references (`mimeType` plus exactly one of URI or buffer view),
   `externalAssets` model indirection, and explicit loading of nested assets.
 - One preferred scene with read compatibility for legacy multiple scenes.
-- Shapes, node bounding volumes, thumbnails, and object UIDs.
-- Core accessor component-type definitions for signed 32-bit, half/double
-  precision floats, and signed/unsigned 64-bit integers.
-- Non-sequential `TEXCOORD_n` and `COLOR_n` primitive semantics.
+- Shapes, including `mesh` and `convexMesh` references, node bounding volumes,
+  thumbnails, and the existing partial UID support described in the support
+  table. Mesh shape validation covers references and primitive structure;
+  geometric convexity, volume, and winding remain caller responsibilities.
+- Accessor and built-in attribute formats from the pinned specification, with
+  the additional formats enabled by a required `KHR_mesh_quantization`.
+- Consecutive indexed attribute semantics starting at zero, without leading
+  zeroes, and with at most nine digits under the draft profile.
+
+## Compatibility changes in this update
+
+The accessor tables and schema at this SHA enumerate `5120`, `5121`, `5122`,
+`5123`, `5125`, and `5126`. Strict document validation and primitive reads and
+writes now reject the proposed `i32`, `f16`, `f64`, `i64`, and `u64` storage
+previously accepted by `Gltf21Draft`. `ComponentType` still represents these
+codes, and `Document::from_json_bytes` preserves their original JSON.
+
+The previous documentation also advertised non-consecutive texture-coordinate
+and color sets. Both this snapshot and its predecessor require consecutive
+indices. Validation now enforces the tables and indexed-semantic syntax.
+
+Extension promotion and expanded component definitions remain tracked by
+[#2592](https://github.com/KhronosGroup/glTF/issues/2592) and
+[#2596](https://github.com/KhronosGroup/glTF/issues/2596). The pinned normative
+text continues to require the extension declaration for quantized attributes,
+including when `asset.minVersion` is `"2.1"`.
 
 The parser preserves all unknown JSON and extension payloads. Strict
 validation and transformations only claim the subset listed above plus the
