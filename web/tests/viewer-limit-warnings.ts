@@ -85,7 +85,10 @@ const manifest = {
       indices: 2,
       // A target may only refine a semantic the primitive declares, so TANGENT
       // is part of a valid fixture rather than decoration.
-      targets: Array.from({ length: TARGETS }, (_, target) => ({ POSITION: 3 + target, TANGENT: 1 })),
+      // Morph tangent deltas are VEC3; only the base tangent carries handedness.
+      targets: Array.from({ length: TARGETS }, (_, target) => ({
+        POSITION: 3 + target, TANGENT: 3 + target,
+      })),
     }],
   }],
   animations: [{
