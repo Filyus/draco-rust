@@ -9,32 +9,41 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Fixed
+## [0.8.0](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.7.0...draco-gltf-v0.8.0) - 2026-11-11
 
-- Read normalized signed byte and short normals with a required
-  `KHR_mesh_quantization` declaration, along with the extension's other
-  attribute formats. Apply the same declarations to ordinary and Draco
-  primitive reads and raw writes. Raw writes align individual attribute
-  elements and retain stored-value POSITION bounds.
-- Resolve GLB v3 buffer references to any plain chunk type, allow buffer
+### API
+
+- **Breaking:** `Gltf21Draft` now follows the pinned specification's accessor
+  and attribute tables. Strict document validation and primitive reads and
+  writes reject proposed `i32`, `f16`, `f64`, `i64`, and `u64` storage
+  and non-consecutive core attribute indices. The data model still represents
+  these component codes and preserves their original JSON.
+- `PackedGeometry::new` checks structure and attribute dimensions.
+  `validate(profile)` additionally checks core formats, while `Import`
+  operations account for extensions declared by their document.
+- Add `DracoPrimitiveContract::with_mesh_quantization` for hosts supplying
+  their own document model, and `GeometryError::InvalidAttributeSemantic`
+  for malformed or non-consecutive attribute indices.
+
+### glTF
+
+- Fix rejection of normalized signed byte and short normals when
+  `KHR_mesh_quantization` is required. Ordinary and Draco primitive reads
+  and raw writes accept the extension's attribute formats. Fixes
+  [#3](https://github.com/Filyus/draco-rust/issues/3).
+- Raw writes align individual attribute elements and retain stored-value
+  `POSITION` bounds. `Import::from_geometry` declares
+  `KHR_mesh_quantization` when its geometry requires it.
+- Resolve GLB v3 buffer references to any plain chunk type, read buffer
   prefixes shorter than their chunks, and skip unused encoded chunks.
   Inspection exposes encoding metadata and payload loading checks it.
   Write GLB v3 alignment padding outside chunk lengths.
 
-### Changed
+### Compatibility
 
-- Update the glTF 2.1 draft snapshot to `fab13e27`. Profile validation now
-  follows its accessor and attribute tables, indexed semantic syntax,
-  version constraints, mesh shape structure, and external-asset MIME types.
-  `Gltf21Draft` rejects the proposed `i32`, `f16`, `f64`, `i64`, and `u64`
-  storage during strict validation and primitive reads and writes, and
-  rejects non-consecutive core attribute indices. The data model continues
-  to preserve their JSON and represent their component codes.
-- `PackedGeometry::new` checks structure. `validate(profile)` additionally
-  checks core formats, while Import operations check document extensions.
-  `DracoPrimitiveContract::with_mesh_quantization` enables extension formats
-  for hosts supplying their own document model. `GeometryError` gains
-  `InvalidAttributeSemantic` for malformed or non-consecutive indices.
+- Update the glTF 2.1 draft snapshot to `fab13e27`. Validation checks
+  indexed semantic syntax, asset versions and minimum versions, mesh shape
+  structure, and external-asset MIME types against this snapshot.
 
 ## [0.7.0](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.6.0...draco-gltf-v0.7.0) - 2026-10-10
 
