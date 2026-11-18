@@ -202,10 +202,10 @@ impl Bc7Block {
         }
 
         if BC7_MODE_HAS_P_BITS[mode] {
-            for subset in 0..subsets {
-                writer.write(self.pbits[subset][0], 1);
+            for pbits in self.pbits.iter().take(subsets) {
+                writer.write(pbits[0], 1);
                 if !BC7_MODE_HAS_SHARED_P_BITS[mode] {
-                    writer.write(self.pbits[subset][1], 1);
+                    writer.write(pbits[1], 1);
                 }
             }
         }

@@ -87,8 +87,13 @@ pub(crate) fn convert(unpacked: &Unpacked) -> [u8; 16] {
 
     // ASTC stores its weights from the end of the block backwards, each one
     // bit-reversed.
-    for index in 0..total_weights as usize {
-        let weight = unpacked.weights[index] as u32;
+    for (index, &weight) in unpacked
+        .weights
+        .iter()
+        .take(total_weights as usize)
+        .enumerate()
+    {
+        let weight = weight as u32;
         let reversed = reverse_bits(weight, weight_bits);
         let at = 128 - weight_bits - index as u32 * weight_bits;
         let shifted = reversed << (at & 7);
