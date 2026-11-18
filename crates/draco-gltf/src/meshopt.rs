@@ -438,10 +438,8 @@ pub fn decode_index_buffer(
         )));
     }
 
-    let mut edge_fifo = [[0u32; 2]; 16];
-    let mut vertex_fifo = [0u32; 16];
-    let mut edge_offset = 0usize;
-    let mut vertex_offset = 0usize;
+    let mut edge_fifo = IndexFifo::new();
+    let mut vertex_fifo = IndexFifo::new();
     let mut next = 0u32;
     let mut last = 0u32;
     let fec_max = if version >= 1 { 13 } else { 15 };
@@ -456,17 +454,19 @@ pub fn decode_index_buffer(
         let code_tri = source[code];
         if code_tri < 0xf0 {
             let fe = usize::from(code_tri >> 4);
-            let edge = edge_fifo[(edge_offset.wrapping_sub(1 + fe)) & 15];
-            let (a, b) = (edge[0], edge[1]);
+            let [a, b] = edge_fifo.read(1 + fe)?;
             let c;
 
             let fec = i32::from(code_tri & 15);
             if fec < fec_max {
-                let cached = vertex_fifo[(vertex_offset.wrapping_sub(1 + fec as usize)) & 15];
-                c = if fec == 0 { next } else { cached };
+                c = if fec == 0 {
+                    next
+                } else {
+                    vertex_fifo.read(1 + fec as usize)?
+                };
                 let first = usize::from(fec == 0);
                 next += u32::from(fec == 0);
-                push_vertex_fifo(&mut vertex_fifo, c, &mut vertex_offset, first);
+                vertex_fifo.push(c, first);
             } else {
                 if data > safe_end {
                     return Err(invalid("index stream data is truncated"));
@@ -477,11 +477,11 @@ pub fn decode_index_buffer(
                     decode_index(source, &mut data, last)?
                 };
                 last = c;
-                push_vertex_fifo(&mut vertex_fifo, c, &mut vertex_offset, 1);
+                vertex_fifo.push(c, 1);
             }
 
-            push_edge_fifo(&mut edge_fifo, c, b, &mut edge_offset);
-            push_edge_fifo(&mut edge_fifo, a, c, &mut edge_offset);
+            edge_fifo.push([c, b], 1);
+            edge_fifo.push([a, c], 1);
             write_triangle(destination, &mut written, size, a, b, c);
         } else if code_tri < 0xfe {
             let code_aux = source[table + usize::from(code_tri & 15)];
@@ -494,7 +494,7 @@ pub fn decode_index_buffer(
             let b = if feb == 0 {
                 next
             } else {
-                vertex_fifo[(vertex_offset.wrapping_sub(feb)) & 15]
+                vertex_fifo.read(feb)?
             };
             let feb0 = usize::from(feb == 0);
             next += feb0 as u32;
@@ -502,20 +502,20 @@ pub fn decode_index_buffer(
             let c = if fec == 0 {
                 next
             } else {
-                vertex_fifo[(vertex_offset.wrapping_sub(fec)) & 15]
+                vertex_fifo.read(fec)?
             };
             let fec0 = usize::from(fec == 0);
             next += fec0 as u32;
 
             write_triangle(destination, &mut written, size, a, b, c);
 
-            push_vertex_fifo(&mut vertex_fifo, a, &mut vertex_offset, 1);
-            push_vertex_fifo(&mut vertex_fifo, b, &mut vertex_offset, feb0);
-            push_vertex_fifo(&mut vertex_fifo, c, &mut vertex_offset, fec0);
+            vertex_fifo.push(a, 1);
+            vertex_fifo.push(b, feb0);
+            vertex_fifo.push(c, fec0);
 
-            push_edge_fifo(&mut edge_fifo, b, a, &mut edge_offset);
-            push_edge_fifo(&mut edge_fifo, c, b, &mut edge_offset);
-            push_edge_fifo(&mut edge_fifo, a, c, &mut edge_offset);
+            edge_fifo.push([b, a], 1);
+            edge_fifo.push([c, b], 1);
+            edge_fifo.push([a, c], 1);
         } else {
             if data > safe_end {
                 return Err(invalid("index stream data is truncated"));
@@ -532,58 +532,31 @@ pub fn decode_index_buffer(
                 next = 0;
             }
 
-            let mut a = 0u32;
-            if fea == 0 {
-                a = next;
-                next += 1;
-            }
-            let mut b = if feb == 0 {
-                let value = next;
-                next += 1;
-                value
-            } else {
-                vertex_fifo[(vertex_offset.wrapping_sub(feb)) & 15]
+            let mut read_index = |code| match code {
+                0 => {
+                    let index = next;
+                    next += 1;
+                    Ok(index)
+                }
+                15 => {
+                    last = decode_index(source, &mut data, last)?;
+                    Ok(last)
+                }
+                distance => vertex_fifo.read(distance),
             };
-            let mut c = if fec == 0 {
-                let value = next;
-                next += 1;
-                value
-            } else {
-                vertex_fifo[(vertex_offset.wrapping_sub(fec)) & 15]
-            };
-
-            if fea == 15 {
-                a = decode_index(source, &mut data, last)?;
-                last = a;
-            }
-            if feb == 15 {
-                b = decode_index(source, &mut data, last)?;
-                last = b;
-            }
-            if fec == 15 {
-                c = decode_index(source, &mut data, last)?;
-                last = c;
-            }
+            let a = read_index(fea)?;
+            let b = read_index(feb)?;
+            let c = read_index(fec)?;
 
             write_triangle(destination, &mut written, size, a, b, c);
 
-            push_vertex_fifo(&mut vertex_fifo, a, &mut vertex_offset, 1);
-            push_vertex_fifo(
-                &mut vertex_fifo,
-                b,
-                &mut vertex_offset,
-                usize::from(feb == 0 || feb == 15),
-            );
-            push_vertex_fifo(
-                &mut vertex_fifo,
-                c,
-                &mut vertex_offset,
-                usize::from(fec == 0 || fec == 15),
-            );
+            vertex_fifo.push(a, 1);
+            vertex_fifo.push(b, usize::from(feb == 0 || feb == 15));
+            vertex_fifo.push(c, usize::from(fec == 0 || fec == 15));
 
-            push_edge_fifo(&mut edge_fifo, b, a, &mut edge_offset);
-            push_edge_fifo(&mut edge_fifo, c, b, &mut edge_offset);
-            push_edge_fifo(&mut edge_fifo, a, c, &mut edge_offset);
+            edge_fifo.push([b, a], 1);
+            edge_fifo.push([c, b], 1);
+            edge_fifo.push([a, c], 1);
         }
     }
 
@@ -639,14 +612,30 @@ pub fn decode_index_sequence(
     Ok(())
 }
 
-fn push_edge_fifo(fifo: &mut [[u32; 2]; 16], a: u32, b: u32, offset: &mut usize) {
-    fifo[*offset] = [a, b];
-    *offset = (*offset + 1) & 15;
+struct IndexFifo<T> {
+    entries: [Option<T>; 16],
+    offset: usize,
 }
 
-fn push_vertex_fifo(fifo: &mut [u32; 16], v: u32, offset: &mut usize, advance: usize) {
-    fifo[*offset] = v;
-    *offset = (*offset + advance) & 15;
+impl<T: Copy> IndexFifo<T> {
+    fn new() -> Self {
+        Self {
+            entries: [None; 16],
+            offset: 0,
+        }
+    }
+
+    /// Distance 1 addresses the most recent entry before the write cursor.
+    fn read(&self, distance: usize) -> Result<T> {
+        self.entries[self.offset.wrapping_sub(distance) & 15]
+            .ok_or_else(|| invalid("index stream references an unwritten FIFO entry"))
+    }
+
+    fn push(&mut self, value: T, advance: usize) {
+        // Vertex reuse can write the current slot without advancing the cursor.
+        self.entries[self.offset] = Some(value);
+        self.offset = (self.offset + advance) & 15;
+    }
 }
 
 fn decode_vbyte(source: &[u8], pos: &mut usize) -> Result<u32> {
@@ -967,6 +956,82 @@ mod tests {
         decode_index_buffer(&mut decoded, 3, 2, &stream).unwrap();
 
         assert_eq!(decoded, [0, 0, 1, 0, 2, 0]);
+    }
+
+    #[test]
+    fn index_buffer_rejects_unwritten_fifo_entries() {
+        let cases: &[(&[u8], &[u8], u8)] = &[
+            (&[0x10], &[], 0),        // Edge reuse before the first push.
+            (&[0xf0, 0x30], &[], 0),  // Edge reuse beyond the three pushed edges.
+            (&[0xf0, 0x03], &[], 0),  // Edge reuse with a missing third vertex.
+            (&[0xf0], &[], 0x10),     // Table code reuses b.
+            (&[0xf0], &[], 0x01),     // Table code reuses c.
+            (&[0xfe], &[0x10], 0),    // Explicit code reuses b.
+            (&[0xff], &[0x01, 0], 0), // Explicit code reuses c.
+        ];
+        for version in [0, 1] {
+            for size in [2, 4] {
+                for &(codes, data, table_entry) in cases {
+                    let mut stream = vec![INDEX_HEADER | version];
+                    stream.extend_from_slice(codes);
+                    stream.extend_from_slice(data);
+                    stream.push(table_entry);
+                    stream.extend_from_slice(&[0; 15]);
+
+                    let count = codes.len() * 3;
+                    let mut decoded = vec![0; count * size];
+                    let result = decode_index_buffer(&mut decoded, count, size, &stream);
+                    assert!(
+                        matches!(result, Err(GltfError::InvalidGltf(ref message))
+                            if message.contains("unwritten FIFO entry")),
+                        "version {version}, stride {size}, codes {codes:02x?}: {result:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn index_buffer_reuses_fifo_entries_after_wraparound() {
+        // Six fresh triangles wrap both FIFOs. Then reuse an old edge and
+        // allocate c, and use a table code to reuse an old vertex as b.
+        let codes = [0xf0, 0xf0, 0xf0, 0xf0, 0xf0, 0xf0, 0xe0, 0xf1];
+        let mut expected: Vec<u32> = (0..18).collect();
+        expected.extend_from_slice(&[4, 3, 18, 19, 5, 20]);
+        for version in [0, 1] {
+            let mut stream = vec![INDEX_HEADER | version];
+            stream.extend_from_slice(&codes);
+            stream.extend_from_slice(&[0, 0xe0]);
+            stream.extend_from_slice(&[0; 14]);
+
+            for size in [2, 4] {
+                let mut decoded = vec![0; expected.len() * size];
+                decode_index_buffer(&mut decoded, expected.len(), size, &stream).unwrap();
+                let expected_bytes: Vec<_> = expected
+                    .iter()
+                    .flat_map(|index| index.to_le_bytes().into_iter().take(size))
+                    .collect();
+                assert_eq!(decoded, expected_bytes);
+            }
+        }
+    }
+
+    #[test]
+    fn index_buffer_decodes_and_reuses_explicit_indices() {
+        // Three free indices (MAX, 1, 2), then a table code that reuses MAX.
+        for version in [0, 1] {
+            let mut stream = vec![INDEX_HEADER | version, 0xff, 0xf0, 0xff, 1, 4, 2, 0x30];
+            stream.extend_from_slice(&[0; 15]);
+            for size in [2, 4] {
+                let mut decoded = vec![0; 6 * size];
+                decode_index_buffer(&mut decoded, 6, size, &stream).unwrap();
+                let expected: Vec<_> = [u32::MAX, 1, 2, 0, u32::MAX, 1]
+                    .into_iter()
+                    .flat_map(|index| index.to_le_bytes().into_iter().take(size))
+                    .collect();
+                assert_eq!(decoded, expected);
+            }
+        }
     }
 
     #[test]
