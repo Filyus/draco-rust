@@ -167,11 +167,14 @@ pub fn decode_vertex_buffer(
 
     let mut last_vertex = [0u8; 256];
     last_vertex[..stride].copy_from_slice(&source[tail..tail + stride]);
-    let channels = if version == 0 {
-        Vec::new()
-    } else {
-        source[tail + stride..tail + tail_size].to_vec()
-    };
+    let channels = &source[tail + stride..tail + tail_size];
+    // Only the XOR mode uses the high nibble for a rotation.
+    if channels
+        .iter()
+        .any(|&channel| channel > 1 && channel & 15 != 2)
+    {
+        return Err(invalid("vertex stream channel type is invalid"));
+    }
 
     let block_capacity = vertex_block_size(stride);
     let mut scratch = vec![0u8; VERTEX_BLOCK_MAX_SIZE * 4];
@@ -186,7 +189,7 @@ pub fn decode_vertex_buffer(
             block,
             stride,
             &mut last_vertex,
-            &channels,
+            channels,
             version,
             &mut scratch,
         )?;
@@ -251,7 +254,7 @@ fn decode_vertex_block(
         }
 
         let channel = if version == 0 { 0 } else { channels[k / 4] };
-        match channel & 3 {
+        match channel {
             0 => decode_deltas(
                 scratch,
                 destination,
@@ -274,7 +277,8 @@ fn decode_vertex_block(
                 false,
                 0,
             ),
-            2 => {
+            _ => {
+                // The channel table has already been validated.
                 let rotation = (32 - u32::from(channel >> 4)) & 31;
                 decode_deltas(
                     scratch,
@@ -288,7 +292,6 @@ fn decode_vertex_block(
                     rotation,
                 )
             }
-            _ => return Err(invalid("vertex block channel type is invalid")),
         }
     }
 
@@ -447,7 +450,14 @@ pub fn decode_index_buffer(
     let code_end = 1 + count / 3;
     let mut data = code_end;
     let safe_end = source.len() - 16;
-    let table = safe_end;
+    let table = &source[safe_end..];
+    if table[14..] != [0, 0]
+        || table[..14]
+            .iter()
+            .any(|&entry| entry >> 4 == 15 || entry & 15 == 15)
+    {
+        return Err(invalid("index stream codeaux table is invalid"));
+    }
     let mut written = 0usize;
 
     for code in 1..code_end {
@@ -484,7 +494,7 @@ pub fn decode_index_buffer(
             edge_fifo.push([a, c], 1);
             write_triangle(destination, &mut written, size, a, b, c);
         } else if code_tri < 0xfe {
-            let code_aux = source[table + usize::from(code_tri & 15)];
+            let code_aux = table[usize::from(code_tri & 15)];
             let feb = usize::from(code_aux >> 4);
             let fec = usize::from(code_aux & 15);
 
@@ -647,19 +657,17 @@ fn decode_vbyte(source: &[u8], pos: &mut usize) -> Result<u32> {
         return Ok(u32::from(lead));
     }
     let mut result = u32::from(lead & 127);
-    let mut shift = 7;
-    for _ in 0..4 {
+    for shift in [7, 14, 21, 28] {
         let group = *source
             .get(*pos)
             .ok_or_else(|| invalid("variable-length index is truncated"))?;
         *pos += 1;
         result |= u32::from(group & 127) << shift;
-        shift += 7;
         if group < 128 {
-            break;
+            return Ok(result);
         }
     }
-    Ok(result)
+    Err(invalid("variable-length index is unterminated"))
 }
 
 fn decode_index(source: &[u8], pos: &mut usize, last: u32) -> Result<u32> {
@@ -946,6 +954,28 @@ mod tests {
     }
 
     #[test]
+    fn vertex_stream_rejects_reserved_channel_bits() {
+        // One v1 vertex with four literal delta bytes and a padded tail.
+        let mut stream = [0; 6 + TAIL_MIN_SIZE_V1];
+        stream[..6].copy_from_slice(&[VERTEX_HEADER | 1, 0xff, 2, 0, 0, 0]);
+        let channel_offset = stream.len() - 1;
+        let mut decoded = [0; 4];
+        for channel in [0x03, 0x04, 0x10, 0x11] {
+            stream[channel_offset] = channel;
+            let result = decode_vertex_buffer(&mut decoded, 1, 4, &stream);
+            assert!(
+                matches!(result, Err(GltfError::InvalidGltf(_))),
+                "channel {channel:#04x}: {result:?}"
+            );
+        }
+
+        // An XOR channel can use the high nibble to rotate the delta.
+        stream[channel_offset] = 0x12;
+        decode_vertex_buffer(&mut decoded, 1, 4, &stream).unwrap();
+        assert_eq!(decoded, [1, 0, 0, 0]);
+    }
+
+    #[test]
     fn index_buffer_decodes_a_restarted_triangle() {
         // 0xfe selects the slow path with a full codeaux byte; a zero codeaux
         // resets the index counter and emits the next three fresh indices.
@@ -987,6 +1017,25 @@ mod tests {
                         "version {version}, stride {size}, codes {codes:02x?}: {result:?}"
                     );
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn index_buffer_rejects_invalid_codeaux_table_entries() {
+        for version in [0, 1] {
+            let mut stream = [0; 18];
+            stream[..2].copy_from_slice(&[INDEX_HEADER | version, 0xf0]);
+            // The triangle uses entry zero. Invalid unused entries also matter.
+            for (entry, value) in [(1, 0xf0), (1, 0x0f), (14, 1), (15, 1)] {
+                stream[2 + entry] = value;
+                let mut decoded = [0; 6];
+                let result = decode_index_buffer(&mut decoded, 3, 2, &stream);
+                assert!(
+                    matches!(result, Err(GltfError::InvalidGltf(_))),
+                    "version {version}, entry {entry}: {result:?}"
+                );
+                stream[2 + entry] = 0;
             }
         }
     }
@@ -1047,6 +1096,33 @@ mod tests {
             [0, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0],
             "sequence indices are delta coded against two baselines"
         );
+    }
+
+    #[test]
+    fn index_streams_require_the_fifth_varint_byte_to_terminate() {
+        let mut triangle = [0; 3 + 5 + 16];
+        triangle[..3].copy_from_slice(&[INDEX_HEADER | 1, 0xff, 0]);
+        triangle[3..8].copy_from_slice(&[0x80, 0x80, 0x80, 0x80, 1]);
+        let mut triangle_output = [0; 12];
+        decode_index_buffer(&mut triangle_output, 3, 4, &triangle).unwrap();
+        assert_eq!(&triangle_output[..4], &0x0800_0000u32.to_le_bytes());
+        triangle[7] |= 0x80;
+        assert!(matches!(
+            decode_index_buffer(&mut triangle_output, 3, 4, &triangle),
+            Err(GltfError::InvalidGltf(_))
+        ));
+
+        let mut sequence = [0; 1 + 5 + 4];
+        sequence[0] = SEQUENCE_HEADER | 1;
+        sequence[1..6].copy_from_slice(&[0x80, 0x80, 0x80, 0x80, 1]);
+        let mut sequence_output = [0; 4];
+        decode_index_sequence(&mut sequence_output, 1, 4, &sequence).unwrap();
+        assert_eq!(sequence_output, 0x0400_0000u32.to_le_bytes());
+        sequence[5] |= 0x80;
+        assert!(matches!(
+            decode_index_sequence(&mut sequence_output, 1, 4, &sequence),
+            Err(GltfError::InvalidGltf(_))
+        ));
     }
 
     /// Expected values come from an independent transcription of the reference
