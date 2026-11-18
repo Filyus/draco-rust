@@ -51,6 +51,7 @@ draco-io = { path = "../crates/draco-io", default-features = false, features = [
 # each transcode target is reachable.
 draco-texture = { path = "../crates/draco-texture" }
 libfuzzer-sys = "0.4"
+meshopt = "=0.7.0"
 
 [[bin]]
 name = "decode_drc"

@@ -19,12 +19,18 @@ status, threat model, and known residual risk live in
 | `decode_drc` | [`fuzz/fuzz_targets/decode_drc.rs`](fuzz/fuzz_targets/decode_drc.rs) | Feeds each input through both `MeshDecoder` and `PointCloudDecoder` under tight decode limits, including the legacy decode features used for old `.drc` streams, and requires the point-cloud decode on two threads to read what the one on one does. |
 | `compress_gltf` | [`fuzz/fuzz_targets/compress_gltf.rs`](fuzz/fuzz_targets/compress_gltf.rs) | Feeds arbitrary glTF/GLB bytes into the document-preserving glTF compressor with external file resolution disabled, under tight Draco decode limits. |
 | `draco_gltf_import` | [`fuzz/fuzz_targets/draco_gltf_import.rs`](fuzz/fuzz_targets/draco_gltf_import.rs) | Imports a full scene through `draco-gltf`, decodes every Draco primitive, then exercises atomic in-place decompression, all under tight Draco decode limits. |
-| `meshopt_decode` | [`fuzz/fuzz_targets/meshopt_decode.rs`](fuzz/fuzz_targets/meshopt_decode.rs) | Decodes a bounded meshopt buffer view in attribute, triangle, or index mode. Successful decodes must write the same bytes into buffers initially filled with zeros and ones. |
+| `meshopt_decode` | [`fuzz/fuzz_targets/meshopt_decode.rs`](fuzz/fuzz_targets/meshopt_decode.rs) | Compares successful mutated-stream decodes with meshoptimizer, round-trips generated inputs through its encoder, and checks rejection of specific forbidden stream structures. |
 | `fbx_read_scene` | [`fuzz/fuzz_targets/fbx_read_scene.rs`](fuzz/fuzz_targets/fbx_read_scene.rs) | Reads arbitrary bytes as an FBX scene under tight decode limits, in both lenient and strict modes, and checks that reading the same input twice agrees. |
 | `fbx_roundtrip` | [`fuzz/fuzz_targets/fbx_roundtrip.rs`](fuzz/fuzz_targets/fbx_roundtrip.rs) | Writes back whatever the FBX reader accepted and requires the result to satisfy the reader's strict mode, so the writer is fuzzed with scenes nobody would hand-build. The rewrite has to carry every mesh's control points, polygon corners, blend-shape targets and per-face material indices through unchanged, which counting nodes and materials cannot see. |
 | `encode_drc` | [`fuzz/fuzz_targets/encode_drc.rs`](fuzz/fuzz_targets/encode_drc.rs) | Builds a mesh or point cloud from the input - point count, triangle indices, attribute layouts and payloads, encoder options, the point order search among them - encodes it, and requires that anything the encoder accepted decodes, and that a point cloud's stream does not depend on the number of threads. |
 | `mesh_text_readers` | [`fuzz/fuzz_targets/mesh_text_readers.rs`](fuzz/fuzz_targets/mesh_text_readers.rs) | Feeds each input to the OBJ, PLY and STL readers, which parse untrusted files with no limits API of their own. |
 | `ktx2_transcode` | [`fuzz/fuzz_targets/ktx2_transcode.rs`](fuzz/fuzz_targets/ktx2_transcode.rs) | Parses arbitrary bytes as KTX2 and transcodes every level small enough into every target, so that an allocation failure is a finding rather than the header's own arithmetic. |
+
+For mutated meshopt streams, the byte comparison runs when both decoders
+accept the input. For generated valid streams, any rejection or output mismatch
+is a finding. The reference decoder also accepts some invalid streams, so
+targeted constructions independently check empty FIFO reads, unterminated
+varints, reserved table entries and channel modes.
 
 `decode_drc` builds `draco-core` with `default-features = false` and enables the
 legacy decode features needed for old streams. The two glTF targets use
