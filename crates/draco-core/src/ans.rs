@@ -193,10 +193,7 @@ impl<'a> AnsDecoder<'a> {
             return false;
         }
 
-        if self.state >= self.l_base * ANS_IO_BASE {
-            return false;
-        }
-        true
+        self.state < self.l_base * ANS_IO_BASE
     }
 
     pub fn rabs_desc_read(&mut self, p0: u8) -> bool {
