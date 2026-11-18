@@ -8,6 +8,12 @@ has changed in them; each package version has a section of its own.
 
 ## Unreleased
 
+## [0.4.1] - 2026-11-18
+
+- `@draco-rust/gltf` rejects malformed `EXT_meshopt_compression` streams with
+  reserved channel modes or bits, malformed codeaux tables, unterminated index
+  varints, or triangle streams that read unwritten FIFO entries.
+
 ## [0.4.0] - 2026-11-12
 
 - **Breaking: glTF validation now follows the pinned 2.1 draft more closely.**
