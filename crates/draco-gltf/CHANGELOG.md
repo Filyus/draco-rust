@@ -9,6 +9,14 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.1](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.8.0...draco-gltf-v0.8.1) - 2026-11-18
+
+### Safety and Hardening
+
+- Reject meshopt triangle streams that read unwritten FIFO entries, malformed
+  codeaux tables, or unterminated index varints. Reject reserved vertex channel
+  modes and reserved channel bits in attribute streams.
+
 ## [0.8.0](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.7.0...draco-gltf-v0.8.0) - 2026-11-11
 
 ### API
