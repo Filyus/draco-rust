@@ -507,11 +507,7 @@ fn tex_coords_prediction_overflow_checks(
     }
 
     let pn_absmax = vec3_absmax(pn);
-    if pn_absmax == 0 || exceeds_i64_product_limit_u64(cn_dot_pn.unsigned_abs(), pn_absmax) {
-        return false;
-    }
-
-    true
+    !(pn_absmax == 0 || exceeds_i64_product_limit_u64(cn_dot_pn.unsigned_abs(), pn_absmax))
 }
 
 #[cfg(any(feature = "decoder", feature = "encoder"))]

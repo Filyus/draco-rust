@@ -818,7 +818,6 @@ impl MeshEdgebreakerEncoder {
     // DFS traversal state requires 8 parameters: start corner, mesh, corner table,
     // and 4 mutable output vectors (point_ids, corners, vertex_map, visited flags).
     // This is a performance-critical inner loop that matches C++ DepthFirstTraverser.
-    #[allow(clippy::too_many_arguments)]
     /// `corner_stack` is the caller's scratch, cleared here rather than
     /// allocated: this runs once per seed corner, and on a mesh where every
     /// vertex is on a boundary that is once per vertex, so a `Vec::new` here

@@ -136,10 +136,7 @@ impl<'a> RAnsSymbolDecoder<'a> {
     }
 
     pub fn create(&mut self, buffer: &mut DecoderBuffer) -> bool {
-        if !self.decode_table(buffer) {
-            return false;
-        }
-        true
+        self.decode_table(buffer)
     }
 
     fn decode_table(&mut self, buffer: &mut DecoderBuffer) -> bool {
