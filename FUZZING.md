@@ -19,6 +19,7 @@ status, threat model, and known residual risk live in
 | `decode_drc` | [`fuzz/fuzz_targets/decode_drc.rs`](fuzz/fuzz_targets/decode_drc.rs) | Feeds each input through both `MeshDecoder` and `PointCloudDecoder` under tight decode limits, including the legacy decode features used for old `.drc` streams, and requires the point-cloud decode on two threads to read what the one on one does. |
 | `compress_gltf` | [`fuzz/fuzz_targets/compress_gltf.rs`](fuzz/fuzz_targets/compress_gltf.rs) | Feeds arbitrary glTF/GLB bytes into the document-preserving glTF compressor with external file resolution disabled, under tight Draco decode limits. |
 | `draco_gltf_import` | [`fuzz/fuzz_targets/draco_gltf_import.rs`](fuzz/fuzz_targets/draco_gltf_import.rs) | Imports a full scene through `draco-gltf`, decodes every Draco primitive, then exercises atomic in-place decompression, all under tight Draco decode limits. |
+| `meshopt_decode` | [`fuzz/fuzz_targets/meshopt_decode.rs`](fuzz/fuzz_targets/meshopt_decode.rs) | Decodes a bounded meshopt buffer view in attribute, triangle, or index mode. Successful decodes must write the same bytes into buffers initially filled with zeros and ones. |
 | `fbx_read_scene` | [`fuzz/fuzz_targets/fbx_read_scene.rs`](fuzz/fuzz_targets/fbx_read_scene.rs) | Reads arbitrary bytes as an FBX scene under tight decode limits, in both lenient and strict modes, and checks that reading the same input twice agrees. |
 | `fbx_roundtrip` | [`fuzz/fuzz_targets/fbx_roundtrip.rs`](fuzz/fuzz_targets/fbx_roundtrip.rs) | Writes back whatever the FBX reader accepted and requires the result to satisfy the reader's strict mode, so the writer is fuzzed with scenes nobody would hand-build. The rewrite has to carry every mesh's control points, polygon corners, blend-shape targets and per-face material indices through unchanged, which counting nodes and materials cannot see. |
 | `encode_drc` | [`fuzz/fuzz_targets/encode_drc.rs`](fuzz/fuzz_targets/encode_drc.rs) | Builds a mesh or point cloud from the input - point count, triangle indices, attribute layouts and payloads, encoder options, the point order search among them - encodes it, and requires that anything the encoder accepted decodes, and that a point cloud's stream does not depend on the number of threads. |
@@ -340,6 +341,10 @@ cargo +nightly fuzz run -O compress_gltf --fuzz-dir fuzz -- -max_total_time=120 
 
 # Full-scene import, Draco decode, and decompression smoke run
 cargo +nightly fuzz run -O draco_gltf_import --fuzz-dir fuzz -- -max_total_time=120 -rss_limit_mb=4096
+
+# Raw meshopt buffer views with a four-byte mode, stride and count prefix.
+./fuzz/seed_corpus.sh meshopt_decode
+cargo +nightly fuzz run -O meshopt_decode --fuzz-dir fuzz -- -max_total_time=60 -max_len=16388
 
 # FBX container read, lenient and strict
 cargo +nightly fuzz run -O fbx_read_scene --fuzz-dir fuzz -- -max_total_time=120 -rss_limit_mb=4096

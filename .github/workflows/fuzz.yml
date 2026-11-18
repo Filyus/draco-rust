@@ -219,6 +219,11 @@ jobs:
             targets: draco_gltf_import
             dict: gltf
             soak_seconds: 1800
+          - group: meshopt_decode
+            name: Meshopt buffer views
+            targets: meshopt_decode
+            extra_libfuzzer_args: "-max_len=16388"
+            soak_seconds: 1800
           - group: ktx2
             name: KTX2 transcode
             targets: ktx2_transcode

@@ -36,6 +36,10 @@ case "$target" in
     # so a file they recognise is what starts it.
     find_args=( \( -name '*.obj' -o -name '*.ply' -o -name '*.stl' \) )
     ;;
+  meshopt_decode)
+    # The target takes a layout prefix followed by one compressed buffer view.
+    find_args=( -name '*.no-such-fixture' )
+    ;;
   encode_drc)
     # Encoder-side target: its input describes geometry to encode, not a file
     # to parse, so no repository fixture is a seed. Seeded entirely from

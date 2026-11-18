@@ -81,6 +81,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "meshopt_decode"
+path = "fuzz_targets/meshopt_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "mesh_text_readers"
 path = "fuzz_targets/mesh_text_readers.rs"
 test = false

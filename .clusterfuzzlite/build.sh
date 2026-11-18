@@ -31,7 +31,7 @@ esac
 # Every [[bin]] in fuzz/Cargo.toml, and the list is checked against it below:
 # a target added there and not here would build and then never be fuzzed by
 # this layer, which is how `mesh_text_roundtrip` went missing once.
-fuzz_targets=(decode_drc compress_gltf draco_gltf_import fbx_read_scene fbx_roundtrip ktx2_transcode encode_drc mesh_text_readers mesh_text_roundtrip)
+fuzz_targets=(decode_drc compress_gltf draco_gltf_import meshopt_decode fbx_read_scene fbx_roundtrip ktx2_transcode encode_drc mesh_text_readers mesh_text_roundtrip)
 declared=$(grep -E '^name = "' fuzz/Cargo.toml | grep -v draco-fuzz | sed -E 's/name = "(.*)"/\1/' | sort)
 listed=$(printf '%s\n' "${fuzz_targets[@]}" | sort)
 if [ "$declared" != "$listed" ]; then
