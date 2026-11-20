@@ -40,6 +40,28 @@ triangle corners, which is empty for a point cloud. `normals` and `uvs` are
 such attribute. Attributes the stream carries beyond those are in
 `meshes[0].extras`, and `result.warnings` says what was not interpreted.
 
+### Metadata
+
+A `.drc` can carry metadata: unnamed byte entries by key, nested blocks, a
+block for the whole geometry and one per attribute. Both `parse_drc_bytes` and
+`decode_draco` hand it back unchanged.
+
+```js
+const metadata = result.metadata;                    // the geometry's block, when it has one
+metadata.entries.sh_degree;                          // the raw bytes, as written
+metadata.strings.producer;                           // the same entry as text, when it is valid UTF-8
+metadata.subMetadata?.node;                          // a nested block, same shape again
+
+result.meshes[0].extras[0].metadata;                 // an attribute's own block
+result.attributes[2].metadata?.name;                 // what a generic is called, in `decode_draco`
+```
+
+An entry is whatever bytes the producer wrote -- the bitstream carries no type
+tag -- so `entries` holds them raw and `strings` holds the ones that are valid
+UTF-8 as text. Reading a typed entry back is a `DataView` over the raw array:
+`new DataView(entry.buffer, entry.byteOffset).getInt32(0, true)` for an `i32`,
+for instance.
+
 ### Attributes the way a loader asks for them
 
 `decode_draco` returns every attribute as a typed array, or the ones a loader

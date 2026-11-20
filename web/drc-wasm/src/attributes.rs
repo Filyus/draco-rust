@@ -14,12 +14,49 @@ use draco_core::draco_types::DataType;
 use draco_core::geometry_attribute::{GeometryAttributeType, PointAttribute};
 use draco_core::geometry_indices::{AttributeValueIndex, PointIndex};
 use draco_core::mesh::Mesh;
+use draco_core::metadata::Metadata;
 use js_sys::{
     Array, BigInt64Array, BigUint64Array, Float32Array, Float64Array, Int16Array, Int32Array,
     Int8Array, Object, Reflect, Uint16Array, Uint32Array, Uint8Array,
 };
 use wasm_bindgen::prelude::*;
 use wasm_bridge::{set_bool, set_js, set_opt_string, set_string_array};
+
+/// One metadata block, as JavaScript reads it: raw byte entries by key, the
+/// entries that are valid UTF-8 again as text, and nested blocks.
+///
+/// The bitstream carries an entry as unnamed bytes -- no type tag -- so the
+/// raw array is the honest form and the string dictionary is the convenience
+/// one; a typed read is a `DataView` over the array when neither fits.
+pub(crate) fn metadata_to_js(metadata: &Metadata) -> JsValue {
+    let obj = Object::new();
+    let entries = Object::new();
+    let strings = Object::new();
+    for (name, value) in metadata.entries() {
+        set_js(&entries, name, &Uint8Array::from(value.as_slice()).into());
+        if let Ok(text) = std::str::from_utf8(value) {
+            set_js(&strings, name, &JsValue::from_str(text));
+        }
+    }
+    set_js(&obj, "entries", &entries.into());
+    set_js(&obj, "strings", &strings.into());
+    if !metadata.sub_metadata().is_empty() {
+        let sub = Object::new();
+        for (name, nested) in metadata.sub_metadata() {
+            set_js(&sub, name, &metadata_to_js(nested));
+        }
+        set_js(&obj, "subMetadata", &sub.into());
+    }
+    obj.into()
+}
+
+/// The metadata block an attribute carries, or nothing: an attribute without a
+/// metadata block of its own reports no `metadata` rather than an empty one,
+/// which keeps `attribute.metadata?.name` the shortest read.
+pub(crate) fn attribute_metadata_to_js(mesh: &Mesh, unique_id: u32) -> Option<JsValue> {
+    mesh.attribute_metadata_by_unique_id(unique_id)
+        .map(|metadata| metadata_to_js(metadata.metadata()))
+}
 
 #[wasm_bindgen(typescript_custom_section)]
 const TYPES: &str = r#"
@@ -55,6 +92,24 @@ export interface DracoAttribute {
   array: DracoArray;
   itemSize: number;
   normalized: boolean;
+  /** The metadata the stream's attribute metadata block carries, when it carries one. */
+  metadata?: DracoMetadata;
+}
+
+/**
+ * A Draco metadata block, as the bitstream stores it: unnamed byte entries by
+ * key and nested blocks. An entry is whatever bytes the producer wrote -- the
+ * bitstream carries no type tag -- so `entries` holds them raw and `strings`
+ * holds the ones that are valid UTF-8 as text. `Metadata::get_i32`-style
+ * readers are a `DataView` over an entry away.
+ */
+export interface DracoMetadata {
+  /** Raw byte entries by key. */
+  entries: Record<string, Uint8Array>;
+  /** The entries that are valid UTF-8, as text, by key. */
+  strings: Record<string, string>;
+  /** Nested sub-metadata blocks by key. */
+  subMetadata?: Record<string, DracoMetadata>;
 }
 
 export interface DracoDecodeOptions {
@@ -74,6 +129,8 @@ export interface DracoDecodeResult {
   /** Triangle corners for a mesh, `null` for a point cloud. */
   index: Uint32Array | Uint16Array | null;
   attributes: DracoAttribute[];
+  /** The metadata the whole geometry carries, when the stream declares any. */
+  metadata?: DracoMetadata;
 }
 
 /**
@@ -103,10 +160,12 @@ export function decode_draco(
 ///   `GetAttributeDataArrayForAllPoints` does; without it the values keep
 ///   their own type. A value the type cannot hold is an error.
 ///
-/// The result is `{ success, error, warnings, geometry, index, attributes }`,
-/// where `geometry` is `"mesh"` or `"point_cloud"` as the stream's header says,
-/// `index` the triangle corners for a mesh and `null` for a point cloud, and
-/// each attribute `{ name, uniqueId, semantic, array, itemSize, normalized }`.
+/// The result is `{ success, error, warnings, geometry, index, attributes,
+/// metadata }`, where `geometry` is `"mesh"` or `"point_cloud"` as the
+/// stream's header says, `index` the triangle corners for a mesh and `null`
+/// for a point cloud, each attribute
+/// `{ name, uniqueId, semantic, array, itemSize, normalized, metadata }`, and
+/// `metadata` the geometry's own metadata block when the stream declares one.
 /// The index is a `Uint32Array`, or with `options.index` set to `"auto"` a
 /// `Uint16Array` where the points number at most 65536.
 ///
@@ -219,6 +278,16 @@ fn decode(data: &[u8], attributes: &JsValue, options: Option<&Object>) -> Result
     };
     set_js(&obj, "index", &index);
     set_js(&obj, "attributes", &out.into());
+    // The geometry's own metadata block: global keys such as a splat's
+    // `sh_degree` or a producer's format version ride there, above every
+    // attribute's.
+    if let Some(metadata) = mesh
+        .metadata()
+        .filter(|metadata| !metadata.is_empty())
+        .map(|metadata| metadata_to_js(metadata.metadata()))
+    {
+        set_js(&obj, "metadata", &metadata);
+    }
     Ok(obj)
 }
 
@@ -350,6 +419,9 @@ fn attribute_to_js(
         &JsValue::from(u32::from(attribute.num_components())),
     );
     set_bool(&obj, "normalized", attribute.normalized());
+    if let Some(metadata) = attribute_metadata_to_js(mesh, attribute.unique_id()) {
+        set_js(&obj, "metadata", &metadata);
+    }
     obj
 }
 

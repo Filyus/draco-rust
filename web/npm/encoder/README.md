@@ -35,6 +35,22 @@ They write smaller files, at the cost of output no longer byte-identical to
 Google's encoder. `point_order_search` also costs encode time to measure, and
 `spatial_point_order` reorders the decoded points whatever the price.
 
+## Quantization grids and metadata
+
+Per attribute, `quantizationBits` names a bit budget and, with it,
+`quantizationOrigin` and `quantizationRange` name the grid the values are
+quantized on -- the same three options `ExpertEncoder::SetAttributeExplicitQuantization`
+takes. Positions take `position_origin` and `position_range` beside
+`position_bits`. The grid goes into the stream as the transform's own
+parameters, so any decoder reads it the same way; values outside it come back
+on its edges rather than off it.
+
+The mesh can carry `metadata` -- and each extra attribute its own -- in the
+same shape `parse_drc_bytes` reports it: `{ entries, subMetadata? }`, entries
+byte arrays keyed by name. A `.drc -> .drc` recode passes them back and keeps
+what the file said about itself; a `name` on an extra still lands in its
+metadata as `"name"`.
+
 ## On workers
 
 `@draco-rust/encoder/pool` encodes on workers, so a large mesh does not block

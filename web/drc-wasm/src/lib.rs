@@ -27,7 +27,7 @@ pub use attributes::decode_draco;
 #[cfg(feature = "write")]
 use wasm_bridge::{
     f64_array_from_js, get_field, opt_bool_from_js, opt_i32_from_js, optional_f32_array,
-    optional_u8_array, required_f32_array, required_u32_array,
+    optional_u8_array, required_f32_array, required_u32_array, u8_array_from_js,
 };
 use wasm_bridge::{set_bool, set_js, set_opt_string, u8_array_to_js};
 
@@ -56,8 +56,10 @@ use draco_core::geometry_attribute::GeometryAttributeType;
 use draco_core::geometry_attribute::PointAttribute;
 use draco_core::geometry_indices::{FaceIndex, PointIndex};
 use draco_core::mesh::Mesh;
-#[cfg(feature = "write")]
+#[cfg(any(feature = "read", feature = "write"))]
 use draco_core::metadata::Metadata;
+#[cfg(feature = "write")]
+use js_sys::Reflect;
 
 // ===========================================================================
 // Reader
@@ -113,6 +115,12 @@ pub struct ExtraAttribute {
     /// payload says which of its sixty-odd generics is `opacity`, and without
     /// it a consumer has a list of unlabelled columns.
     pub name: Option<String>,
+    /// The whole metadata block the payload's attribute metadata carries, when
+    /// it carries one, above the `name` it usually also names.
+    ///
+    /// A writer reads this to put it back; a decoded attribute carries what
+    /// its payload declared, and one with no metadata block reports `None`.
+    pub metadata: Option<Metadata>,
     /// How many bits to quantize it to when it is written, or `None` to keep
     /// its values exact.
     ///
@@ -162,6 +170,10 @@ pub struct ParseResult {
     pub warnings: Vec<String>,
     /// Every attribute the payload declared, in the order it declared them.
     pub attributes: Vec<AttributeInfo>,
+    /// The metadata the whole geometry carries, when the payload declares any:
+    /// global keys such as a splat's `sh_degree` or a producer's format
+    /// version ride there, above every attribute's own block.
+    pub metadata: Option<Metadata>,
 }
 
 /// One attribute as the payload declares it.
@@ -187,6 +199,9 @@ pub struct AttributeInfo {
     /// Whether the flat mesh interpreted this attribute. The rest are carried
     /// through unchanged rather than dropped, but nothing reads their meaning.
     pub read: bool,
+    /// The metadata block the payload carries for this attribute, when it
+    /// carries one.
+    pub metadata: Option<Metadata>,
 }
 
 /// Decode a standalone Draco payload.
@@ -205,6 +220,9 @@ fn extra_attribute_to_js(extra: &ExtraAttribute) -> JsValue {
     set_js(&obj, "uniqueId", &JsValue::from(extra.unique_id));
     set_bool(&obj, "normalized", extra.normalized);
     set_opt_string(&obj, "name", &extra.name);
+    if let Some(metadata) = &extra.metadata {
+        set_js(&obj, "metadata", &attributes::metadata_to_js(metadata));
+    }
     set_js(&obj, "values", &f64_array_to_js(&extra.values));
     obj.into()
 }
@@ -260,9 +278,19 @@ fn parse_result_to_js(result: &ParseResult) -> JsValue {
             &JsValue::from_f64(attribute.values as f64),
         );
         set_bool(&attribute_obj, "read", attribute.read);
+        if let Some(metadata) = &attribute.metadata {
+            set_js(
+                &attribute_obj,
+                "metadata",
+                &attributes::metadata_to_js(metadata),
+            );
+        }
         attributes.push(&attribute_obj.into());
     }
     set_js(&obj, "attributes", &attributes.into());
+    if let Some(metadata) = &result.metadata {
+        set_js(&obj, "metadata", &attributes::metadata_to_js(metadata));
+    }
     obj.into()
 }
 
@@ -314,6 +342,7 @@ fn parse_drc_internal(data: &[u8]) -> ParseResult {
                 meshes: vec![mesh_to_js_data(&mesh)],
                 error: None,
                 warnings,
+                metadata: mesh.metadata().map(|metadata| metadata.metadata().clone()),
             }
         }
         Err(error) => ParseResult {
@@ -322,6 +351,7 @@ fn parse_drc_internal(data: &[u8]) -> ParseResult {
             error: Some(error),
             warnings: vec![],
             attributes: vec![],
+            metadata: None,
         },
     }
 }
@@ -347,6 +377,9 @@ fn describe_attributes(mesh: &Mesh) -> Vec<AttributeInfo> {
                 unique_id: attribute.unique_id(),
                 values: attribute.size(),
                 read: first && attribute_type != GeometryAttributeType::Generic,
+                metadata: mesh
+                    .attribute_metadata_by_unique_id(attribute.unique_id())
+                    .map(|metadata| metadata.metadata().clone()),
             }
         })
         .collect()
@@ -423,6 +456,9 @@ fn read_extra_attributes(mesh: &Mesh) -> Vec<ExtraAttribute> {
             unique_id: attribute.unique_id(),
             normalized: attribute.normalized(),
             name: attribute_name(mesh, attribute.unique_id()),
+            metadata: mesh
+                .attribute_metadata_by_unique_id(attribute.unique_id())
+                .map(|metadata| metadata.metadata().clone()),
             quantization_bits: None,
             quantization_origin: None,
             quantization_range: None,
@@ -601,6 +637,14 @@ pub struct MeshInput {
     pub colors: Option<Vec<u8>>,
     /// Attributes to write back exactly as they were read, uninterpreted.
     pub extras: Option<Vec<ExtraAttribute>>,
+    /// The metadata the whole geometry carries, written into the payload's
+    /// geometry metadata block when it holds anything.
+    ///
+    /// A `.drc -> .drc` recode passes what [`parse_drc_bytes`][crate::parse_drc_bytes]
+    /// reported back here and keeps it; a payload whose meaning is in its
+    /// metadata -- a splat's `sh_degree`, a producer's format version -- loses
+    /// it otherwise.
+    pub metadata: Option<Metadata>,
 }
 
 /// Encoder options, named as the export panel's controls are.
@@ -863,6 +907,10 @@ fn export_result_to_js(result: &ExportResult) -> JsValue {
 
 #[cfg(feature = "write")]
 fn mesh_input_from_js(value: &JsValue) -> Result<MeshInput, String> {
+    let metadata = match get_field(value, "metadata") {
+        None => None,
+        Some(metadata) => Some(metadata_from_js(&metadata, "metadata")?),
+    };
     Ok(MeshInput {
         positions: required_f32_array(value, "positions")?,
         indices: required_u32_array(value, "indices")?,
@@ -870,7 +918,53 @@ fn mesh_input_from_js(value: &JsValue) -> Result<MeshInput, String> {
         uvs: optional_f32_array(value, "uvs")?,
         colors: optional_u8_array(value, "colors")?,
         extras: optional_extras(value)?,
+        metadata,
     })
+}
+
+/// Reads a metadata block in the shape [`crate::parse_drc_bytes`] and
+/// [`decode_draco`][crate::decode_draco] report one: `entries` of byte arrays
+/// keyed by name, and optional nested `subMetadata`.
+///
+/// `entries` must be present even when empty -- a metadata object that carries
+/// nothing is not an error, but one that is not shaped like a metadata object
+/// is the caller's to see.
+#[cfg(feature = "write")]
+fn metadata_from_js(value: &JsValue, label: &str) -> Result<Metadata, String> {
+    let entries = get_field(value, "entries")
+        .ok_or_else(|| format!("{label} must carry entries, even empty ones"))?;
+    let entries = entries
+        .dyn_ref::<Object>()
+        .ok_or_else(|| format!("{label} entries must be an object"))?;
+    let mut metadata = Metadata::new();
+    for key in Object::keys(entries) {
+        let name = key
+            .as_string()
+            .ok_or_else(|| format!("{label} entries must be keyed by strings"))?;
+        let raw = Reflect::get(entries, &key)
+            .map_err(|_| format!("{label}: entry {name} could not be read"))?;
+        let bytes = u8_array_from_js(&raw, &format!("{label}.{name}"))?;
+        metadata
+            .set_raw(&name, bytes)
+            .map_err(|error| format!("{label}: entry {name}: {error}"))?;
+    }
+    if let Some(sub) = get_field(value, "subMetadata") {
+        let sub = sub
+            .dyn_ref::<Object>()
+            .ok_or_else(|| format!("{label} subMetadata must be an object"))?;
+        for key in Object::keys(sub) {
+            let name = key
+                .as_string()
+                .ok_or_else(|| format!("{label} subMetadata must be keyed by strings"))?;
+            let child = Reflect::get(sub, &key)
+                .map_err(|_| format!("{label}: sub-metadata {name} could not be read"))?;
+            let child = metadata_from_js(&child, &format!("{label}.{name}"))?;
+            metadata
+                .insert_sub_metadata(&name, child)
+                .map_err(|error| format!("{label}: sub-metadata {name}: {error}"))?;
+        }
+    }
+    Ok(metadata)
 }
 
 #[cfg(feature = "write")]
@@ -910,6 +1004,13 @@ fn extra_attribute_from_js(value: &JsValue) -> Result<ExtraAttribute, String> {
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
     let name = get_field(value, "name").and_then(|value| value.as_string());
+    let metadata = match get_field(value, "metadata") {
+        None => None,
+        Some(metadata) => Some(metadata_from_js(
+            &metadata,
+            "an extra attribute's metadata",
+        )?),
+    };
     let quantization_bits = opt_i32_from_js(value, "quantizationBits");
     let quantization_origin = optional_f32_array(value, "quantizationOrigin")?;
     let quantization_range = get_field(value, "quantizationRange")
@@ -925,6 +1026,7 @@ fn extra_attribute_from_js(value: &JsValue) -> Result<ExtraAttribute, String> {
         unique_id,
         normalized,
         name,
+        metadata,
         quantization_bits,
         quantization_origin,
         quantization_range,
@@ -1341,18 +1443,33 @@ fn mesh_input_to_core_mesh(
                 extra.name.as_deref().unwrap_or("without a name"),
             ));
         }
-        // The name goes back into metadata under the id the attribute ended
+        // The attribute's metadata goes back under the id the attribute ended
         // up with, which is not always the one it arrived with. Dropping it
-        // here would make an export lossy in exactly the way that matters to a
-        // payload whose meaning is in its names.
+        // here would make an export lossy in exactly the way that matters to
+        // a payload whose meaning is in its names and its nested tables. A
+        // caller-supplied `name` still lands in it as `"name"`, alone or
+        // alongside the block that came with the attribute.
+        let mut attribute_metadata = extra.metadata.clone().unwrap_or_default();
         if let Some(name) = &extra.name {
-            let mut metadata = Metadata::new();
-            metadata
+            attribute_metadata
                 .set_string("name", name.clone())
                 .map_err(|error| format!("attribute name {name}: {error}"))?;
-            mesh.metadata_or_insert()
-                .set_attribute_metadata(unique_id, metadata);
         }
+        if !attribute_metadata.is_empty() {
+            mesh.metadata_or_insert()
+                .set_attribute_metadata(unique_id, attribute_metadata);
+        }
+    }
+
+    // The geometry's own metadata, same as the attributes': recoding a payload
+    // that carries one without passing it back would drop exactly the keys a
+    // consumer reads the payload by.
+    if let Some(metadata) = input
+        .metadata
+        .as_ref()
+        .filter(|metadata| !metadata.is_empty())
+    {
+        *mesh.metadata_or_insert().metadata_mut() = metadata.clone();
     }
 
     mesh.set_num_faces(input.indices.len() / 3);
@@ -1425,6 +1542,7 @@ mod tests {
             uvs: Some(vec![0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0]),
             colors: None,
             extras: None,
+            metadata: None,
         }
     }
 
@@ -1573,6 +1691,7 @@ mod tests {
             normals: None,
             uvs: None,
             colors: None,
+            metadata: None,
             extras: Some(vec![ExtraAttribute {
                 attribute_type: "GENERIC".to_string(),
                 components: 1,
@@ -1580,12 +1699,69 @@ mod tests {
                 unique_id: 7,
                 normalized: false,
                 name: None,
+                metadata: None,
                 quantization_bits: None,
                 quantization_origin: None,
                 quantization_range: None,
                 values: vec![-3.0, -2.0, -1.0, 0.0],
             }]),
         }
+    }
+
+    /// Metadata rides both ways through the entry points: a geometry-level
+    /// block and a per-attribute block written in come back from a decode,
+    /// and a name given alongside an attribute's own block loses neither.
+    #[test]
+    fn test_metadata_round_trips_through_the_entry_points() {
+        let mut input = splat_points();
+        input.metadata = Some({
+            let mut metadata = Metadata::new();
+            metadata.set_i32("sh_degree", 3).unwrap();
+            metadata.set_string("producer", "test").unwrap();
+            metadata
+        });
+        let extra = &mut input.extras.as_mut().unwrap()[0];
+        extra.name = Some("opacity".to_string());
+        extra.metadata = Some({
+            let mut metadata = Metadata::new();
+            metadata
+                .set_f64_array("transform", &[1.0, 0.0, 0.0])
+                .unwrap();
+            metadata
+        });
+        let exported = create_drc_internal(
+            &input,
+            &ExportOptions {
+                point_cloud: Some(true),
+                ..Default::default()
+            },
+        );
+        assert!(exported.success, "{:?}", exported.error);
+        let parsed = parse_drc_internal(&exported.binary_data.expect("a payload"));
+        assert!(parsed.success, "{:?}", parsed.error);
+
+        let metadata = parsed.metadata.as_ref().expect("geometry metadata");
+        assert_eq!(metadata.get_i32("sh_degree"), Some(3));
+        assert_eq!(metadata.get_string("producer"), Some("test"));
+
+        let extra = &parsed.meshes[0].extras[0];
+        let attribute_metadata = extra.metadata.as_ref().expect("attribute metadata");
+        assert_eq!(attribute_metadata.get_string("name"), Some("opacity"));
+        assert_eq!(
+            attribute_metadata.get_f64_array("transform"),
+            Some(vec![1.0, 0.0, 0.0])
+        );
+
+        // The declaration list carries the same block, so a reader that never
+        // touches the extras still sees it.
+        let declared = &parsed.attributes[1];
+        assert_eq!(
+            declared
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get_string("name")),
+            Some("opacity")
+        );
     }
 
     /// A named generic keeps its name through a write and a read, and takes the
@@ -1695,9 +1871,8 @@ mod tests {
     /// bits is refused.
     #[test]
     fn test_a_position_grid_needs_its_bits() {
-        let grid = |options: ExportOptions| {
-            create_drc_internal(&quad(), &ExportOptions { ..options })
-        };
+        let grid =
+            |options: ExportOptions| create_drc_internal(&quad(), &ExportOptions { ..options });
         let exported = grid(ExportOptions {
             position_bits: Some(10),
             position_origin: Some(vec![-1.0, -1.0, -1.0]),
@@ -1771,6 +1946,7 @@ mod tests {
             normals: None,
             uvs: None,
             colors: None,
+            metadata: None,
             extras: Some(vec![ExtraAttribute {
                 attribute_type: "GENERIC".to_string(),
                 components: 1,
@@ -1778,6 +1954,7 @@ mod tests {
                 unique_id: 7,
                 normalized: false,
                 name: None,
+                metadata: None,
                 quantization_bits: None,
                 quantization_origin: None,
                 quantization_range: None,
