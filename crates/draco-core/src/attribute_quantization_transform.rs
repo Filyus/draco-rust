@@ -121,19 +121,13 @@ impl AttributeQuantizationTransform {
         if !VALID_QUANTIZATION_BITS.contains(&quantization_bits) {
             return Err(invalid_quantization_bits(quantization_bits));
         }
-        // The grid is what every value is scaled against: a zero or negative
-        // range divides by nothing, and a non-finite one, like a non-finite
-        // origin, would write NaN into the stream.
-        if !range.is_finite() || range <= 0.0 {
-            return Err(DracoError::invalid_parameter(format!(
-                "Quantization range {range} must be a finite value above zero"
-            )));
-        }
-        if let Some(component) = min_values.iter().position(|value| !value.is_finite()) {
-            return Err(DracoError::invalid_parameter(format!(
-                "Quantization origin component {component} is not finite"
-            )));
-        }
+        // What the stream carries is what this takes, without second-guessing
+        // it: a range of zero is what C++ writes when every value is the same,
+        // and its decoder collapses the attribute onto the origin for it. The
+        // kd-tree decoder passes through here with exactly that stream, and
+        // the encoder's explicit grid is held to more than this instead, in
+        // `init_quantization_transform`, where a caller naming a grid means a
+        // finite range above zero over finite origin values.
         self.quantization_bits = quantization_bits;
         self.min_values = min_values.to_vec();
         self.range = range;
@@ -1024,11 +1018,12 @@ impl AttributeTransform for AttributeQuantizationTransform {
 /// computed path quantizes unclamped, as upstream does, and its bytes are
 /// unchanged.
 ///
-/// A grid whose origin does not have one component per attribute component is
-/// refused rather than silently replaced by computed parameters: the caller
-/// named the grid, so a mismatch is theirs to see. The computed path's own
-/// refusals -- a non-float attribute, an empty one, a NaN -- surface here as
-/// they always did.
+/// A grid whose origin does not have one component per attribute component, or
+/// whose range is not a finite value above zero, or whose origin is not
+/// finite, is refused rather than silently replaced by computed parameters:
+/// the caller named the grid, so a fault in it is theirs to see. The computed
+/// path's own refusals -- a non-float attribute, an empty one, a NaN --
+/// surface here as they always did.
 ///
 /// `quantization_bits` below one is refused as well; every caller that reaches
 /// here has already decided quantization applies to the attribute, which
@@ -1056,6 +1051,23 @@ pub(crate) fn init_quantization_transform(
                  for {}-component values",
                 origin.len(),
                 attribute.num_components()
+            )));
+        }
+        // The grid is what every value is scaled against: a zero or negative
+        // range divides by nothing, and a non-finite one, like a non-finite
+        // origin, would write NaN into the stream. `set_parameters` itself
+        // takes what a stream carries -- a range of zero is one C++ wrote --
+        // so this holds only the grid a caller named.
+        if !range.is_finite() || range <= 0.0 {
+            return Err(DracoError::invalid_parameter(format!(
+                "Attribute {att_id} declares a quantization range of {range}, \
+                 which must be a finite value above zero"
+            )));
+        }
+        if let Some(component) = origin.iter().position(|value| !value.is_finite()) {
+            return Err(DracoError::invalid_parameter(format!(
+                "Attribute {att_id} declares a quantization origin whose \
+                 component {component} is not finite"
             )));
         }
         transform.set_parameters(quantization_bits, origin, range)?;
@@ -1414,11 +1426,21 @@ mod tests {
     /// that is not finite. Every one of those would write a stream the
     /// quantizer divides by zero or fills with NaN.
     #[test]
-    fn set_parameters_refuses_a_grid_it_cannot_quantize_against() {
+    fn init_quantization_transform_refuses_a_grid_it_cannot_quantize_against() {
         let refused = |range: f32, origin: &[f32]| {
-            let mut transform = AttributeQuantizationTransform::new();
-            transform
-                .set_parameters(12, origin, range)
+            let mut attribute = PointAttribute::new();
+            attribute.init(
+                GeometryAttributeType::Position,
+                3,
+                DataType::Float32,
+                false,
+                1,
+            );
+            let mut options = crate::encoder_options::EncoderOptions::new();
+            options.set_attribute_int(0, "quantization_bits", 12);
+            options.set_attribute_floats(0, "quantization_origin", origin);
+            options.set_attribute_float(0, "quantization_range", range);
+            init_quantization_transform(&attribute, &options, 0, 1)
                 .err()
                 .map(|error| error.to_string())
         };
@@ -1432,7 +1454,7 @@ mod tests {
         }
         for (component, origin) in [
             (1usize, &[0.0f32, f32::NAN, 0.0][..]),
-            (0, &[f32::INFINITY][..]),
+            (0, &[f32::INFINITY, 0.0, 0.0][..]),
         ] {
             let error =
                 refused(1.0, origin).expect("a non-finite origin component must be refused");
@@ -1443,8 +1465,35 @@ mod tests {
         }
         // A finite grid over finite values is what every in-tree caller
         // passes, and still passes.
+        let mut attribute = PointAttribute::new();
+        attribute.init(
+            GeometryAttributeType::Position,
+            3,
+            DataType::Float32,
+            false,
+            1,
+        );
+        let mut options = crate::encoder_options::EncoderOptions::new();
+        options.set_attribute_int(0, "quantization_bits", 12);
+        options.set_attribute_floats(0, "quantization_origin", &[0.0, 0.0, 0.0]);
+        options.set_attribute_float(0, "quantization_range", 1.0);
+        assert!(init_quantization_transform(&attribute, &options, 0, 1).is_ok());
+    }
+
+    /// What the stream carries, `set_parameters` takes: a range of zero is
+    /// what C++ writes when every value of an attribute is the same, and its
+    /// decoder collapses the attribute onto the origin for it. The kd-tree
+    /// decoder passes through here with exactly such a stream, so refusing it
+    /// would refuse a real file; the encoder's own grid is held to more, in
+    /// `init_quantization_transform`.
+    #[test]
+    fn set_parameters_takes_what_the_stream_carries_including_a_zero_range() {
         let mut transform = AttributeQuantizationTransform::new();
-        assert!(transform.set_parameters(12, &[0.0, 0.0, 0.0], 1.0).is_ok());
+        assert!(transform.set_parameters(12, &[1.0, 1.0, 1.0], 0.0).is_ok());
+        // Everything quantizes to the grid's floor and dequantizes back to
+        // the origin the stream named.
+        assert_eq!(transform.round_trip_component(0, 1.0).unwrap(), 1.0);
+        assert_eq!(transform.round_trip_component(2, 7.5).unwrap(), 1.0);
     }
 
     /// A value outside an explicitly named grid is pulled back onto it rather
