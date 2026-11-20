@@ -5,7 +5,9 @@
 //! against the KD-tree structure. Encode-side counterpart of
 //! `KdTreeAttributesDecoder`. Port of Draco's `kd_tree_attributes_encoder.h`.
 
-use crate::attribute_quantization_transform::AttributeQuantizationTransform;
+use crate::attribute_quantization_transform::{
+    init_quantization_transform, AttributeQuantizationTransform,
+};
 use crate::attribute_transform::AttributeTransform;
 use crate::draco_types::DataType;
 use crate::dynamic_integer_points_kd_tree::{DynamicIntegerPointsKdTreeEncoder, PointDVector};
@@ -86,15 +88,7 @@ impl KdTreeAttributesEncoder {
             let att = point_cloud.attribute(att_id);
             match att.data_type() {
                 DataType::Float32 => {
-                    let quantization_bits =
-                        options.get_attribute_int(att_id, "quantization_bits", -1);
-                    if quantization_bits < 1 {
-                        return Err(DracoError::invalid_parameter(format!(
-                            "Attribute {att_id} is float and needs quantization_bits,                              which is {quantization_bits}"
-                        )));
-                    }
-                    let mut transform = AttributeQuantizationTransform::new();
-                    transform.compute_parameters(att, quantization_bits)?;
+                    let transform = init_quantization_transform(att, options, att_id, 1)?;
 
                     let mut portable_att = crate::geometry_attribute::PointAttribute::default();
                     portable_att.init(

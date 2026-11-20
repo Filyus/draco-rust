@@ -231,3 +231,61 @@ fn every_encoding_speed_writes_a_stream_that_reads_back_as_the_same_points() {
         );
     }
 }
+
+/// The search prices its steps on the grid the caller named, and a grid the
+/// data pokes out of is priced the way the encode writes it: with everything
+/// outside pulled back onto the grid's edges. The stream it picks decodes to
+/// the same points the encode without the search writes, all of them on or
+/// inside the grid.
+#[test]
+fn the_order_search_prices_an_explicit_grid_its_data_pokes_out_of() {
+    let points = Points {
+        // Positions deliberately straddling a grid of [0, 1] on every axis:
+        // a quarter of the cloud sits outside it and is clamped by the encode.
+        positions: (0..256)
+            .map(|i| {
+                let t = i as f32 / 256.0;
+                [t * 3.0 - 1.0, t * 3.0, (t * 12.0).cos()]
+            })
+            .collect(),
+        // One extra on a named grid of [0, 1], one on its own measured bounds:
+        // the clamped one is what the search has to price honestly.
+        extras: vec![
+            (0..256).map(|i| (i as f32 / 32.0).sin() * 2.0).collect(),
+            (0..256).map(|i| (i as f32 / 32.0).cos()).collect(),
+        ],
+    };
+    let point_cloud = cloud(&points);
+
+    let mut options = options(2);
+    // Positions on [0, 1] per axis, the first extra on [0, 1], the second left
+    // to its own bounds.
+    options.set_attribute_explicit_quantization(0, 12, 3, &[0.0, 0.0, 0.0], 1.0);
+    options.set_attribute_explicit_quantization(1, 8, 1, &[0.0], 1.0);
+    options.set_point_order_search(true);
+    let searched = encode(&point_cloud, &options);
+    options.set_point_order_search(false);
+    let plain = encode(&point_cloud, &options);
+
+    // Whatever order each settled on, the points they carry are the same set
+    // -- the search changes an order, never a value -- and the clamped
+    // attribute comes back on the grid it was named for.
+    assert_eq!(decoded_set(&searched), decoded_set(&plain));
+
+    let mut decoded = PointCloud::new();
+    PointCloudDecoder::new()
+        .decode(&mut DecoderBuffer::new(&searched), &mut decoded)
+        .expect("what the encoder wrote, the decoder reads");
+    let attribute = decoded.attribute(1);
+    let stride = attribute.byte_stride() as usize;
+    for point in 0..decoded.num_points() {
+        let index = attribute.mapped_index(PointIndex(point as u32)).0 as usize;
+        let mut bytes = [0u8; 4];
+        attribute.buffer().read(index * stride, &mut bytes);
+        let value = f32::from_le_bytes(bytes);
+        assert!(
+            (0.0..=1.0).contains(&value),
+            "{value} came back off the grid it was clamped onto"
+        );
+    }
+}

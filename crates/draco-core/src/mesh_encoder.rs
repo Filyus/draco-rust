@@ -1,4 +1,6 @@
-use crate::attribute_quantization_transform::AttributeQuantizationTransform;
+use crate::attribute_quantization_transform::{
+    init_quantization_transform, AttributeQuantizationTransform,
+};
 use crate::attribute_transform::AttributeTransform;
 use crate::compression_config::EncodedGeometryType;
 use crate::compression_config::MeshEncodingMethod;
@@ -1314,7 +1316,6 @@ impl MeshEncoder {
         for i in 0..num_attributes {
             let att = self.point_cloud().expect("point_cloud set").attribute(i);
             let decoder_type = decoder_types[i as usize];
-            let quantization_bits = self.options.get_attribute_int(i, "quantization_bits", -1);
 
             match decoder_type {
                 3 => {
@@ -1344,12 +1345,11 @@ impl MeshEncoder {
                 }
                 2 => {
                     // Quantized attribute (mapping already applied at start of encode_attributes)
-                    let mut q_transform = AttributeQuantizationTransform::new();
-                    q_transform
-                        .compute_parameters(att, quantization_bits)
+                    // The mesh path quantizes on the calling thread, as it always has.
+                    let q_transform = init_quantization_transform(att, &self.options, i, 1)
                         .map_err(|e| {
                             DracoError::general(format!(
-                                "Failed to compute quantization parameters: {e}"
+                                "Failed to initialize quantization transform: {e}"
                             ))
                         })?;
                     let mut portable = PointAttribute::default();
@@ -1773,15 +1773,10 @@ impl MeshEncoder {
                     quantization_transforms.push(None);
                     continue;
                 }
-                let quantization_bits =
-                    self.options
-                        .get_attribute_int(att_id, "quantization_bits", -1);
-                let mut q_transform = AttributeQuantizationTransform::new();
-                q_transform
-                    .compute_parameters(att, quantization_bits)
+                let q_transform = init_quantization_transform(att, &self.options, att_id, 1)
                     .map_err(|e| {
                         DracoError::general(format!(
-                            "Failed to compute quantization parameters: {e}"
+                            "Failed to initialize quantization transform: {e}"
                         ))
                     })?;
                 let mut portable = PointAttribute::default();
@@ -2149,9 +2144,6 @@ impl MeshEncoder {
         }
 
         if self.decoder_type_for_attribute(att_id) == 2 {
-            let quantization_bits = self
-                .options
-                .get_attribute_int(att_id, "quantization_bits", -1);
             // The encode has already computed these for this attribute, and
             // computing them again means sweeping every value for its minimum
             // a second time. Recompute only if the attribute was quantized by
@@ -2165,15 +2157,11 @@ impl MeshEncoder {
             let q_transform = match recorded {
                 Some(transform) => transform,
                 None => {
-                    let mut transform = AttributeQuantizationTransform::new();
-                    transform
-                        .compute_parameters(att, quantization_bits)
-                        .map_err(|e| {
-                            DracoError::general(format!(
-                                "Failed to compute position quantization parameters: {e}"
-                            ))
-                        })?;
-                    transform
+                    init_quantization_transform(att, &self.options, att_id, 1).map_err(|e| {
+                        DracoError::general(format!(
+                            "Failed to initialize position quantization parameters: {e}"
+                        ))
+                    })?
                 }
             };
 

@@ -158,6 +158,26 @@ pub(crate) fn curve_axis_bits(options: &EncoderOptions, att_id: i32) -> u32 {
     quantization.min(MAX_AXIS_BITS) as u32
 }
 
+/// The grid a caller explicitly named for one attribute's quantization, when
+/// one is set and well-formed for the attribute: `quantization_origin` and
+/// `quantization_range`, the keys `ExpertEncoder::SetAttributeExplicitQuantization`
+/// writes. `None` leaves the encoder to compute its grid from the data, and
+/// pricing runs on the data's own bounds as always.
+///
+/// A malformed grid -- a component-count mismatch, a range that is not a
+/// finite positive number -- reads as `None` here rather than refusing: the
+/// encode itself refuses with the exact fault when it reaches the transform,
+/// and the search's estimate is not the place to answer for it.
+fn explicit_quantization_grid(
+    options: &EncoderOptions,
+    att_id: i32,
+    num_components: usize,
+) -> Option<(&[f32], f32)> {
+    let origin = options.get_attribute_floats(att_id, "quantization_origin")?;
+    let range = options.get_attribute_float_opt(att_id, "quantization_range")?;
+    (origin.len() == num_components && range.is_finite() && range > 0.0).then_some((origin, range))
+}
+
 /// 24 states x 8 octants: the low three bits are the octant's index along the
 /// curve, the rest is the next state. The automaton of a 3D Hilbert curve, one
 /// level a step.
@@ -464,6 +484,12 @@ fn grid(pc: &PointCloud, options: &EncoderOptions, threads: usize) -> Option<(i3
     let count = pc.num_points();
     let axis_bits = curve_axis_bits(options, att_id);
     let levels = ((1u64 << axis_bits) - 1) as f64;
+    // A grid the caller named for the positions puts the cells where the
+    // encoder puts the quantized values, with everything outside it pulled
+    // onto the edge cells, exactly as the encode clamps; the data's own
+    // bounds do that only by coincidence.
+    let explicit = explicit_quantization_grid(options, att_id, attribute.num_components() as usize)
+        .map(|(origin, range)| (origin, f64::from(range)));
     let axes = parallel::map(3, threads, |axis| -> Option<Vec<u32>> {
         let data = attribute.buffer().data();
         let at = value_offsets(attribute, axis, count)?;
@@ -483,7 +509,10 @@ fn grid(pc: &PointCloud, options: &EncoderOptions, threads: usize) -> Option<(i3
                     low = low.min(v);
                     high = high.max(v);
                 }
-                let span = high - low;
+                let (low, span) = match &explicit {
+                    Some((origin, range)) => (f64::from(origin[axis]), *range),
+                    None => (low, high - low),
+                };
                 Some(
                     (0..count)
                         .map(|p| {
@@ -492,7 +521,10 @@ fn grid(pc: &PointCloud, options: &EncoderOptions, threads: usize) -> Option<(i3
                             } else {
                                 0.0
                             };
-                            (normalized * levels) as u32
+                            // Outside a caller-named grid is exactly what the
+                            // encode clamps onto its edges; inside the data's
+                            // own bounds the clamp is a no-op.
+                            ((normalized * levels).clamp(0.0, levels)) as u32
                         })
                         .collect(),
                 )
@@ -556,32 +588,40 @@ fn quarter_bits(d: u32) -> u16 {
     ((d.saturating_add(1) as f32).to_bits() >> 21) as u16 - 508
 }
 
-/// One attribute component quantized to bytes: `((v - low) * scale + 0.5)`.
+/// One attribute component quantized to bytes: `((v - low) * scale + 0.5)`,
+/// with the top of the grid it lands on. On a grid the data's own bounds
+/// define, no value lands past the top; on one a caller named, values outside
+/// it are what the encoder clamps onto the grid's edges, so the bytes here
+/// follow rather than pricing steps the encode does not make.
 #[derive(Clone, Copy)]
 struct Quantizer {
     low: f32,
     scale: f32,
+    max: u8,
 }
 
 impl Quantizer {
     #[inline(always)]
     fn byte(&self, v: f32) -> u8 {
-        ((v - self.low) * self.scale + 0.5) as u8
+        (((v - self.low) * self.scale + 0.5) as u8).min(self.max)
     }
 }
 
 /// One attribute component on the grid the encoder predicts it on, where that
 /// is finer than a byte: an integer's own values, or a float's quantization.
+/// `max` is the top level the encoder writes -- the quantized value's ceiling,
+/// which a caller-named grid pulls its outside values back onto.
 #[derive(Clone, Copy)]
 struct Fine {
     low: f64,
     scale: f64,
+    max: u32,
 }
 
 impl Fine {
     #[inline(always)]
     fn level(&self, v: f64) -> u32 {
-        ((v - self.low) * self.scale + 0.5) as u32
+        (((v - self.low) * self.scale + 0.5) as u32).min(self.max)
     }
 
     /// `exact` on this grid, one level a point.
@@ -640,9 +680,17 @@ fn measure_columns(
             low = low.min(v);
             high = high.max(v);
         }
-        let span = high - low;
+        let mut span = high - low;
         if !span.is_finite() || span <= 1e-12 {
             return None;
+        }
+        // An explicitly named grid is what the encoder will scale against, so
+        // the bytes here land on it too rather than on the data's bounds.
+        if let Some((origin, range)) =
+            explicit_quantization_grid(options, id, attribute.num_components() as usize)
+        {
+            low = origin[component];
+            span = range;
         }
         let bits = if attribute.data_type() == DataType::Float32 {
             match options.get_attribute_int(id, "quantization_bits", -1) {
@@ -656,9 +704,18 @@ fn measure_columns(
         let quantizer = Quantizer {
             low,
             scale: levels / span,
+            max: levels as u8,
         };
-        let fine_levels = fine_grid(attribute, component, count, coder, quantization_bits)
-            .map(|(fine, exact)| fine.levels(&exact));
+        let fine_levels = fine_grid(
+            attribute,
+            component,
+            count,
+            coder,
+            quantization_bits,
+            options,
+            id,
+        )
+        .map(|(fine, exact)| fine.levels(&exact));
         let cost_curve = (0..count.saturating_sub(1))
             .step_by(SAMPLE_STRIDE)
             .map(|i| {
@@ -694,6 +751,8 @@ fn fine_grid(
     count: usize,
     coder: SequentialAttributeEncoderType,
     quantization_bits: i32,
+    options: &EncoderOptions,
+    att_id: i32,
 ) -> Option<(Fine, Vec<f64>)> {
     let finer = match coder {
         SequentialAttributeEncoderType::Quantization => quantization_bits > 8,
@@ -704,22 +763,44 @@ fn fine_grid(
         return None;
     }
     let exact = exact_values(attribute, component, count)?;
+    // An explicitly named grid puts the encoder's levels where the caller put
+    // them, not where the data's bounds do; see `explicit_quantization_grid`.
+    // Its ceiling is the quantized value's own, which the encode clamps its
+    // outside values onto.
+    if coder == SequentialAttributeEncoderType::Quantization {
+        if let Some((origin, range)) =
+            explicit_quantization_grid(options, att_id, attribute.num_components() as usize)
+        {
+            let scale = ((1u64 << quantization_bits.min(30)) - 1) as f64 / f64::from(range);
+            return (scale.is_finite()).then_some((
+                Fine {
+                    low: f64::from(origin[component]),
+                    scale,
+                    max: ((1u64 << quantization_bits.min(30)) - 1) as u32,
+                },
+                exact,
+            ));
+        }
+    }
     let (low, high) = exact
         .iter()
         .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), &v| {
             (low.min(v), high.max(v))
         });
     let span = high - low;
-    let scale = if coder == SequentialAttributeEncoderType::Quantization {
-        ((1u64 << quantization_bits.min(30)) - 1) as f64 / span
+    let (scale, max) = if coder == SequentialAttributeEncoderType::Quantization {
+        (
+            ((1u64 << quantization_bits.min(30)) - 1) as f64 / span,
+            ((1u64 << quantization_bits.min(30)) - 1) as u32,
+        )
     } else if span > 255.0 {
-        1.0
+        (1.0, u32::MAX)
     } else {
         return None;
     };
     // A level is a `u32`: an `i32` attribute's widest span is exactly its top.
     (span > 0.0 && scale.is_finite() && span * scale <= f64::from(u32::MAX))
-        .then_some((Fine { low, scale }, exact))
+        .then_some((Fine { low, scale, max }, exact))
 }
 
 // ---------------------------------------------------------------------------
@@ -777,7 +858,11 @@ impl Coded<'_> {
         let v = read_exact(attribute.buffer().data(), data_type, at);
         match &self.lows {
             None => v as i64 as i32,
-            Some(lows) => ((v - lows[component]) * self.scale + 0.5).floor() as i32,
+            // The encoder's own grid: a value outside it is one the encode
+            // clamps onto the grid's edges, so the estimate prices the value
+            // the stream will actually carry, not the one that left the grid.
+            Some(lows) => (((v - lows[component]) * self.scale + 0.5).floor() as i32)
+                .clamp(self.low, self.high),
         }
     }
 }
@@ -817,6 +902,26 @@ fn coded_attributes<'a>(
                     | DataType::Int32
             ) {
                 return None;
+            }
+            // An explicitly named grid replaces the bounds, before they are
+            // swept: the encoder scales against the caller's origin and range,
+            // not the data's, and pricing an order on anything else would price
+            // steps the encode does not make.
+            if coder == SequentialAttributeEncoderType::Quantization {
+                if let Some((origin, range)) = explicit_quantization_grid(options, id, components) {
+                    let scale =
+                        ((1u64 << quantization_bits.clamp(1, 30)) - 1) as f64 / f64::from(range);
+                    let high = (f64::from(range) * scale + 0.5).floor() as i32;
+                    return Some(Coded {
+                        attribute,
+                        components,
+                        identity: attribute.is_mapping_identity(),
+                        lows: Some(origin.iter().map(|&value| f64::from(value)).collect()),
+                        scale,
+                        low: 0,
+                        high,
+                    });
+                }
             }
             let data = attribute.buffer().data();
             let bounds: Vec<(f64, f64)> = (0..components)

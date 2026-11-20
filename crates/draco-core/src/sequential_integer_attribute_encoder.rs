@@ -6,7 +6,9 @@
 //! `SequentialIntegerAttributeDecoder`. Port of Draco's
 //! `sequential_integer_attribute_encoder.h`.
 
-use crate::attribute_quantization_transform::AttributeQuantizationTransform;
+use crate::attribute_quantization_transform::{
+    init_quantization_transform, AttributeQuantizationTransform,
+};
 use crate::attribute_transform::AttributeTransform;
 use crate::data_buffer::DataBuffer;
 use crate::draco_types::DataType;
@@ -303,9 +305,8 @@ impl SequentialIntegerAttributeEncoder {
             {
                 // Apply quantization transform (but don't write params yet - that happens
                 // in encode_data_needed_by_portable_transform)
-                let mut q_transform = AttributeQuantizationTransform::new();
-                q_transform.set_threads(self.threads);
-                q_transform.compute_parameters(attribute, quantization_bits)?;
+                let q_transform =
+                    init_quantization_transform(attribute, options, att_id, self.threads)?;
                 q_transform.transform_attribute(
                     attribute,
                     EntryToPointIdMap::from_point_indices(point_ids),
@@ -1365,9 +1366,12 @@ impl SequentialIntegerAttributeEncoder {
         // find in front.
         #[cfg(feature = "legacy_bitstream_encode")]
         if uses_inline_quantization_parameters(attribute, options, att_id) {
-            let quantization_bits = options.get_attribute_int(att_id, "quantization_bits", -1);
-            let mut transform = AttributeQuantizationTransform::new();
-            transform.compute_parameters(attribute, quantization_bits)?;
+            // The same initialization the transform that quantized the values
+            // went through: an explicit grid in the options must be written
+            // here as itself, not as what the data's own bounds would have
+            // computed, or the decoder would dequantize on a grid the values
+            // were never quantized against.
+            let transform = init_quantization_transform(attribute, options, att_id, 1)?;
             transform.encode_parameters(out_buffer)?;
         }
 

@@ -5,7 +5,10 @@ use std::sync::Arc;
 ///
 /// Options mirror the C++ Draco encoder style: global options apply to the
 /// whole geometry, while attribute options override a value for one attribute
-/// id and fall back to the global value when unset.
+/// id and fall back to the global value when unset. Integer options are the
+/// historical surface and carry every decision the codec itself makes; the
+/// float and float-vector options carry the explicit-quantization grid, which
+/// the C++ `DracoOptions` also keeps beside its integers.
 ///
 /// Common keys include `quantization_bits` (per-attribute precision),
 /// `encoding_speed`/`decoding_speed`, `encoding_method`, and
@@ -43,6 +46,10 @@ pub struct EncoderOptions {
 struct Inner {
     global_options: HashMap<String, i32>,
     attribute_options: HashMap<i32, HashMap<String, i32>>,
+    global_floats: HashMap<String, f32>,
+    attribute_floats: HashMap<i32, HashMap<String, f32>>,
+    global_float_vectors: HashMap<String, Vec<f32>>,
+    attribute_float_vectors: HashMap<i32, HashMap<String, Vec<f32>>>,
 }
 
 impl EncoderOptions {
@@ -415,6 +422,123 @@ impl EncoderOptions {
         // Falls back to the global value, as upstream does.
         self.get_global_int(key, default_val)
     }
+
+    /// Sets a global float option.
+    pub fn set_global_float(&mut self, key: &str, value: f32) {
+        Arc::make_mut(&mut self.inner)
+            .global_floats
+            .insert(key.to_string(), value);
+    }
+
+    /// Returns a global float option or the supplied default.
+    pub fn get_global_float(&self, key: &str, default_val: f32) -> f32 {
+        self.inner
+            .global_floats
+            .get(key)
+            .copied()
+            .unwrap_or(default_val)
+    }
+
+    /// Sets a global float-vector option.
+    pub fn set_global_floats(&mut self, key: &str, values: &[f32]) {
+        Arc::make_mut(&mut self.inner)
+            .global_float_vectors
+            .insert(key.to_string(), values.to_vec());
+    }
+
+    /// Returns a global float-vector option, or `None` when unset.
+    pub fn get_global_floats(&self, key: &str) -> Option<&[f32]> {
+        self.inner.global_float_vectors.get(key).map(Vec::as_slice)
+    }
+
+    /// Sets a float option for one attribute id.
+    ///
+    /// The float options exist for the explicit-quantization grid, which the
+    /// C++ `DracoOptions` stores beside its integers
+    /// (`SetAttributeFloat`/`SetAttributeVector`), and they fall back the same
+    /// way the integer ones do: per-attribute first, then global.
+    pub fn set_attribute_float(&mut self, att_id: i32, key: &str, value: f32) {
+        Arc::make_mut(&mut self.inner)
+            .attribute_floats
+            .entry(att_id)
+            .or_default()
+            .insert(key.to_string(), value);
+    }
+
+    /// Returns an attribute float option, falling back to the global value.
+    pub fn get_attribute_float(&self, att_id: i32, key: &str, default_val: f32) -> f32 {
+        self.get_attribute_float_opt(att_id, key)
+            .unwrap_or(default_val)
+    }
+
+    /// Returns an attribute float option without a fallback, so a caller can
+    /// tell "unset" from "set to the default".
+    ///
+    /// Crate-internal: the encoder reads `quantization_range` through
+    /// [`get_attribute_float`](Self::get_attribute_float) with C++'s own
+    /// default of `1.0`; only the both-options-set check for the
+    /// explicit-quantization grid needs the `None`.
+    pub(crate) fn get_attribute_float_opt(&self, att_id: i32, key: &str) -> Option<f32> {
+        if let Some(opts) = self.inner.attribute_floats.get(&att_id) {
+            if let Some(val) = opts.get(key) {
+                return Some(*val);
+            }
+        }
+        self.inner.global_floats.get(key).copied()
+    }
+
+    /// Sets a float-vector option for one attribute id.
+    pub fn set_attribute_floats(&mut self, att_id: i32, key: &str, values: &[f32]) {
+        Arc::make_mut(&mut self.inner)
+            .attribute_float_vectors
+            .entry(att_id)
+            .or_default()
+            .insert(key.to_string(), values.to_vec());
+    }
+
+    /// Returns an attribute float-vector option, falling back to the global
+    /// value.
+    pub fn get_attribute_floats(&self, att_id: i32, key: &str) -> Option<&[f32]> {
+        if let Some(opts) = self.inner.attribute_float_vectors.get(&att_id) {
+            if let Some(values) = opts.get(key) {
+                return Some(values);
+            }
+        }
+        self.inner.global_float_vectors.get(key).map(Vec::as_slice)
+    }
+
+    /// Sets the explicit-quantization grid for one attribute id, as
+    /// `ExpertEncoder::SetAttributeExplicitQuantization` does.
+    ///
+    /// The three options land under the same keys C++ writes --
+    /// `"quantization_bits"`, `"quantization_origin"` and
+    /// `"quantization_range"` -- and reach the encoder through
+    /// [`get_attribute_int`](Self::get_attribute_int),
+    /// [`get_attribute_floats`](Self::get_attribute_floats) and
+    /// [`get_attribute_float`](Self::get_attribute_float). Every encoder that
+    /// quantizes a float attribute honours them; a grid is used only when both
+    /// `quantization_origin` and `quantization_range` are set, and
+    /// `compute_parameters` runs as before otherwise.
+    ///
+    /// `num_dims` is the grid's component count, as in C++, and the first
+    /// `num_dims` values of `origin` are stored; a slice shorter than that is
+    /// stored whole and refused at encode time against any attribute with more
+    /// components than it holds. The bitstream does not change shape either
+    /// way: `min_values` and `range` are written as always, the grid only
+    /// decides where the encoder takes them from.
+    pub fn set_attribute_explicit_quantization(
+        &mut self,
+        att_id: i32,
+        quantization_bits: i32,
+        num_dims: usize,
+        origin: &[f32],
+        range: f32,
+    ) {
+        self.set_attribute_int(att_id, "quantization_bits", quantization_bits);
+        let origin = origin.get(..num_dims).unwrap_or(origin);
+        self.set_attribute_floats(att_id, "quantization_origin", origin);
+        self.set_attribute_float(att_id, "quantization_range", range);
+    }
 }
 
 #[cfg(test)]
@@ -487,5 +611,112 @@ mod tests {
         // Unset attributes fall back to the global value, same as
         // `get_attribute_int` -- there is none here, so -1.
         assert_eq!(options.get_attribute_quantization(2), -1);
+    }
+
+    #[test]
+    fn float_options_fall_back_attribute_to_global() {
+        let mut options = EncoderOptions::new();
+        assert_eq!(
+            options.get_attribute_float(0, "quantization_range", 1.0),
+            1.0
+        );
+        assert!(options
+            .get_attribute_float_opt(0, "quantization_range")
+            .is_none());
+        assert!(options
+            .get_attribute_floats(0, "quantization_origin")
+            .is_none());
+
+        options.set_global_float("quantization_range", 4.0);
+        assert_eq!(
+            options.get_attribute_float(0, "quantization_range", 1.0),
+            4.0
+        );
+        assert_eq!(
+            options.get_attribute_float_opt(0, "quantization_range"),
+            Some(4.0)
+        );
+
+        options.set_attribute_float(0, "quantization_range", 2.5);
+        assert_eq!(
+            options.get_attribute_float(0, "quantization_range", 1.0),
+            2.5
+        );
+        // Another attribute still sees the global value.
+        assert_eq!(
+            options.get_attribute_float(1, "quantization_range", 1.0),
+            4.0
+        );
+    }
+
+    #[test]
+    fn float_vectors_fall_back_attribute_to_global() {
+        let mut options = EncoderOptions::new();
+        options.set_global_floats("quantization_origin", &[1.0, 2.0]);
+        assert_eq!(
+            options.get_attribute_floats(0, "quantization_origin"),
+            Some(&[1.0, 2.0][..])
+        );
+
+        options.set_attribute_floats(0, "quantization_origin", &[7.0]);
+        assert_eq!(
+            options.get_attribute_floats(0, "quantization_origin"),
+            Some(&[7.0][..])
+        );
+        assert_eq!(
+            options.get_attribute_floats(1, "quantization_origin"),
+            Some(&[1.0, 2.0][..])
+        );
+    }
+
+    /// The helper writes the three keys C++ writes, and the grid it leaves
+    /// behind is what the encoders read back.
+    #[test]
+    fn set_attribute_explicit_quantization_writes_the_cpp_keys() {
+        let mut options = EncoderOptions::new();
+        options.set_attribute_explicit_quantization(2, 12, 3, &[1.0, -2.0, 5.0], 10.0);
+
+        assert_eq!(options.get_attribute_quantization(2), 12);
+        assert_eq!(
+            options.get_attribute_floats(2, "quantization_origin"),
+            Some(&[1.0, -2.0, 5.0][..])
+        );
+        assert_eq!(
+            options.get_attribute_float_opt(2, "quantization_range"),
+            Some(10.0)
+        );
+    }
+
+    /// `num_dims` truncates the origin from the front, as C++'s
+    /// `SetAttributeVector(name, num_dims, origin)` copies `num_dims` values.
+    #[test]
+    fn set_attribute_explicit_quantization_takes_num_dims_values() {
+        let mut options = EncoderOptions::new();
+        options.set_attribute_explicit_quantization(0, 10, 2, &[1.0, 2.0, 3.0], 8.0);
+        assert_eq!(
+            options.get_attribute_floats(0, "quantization_origin"),
+            Some(&[1.0, 2.0][..])
+        );
+    }
+
+    /// A clone shares the float maps the way it shares the integer ones: until
+    /// one side writes.
+    #[test]
+    fn a_clone_shares_the_float_maps_until_one_side_writes() {
+        let mut options = EncoderOptions::new();
+        options.set_attribute_explicit_quantization(0, 14, 3, &[0.0, 0.0, 0.0], 1.0);
+        let mut cloned = options.clone();
+        assert!(Arc::ptr_eq(&options.inner, &cloned.inner));
+
+        cloned.set_attribute_float(0, "quantization_range", 2.0);
+        assert!(!Arc::ptr_eq(&options.inner, &cloned.inner));
+        assert_eq!(
+            options.get_attribute_float_opt(0, "quantization_range"),
+            Some(1.0)
+        );
+        assert_eq!(
+            cloned.get_attribute_float_opt(0, "quantization_range"),
+            Some(2.0)
+        );
     }
 }

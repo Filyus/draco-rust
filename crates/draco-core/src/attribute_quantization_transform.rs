@@ -47,6 +47,22 @@ pub struct AttributeQuantizationTransform {
     /// Threads the forward passes may use; see `set_threads`.
     #[cfg(feature = "encoder")]
     threads: usize,
+    /// Whether values outside the grid this transform carries are pulled back
+    /// onto it rather than quantized past its ends.
+    ///
+    /// Parameters computed from the data cover every value they were computed
+    /// from, so nothing falls outside and this is left off: quantizing
+    /// unclamped is what upstream does, and the crate's output stays
+    /// byte-identical to C++ Draco's for the same input. An explicitly set
+    /// grid -- `quantization_origin` plus `quantization_range` in the encoder
+    /// options -- can be narrower than the data by the caller's choice, and
+    /// there a value below the origin would quantize negative and ride the
+    /// portable attribute's `u32` storage as its wrap-around, and a value past
+    /// the top would push the kd-tree coder's bit length to thirty-two. Both
+    /// decode back correctly, but neither is what a caller naming a grid
+    /// asked to see, so the explicit path clamps each quantized value into
+    /// `[0, max_quantized_value]`.
+    clamp_to_grid: bool,
 }
 
 impl Default for AttributeQuantizationTransform {
@@ -57,6 +73,7 @@ impl Default for AttributeQuantizationTransform {
             range: 0.0,
             #[cfg(feature = "encoder")]
             threads: 1,
+            clamp_to_grid: false,
         }
     }
 }
@@ -76,6 +93,25 @@ impl AttributeQuantizationTransform {
         self.threads = threads.max(1);
     }
 
+    /// Pulls quantized values back into `[0, max_quantized_value]`, for the
+    /// explicit-grid path; see the field's own comment for why the default
+    /// leaves them as they are.
+    #[cfg(feature = "encoder")]
+    pub(crate) fn set_clamp_to_grid(&mut self, enabled: bool) {
+        self.clamp_to_grid = enabled;
+    }
+
+    /// One quantized value as the portable attribute stores it: clamped onto
+    /// the grid where this transform was given an explicit grid, and as
+    /// quantized otherwise.
+    fn stored_quantized(&self, q_val: i32, max_quantized_value: i32) -> i32 {
+        if self.clamp_to_grid {
+            q_val.clamp(0, max_quantized_value)
+        } else {
+            q_val
+        }
+    }
+
     pub fn set_parameters(
         &mut self,
         quantization_bits: i32,
@@ -84,6 +120,19 @@ impl AttributeQuantizationTransform {
     ) -> Status {
         if !VALID_QUANTIZATION_BITS.contains(&quantization_bits) {
             return Err(invalid_quantization_bits(quantization_bits));
+        }
+        // The grid is what every value is scaled against: a zero or negative
+        // range divides by nothing, and a non-finite one, like a non-finite
+        // origin, would write NaN into the stream.
+        if !range.is_finite() || range <= 0.0 {
+            return Err(DracoError::invalid_parameter(format!(
+                "Quantization range {range} must be a finite value above zero"
+            )));
+        }
+        if let Some(component) = min_values.iter().position(|value| !value.is_finite()) {
+            return Err(DracoError::invalid_parameter(format!(
+                "Quantization origin component {component} is not finite"
+            )));
         }
         self.quantization_bits = quantization_bits;
         self.min_values = min_values.to_vec();
@@ -117,7 +166,10 @@ impl AttributeQuantizationTransform {
 
         let mut quantizer = Quantizer::new();
         quantizer.init(self.range, max_quantized_value);
-        let quantized = quantizer.quantize_float(value - min_value);
+        let quantized = self.stored_quantized(
+            quantizer.quantize_float(value - min_value),
+            max_quantized_value,
+        );
 
         let mut dequantizer = Dequantizer::new();
         if !dequantizer.init(self.range, max_quantized_value) {
@@ -472,9 +524,18 @@ impl AttributeQuantizationTransform {
                 ]);
 
                 // Quantize
-                let q_x = quantizer.quantize_float(raw_x - self.min_values[0]) as u32;
-                let q_y = quantizer.quantize_float(raw_y - self.min_values[1]) as u32;
-                let q_z = quantizer.quantize_float(raw_z - self.min_values[2]) as u32;
+                let q_x = self.stored_quantized(
+                    quantizer.quantize_float(raw_x - self.min_values[0]),
+                    max_quantized_value,
+                ) as u32;
+                let q_y = self.stored_quantized(
+                    quantizer.quantize_float(raw_y - self.min_values[1]),
+                    max_quantized_value,
+                ) as u32;
+                let q_z = self.stored_quantized(
+                    quantizer.quantize_float(raw_z - self.min_values[2]),
+                    max_quantized_value,
+                ) as u32;
 
                 // Write 3 uint32s
                 dst_data[dst_offset..dst_offset + 4].copy_from_slice(&q_x.to_le_bytes());
@@ -522,7 +583,8 @@ impl AttributeQuantizationTransform {
                     // Read raw component then subtract min to match C++ ordering
                     let raw_val = f32::from_le_bytes(*src_component);
                     let val = raw_val - mins[c];
-                    let q_val = quantizer.quantize_float(val);
+                    let q_val =
+                        self.stored_quantized(quantizer.quantize_float(val), max_quantized_value);
 
                     #[cfg(feature = "debug_logs")]
                     {
@@ -604,7 +666,10 @@ impl AttributeQuantizationTransform {
                         .zip(mins)
                     {
                         let value = f32::from_le_bytes(*src_component) - min_value;
-                        *dst_component = (quantizer.quantize_float(value) as u32).to_le_bytes();
+                        *dst_component = (self
+                            .stored_quantized(quantizer.quantize_float(value), max_quantized_value)
+                            as u32)
+                            .to_le_bytes();
                     }
                 }
             },
@@ -943,6 +1008,63 @@ impl AttributeTransform for AttributeQuantizationTransform {
     fn get_transformed_num_components(&self, attribute: &PointAttribute) -> i32 {
         attribute.num_components() as i32
     }
+}
+
+/// The quantization transform one float attribute is encoded through, from the
+/// encoder options.
+///
+/// An explicit grid -- `quantization_origin` and `quantization_range` both set
+/// for the attribute, the keys `ExpertEncoder::SetAttributeExplicitQuantization`
+/// writes -- is used as it stands, and values outside it are pulled back onto
+/// it on the way through: a value below the origin would otherwise quantize
+/// negative and ride the portable attribute's `u32` storage as its wrap-around,
+/// and one past the top would push the kd-tree coder's bit length to
+/// thirty-two. Neither is what a caller naming a grid asked to see. Parameters
+/// computed from the data cover every value they were computed from, so the
+/// computed path quantizes unclamped, as upstream does, and its bytes are
+/// unchanged.
+///
+/// A grid whose origin does not have one component per attribute component is
+/// refused rather than silently replaced by computed parameters: the caller
+/// named the grid, so a mismatch is theirs to see. The computed path's own
+/// refusals -- a non-float attribute, an empty one, a NaN -- surface here as
+/// they always did.
+///
+/// `quantization_bits` below one is refused as well; every caller that reaches
+/// here has already decided quantization applies to the attribute, which
+/// upstream's own selection makes impossible without it.
+#[cfg(feature = "encoder")]
+pub(crate) fn init_quantization_transform(
+    attribute: &PointAttribute,
+    options: &crate::encoder_options::EncoderOptions,
+    att_id: i32,
+    threads: usize,
+) -> Result<AttributeQuantizationTransform, DracoError> {
+    let quantization_bits = options.get_attribute_int(att_id, "quantization_bits", -1);
+    if quantization_bits < 1 {
+        return Err(DracoError::invalid_parameter(format!(
+            "Attribute {att_id} is float and needs quantization_bits, which is {quantization_bits}"
+        )));
+    }
+    let origin = options.get_attribute_floats(att_id, "quantization_origin");
+    let range = options.get_attribute_float_opt(att_id, "quantization_range");
+    let mut transform = AttributeQuantizationTransform::new();
+    if let (Some(origin), Some(range)) = (origin, range) {
+        if origin.len() != attribute.num_components() as usize {
+            return Err(DracoError::invalid_parameter(format!(
+                "Attribute {att_id} declares a quantization origin of {} components \
+                 for {}-component values",
+                origin.len(),
+                attribute.num_components()
+            )));
+        }
+        transform.set_parameters(quantization_bits, origin, range)?;
+        transform.set_clamp_to_grid(true);
+    } else {
+        transform.compute_parameters(attribute, quantization_bits)?;
+    }
+    transform.set_threads(threads);
+    Ok(transform)
 }
 
 #[cfg(test)]
@@ -1285,5 +1407,105 @@ mod tests {
             err.to_string().contains("1..=30"),
             "the error should name the actual supported range, got: {err}"
         );
+    }
+
+    /// An explicitly set grid is refused when it cannot be quantized against:
+    /// a range that is zero, negative or not finite, or an origin component
+    /// that is not finite. Every one of those would write a stream the
+    /// quantizer divides by zero or fills with NaN.
+    #[test]
+    fn set_parameters_refuses_a_grid_it_cannot_quantize_against() {
+        let refused = |range: f32, origin: &[f32]| {
+            let mut transform = AttributeQuantizationTransform::new();
+            transform
+                .set_parameters(12, origin, range)
+                .err()
+                .map(|error| error.to_string())
+        };
+        for range in [0.0f32, -1.0, f32::NAN, f32::INFINITY] {
+            let error = refused(range, &[0.0, 0.0, 0.0])
+                .expect("a range outside the grid's own terms must be refused");
+            assert!(
+                error.contains("range"),
+                "the error should name the range, got: {error}"
+            );
+        }
+        for (component, origin) in [
+            (1usize, &[0.0f32, f32::NAN, 0.0][..]),
+            (0, &[f32::INFINITY][..]),
+        ] {
+            let error =
+                refused(1.0, origin).expect("a non-finite origin component must be refused");
+            assert!(
+                error.contains(&format!("component {component}")),
+                "the error should name the component, got: {error}"
+            );
+        }
+        // A finite grid over finite values is what every in-tree caller
+        // passes, and still passes.
+        let mut transform = AttributeQuantizationTransform::new();
+        assert!(transform.set_parameters(12, &[0.0, 0.0, 0.0], 1.0).is_ok());
+    }
+
+    /// A value outside an explicitly named grid is pulled back onto it rather
+    /// than quantized past its ends: below the origin it would ride the
+    /// portable attribute's `u32` storage as its wrap-around, and past the top
+    /// it would push a kd-tree coder's bit length to thirty-two.
+    #[test]
+    fn values_outside_an_explicit_grid_are_pulled_back_onto_it() {
+        let mut attribute = PointAttribute::new();
+        attribute.init(
+            GeometryAttributeType::Position,
+            1,
+            DataType::Float32,
+            false,
+            3,
+        );
+        // -1.0 and 3.0 sit outside [1.0, 2.0]; the middle one is inside it.
+        for (i, value) in [-1.0f32, 1.5, 3.0].iter().enumerate() {
+            attribute.buffer_mut().write(i * 4, &value.to_le_bytes());
+        }
+        let mut transform = AttributeQuantizationTransform::new();
+        transform.set_parameters(8, &[1.0], 1.0).unwrap();
+        transform.set_clamp_to_grid(true);
+
+        let mut target = PointAttribute::default();
+        transform
+            .transform_attribute(&attribute, EntryToPointIdMap::identity(3), &mut target)
+            .unwrap();
+
+        // Round trip what the portable attribute carries: the outside values
+        // come back at the grid's edges, the inside one where it started.
+        let mut dequantized = PointAttribute::new();
+        dequantized.init(
+            GeometryAttributeType::Position,
+            1,
+            DataType::Float32,
+            false,
+            3,
+        );
+        transform
+            .inverse_transform_attribute(&target, &mut dequantized)
+            .unwrap();
+        let data = dequantized.buffer().data();
+        let round = |i: usize| f32::from_le_bytes(data[i * 4..i * 4 + 4].try_into().unwrap());
+        // Eight bits over a range of one is a step of 1/255; the clamped ends
+        // land exactly on it, the inside value wherever the grid puts it.
+        let step = 1.0f32 / 255.0;
+        let on_grid = |value: f32, expected: f32| {
+            let distance = (value - expected).abs();
+            assert!(
+                distance < step / 2.0,
+                "{value} is not where {expected} sits on the grid"
+            );
+        };
+        on_grid(round(0), 1.0);
+        on_grid(round(1), 1.5);
+        on_grid(round(2), 2.0);
+
+        // And the bounds the grid reports go through the same clamp, so a
+        // caller reading them sees what the decoder will produce.
+        on_grid(transform.round_trip_component(0, -1.0).unwrap(), 1.0);
+        on_grid(transform.round_trip_component(0, 3.0).unwrap(), 2.0);
     }
 }
