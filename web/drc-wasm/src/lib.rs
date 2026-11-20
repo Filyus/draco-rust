@@ -124,6 +124,27 @@ pub struct ExtraAttribute {
     /// float attribute never reaches Draco's integer coder at all, so no
     /// prediction runs on it and it is stored at full width.
     pub quantization_bits: Option<i32>,
+    /// The quantization grid to quantize it on when it is written, as
+    /// `ExpertEncoder::SetAttributeExplicitQuantization` takes one: one origin
+    /// value per component and a single range over them all.
+    ///
+    /// Only a writer reads this, and only together with `quantization_bits`;
+    /// a decoded attribute always reports `None`. Without it the encoder
+    /// measures the attribute's own bounds and quantizes against those, which
+    /// is what it has always done -- the grid is for a caller who needs the
+    /// decoded values to sit on a grid they chose, one payload written next
+    /// to another sharing it, or one whose values must not move a grid that a
+    /// sidecar file already references.
+    ///
+    /// The bitstream does not change shape either way: the origin and the
+    /// range are written into it as the transform's parameters, exactly where
+    /// the measured bounds would have gone, and a decoder reads the stream
+    /// the same way.
+    pub quantization_origin: Option<Vec<f32>>,
+    /// The range of the grid named by `quantization_origin`, which must be a
+    /// finite value above zero. Values outside `[origin, origin + range]`
+    /// come back on the grid's edges rather than off it.
+    pub quantization_range: Option<f32>,
     /// One tuple per point, `components` long.
     pub values: Vec<f64>,
 }
@@ -403,6 +424,8 @@ fn read_extra_attributes(mesh: &Mesh) -> Vec<ExtraAttribute> {
             normalized: attribute.normalized(),
             name: attribute_name(mesh, attribute.unique_id()),
             quantization_bits: None,
+            quantization_origin: None,
+            quantization_range: None,
             values,
         });
     }
@@ -590,6 +613,13 @@ pub struct ExportOptions {
     pub decoding_speed: Option<i32>,
     /// Quantization bits for positions.
     pub position_bits: Option<i32>,
+    /// The quantization grid for positions, one origin per component and one
+    /// range: `ExpertEncoder::SetAttributeExplicitQuantization`'s terms. Read
+    /// only with `position_bits`; without it the encoder quantizes against
+    /// the positions' own bounds, as it always has.
+    pub position_origin: Option<Vec<f32>>,
+    /// The range of the grid named by `position_origin`.
+    pub position_range: Option<f32>,
     /// Quantization bits for normals.
     pub normal_bits: Option<i32>,
     /// Quantization bits for texture coordinates.
@@ -785,7 +815,17 @@ pub fn encode_draco(mesh_js: JsValue, options_js: JsValue) -> JsValue {
             });
         }
     };
-    let options = export_options_from_js(&options_js);
+    let options = match export_options_from_js(&options_js) {
+        Ok(options) => options,
+        Err(error) => {
+            return export_result_to_js(&ExportResult {
+                success: false,
+                binary_data: None,
+                error: Some(error),
+                draco_stats: None,
+            });
+        }
+    };
     export_result_to_js(&create_drc_internal(&mesh, &options))
 }
 
@@ -871,6 +911,10 @@ fn extra_attribute_from_js(value: &JsValue) -> Result<ExtraAttribute, String> {
         .unwrap_or(false);
     let name = get_field(value, "name").and_then(|value| value.as_string());
     let quantization_bits = opt_i32_from_js(value, "quantizationBits");
+    let quantization_origin = optional_f32_array(value, "quantizationOrigin")?;
+    let quantization_range = get_field(value, "quantizationRange")
+        .and_then(|value| value.as_f64())
+        .map(|value| value as f32);
     let values = get_field(value, "values")
         .ok_or_else(|| "an extra attribute must have values".to_string())?;
     let values = f64_array_from_js(&values, "values")?;
@@ -882,16 +926,22 @@ fn extra_attribute_from_js(value: &JsValue) -> Result<ExtraAttribute, String> {
         normalized,
         name,
         quantization_bits,
+        quantization_origin,
+        quantization_range,
         values,
     })
 }
 
 #[cfg(feature = "write")]
-fn export_options_from_js(value: &JsValue) -> ExportOptions {
-    ExportOptions {
+fn export_options_from_js(value: &JsValue) -> Result<ExportOptions, String> {
+    Ok(ExportOptions {
         encoding_speed: opt_i32_from_js(value, "encoding_speed"),
         decoding_speed: opt_i32_from_js(value, "decoding_speed"),
         position_bits: opt_i32_from_js(value, "position_bits"),
+        position_origin: optional_f32_array(value, "position_origin")?,
+        position_range: get_field(value, "position_range")
+            .and_then(|value| value.as_f64())
+            .map(|value| value as f32),
         normal_bits: opt_i32_from_js(value, "normal_bits"),
         texcoord_bits: opt_i32_from_js(value, "texcoord_bits"),
         include_normals: opt_bool_from_js(value, "include_normals"),
@@ -902,7 +952,7 @@ fn export_options_from_js(value: &JsValue) -> ExportOptions {
         prediction_search: opt_bool_from_js(value, "prediction_search"),
         spatial_point_order: opt_bool_from_js(value, "spatial_point_order"),
         point_order_search: opt_bool_from_js(value, "point_order_search"),
-    }
+    })
 }
 
 #[cfg(feature = "write")]
@@ -935,8 +985,20 @@ fn create_drc_internal(input: &MeshInput, options: &ExportOptions) -> ExportResu
         2 => settings.set_encoding_method(1), // force EdgeBreaker
         _ => {}
     }
-    for (attribute_id, bits) in quantization {
-        settings.set_attribute_int(attribute_id, "quantization_bits", bits);
+    for request in &quantization {
+        settings.set_attribute_int(request.attribute_id, "quantization_bits", request.bits);
+        if let Some((origin, range)) = &request.grid {
+            // The grid lands under the same keys the C++ expert encoder
+            // writes, and the bitstream carries it as the transform's own
+            // parameters either way.
+            settings.set_attribute_explicit_quantization(
+                request.attribute_id,
+                request.bits,
+                origin.len(),
+                origin,
+                *range,
+            );
+        }
     }
     // All three are read only by the point-cloud coder, so setting them on
     // the way past costs a mesh encode nothing and keeps the one place
@@ -1042,6 +1104,18 @@ fn encode_as_point_cloud(
     }
 }
 
+/// One attribute's quantization request, resolved against the mesh that was
+/// built: the id the settings address it by, its bits, and the grid to
+/// quantize on when one was named.
+#[cfg(feature = "write")]
+struct QuantizationRequest {
+    attribute_id: i32,
+    bits: i32,
+    /// `ExpertEncoder::SetAttributeExplicitQuantization`'s terms, one origin
+    /// per component and one range.
+    grid: Option<(Vec<f32>, f32)>,
+}
+
 /// Build the mesh, and say which attribute id each bit setting belongs to.
 ///
 /// The ids are only knowable here: `set_attribute_int` addresses attributes by
@@ -1051,7 +1125,7 @@ fn encode_as_point_cloud(
 fn mesh_input_to_core_mesh(
     input: &MeshInput,
     options: &ExportOptions,
-) -> Result<(Mesh, Vec<(i32, i32)>), String> {
+) -> Result<(Mesh, Vec<QuantizationRequest>), String> {
     if !input.positions.len().is_multiple_of(3) {
         return Err("positions length must be divisible by 3".to_string());
     }
@@ -1071,6 +1145,30 @@ fn mesh_input_to_core_mesh(
     let mut mesh = Mesh::new();
     mesh.set_num_points(vertex_count);
     let mut quantization = Vec::new();
+    // The position grid the caller named, which pairs with `position_bits`.
+    // One of the two alone is a half request, and a grid is refused rather
+    // than silently ignored.
+    let position_grid = match (&options.position_origin, options.position_range) {
+        (Some(origin), Some(range)) => {
+            if origin.len() != 3 {
+                return Err(format!(
+                    "position_origin states {} components for a 3-component attribute",
+                    origin.len()
+                ));
+            }
+            Some((origin.clone(), range))
+        }
+        (None, None) => None,
+        (Some(_), None) => {
+            return Err("position_origin needs position_range to name a grid".to_string())
+        }
+        (None, Some(_)) => {
+            return Err("position_range needs position_origin to name a grid".to_string())
+        }
+    };
+    if position_grid.is_some() && options.position_bits.is_none() {
+        return Err("a position grid needs position_bits to be quantized on".to_string());
+    }
 
     let position_id = mesh.add_attribute(float_attribute(
         GeometryAttributeType::Position,
@@ -1079,7 +1177,11 @@ fn mesh_input_to_core_mesh(
         vertex_count,
     ));
     if let Some(bits) = options.position_bits {
-        quantization.push((position_id, bits));
+        quantization.push(QuantizationRequest {
+            attribute_id: position_id,
+            bits,
+            grid: position_grid.clone(),
+        });
     }
 
     if options.include_normals.unwrap_or(true) {
@@ -1091,7 +1193,11 @@ fn mesh_input_to_core_mesh(
                 vertex_count,
             ));
             if let Some(bits) = options.normal_bits {
-                quantization.push((id, bits));
+                quantization.push(QuantizationRequest {
+                    attribute_id: id,
+                    bits,
+                    grid: None,
+                });
             }
         }
     }
@@ -1105,7 +1211,11 @@ fn mesh_input_to_core_mesh(
                 vertex_count,
             ));
             if let Some(bits) = options.texcoord_bits {
-                quantization.push((id, bits));
+                quantization.push(QuantizationRequest {
+                    attribute_id: id,
+                    bits,
+                    grid: None,
+                });
             }
         }
     }
@@ -1173,6 +1283,42 @@ fn mesh_input_to_core_mesh(
         attribute.set_unique_id(unique_id);
         taken.push(unique_id);
         let id = mesh.add_attribute_preserve_unique_id(attribute);
+        // The grid pairs with the bits the same way the position grid pairs
+        // with its own, and is refused the same way when it arrives without
+        // them or when the two disagree on the attribute's width.
+        let grid = match (&extra.quantization_origin, extra.quantization_range) {
+            (Some(origin), Some(range)) => {
+                if origin.len() != components {
+                    return Err(format!(
+                        "attribute {} states a quantization origin of {} components \
+                         for {components}-component values",
+                        extra.name.as_deref().unwrap_or("without a name"),
+                        origin.len(),
+                    ));
+                }
+                if !matches!(data_type, DataType::Float32 | DataType::Float64) {
+                    return Err(format!(
+                        "attribute {} is {} and cannot take a quantization grid",
+                        extra.name.as_deref().unwrap_or("without a name"),
+                        extra.data_type,
+                    ));
+                }
+                Some((origin.clone(), range))
+            }
+            (None, None) => None,
+            (Some(_), None) => {
+                return Err(format!(
+                    "attribute {}: quantizationOrigin needs quantizationRange to name a grid",
+                    extra.name.as_deref().unwrap_or("without a name"),
+                ))
+            }
+            (None, Some(_)) => {
+                return Err(format!(
+                    "attribute {}: quantizationRange needs quantizationOrigin to name a grid",
+                    extra.name.as_deref().unwrap_or("without a name"),
+                ))
+            }
+        };
         if let Some(bits) = extra.quantization_bits {
             // Quantization maps a float range onto integers. An attribute that
             // already is integers has nothing to map, and taking the request
@@ -1184,7 +1330,16 @@ fn mesh_input_to_core_mesh(
                     extra.data_type,
                 ));
             }
-            quantization.push((id, bits));
+            quantization.push(QuantizationRequest {
+                attribute_id: id,
+                bits,
+                grid,
+            });
+        } else if grid.is_some() {
+            return Err(format!(
+                "attribute {}: a quantization grid needs quantizationBits to be quantized on",
+                extra.name.as_deref().unwrap_or("without a name"),
+            ));
         }
         // The name goes back into metadata under the id the attribute ended
         // up with, which is not always the one it arrived with. Dropping it
@@ -1426,6 +1581,8 @@ mod tests {
                 normalized: false,
                 name: None,
                 quantization_bits: None,
+                quantization_origin: None,
+                quantization_range: None,
                 values: vec![-3.0, -2.0, -1.0, 0.0],
             }]),
         }
@@ -1475,6 +1632,95 @@ mod tests {
                 "{quantized:?} is not on the two-bit grid"
             );
         }
+    }
+
+    /// A grid the caller names reaches the encoder and is what the decoded
+    /// values sit on: the measured bounds would have put these values on a
+    /// different grid entirely, and one value lies outside the named grid and
+    /// comes back on its edge.
+    #[test]
+    fn test_an_explicit_grid_reaches_the_encoder() {
+        let mut input = splat_points();
+        let extra = &mut input.extras.as_mut().unwrap()[0];
+        extra.quantization_bits = Some(8);
+        extra.quantization_origin = Some(vec![0.0]);
+        extra.quantization_range = Some(2.0);
+        // One point inside the grid, one below its origin, one past its top,
+        // one on the top edge.
+        extra.values = vec![1.0, -1.0, 3.0, 2.0];
+        let exported = create_drc_internal(
+            &input,
+            &ExportOptions {
+                point_cloud: Some(true),
+                ..Default::default()
+            },
+        );
+        assert!(exported.success, "{:?}", exported.error);
+        let parsed = parse_drc_internal(&exported.binary_data.expect("a payload"));
+        assert!(parsed.success, "{:?}", parsed.error);
+        let step = 2.0f64 / 255.0;
+        for value in &parsed.meshes[0].extras[0].values {
+            assert!(
+                (0.0..=2.0).contains(value),
+                "{value} came back off the grid it was clamped onto"
+            );
+            let distance = (value / step).round() * step - value;
+            assert!(distance.abs() < step / 2.0, "{value} is not on the grid");
+        }
+
+        // And a half-named grid is refused rather than quietly ignored.
+        let mut half = input.clone();
+        let extra = &mut half.extras.as_mut().unwrap()[0];
+        extra.quantization_range = None;
+        let exported = create_drc_internal(
+            &half,
+            &ExportOptions {
+                point_cloud: Some(true),
+                ..Default::default()
+            },
+        );
+        assert!(!exported.success);
+        assert!(
+            exported
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("quantizationOrigin"),
+            "{:?}",
+            exported.error
+        );
+    }
+
+    /// The position grid rides with `position_bits`, and a grid without its
+    /// bits is refused.
+    #[test]
+    fn test_a_position_grid_needs_its_bits() {
+        let grid = |options: ExportOptions| {
+            create_drc_internal(&quad(), &ExportOptions { ..options })
+        };
+        let exported = grid(ExportOptions {
+            position_bits: Some(10),
+            position_origin: Some(vec![-1.0, -1.0, -1.0]),
+            position_range: Some(4.0),
+            ..Default::default()
+        });
+        assert!(exported.success, "{:?}", exported.error);
+
+        let refused = grid(ExportOptions {
+            position_origin: Some(vec![-1.0, -1.0, -1.0]),
+            position_range: Some(4.0),
+            ..Default::default()
+        });
+        assert!(!refused.success);
+        assert!(
+            refused
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("position_bits"),
+            "{:?}",
+            refused.error
+        );
     }
 
     /// Quantization maps floats onto integers, so asking it of an integer
@@ -1533,6 +1779,8 @@ mod tests {
                 normalized: false,
                 name: None,
                 quantization_bits: None,
+                quantization_origin: None,
+                quantization_range: None,
                 values: vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
             }]),
         };
