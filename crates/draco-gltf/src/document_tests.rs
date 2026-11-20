@@ -956,8 +956,14 @@ mod compression_tests {
         ];
         let normalized = |semantic: &str| (semantic == "COLOR_0").then_some(true);
 
-        let geometry =
-            crate::PackedGeometry::from_draco_mesh(&mesh, &contract, &normalized).unwrap();
+        let geometry = crate::PackedGeometry::from_draco_mesh_with_attributes(
+            &mesh,
+            &contract,
+            &normalized,
+            Vec::new(),
+            crate::PrimitiveMode::Triangles,
+        )
+        .unwrap();
 
         let flag = |semantic: &str| {
             geometry
@@ -1900,7 +1906,7 @@ mod compression_tests {
     /// indices -- Draco's connectivity is always an explicit triangle list --
     /// and no real decoder (three.js's `DRACOLoader` among them) treats the
     /// declared mode as anything but TRIANGLES for a Draco primitive.
-    /// `from_draco_mesh` must not repeat the primitive's own claim.
+    /// `from_draco_mesh_with_attributes` must not repeat the primitive's own claim.
     #[test]
     fn draco_decode_ignores_a_strip_mode_the_source_primitive_declared() {
         let input = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
@@ -2992,4 +2998,580 @@ fn deep_documents_survive_the_encode_safety_walk() {
     import
         .ensure_document_binary_transform_safe()
         .expect("no extensions, so the check passes");
+}
+
+/// The spec's component-type table for the splat attributes, as
+/// `validate_semantic_accessor` enforces it: a normalized signed rotation and
+/// a scale in either unsigned form are ordinary storage, an unnormalized
+/// rotation is not, and the harmonics are float only on an exact pattern.
+#[cfg(feature = "draco-encode")]
+#[test]
+fn splat_semantics_follow_the_spec_component_table() {
+    use crate::geometry::{validate_semantic_accessor, GLTF_COMPONENT_FLOAT};
+
+    const BYTE: u32 = 5120;
+    const UNSIGNED_BYTE: u32 = 5121;
+    const SHORT: u32 = 5122;
+    const UNSIGNED_SHORT: u32 = 5123;
+
+    // A quaternion of rotation: float, or a normalized signed integer.
+    assert!(validate_semantic_accessor(
+        "KHR_gaussian_splatting:ROTATION",
+        "VEC4",
+        GLTF_COMPONENT_FLOAT,
+        false
+    )
+    .is_ok());
+    assert!(
+        validate_semantic_accessor("KHR_gaussian_splatting:ROTATION", "VEC4", BYTE, true).is_ok()
+    );
+    assert!(
+        validate_semantic_accessor("KHR_gaussian_splatting:ROTATION", "VEC4", SHORT, true).is_ok()
+    );
+    assert!(
+        validate_semantic_accessor("KHR_gaussian_splatting:ROTATION", "VEC4", BYTE, false).is_err(),
+        "an unnormalized signed rotation is not in the spec"
+    );
+    assert!(
+        validate_semantic_accessor(
+            "KHR_gaussian_splatting:ROTATION",
+            "VEC3",
+            GLTF_COMPONENT_FLOAT,
+            false
+        )
+        .is_err(),
+        "a rotation is a quaternion"
+    );
+
+    // Non-negative extents: float, or an unsigned integer of either width,
+    // normalized or not -- the one kind that allows both.
+    assert!(validate_semantic_accessor(
+        "KHR_gaussian_splatting:SCALE",
+        "VEC3",
+        GLTF_COMPONENT_FLOAT,
+        false
+    )
+    .is_ok());
+    assert!(validate_semantic_accessor(
+        "KHR_gaussian_splatting:SCALE",
+        "VEC3",
+        UNSIGNED_BYTE,
+        true
+    )
+    .is_ok());
+    assert!(validate_semantic_accessor(
+        "KHR_gaussian_splatting:SCALE",
+        "VEC3",
+        UNSIGNED_BYTE,
+        false
+    )
+    .is_ok());
+    assert!(validate_semantic_accessor(
+        "KHR_gaussian_splatting:SCALE",
+        "VEC3",
+        UNSIGNED_SHORT,
+        true
+    )
+    .is_ok());
+    assert!(
+        validate_semantic_accessor("KHR_gaussian_splatting:SCALE", "VEC3", SHORT, true).is_err(),
+        "a signed scale is not in the spec"
+    );
+    assert!(
+        validate_semantic_accessor(
+            "KHR_gaussian_splatting:SCALE",
+            "VEC4",
+            GLTF_COMPONENT_FLOAT,
+            false
+        )
+        .is_err(),
+        "a scale is an extent"
+    );
+
+    // A normalized linear opacity: float, or a normalized unsigned integer.
+    assert!(validate_semantic_accessor(
+        "KHR_gaussian_splatting:OPACITY",
+        "SCALAR",
+        GLTF_COMPONENT_FLOAT,
+        false
+    )
+    .is_ok());
+    assert!(validate_semantic_accessor(
+        "KHR_gaussian_splatting:OPACITY",
+        "SCALAR",
+        UNSIGNED_BYTE,
+        true
+    )
+    .is_ok());
+    assert!(
+        validate_semantic_accessor(
+            "KHR_gaussian_splatting:OPACITY",
+            "SCALAR",
+            UNSIGNED_BYTE,
+            false
+        )
+        .is_err(),
+        "an unnormalized opacity is not in the spec"
+    );
+    assert!(
+        validate_semantic_accessor(
+            "KHR_gaussian_splatting:OPACITY",
+            "VEC4",
+            GLTF_COMPONENT_FLOAT,
+            false
+        )
+        .is_err(),
+        "an opacity is a scalar"
+    );
+
+    // The harmonics: float only, VEC3, on the pattern the spec names --
+    // degree 0..=3 with an order of at most two per degree.
+    for semantic in [
+        "KHR_gaussian_splatting:SH_DEGREE_0_COEF_0",
+        "KHR_gaussian_splatting:SH_DEGREE_1_COEF_2",
+        "KHR_gaussian_splatting:SH_DEGREE_2_COEF_4",
+        "KHR_gaussian_splatting:SH_DEGREE_3_COEF_6",
+    ] {
+        assert!(
+            validate_semantic_accessor(semantic, "VEC3", GLTF_COMPONENT_FLOAT, false).is_ok(),
+            "{semantic} is in the spec"
+        );
+        assert!(
+            validate_semantic_accessor(semantic, "VEC3", UNSIGNED_BYTE, true).is_err(),
+            "{semantic} is float only"
+        );
+        assert!(
+            validate_semantic_accessor(semantic, "VEC4", GLTF_COMPONENT_FLOAT, false).is_err(),
+            "{semantic} is an RGB coefficient"
+        );
+    }
+    assert!(
+        validate_semantic_accessor(
+            "KHR_gaussian_splatting:SH_DEGREE_4_COEF_0",
+            "VEC3",
+            GLTF_COMPONENT_FLOAT,
+            false
+        )
+        .is_err(),
+        "the spec stops at degree 3"
+    );
+    assert!(
+        validate_semantic_accessor(
+            "KHR_gaussian_splatting:SH_DEGREE_1_COEF_3",
+            "VEC3",
+            GLTF_COMPONENT_FLOAT,
+            false
+        )
+        .is_err(),
+        "degree 1 carries orders 0..=2 only"
+    );
+    assert!(
+        validate_semantic_accessor(
+            "KHR_gaussian_splatting:SH_DEGREE_0_COEF_1",
+            "VEC3",
+            GLTF_COMPONENT_FLOAT,
+            false
+        )
+        .is_err(),
+        "degree 0 carries one coefficient only"
+    );
+    assert!(
+        validate_semantic_accessor(
+            "KHR_gaussian_splatting:SOMETHING_ELSE",
+            "VEC3",
+            GLTF_COMPONENT_FLOAT,
+            false
+        )
+        .is_err(),
+        "a name the spec does not define is refused"
+    );
+}
+
+/// A splat primitive: `POSITION` plus one attribute of each kind the
+/// `KHR_gaussian_splatting` spec defines, over five points.
+#[cfg(feature = "draco-encode")]
+fn splat_geometry() -> crate::PackedGeometry {
+    use crate::{ComponentType, PackedAttribute, PackedGeometry, PrimitiveMode};
+
+    const POINTS: usize = 5;
+    let build = |semantic: &str, components: u8, fill: f32| {
+        let mut bytes = Vec::new();
+        for point in 0..POINTS {
+            for component in 0..u32::from(components) {
+                let value =
+                    ((point as f32 + 1.0) * fill * (component as f32 + 1.0) + 0.125).to_le_bytes();
+                bytes.extend_from_slice(&value);
+            }
+        }
+        PackedAttribute::new(
+            semantic,
+            POINTS,
+            components,
+            ComponentType::F32,
+            false,
+            bytes,
+        )
+        .unwrap()
+    };
+
+    let attributes = vec![
+        build("POSITION", 3, 1.0),
+        build("KHR_gaussian_splatting:ROTATION", 4, 0.5),
+        build("KHR_gaussian_splatting:SCALE", 3, 0.25),
+        build("KHR_gaussian_splatting:OPACITY", 1, 0.75),
+        build("KHR_gaussian_splatting:SH_DEGREE_0_COEF_0", 3, 0.125),
+        build("KHR_gaussian_splatting:SH_DEGREE_1_COEF_2", 3, 0.0625),
+    ];
+    PackedGeometry::new(PrimitiveMode::Points, attributes, None).unwrap()
+}
+
+/// A `KHR_gaussian_splatting` primitive compresses when `allow_points` asks
+/// for it: the payload goes through the point-cloud coder, the primitive keeps
+/// its `mode: 0`, and no index accessor appears -- a point cloud has no faces,
+/// so the extension has no indices to name. What it wrote reads back as what
+/// it is, through the document's own reader, splat semantics included.
+#[cfg(feature = "draco-encode")]
+#[test]
+fn a_splat_primitive_compresses_as_a_point_cloud_when_allowed() {
+    use crate::{CompressionOptions, GeometryWriteOptions, Import, MeshIndex, QuantizationBits};
+
+    let mut import = Import::from_geometry(
+        &splat_geometry(),
+        ValidationProfile::Gltf20,
+        GeometryWriteOptions::default(),
+    )
+    .unwrap();
+    let report = import
+        .compress_primitive(
+            MeshIndex(0),
+            0,
+            CompressionOptions {
+                allow_points: true,
+                quantization: QuantizationBits {
+                    position: Some(14),
+                    generic: Some(10),
+                    ..QuantizationBits::NONE
+                },
+                ..CompressionOptions::default()
+            },
+        )
+        .unwrap();
+    assert!(report.encoded_bytes > 0);
+
+    let primitive = &import.document().as_value()["meshes"][0]["primitives"][0];
+    assert_eq!(primitive["mode"].as_u64(), Some(0));
+    assert!(
+        primitive.get("indices").is_none(),
+        "a point cloud must not gain an index accessor"
+    );
+    let extension = &primitive["extensions"]["KHR_draco_mesh_compression"];
+    assert_eq!(
+        extension["attributes"]
+            .as_object()
+            .map(|object| object.len()),
+        Some(6),
+        "every splat attribute rides the extension's map"
+    );
+    assert!(import.document().as_value()["extensionsRequired"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|name| name.as_str() == Some("KHR_draco_mesh_compression")));
+
+    let bytes = import.to_bytes(crate::OutputFormat::GlbV2).unwrap();
+    let reloaded = parse(&bytes, ValidationProfile::Gltf20).unwrap();
+    let geometry = reloaded
+        .read_primitive(crate::PrimitiveIndex::new(MeshIndex(0), 0))
+        .unwrap();
+    assert_eq!(geometry.mode(), crate::PrimitiveMode::Points);
+    assert!(geometry.indices().is_none());
+    assert_eq!(geometry.attributes().len(), 6);
+    for attribute in geometry.attributes() {
+        assert_eq!(attribute.count(), 5, "{} lost points", attribute.semantic());
+    }
+}
+
+/// The same primitive, with a fallback kept: the ordinary accessors are
+/// rewritten from what the Draco buffer decodes to, per the spec, and the
+/// extension is used but not required.
+#[cfg(feature = "draco-encode")]
+#[test]
+fn a_compressed_point_clouds_fallback_decodes_from_the_draco_buffer() {
+    use crate::{
+        CompressionMode, CompressionOptions, GeometryWriteOptions, Import, MeshIndex,
+        QuantizationBits,
+    };
+
+    let mut import = Import::from_geometry(
+        &splat_geometry(),
+        ValidationProfile::Gltf20,
+        GeometryWriteOptions::default(),
+    )
+    .unwrap();
+    let report = import
+        .compress_primitive(
+            MeshIndex(0),
+            0,
+            CompressionOptions {
+                allow_points: true,
+                mode: CompressionMode::Fallback,
+                quantization: QuantizationBits {
+                    position: Some(14),
+                    ..QuantizationBits::NONE
+                },
+                ..CompressionOptions::default()
+            },
+        )
+        .unwrap();
+    assert!(report.encoded_bytes > 0);
+
+    let primitive = &import.document().as_value()["meshes"][0]["primitives"][0];
+    assert_eq!(primitive["mode"].as_u64(), Some(0));
+    assert!(primitive.get("indices").is_none());
+    for semantic in ["POSITION", "KHR_gaussian_splatting:OPACITY"] {
+        assert!(
+            primitive["attributes"].get(semantic).is_some(),
+            "the fallback keeps {semantic} as an ordinary accessor"
+        );
+    }
+    assert!(matches!(
+        primitive["extensions"]["KHR_draco_mesh_compression"],
+        crate::JsonValue::Object(_)
+    ));
+    let required = import.document().as_value()["extensionsRequired"].as_array();
+    assert!(
+        required.is_none()
+            || !required
+                .unwrap()
+                .iter()
+                .any(|name| name.as_str() == Some("KHR_draco_mesh_compression")),
+        "a fallback is not required"
+    );
+}
+
+/// An indexed points primitive compresses the points its indices name, and
+/// the index accessor goes with them: a compressed cloud has no indices, so
+/// the one the source carried -- now naming a buffer of stale gather data --
+/// must not survive the transform.
+#[cfg(feature = "draco-encode")]
+#[test]
+fn an_indexed_points_primitive_compresses_without_keeping_its_indices() {
+    use crate::{
+        ComponentType, CompressionOptions, GeometryWriteOptions, Import, MeshIndex,
+        PackedAttribute, PackedGeometry, PackedIndices, PrimitiveMode,
+    };
+
+    let positions: Vec<u8> = [[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+        .iter()
+        .flatten()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    let geometry = PackedGeometry::new(
+        PrimitiveMode::Points,
+        vec![PackedAttribute::new("POSITION", 3, 3, ComponentType::F32, false, positions).unwrap()],
+        // Three points named out of three positions, in an order the encode
+        // gathers: the encoded cloud has three points and no indices.
+        Some(PackedIndices::new(3, ComponentType::U8, vec![0, 2, 1]).unwrap()),
+    )
+    .unwrap();
+    let mut import = Import::from_geometry(
+        &geometry,
+        ValidationProfile::Gltf20,
+        GeometryWriteOptions::default(),
+    )
+    .unwrap();
+    let primitive = &import.document().as_value()["meshes"][0]["primitives"][0];
+    assert_eq!(primitive["mode"].as_u64(), Some(0));
+    assert!(primitive.get("indices").is_some(), "the source is indexed");
+
+    import
+        .compress_primitive(
+            MeshIndex(0),
+            0,
+            CompressionOptions {
+                allow_points: true,
+                ..CompressionOptions::default()
+            },
+        )
+        .unwrap();
+
+    let primitive = &import.document().as_value()["meshes"][0]["primitives"][0];
+    assert_eq!(primitive["mode"].as_u64(), Some(0));
+    assert!(
+        primitive.get("indices").is_none(),
+        "a compressed point cloud must not keep the source's index accessor"
+    );
+
+    // And what it wrote reads back as the gathered points, unindexed.
+    let bytes = import.to_bytes(crate::OutputFormat::GlbV2).unwrap();
+    let reloaded = parse(&bytes, ValidationProfile::Gltf20).unwrap();
+    let geometry = reloaded
+        .read_primitive(crate::PrimitiveIndex::new(MeshIndex(0), 0))
+        .unwrap();
+    assert_eq!(geometry.mode(), crate::PrimitiveMode::Points);
+    assert!(geometry.indices().is_none());
+    assert_eq!(geometry.vertex_count(), 3);
+}
+
+/// `POINTS` stays opt-in: without `allow_points` the primitive is refused
+/// exactly as it always was, whatever its attributes are named.
+#[cfg(feature = "draco-encode")]
+#[test]
+fn a_points_primitive_is_refused_without_allow_points() {
+    use crate::{CompressionOptions, GeometryWriteOptions, Import, MeshIndex};
+
+    let mut import = Import::from_geometry(
+        &splat_geometry(),
+        ValidationProfile::Gltf20,
+        GeometryWriteOptions::default(),
+    )
+    .unwrap();
+    let error = import
+        .compress_primitive(MeshIndex(0), 0, CompressionOptions::default())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("allow_points"),
+        "the refusal should say what unlocks it, got: {error}"
+    );
+}
+
+/// A morph-targeted primitive cannot be point-cloud compressed: the cloud
+/// carries no connectivity for targets to ride on, and saying so beats
+/// silently dropping them.
+#[cfg(feature = "draco-encode")]
+#[test]
+fn a_points_primitive_with_morph_targets_is_refused() {
+    use crate::{CompressionOptions, GeometryWriteOptions, Import, MeshIndex};
+
+    let mut import = Import::from_geometry(
+        &splat_geometry(),
+        ValidationProfile::Gltf20,
+        GeometryWriteOptions::default(),
+    )
+    .unwrap();
+    // Morph targets are added the way a document carries them: a `targets`
+    // array on the primitive.
+    import.document_mut().as_value_mut()["meshes"][0]["primitives"][0]["targets"] =
+        crate::JsonValue::Array(vec![crate::JsonValue::object([(
+            "POSITION",
+            crate::JsonValue::from(0u64),
+        )])]);
+
+    let error = import
+        .compress_primitive(
+            MeshIndex(0),
+            0,
+            CompressionOptions {
+                allow_points: true,
+                ..CompressionOptions::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("morph targets"),
+        "the refusal should say why, got: {error}"
+    );
+}
+
+/// A semantic name the extension does not define is refused at the attribute
+/// read, not carried as a custom attribute: the spec names its kinds exactly,
+/// and a typo in one is a broken splat, not a generic column.
+#[cfg(feature = "draco-encode")]
+#[test]
+fn an_unknown_splat_semantic_is_refused() {
+    use crate::{CompressionOptions, GeometryWriteOptions, Import, MeshIndex};
+
+    let geometry = crate::PackedGeometry::new(
+        crate::PrimitiveMode::Points,
+        vec![
+            crate::PackedAttribute::new(
+                "POSITION",
+                1,
+                3,
+                crate::ComponentType::F32,
+                false,
+                vec![0u8; 12],
+            )
+            .unwrap(),
+            crate::PackedAttribute::new(
+                "KHR_gaussian_splatting:Rottaion",
+                1,
+                4,
+                crate::ComponentType::F32,
+                false,
+                vec![0u8; 16],
+            )
+            .unwrap(),
+        ],
+        None,
+    )
+    .unwrap();
+    let mut import = Import::from_geometry(
+        &geometry,
+        ValidationProfile::Gltf20,
+        GeometryWriteOptions::default(),
+    )
+    .unwrap();
+    let error = import
+        .compress_primitive(
+            MeshIndex(0),
+            0,
+            CompressionOptions {
+                allow_points: true,
+                ..CompressionOptions::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("KHR_gaussian_splatting:Rottaion"),
+        "the refusal should name the semantic, got: {error}"
+    );
+}
+
+/// The host-neutral encoder takes a `POINTS` primitive on the same terms
+/// [`Import::compress_primitive`](crate::Import::compress_primitive) does --
+/// strictly opt-in, no indices to declare, and what its fallback decodes is a
+/// point cloud, not a triangle list with none.
+#[cfg(feature = "draco-encode")]
+#[test]
+fn the_host_neutral_encoder_takes_a_points_primitive_when_allowed() {
+    use crate::{
+        CompressionOptions, DracoPrimitiveEncoding, GeometryWriteOptions, Import, MeshIndex,
+        PrimitiveMode, QuantizationBits,
+    };
+
+    // Refused without the option, exactly as the document path refuses it.
+    let refused = DracoPrimitiveEncoding::encode(&splat_geometry(), &CompressionOptions::default())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("allow_points"),
+        "the refusal should say what unlocks it, got: {refused}"
+    );
+
+    let options = CompressionOptions {
+        allow_points: true,
+        quantization: QuantizationBits {
+            position: Some(14),
+            generic: Some(10),
+            ..QuantizationBits::NONE
+        },
+        ..CompressionOptions::default()
+    };
+    let encoded = DracoPrimitiveEncoding::encode(&splat_geometry(), &options).unwrap();
+    assert!(encoded.index_count() == 0, "a point cloud has no indices");
+    let extension = encoded.extension(0).to_json();
+    assert_eq!(
+        extension["attributes"]
+            .as_object()
+            .map(|object| object.len()),
+        Some(6)
+    );
+    let decoded = encoded.decoded().unwrap();
+    assert_eq!(decoded.mode(), PrimitiveMode::Points);
+    assert!(decoded.indices().is_none());
+    assert_eq!(decoded.attributes().len(), 6);
 }

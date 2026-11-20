@@ -493,7 +493,7 @@ impl PackedGeometry {
 
     /// Builds packed geometry from a decoded Draco mesh.
     ///
-    /// Always tagged `TRIANGLES`, regardless of what mode the source
+    /// A mesh stream is tagged `TRIANGLES` regardless of what mode the source
     /// primitive declared: Draco's connectivity is an explicit triangle
     /// list by construction, with no way to reconstruct a strip or a fan
     /// from it, and `KHR_draco_mesh_compression` allows a compressed
@@ -503,21 +503,19 @@ impl PackedGeometry {
     /// Draco primitive for exactly this reason; trusting it here would tag
     /// an ordinary triangle list as a strip, which is wrong for any caller
     /// that takes `mode` at its word instead of also ignoring it.
-    #[cfg(feature = "draco-encode")]
-    pub(crate) fn from_draco_mesh(
-        mesh: &Mesh,
-        attributes: &[(String, u32)],
-        normalized: &dyn Fn(&str) -> Option<bool>,
-    ) -> Result<Self> {
-        Self::from_draco_mesh_with_attributes(mesh, attributes, normalized, Vec::new())
-    }
-
+    ///
+    /// A point-cloud stream -- one with no faces at all, which is what a
+    /// compressed `POINTS` primitive carries -- is tagged `POINTS` and given
+    /// no indices, since a point cloud has none; any other declared mode
+    /// against such a stream fails element-count validation, as it should.
+    /// A stream with faces under a `POINTS` declaration is refused outright.
     #[cfg(feature = "draco-decode")]
     pub(crate) fn from_draco_mesh_with_attributes(
         mesh: &Mesh,
         attributes: &[(String, u32)],
         normalized: &dyn Fn(&str) -> Option<bool>,
         ordinary: Vec<PackedAttribute>,
+        mode: PrimitiveMode,
     ) -> Result<Self> {
         let mut attributes = attributes
             .iter()
@@ -542,6 +540,17 @@ impl PackedGeometry {
             })
             .collect::<Result<Vec<_>>>()?;
         attributes.extend(ordinary);
+        if mode == PrimitiveMode::Points {
+            if mesh.num_faces() != 0 {
+                return Err(Error::Geometry(GeometryError::UnsupportedDraco(format!(
+                    "a POINTS primitive decoded to {} faces",
+                    mesh.num_faces()
+                ))));
+            }
+            // A point cloud carries no indices, and `POINTS` validation asks
+            // for at least one point, which the attributes below supply.
+            return Self::new(PrimitiveMode::Points, attributes, None).map_err(Error::Geometry);
+        }
         let count = mesh
             .num_faces()
             .checked_mul(3)

@@ -369,6 +369,14 @@ impl Import {
             .with_threads(self.draco_decode.threads)
             .with_profile(self.profile)
             .with_mesh_quantization(self.mesh_quantization());
+        // The declared mode rides the contract: it is what makes a compressed
+        // `POINTS` primitive come back as points rather than failing
+        // element-count validation against a mesh's shape, and what leaves
+        // the index accessor's count unchecked for anything but triangles.
+        let mode = crate::PrimitiveMode::from_gltf(primitive.mode()).ok_or_else(|| {
+            Error::Geometry(crate::GeometryError::InvalidPrimitiveMode(primitive.mode()))
+        })?;
+        contract = contract.with_mode(mode);
         for (semantic, index) in primitive.attribute_indices() {
             let accessor = self.document().accessor(index);
             let count = accessor.and_then(crate::Accessor::count).ok_or_else(|| {

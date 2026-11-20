@@ -3,7 +3,7 @@ use draco_core::{
     encoder_buffer::EncoderBuffer,
     encoder_options::EncoderOptions,
     geometry_attribute::GeometryAttributeType,
-    mesh_encoder::{EncodedMeshInfo, MeshEncoder},
+    mesh_encoder::{EncodedAttributeInfo, EncodedMeshInfo, MeshEncoder},
 };
 
 /// How the exported primitive exposes its Draco payload.
@@ -68,6 +68,19 @@ fn detach_draco_only_accessors(
         )?;
     }
 
+    // A point cloud has no faces, so there is no index accessor to detach --
+    // and one the source primitive did carry, whose points the encode
+    // gathered, must go: it names a bufferView the compressed primitive has
+    // no use for, and a count the stream's points may not match. The
+    // fallback's own rewrite drops it the same way.
+    if layout.point_cloud {
+        let primitive = &mut root["meshes"][mesh_index]["primitives"][primitive_index];
+        if let Some(entries) = primitive.as_object_mut() {
+            entries.retain(|(name, _)| name != "indices");
+        }
+        return Ok(());
+    }
+
     let source = root["meshes"][mesh_index]["primitives"][primitive_index]
         .get("indices")
         .and_then(crate::JsonValue::as_u64)
@@ -107,6 +120,8 @@ pub(crate) struct DracoAttributeLayout {
 /// What the accessors of an encoded primitive declare, from the encoder's
 /// report: the spec requires them to "match the decompressed data".
 pub(crate) struct DracoGeometryLayout {
+    /// Whether the payload is a point cloud, which has no indices to detach.
+    pub(crate) point_cloud: bool,
     pub(crate) points: usize,
     pub(crate) index_count: usize,
     /// In the order of the extension's attribute map.
@@ -165,17 +180,123 @@ impl DracoGeometryLayout {
             .checked_mul(3)
             .ok_or_else(|| Error::ResourceLimit("encoded index count overflows".into()))?;
         Ok(Self {
+            point_cloud: false,
             points: info.num_encoded_points,
             index_count,
             attributes,
         })
+    }
+
+    /// The layout of a point-cloud encode, from its own decoded stream.
+    ///
+    /// A point cloud's encoder reports no POSITION bounds -- the kd-tree coder
+    /// reports no per-attribute anything -- so the accessors are declared from
+    /// what the stream decodes to, which is what the spec asks them to match
+    /// anyway. The decode behind this is of the stream this crate just wrote,
+    /// under permissive limits, and the caller checks its point count against
+    /// what the encoder reported.
+    pub(crate) fn from_decoded_point_cloud(
+        decoded: &draco_core::Mesh,
+        mapping: &[(String, u32)],
+    ) -> Result<Self> {
+        let attributes = mapping
+            .iter()
+            .map(|(semantic, unique_id)| {
+                let attribute = decoded.attribute_by_unique_id(*unique_id).ok_or_else(|| {
+                    Error::Extension(format!("decoded Draco attribute {unique_id} is missing"))
+                })?;
+                let position_bounds = if semantic == "POSITION" {
+                    Some(decoded_position_bounds(attribute, decoded.num_points())?)
+                } else {
+                    None
+                };
+                if position_bounds
+                    .as_ref()
+                    .is_some_and(|(min, max)| min.iter().chain(max).any(|bound| !bound.is_finite()))
+                {
+                    return Err(Error::Extension(
+                        "POSITION holds values that are not finite, which glTF bounds cannot state"
+                            .into(),
+                    ));
+                }
+                Ok(DracoAttributeLayout {
+                    components: attribute.num_components(),
+                    component_type: gltf20_component_type(
+                        crate::packed::component_type_for_data_type(attribute.data_type())?,
+                    )?,
+                    position_bounds,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
+            point_cloud: true,
+            points: decoded.num_points(),
+            index_count: 0,
+            attributes,
+        })
+    }
+}
+
+/// POSITION's bounds as its accessor declares them, from a decoded attribute
+/// read a component at a time.
+fn decoded_position_bounds(
+    attribute: &draco_core::PointAttribute,
+    points: usize,
+) -> Result<(Vec<f64>, Vec<f64>)> {
+    let components = usize::from(attribute.num_components());
+    let stride = usize::try_from(attribute.byte_stride())
+        .map_err(|_| Error::Extension("decoded POSITION stride is invalid".into()))?;
+    let width = attribute.data_type().byte_length();
+    let data = attribute.buffer().data();
+    let mut min = vec![f64::INFINITY; components];
+    let mut max = vec![f64::NEG_INFINITY; components];
+    for point in 0..points {
+        let value_index = attribute
+            .mapped_index(draco_core::PointIndex(point as u32))
+            .0 as usize;
+        for component in 0..components {
+            let start = value_index
+                .checked_mul(stride)
+                .and_then(|start| start.checked_add(component * width))
+                .ok_or_else(|| Error::Extension("decoded POSITION is out of bounds".into()))?;
+            let bytes = data
+                .get(start..start + width)
+                .ok_or_else(|| Error::Extension("decoded POSITION is truncated".into()))?;
+            let value = scalar_as_f64(attribute.data_type(), bytes);
+            min[component] = min[component].min(value);
+            max[component] = max[component].max(value);
+        }
+    }
+    Ok((min, max))
+}
+
+/// One component as a double, which every Draco type fits without loss.
+fn scalar_as_f64(data_type: draco_core::DataType, bytes: &[u8]) -> f64 {
+    use draco_core::DataType as Dt;
+    match data_type {
+        Dt::Int8 => bytes[0] as i8 as f64,
+        Dt::Uint8 | Dt::Bool => bytes[0] as f64,
+        Dt::Int16 => i16::from_le_bytes(bytes.try_into().unwrap()) as f64,
+        Dt::Uint16 => u16::from_le_bytes(bytes.try_into().unwrap()) as f64,
+        Dt::Int32 => i32::from_le_bytes(bytes.try_into().unwrap()) as f64,
+        Dt::Uint32 => u32::from_le_bytes(bytes.try_into().unwrap()) as f64,
+        Dt::Int64 => i64::from_le_bytes(bytes.try_into().unwrap()) as f64,
+        Dt::Uint64 => u64::from_le_bytes(bytes.try_into().unwrap()) as f64,
+        Dt::Float32 => f32::from_le_bytes(bytes.try_into().unwrap()) as f64,
+        Dt::Float64 => f64::from_le_bytes(bytes.try_into().unwrap()),
+        Dt::Invalid => 0.0,
     }
 }
 
 /// A primitive encoded, with what its accessors declare.
 pub(crate) struct EncodedPrimitive {
     pub(crate) bytes: Vec<u8>,
-    pub(crate) info: EncodedMeshInfo,
+    /// `(numeric Draco method, speed)` the encoder settled on, for the report.
+    pub(crate) encoding: (i32, i32),
+    /// The per-attribute report, for the prediction summary. Empty where the
+    /// encoder has no per-attribute choice to report -- the kd-tree point-cloud
+    /// coder encodes every attribute through one coder.
+    pub(crate) attributes: Vec<EncodedAttributeInfo>,
     /// `(glTF semantic, Draco unique id)`, the extension's attribute map.
     pub(crate) mapping: Vec<(String, u32)>,
     pub(crate) layout: DracoGeometryLayout,
@@ -190,11 +311,94 @@ pub(crate) fn encode_primitive(
     let (bytes, info) = encode_draco_mesh(mesh, options)?;
     let layout = DracoGeometryLayout::from_encoded_info(&info, &mapping)?;
     Ok(EncodedPrimitive {
+        encoding: (info.encoding_method, info.speed),
+        attributes: info.attributes,
         bytes,
-        info,
         mapping,
         layout,
     })
+}
+
+/// Encodes a `POINTS` primitive's geometry through Draco's point-cloud coder.
+///
+/// The mesh carries no faces -- `decode_geometry` built it from a mode-0
+/// primitive -- and `mesh.into_point_cloud` drops what it does not have, so
+/// the same builder feeds both coders. The layout is declared from what the
+/// stream decodes back to, not from an encoder report: the kd-tree coder has
+/// no per-attribute report and neither coder reports POSITION bounds, and the
+/// spec asks the accessors to match the decoded data anyway.
+pub(crate) fn encode_point_cloud_primitive(
+    mesh: draco_core::Mesh,
+    mapping: Vec<(String, u32)>,
+    options: &CompressionOptions,
+) -> Result<EncodedPrimitive> {
+    let num_points = mesh.num_points();
+    let (bytes, info) = encode_draco_point_cloud(mesh, options)?;
+    let decoded = crate::draco_primitive::decode_payload(
+        &bytes,
+        &crate::DracoDecodeOptions::default().with_limits(draco_core::DecodeLimits::permissive()),
+    )?;
+    if decoded.num_points() != num_points {
+        return Err(Error::Extension(format!(
+            "Draco point-cloud encoder reported {num_points} points, its stream decodes to {}",
+            decoded.num_points()
+        )));
+    }
+    let layout = DracoGeometryLayout::from_decoded_point_cloud(&decoded, &mapping)?;
+    Ok(EncodedPrimitive {
+        encoding: (info.encoding_method, info.speed),
+        attributes: info.attributes,
+        bytes,
+        mapping,
+        layout,
+    })
+}
+
+/// Encodes the built geometry through Draco's point-cloud coder.
+///
+/// The quantization table is keyed by attribute type exactly as the mesh path
+/// keys it, and the three point-cloud options are read from
+/// [`CompressionOptions`], which leaves them unset for a mesh encode: they
+/// name a point order and a prediction search the mesh coder does not take.
+fn encode_draco_point_cloud(
+    mesh: draco_core::Mesh,
+    options: &CompressionOptions,
+) -> Result<(Vec<u8>, draco_core::EncodedPointCloudInfo)> {
+    use draco_core::point_cloud_encoder::PointCloudEncoder;
+
+    let mut settings = EncoderOptions::new();
+    settings.set_global_int("encoding_speed", options.encoding_speed as i32);
+    settings.set_global_int("decoding_speed", options.decoding_speed as i32);
+    // The caller-facing method convention is the mesh one -- 1 sequential,
+    // 2 the connectivity coder -- and a point cloud has no connectivity, so 2
+    // lands on the kd-tree coder, the other thing the choice is between.
+    match options.encoding_method {
+        1 => settings.set_encoding_method(0), // force sequential
+        2 => settings.set_encoding_method(1), // force kd-tree
+        _ => {}
+    }
+    for attribute_id in 0..mesh.num_attributes() {
+        let attribute_type = mesh.attribute(attribute_id).attribute_type();
+        if let Some(bits) = options.quantization.for_attribute(attribute_type) {
+            settings.set_attribute_int(attribute_id, "quantization_bits", bits as i32);
+        }
+    }
+    settings.set_prediction_search(options.prediction_search);
+    settings.set_spatial_point_order(options.spatial_point_order);
+    settings.set_point_order_search(options.point_order_search);
+
+    let mut encoder = PointCloudEncoder::new();
+    encoder.set_point_cloud(mesh.into_point_cloud());
+    let mut output = EncoderBuffer::new();
+    encoder
+        .encode(&settings, &mut output)
+        .map_err(|error| Error::Extension(error.to_string()))?;
+    let bytes = output.data().to_vec();
+    let info = encoder
+        .encoded_point_cloud_info()
+        .cloned()
+        .ok_or_else(|| Error::Extension("the point-cloud encoder reported nothing".into()))?;
+    Ok((bytes, info))
 }
 
 /// Decodes a stream just encoded, for callers that need the data (a fallback
@@ -204,21 +408,28 @@ pub(crate) fn decode_encoded(
     mapping: &[(String, u32)],
     reported: (usize, usize),
     normalized: &[(String, bool)],
+    mode: crate::PrimitiveMode,
 ) -> Result<crate::PackedGeometry> {
     // Our own stream: the limits for hostile input do not apply.
     let mesh = crate::draco_primitive::decode_payload(
         bytes,
         &crate::DracoDecodeOptions::default().with_limits(draco_core::DecodeLimits::permissive()),
     )?;
-    let decoded = crate::PackedGeometry::from_draco_mesh(&mesh, mapping, &|semantic| {
-        // The last entry for a semantic wins, as it would in a map built
-        // from the same list.
-        normalized
-            .iter()
-            .rev()
-            .find(|(name, _)| name == semantic)
-            .map(|(_, normalized)| *normalized)
-    })?;
+    let decoded = crate::PackedGeometry::from_draco_mesh_with_attributes(
+        &mesh,
+        mapping,
+        &|semantic| {
+            // The last entry for a semantic wins, as it would in a map built
+            // from the same list.
+            normalized
+                .iter()
+                .rev()
+                .find(|(name, _)| name == semantic)
+                .map(|(_, normalized)| *normalized)
+        },
+        Vec::new(),
+        mode,
+    )?;
     let index_count = decoded.indices().map_or(0, crate::PackedIndices::count);
     if (decoded.vertex_count(), index_count) != reported {
         return Err(Error::Extension(format!(
@@ -846,7 +1057,42 @@ pub struct CompressionOptions {
     /// value an omitted argument coerces to at every FFI boundary above this
     /// -- 0 -- already means "leave it alone" and cannot be mistaken for a
     /// forced choice.
+    ///
+    /// On a `POINTS` primitive the same two values pick between the point
+    /// cloud's own coders instead: `1` forces the sequential coder, `2` the
+    /// kd-tree one. There is no EdgeBreaker for a cloud to force.
     pub encoding_method: i32,
+    /// Whether a `POINTS` (mode 0) primitive may be compressed.
+    ///
+    /// Off by default, and deliberately. The `KHR_draco_mesh_compression`
+    /// specification defines compression for triangle-shaped connectivity
+    /// only, and a stream written over a point cloud sits outside it: every
+    /// decoder that carries a Draco point-cloud decoder reads it -- this
+    /// crate's own reader among them, which follows what the stream says
+    /// rather than what the primitive declares -- but a reader that enforces
+    /// the spec's mode table on the extension refuses it. A caller who wants
+    /// a compressed splat or scan asks for it here, and the document records
+    /// what it did: `mode` stays `0`, and the payload lands in the same
+    /// buffer view the extension names.
+    ///
+    /// With it off, a mode-0 primitive is refused exactly as before.
+    pub allow_points: bool,
+    /// Orders a point cloud's points along a Hilbert curve before they are
+    /// written. Read only when [`Self::allow_points`] compresses a `POINTS`
+    /// primitive; it reorders the decoded points, and it can make a file
+    /// larger, when an attribute varies along the order the points came in.
+    pub spatial_point_order: bool,
+    /// Runs the order search before the points are written and keeps it only
+    /// when the coder's own plan prices it under the order they came in. Read
+    /// only when [`Self::allow_points`] compresses a `POINTS` primitive; it
+    /// costs encode time, and it reorders the decoded points when it fires.
+    pub point_order_search: bool,
+    /// Lets the point-cloud coder choose each attribute's prediction scheme by
+    /// the estimated cost of the candidates rather than by the fixed rule. Read
+    /// only when [`Self::allow_points`] compresses a `POINTS` primitive; it
+    /// costs encode time and nothing else, and every stream it can produce is
+    /// one an ordinary decoder reads.
+    pub prediction_search: bool,
 }
 impl Default for CompressionOptions {
     fn default() -> Self {
@@ -857,6 +1103,10 @@ impl Default for CompressionOptions {
             max_output_bytes: None,
             quantization: QuantizationBits::default(),
             encoding_method: 0,
+            allow_points: false,
+            spatial_point_order: false,
+            point_order_search: false,
+            prediction_search: false,
         }
     }
 }
@@ -993,12 +1243,14 @@ fn prediction_scheme_name(
     format!("{method} ({transform})")
 }
 
-fn prediction_summary(info: &EncodedMeshInfo, mapping: &[(String, u32)]) -> Option<String> {
+fn prediction_summary(
+    attributes: &[EncodedAttributeInfo],
+    mapping: &[(String, u32)],
+) -> Option<String> {
     let schemes: Vec<String> = mapping
         .iter()
         .filter_map(|(semantic, unique_id)| {
-            let attribute = info
-                .attributes
+            let attribute = attributes
                 .iter()
                 .find(|attribute| attribute.unique_id == *unique_id)?;
             let (method, transform) = attribute.prediction?;
@@ -1099,7 +1351,26 @@ impl Import {
             self.ensure_document_binary_transform_safe()?;
         }
         let source_mode = reference.mode();
-        if !matches!(source_mode, 4..=6) {
+        let points = source_mode == 0;
+        if points {
+            // A point cloud sits outside what the extension's own text
+            // covers, so it is strictly opt-in; see `CompressionOptions::
+            // allow_points`.
+            if !options.allow_points {
+                return Err(Error::Extension(format!(
+                    "KHR_draco_mesh_compression encoding supports only TRIANGLES (4), \
+                     TRIANGLE_STRIP (5) and TRIANGLE_FAN (6), not mode {source_mode}; \
+                     pass allow_points to compress a POINTS primitive"
+                )));
+            }
+            if reference.morph_targets().next().is_some() {
+                return Err(Error::Extension(
+                    "a primitive with morph targets cannot be point-cloud compressed: \
+                     the point cloud carries no connectivity for the targets to ride on"
+                        .into(),
+                ));
+            }
+        } else if !matches!(source_mode, 4..=6) {
             return Err(Error::Extension(format!(
                 "KHR_draco_mesh_compression encoding supports only TRIANGLES (4), \
                  TRIANGLE_STRIP (5) and TRIANGLE_FAN (6), not mode {source_mode}"
@@ -1130,13 +1401,22 @@ impl Import {
             })
             .collect();
         let (geometry, mapping) = self.decode_geometry_primitive(reference)?;
-        let encoded = encode_primitive(geometry, mapping, &options)?;
+        let encoded = if points {
+            encode_point_cloud_primitive(geometry, mapping, &options)?
+        } else {
+            encode_primitive(geometry, mapping, &options)?
+        };
         let decoded = if has_targets || options.mode == CompressionMode::Fallback {
             Some(decode_encoded(
                 &encoded.bytes,
                 &encoded.mapping,
                 (encoded.layout.points, encoded.layout.index_count),
                 &normalized,
+                if encoded.layout.point_cloud {
+                    crate::PrimitiveMode::Points
+                } else {
+                    crate::PrimitiveMode::Triangles
+                },
             )?)
         } else {
             None
@@ -1153,13 +1433,14 @@ impl Import {
         }
         let EncodedPrimitive {
             bytes,
-            info: encoded_info,
+            encoding,
+            attributes: encoded_attributes,
             mapping,
             layout,
         } = encoded;
-        let encoding_method = encoded_info.encoding_method;
-        let encoding_speed = encoded_info.speed;
-        let prediction_scheme = prediction_summary(&encoded_info, &mapping);
+        let encoding_method = encoding.0;
+        let encoding_speed = encoding.1;
+        let prediction_scheme = prediction_summary(&encoded_attributes, &mapping);
         // The spec: fallback data should be "decompressed from the Draco
         // buffer, rather than the original source data".
         if let (CompressionMode::Fallback, Some(decoded)) = (options.mode, &decoded) {
@@ -1200,8 +1481,9 @@ impl Import {
             // so the primitive now truthfully is TRIANGLES, whatever mode it
             // arrived as. Left untouched when it already was: an explicit
             // `mode: 4` next to an unchanged geometry stream would be a diff
-            // with nothing behind it.
-            if source_mode != 4 {
+            // with nothing behind it. A compressed point cloud keeps `mode 0`,
+            // which is what it is.
+            if matches!(source_mode, 5..=6) {
                 root["meshes"][mesh.0]["primitives"][primitive]["mode"] =
                     crate::JsonValue::from(4u64);
             }

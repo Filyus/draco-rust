@@ -118,9 +118,12 @@ pub const BINARY_FREE_EXTENSIONS: &[&str] = &[
     //
     // Registering it is what lets an asset that mixes splats with ordinary
     // geometry be compressed at all, since the document-wide transform guard
-    // refuses on any unregistered extension anywhere in the file. The splat
-    // primitives themselves stay untouched either way: they are POINTS, and
-    // compression takes only modes 4..=6.
+    // refuses on any unregistered extension anywhere in the file.
+    //
+    // The splat primitives themselves are POINTS, and compression takes them
+    // only when `CompressionOptions::allow_points` asks for it -- the
+    // extension's own text covers triangle-shaped connectivity, so a
+    // compressed splat sits outside it and is the caller's choice to write.
     //
     // This covers the base extension alone. The compression extensions built
     // on top of it -- which the specification anticipates and which will carry

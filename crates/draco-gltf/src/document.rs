@@ -1193,9 +1193,18 @@ fn validate_draco_extension(
                 ]));
             }
             let mode = primitive.get("mode").and_then(JsonRef::as_u64).unwrap_or(4);
-            if !matches!(mode, 4 | 5) {
+            // The extension's own text covers triangle connectivity only, and
+            // a strict reader of its mode table would stop at 4 and 5. This
+            // crate's writer also produces POINTS under it, on an explicit
+            // `CompressionOptions::allow_points` request, and a stream that
+            // decodes as a point cloud is self-consistent geometry whatever a
+            // strict reading of the mode table says -- so 0 is accepted here,
+            // which is what lets this crate read back what it writes.
+            if !matches!(mode, 0 | 4 | 5) {
                 return Err(Error::Validation(vec![
-                    "KHR_draco_mesh_compression requires TRIANGLES or TRIANGLE_STRIP".into(),
+                    "KHR_draco_mesh_compression requires TRIANGLES, TRIANGLE_STRIP \
+                     or POINTS"
+                        .into(),
                 ]));
             }
             check(extension, "bufferView", "bufferViews")?;

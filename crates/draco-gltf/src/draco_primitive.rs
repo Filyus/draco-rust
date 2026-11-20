@@ -128,6 +128,7 @@ impl DracoPrimitiveExtension {
             &self.attributes,
             &normalized,
             ordinary,
+            contract.mode,
         )?;
         geometry.validate_with_quantization(contract.profile, contract.mesh_quantization)?;
         Ok(geometry)
@@ -310,7 +311,9 @@ mod encode {
     use super::DracoPrimitiveExtension;
     use std::sync::OnceLock;
 
-    use crate::compression::{decode_encoded, encode_primitive, keeps_vertex_order};
+    use crate::compression::{
+        decode_encoded, encode_point_cloud_primitive, encode_primitive, keeps_vertex_order,
+    };
     use crate::geometry::{gltf_type_for_num_components, AccessorSource, DecodedAccessor};
     use crate::gltf_error::GltfError;
     use crate::{ComponentType, CompressionOptions, Error, PackedGeometry, PrimitiveMode, Result};
@@ -347,6 +350,10 @@ mod encode {
         bytes: Vec<u8>,
         attributes: Vec<(String, u32)>,
         accessors: Vec<DracoAccessor>,
+        /// What the payload decodes to: `POINTS` for a point cloud, whose
+        /// decoded geometry carries no indices, `TRIANGLES` for a mesh, whose
+        /// decoded connectivity is always a triangle list.
+        mode: PrimitiveMode,
         index_count: usize,
         normalized: Vec<(String, bool)>,
         position_bits: Option<u8>,
@@ -407,14 +414,25 @@ mod encode {
     }
 
     impl DracoPrimitiveEncoding {
-        /// Encodes a `TRIANGLES`, `TRIANGLE_STRIP` or `TRIANGLE_FAN` primitive
-        /// as [`Import::compress_primitive`](crate::Import::compress_primitive)
-        /// does. Strips and fans become triangle lists, so write `mode` as
-        /// `TRIANGLES`. `options.mode` is ignored; `max_output_bytes` caps the
-        /// bitstream.
+        /// Encodes a primitive as [`Import::compress_primitive`](crate::Import::compress_primitive)
+        /// does: `TRIANGLES`, `TRIANGLE_STRIP` or `TRIANGLE_FAN`, where strips
+        /// and fans become triangle lists, so write `mode` as `TRIANGLES`; or
+        /// `POINTS` when `options.allow_points` is set, which goes through the
+        /// point-cloud coder and keeps `mode` as it is. `options.mode` is
+        /// ignored for the connectivity choice the point cloud does not have;
+        /// `max_output_bytes` caps the bitstream.
         pub fn encode(geometry: &PackedGeometry, options: &CompressionOptions) -> Result<Self> {
             let mode = geometry.mode();
-            if !matches!(
+            let points = mode == PrimitiveMode::Points;
+            if points {
+                if !options.allow_points {
+                    return Err(Error::Extension(format!(
+                        "KHR_draco_mesh_compression encoding supports only TRIANGLES, \
+                         TRIANGLE_STRIP and TRIANGLE_FAN, not {mode:?}; pass allow_points \
+                         to compress a POINTS primitive"
+                    )));
+                }
+            } else if !matches!(
                 mode,
                 PrimitiveMode::Triangles
                     | PrimitiveMode::TriangleStrip
@@ -432,6 +450,9 @@ mod encode {
                 .enumerate()
                 .map(|(index, attribute)| (attribute.semantic().to_owned(), index))
                 .collect();
+            // An indexed points primitive gathers its points the way a strip
+            // is unwound: the encoded cloud has no indices, and the accessors
+            // the caller declares name one value per gathered point.
             let indices = geometry.indices().map(|_| source.index_accessor());
             let (mesh, mapping) =
                 crate::decode_geometry(&source, mode.to_gltf(), &attributes, indices)?;
@@ -440,7 +461,11 @@ mod encode {
                 .iter()
                 .map(|attribute| (attribute.semantic().to_owned(), attribute.normalized()))
                 .collect();
-            let encoded = encode_primitive(mesh, mapping, options)?;
+            let encoded = if points {
+                encode_point_cloud_primitive(mesh, mapping, options)?
+            } else {
+                encode_primitive(mesh, mapping, options)?
+            };
             if let Some(limit) = options.max_output_bytes {
                 if encoded.bytes.len() > limit {
                     return Err(Error::ResourceLimit(format!(
@@ -468,6 +493,11 @@ mod encode {
                 })
                 .collect();
             Ok(Self {
+                mode: if points {
+                    PrimitiveMode::Points
+                } else {
+                    PrimitiveMode::Triangles
+                },
                 index_count: encoded.layout.index_count,
                 bytes: encoded.bytes,
                 attributes: encoded.mapping,
@@ -502,6 +532,7 @@ mod encode {
         }
 
         /// Returns the index accessor's `count`; its type is `UNSIGNED_INT`.
+        /// Zero for a point cloud, which has no index accessor to declare.
         pub const fn index_count(&self) -> usize {
             self.index_count
         }
@@ -520,6 +551,7 @@ mod encode {
                 &self.attributes,
                 self.reported(),
                 &self.normalized,
+                self.mode,
             )?;
             Ok(self.decoded.get_or_init(|| decoded))
         }

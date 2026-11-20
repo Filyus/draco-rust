@@ -79,8 +79,12 @@ write = ["read", "strict-validation"]
 # The valence traversal is enabled on both sides deliberately. Without the
 # encoder half, `select_edgebreaker_traversal` can only ever answer "standard",
 # so every encoding speed below 5 -- the whole range where Draco asks for it --
-# writes the same stream as speed 5 does.
-draco-encode = ["write", "draco-decode", "draco-core/encoder", "draco-core/edgebreaker_valence_encode"]
+# writes the same stream as speed 5 does. Point-cloud encoding is part of the
+# deal: `allow_points` writes a `POINTS` primitive through the point-cloud
+# coder, and the encoder reports what its accessors must declare by decoding
+# the stream it just wrote, which is what `draco-point-cloud-decode` lets it
+# do. Encoding meshes alone pays for the point-cloud decoder regardless.
+draco-encode = ["write", "draco-decode", "draco-point-cloud-decode", "draco-core/encoder", "draco-core/edgebreaker_valence_encode"]
 # Release-grade scene API.
 full = ["read", "accessors", "strict-validation", "draco-decode", "draco-point-cloud-decode", "write", "draco-encode"]
 # Repository-fixture tests are intentionally opt-in and are not run from the

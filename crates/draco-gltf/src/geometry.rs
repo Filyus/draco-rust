@@ -177,6 +177,88 @@ const GENERIC_COMPONENT_TYPES: &[u32] = &[
     GLTF_COMPONENT_FLOAT,
 ];
 
+/// The prefix `KHR_gaussian_splatting` names its attributes with, as the
+/// extension defines them: `KHR_gaussian_splatting:ROTATION`,
+/// `KHR_gaussian_splatting:SCALE`, `KHR_gaussian_splatting:OPACITY` and the
+/// `KHR_gaussian_splatting:SH_DEGREE_l_COEF_n` coefficients.
+const KHR_GAUSSIAN_SPLATTING_PREFIX: &str = "KHR_gaussian_splatting:";
+
+/// The spec for one `KHR_gaussian_splatting:*` attribute, by the name the
+/// extension puts after its prefix; `None` for a name the spec does not
+/// define.
+///
+/// The extension names its attributes with its own prefix rather than an
+/// underscore, so the application-specific rule one branch below does not see
+/// them, and a primitive carrying them is refused on the accessor read before
+/// this allowed them through. All four kinds read as generic Draco attributes
+/// the same way an `_`-prefixed one does: the semantic name stays in
+/// `primitive.attributes` and in the extension's attribute map.
+fn splat_semantic_spec(rest: &str) -> Option<SemanticSpec> {
+    if rest == "ROTATION" {
+        // A quaternion of rotation: float, or a normalized signed integer of
+        // either width, which is COLOR's rule.
+        Some(SemanticSpec {
+            attribute_type: GeometryAttributeType::Generic,
+            expected_accessor_types: &["VEC4"],
+            allowed_component_types: &[
+                GLTF_COMPONENT_FLOAT,
+                GLTF_COMPONENT_BYTE,
+                GLTF_COMPONENT_SHORT,
+            ],
+            normalization: NormalizationPolicy::RequiredForInteger,
+        })
+    } else if rest == "SCALE" {
+        // Non-negative extents: float, or an unsigned integer of either width
+        // normalized or not -- the one kind that allows both.
+        Some(SemanticSpec {
+            attribute_type: GeometryAttributeType::Generic,
+            expected_accessor_types: &["VEC3"],
+            allowed_component_types: &[
+                GLTF_COMPONENT_FLOAT,
+                GLTF_COMPONENT_UNSIGNED_BYTE,
+                GLTF_COMPONENT_UNSIGNED_SHORT,
+            ],
+            normalization: NormalizationPolicy::Generic,
+        })
+    } else if rest == "OPACITY" {
+        // A normalized linear opacity: float, or a normalized unsigned
+        // integer of either width.
+        Some(SemanticSpec {
+            attribute_type: GeometryAttributeType::Generic,
+            expected_accessor_types: &["SCALAR"],
+            allowed_component_types: &[
+                GLTF_COMPONENT_FLOAT,
+                GLTF_COMPONENT_UNSIGNED_BYTE,
+                GLTF_COMPONENT_UNSIGNED_SHORT,
+            ],
+            normalization: NormalizationPolicy::RequiredForInteger,
+        })
+    } else if sh_coefficient_order(rest).is_some() {
+        // A spherical-harmonics RGB coefficient, float only, on the pattern
+        // the spec names: `SH_DEGREE_<l>_COEF_<n>`, degree 0..=3 and an order
+        // of at most two per degree.
+        Some(SemanticSpec {
+            attribute_type: GeometryAttributeType::Generic,
+            expected_accessor_types: &["VEC3"],
+            allowed_component_types: FLOAT_ONLY,
+            normalization: NormalizationPolicy::Forbidden,
+        })
+    } else {
+        None
+    }
+}
+
+/// The order of a spherical-harmonics coefficient named on the spec's
+/// `SH_DEGREE_<l>_COEF_<n>` pattern, or `None` for a name that is not one.
+fn sh_coefficient_order(rest: &str) -> Option<u32> {
+    let (degree, order) = rest
+        .strip_prefix("SH_DEGREE_")
+        .and_then(|rest| rest.split_once("_COEF_"))?;
+    let degree = degree.parse::<u32>().ok()?;
+    let order = order.parse::<u32>().ok()?;
+    (degree <= 3 && order <= 2 * degree).then_some(order)
+}
+
 /// Decodes a non-Draco primitive's geometry into a [`Mesh`] plus its
 /// `(glTF semantic, Draco unique id)` mapping, reading attribute and index data
 /// through any [`AccessorSource`].
@@ -361,7 +443,15 @@ pub fn decode_geometry<S: AccessorSource>(
     // What upstream's `TriangleSoupMeshBuilder::Finalize` does, which is how
     // its glTF reader ends. Remapping does not change attribute ids, so
     // `semantics` stays valid. (Draco-compressed meshes don't need this.)
-    mesh.finalize().map_err(GltfError::DracoDecode)?;
+    //
+    // A point cloud takes none of it: the finalize dedups points and then
+    // drops every one no face names, and a face-less mesh has nothing for the
+    // pass to consult, so it would take them all -- a `POINTS` primitive's
+    // points are per-point rows in their own right, and the accessor count it
+    // carries is the count a compressed stream must still hold.
+    if mode != GLTF_MODE_POINTS {
+        mesh.finalize().map_err(GltfError::DracoDecode)?;
+    }
 
     Ok((mesh, semantics))
 }
@@ -508,6 +598,15 @@ pub(crate) fn supported_semantic_spec(semantic: &str) -> Result<SemanticSpec> {
             allowed_component_types: WEIGHT_COMPONENT_TYPES,
             normalization: NormalizationPolicy::RequiredForInteger,
         }
+    } else if let Some(rest) = semantic.strip_prefix(KHR_GAUSSIAN_SPLATTING_PREFIX) {
+        // KHR_gaussian_splatting names its attributes with its own prefix
+        // rather than an underscore, so the application-specific rule one
+        // branch below does not see them: without this arm a splat primitive
+        // is refused on its first attribute read, before a caller could ever
+        // compress it.
+        splat_semantic_spec(rest).ok_or_else(|| {
+            GltfError::InvalidGltf(format!("invalid glTF attribute semantic {semantic}"))
+        })?
     } else if semantic.starts_with('_') && semantic.len() > 1 {
         // Application-specific semantics are carried as generic Draco
         // attributes. The semantic name remains in primitive.attributes and in
