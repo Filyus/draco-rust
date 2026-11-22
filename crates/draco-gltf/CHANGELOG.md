@@ -9,6 +9,13 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### API
+
+- **Breaking:** `CompressionOptions` adds `position_quantization_grid`; callers
+  constructing it with a struct literal must initialize the new field. Pair
+  its 3D origin and range with `QuantizationBits::position` to encode multiple
+  primitives on one shared POSITION grid.
+
 ## [0.9.0](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.8.1...draco-gltf-v0.9.0) - 2026-11-22
 
 ### API

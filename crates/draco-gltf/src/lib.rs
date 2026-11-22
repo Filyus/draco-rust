@@ -32,7 +32,10 @@ pub mod document;
 #[cfg(feature = "geometry")]
 pub use accessor::{AccessorData, DocumentAccessorSource};
 #[cfg(feature = "draco-encode")]
-pub use compression::{CompressionMode, CompressionOptions, CompressionReport, QuantizationBits};
+pub use compression::{
+    CompressionMode, CompressionOptions, CompressionReport, PositionQuantizationGrid,
+    QuantizationBits,
+};
 mod json;
 pub use document::{
     Accessor, AccessorIndex, Animation, AnimationIndex, BoundingVolume, Buffer, BufferIndex,

@@ -377,12 +377,7 @@ fn encode_draco_point_cloud(
         2 => settings.set_encoding_method(1), // force kd-tree
         _ => {}
     }
-    for attribute_id in 0..mesh.num_attributes() {
-        let attribute_type = mesh.attribute(attribute_id).attribute_type();
-        if let Some(bits) = options.quantization.for_attribute(attribute_type) {
-            settings.set_attribute_int(attribute_id, "quantization_bits", bits as i32);
-        }
-    }
+    set_quantization_options(&mut settings, &mesh, options)?;
     settings.set_prediction_search(options.prediction_search);
     settings.set_spatial_point_order(options.spatial_point_order);
     settings.set_point_order_search(options.point_order_search);
@@ -1047,6 +1042,15 @@ pub struct CompressionOptions {
     /// default so that existing callers keep the bytes they already produce;
     /// anything writing assets for delivery wants values here.
     pub quantization: QuantizationBits,
+    /// Explicit three-dimensional POSITION grid to use with
+    /// [`QuantizationBits::position`]. When position quantization is enabled,
+    /// `None` keeps Draco's data-derived grid.
+    ///
+    /// Reusing the same origin and range lets separately encoded primitives,
+    /// such as adjacent tiles, share one quantization grid. The range must be
+    /// finite and positive, and `quantization.position` must specify 1..=30
+    /// bits.
+    pub position_quantization_grid: Option<PositionQuantizationGrid>,
     /// Forces the mesh connectivity coder, or picks automatically.
     ///
     /// `0` (the default) leaves the choice to `draco-core`'s own encoder,
@@ -1102,6 +1106,7 @@ impl Default for CompressionOptions {
             mode: CompressionMode::DracoOnly,
             max_output_bytes: None,
             quantization: QuantizationBits::default(),
+            position_quantization_grid: None,
             encoding_method: 0,
             allow_points: false,
             spatial_point_order: false,
@@ -1109,6 +1114,89 @@ impl Default for CompressionOptions {
             prediction_search: false,
         }
     }
+}
+
+/// Origin and range for a shared three-dimensional POSITION quantization grid.
+///
+/// Pair this with the `position` bit count in [`CompressionOptions::quantization`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PositionQuantizationGrid {
+    /// The minimum coordinate represented by the grid.
+    pub origin: [f32; 3],
+    /// The shared extent from `origin` to the highest quantized value.
+    pub range: f32,
+}
+
+fn set_quantization_options(
+    settings: &mut EncoderOptions,
+    point_cloud: &draco_core::PointCloud,
+    options: &CompressionOptions,
+) -> Result<()> {
+    let grid = options.position_quantization_grid;
+    if let Some(grid) = grid {
+        let Some(bits) = options.quantization.position else {
+            return Err(Error::Extension(
+                "position_quantization_grid requires quantization.position bits".into(),
+            ));
+        };
+        if !(1..=30).contains(&bits) {
+            return Err(Error::Extension(format!(
+                "position quantization bits must be in 1..=30, got {bits}"
+            )));
+        }
+        if !grid.range.is_finite() || grid.range <= 0.0 {
+            return Err(Error::Extension(format!(
+                "position quantization grid range must be finite and positive, got {}",
+                grid.range
+            )));
+        }
+        if let Some(component) = grid.origin.iter().position(|value| !value.is_finite()) {
+            return Err(Error::Extension(format!(
+                "position quantization grid origin component {component} is not finite"
+            )));
+        }
+
+        let mut position_attribute_found = false;
+        for attribute_id in 0..point_cloud.num_attributes() {
+            let attribute = point_cloud.attribute(attribute_id);
+            if attribute.attribute_type() == GeometryAttributeType::Position {
+                position_attribute_found = true;
+                if attribute.num_components() != 3
+                    || attribute.data_type() != draco_core::DataType::Float32
+                {
+                    return Err(Error::Extension(
+                        "position_quantization_grid requires a three-component Float32 POSITION attribute"
+                            .into(),
+                    ));
+                }
+            }
+        }
+        if !position_attribute_found {
+            return Err(Error::Extension(
+                "position_quantization_grid requires a POSITION attribute".into(),
+            ));
+        }
+    }
+
+    for attribute_id in 0..point_cloud.num_attributes() {
+        let attribute_type = point_cloud.attribute(attribute_id).attribute_type();
+        if let Some(bits) = options.quantization.for_attribute(attribute_type) {
+            if attribute_type == GeometryAttributeType::Position {
+                if let Some(grid) = grid {
+                    settings.set_attribute_explicit_quantization(
+                        attribute_id,
+                        bits as i32,
+                        3,
+                        &grid.origin,
+                        grid.range,
+                    );
+                    continue;
+                }
+            }
+            settings.set_attribute_int(attribute_id, "quantization_bits", bits as i32);
+        }
+    }
+    Ok(())
 }
 
 /// Quantization bit counts per attribute type, as the `draco_encoder` CLI's
@@ -1282,12 +1370,7 @@ pub(crate) fn encode_draco_mesh(
     // Quantization is keyed by attribute id here, while the caller names
     // attribute types, so the mapping has to happen against the mesh that is
     // about to be encoded rather than in the options.
-    for attribute_id in 0..mesh.num_attributes() {
-        let attribute_type = mesh.attribute(attribute_id).attribute_type();
-        if let Some(bits) = options.quantization.for_attribute(attribute_type) {
-            settings.set_attribute_int(attribute_id, "quantization_bits", bits as i32);
-        }
-    }
+    set_quantization_options(&mut settings, &mesh, options)?;
     let mut encoder = MeshEncoder::new();
     encoder.set_mesh(mesh);
     let mut output = EncoderBuffer::new();

@@ -88,6 +88,10 @@ and prediction options apply on that path; primitives with morph targets are
 not supported. `KHR_gaussian_splatting` attributes are read as generic geometry
 attributes with the extension's component types and shapes checked.
 
+Set `CompressionOptions::position_quantization_grid` together with
+`QuantizationBits::position` to encode separate primitives with the same 3D
+POSITION origin and range.
+
 Use `default-features = false, features = ["read", "draco-decode"]` for a
 small Draco-capable reader. Add `strict-validation` when opening untrusted
 assets requires a full graph pass, `write` for raw output or `draco-encode` for

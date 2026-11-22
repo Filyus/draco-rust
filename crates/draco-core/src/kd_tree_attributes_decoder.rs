@@ -6,7 +6,7 @@
 //! `kd_tree_attributes_decoder.h`.
 
 use crate::attribute_quantization_transform::AttributeQuantizationTransform;
-use crate::attribute_transform::{AttributeTransform, AttributeTransformType};
+use crate::attribute_transform::AttributeTransform;
 use crate::attribute_transform_data::AttributeTransformData;
 use crate::decoder_buffer::DecoderBuffer;
 use crate::draco_types::DataType;
@@ -612,7 +612,9 @@ impl KdTreeAttributesDecoder {
             }
 
             let mut transform_data = AttributeTransformData::new();
-            transform_data.set_transform_type(AttributeTransformType::QuantizationTransform);
+            transform_data.set_transform_type(
+                crate::attribute_transform::AttributeTransformType::QuantizationTransform,
+            );
             transform_data.append_parameter_value(bits as i32);
             for _ in 0..3 {
                 transform_data.append_parameter_value(0.0f32);

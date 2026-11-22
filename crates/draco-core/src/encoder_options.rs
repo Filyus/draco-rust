@@ -1,6 +1,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::draco_types::DataType;
+use crate::geometry_attribute::GeometryAttributeType;
+use crate::geometry_indices::PointIndex;
+use crate::point_cloud::PointCloud;
+use crate::status::{DracoError, Status};
+
 /// Integer option bag used to configure Draco encoding.
 ///
 /// Options mirror the C++ Draco encoder style: global options apply to the
@@ -539,6 +545,162 @@ impl EncoderOptions {
         self.set_attribute_floats(att_id, "quantization_origin", origin);
         self.set_attribute_float(att_id, "quantization_range", range);
     }
+
+    /// Sets an explicit three-dimensional POSITION grid from a uniform step.
+    ///
+    /// The grid origin is the grid vertex at or below each component's minimum
+    /// position. The bit count is the smallest supported count that covers the
+    /// largest component span, with one bit for a single grid vertex. The range
+    /// then spans `(2^bits - 1) * spacing`, so every component uses the same
+    /// spacing and grid origin across separate encodes.
+    ///
+    /// `spacing` must be finite and positive. The selected attribute must be a
+    /// non-empty, three-component, `Float32` POSITION attribute, and the grid
+    /// must fit in the transform's supported 1..=30 bits. Invalid values or a
+    /// malformed attribute return an error without changing these options.
+    ///
+    /// The bounds and grid vertices are calculated in `f64` from the exact
+    /// `f32` inputs. Draco stores the origin and range as `f32`, so each is
+    /// rounded by at most half an `f32` ULP; the decoded step uses that stored
+    /// range.
+    pub fn set_attribute_grid_quantization(
+        &mut self,
+        point_cloud: &PointCloud,
+        att_id: i32,
+        spacing: f32,
+    ) -> Status {
+        if !spacing.is_finite() || spacing <= 0.0 {
+            return Err(DracoError::invalid_parameter(format!(
+                "Grid quantization spacing must be finite and positive, got {spacing}"
+            )));
+        }
+
+        let attribute = point_cloud.try_attribute(att_id)?;
+        if attribute.attribute_type() != GeometryAttributeType::Position {
+            return Err(DracoError::invalid_parameter(
+                "Grid quantization is supported only for POSITION attributes",
+            ));
+        }
+        if attribute.num_components() != 3 {
+            return Err(DracoError::invalid_parameter(format!(
+                "Grid quantization requires three-component POSITION values, got {}",
+                attribute.num_components()
+            )));
+        }
+        if attribute.data_type() != DataType::Float32 {
+            return Err(DracoError::invalid_parameter(format!(
+                "Grid quantization requires Float32 POSITION values, got {:?}",
+                attribute.data_type()
+            )));
+        }
+        if point_cloud.num_points() == 0 {
+            return Err(DracoError::invalid_parameter(
+                "Grid quantization cannot use an empty point cloud",
+            ));
+        }
+
+        let stride = usize::try_from(attribute.byte_stride()).map_err(|_| {
+            DracoError::invalid_parameter("Grid quantization POSITION stride is invalid")
+        })?;
+        if stride < 3 * std::mem::size_of::<f32>() {
+            return Err(DracoError::invalid_parameter(
+                "Grid quantization POSITION values are shorter than three Float32 components",
+            ));
+        }
+
+        let spacing = f64::from(spacing);
+        let mut min_grid = [f64::INFINITY; 3];
+        let mut max_grid = [f64::NEG_INFINITY; 3];
+        let data = attribute.buffer().data();
+        for point in 0..point_cloud.num_points() {
+            let point_index = u32::try_from(point).map_err(|_| {
+                DracoError::invalid_parameter(
+                    "Grid quantization point count exceeds the supported index range",
+                )
+            })?;
+            let value_index = attribute.mapped_index(PointIndex(point_index)).0 as usize;
+            if value_index >= attribute.size() {
+                return Err(DracoError::invalid_parameter(format!(
+                    "Grid quantization POSITION point {point} has no attribute value"
+                )));
+            }
+            let value_start = value_index.checked_mul(stride).ok_or_else(|| {
+                DracoError::invalid_parameter("Grid quantization POSITION offset overflow")
+            })?;
+
+            for component in 0..3 {
+                let start = value_start
+                    .checked_add(component * std::mem::size_of::<f32>())
+                    .ok_or_else(|| {
+                        DracoError::invalid_parameter("Grid quantization POSITION offset overflow")
+                    })?;
+                let end = start
+                    .checked_add(std::mem::size_of::<f32>())
+                    .ok_or_else(|| {
+                        DracoError::invalid_parameter("Grid quantization POSITION offset overflow")
+                    })?;
+                let bytes = data.get(start..end).ok_or_else(|| {
+                    DracoError::invalid_parameter(format!(
+                        "Grid quantization POSITION value {value_index} is truncated"
+                    ))
+                })?;
+                let value = f32::from_le_bytes(bytes.try_into().map_err(|_| {
+                    DracoError::invalid_parameter("Grid quantization POSITION value is invalid")
+                })?);
+                if !value.is_finite() {
+                    return Err(DracoError::invalid_parameter(format!(
+                        "Grid quantization POSITION point {point} component {component} is not finite"
+                    )));
+                }
+
+                // Inputs are f32, so widening them before division preserves
+                // their exact values while avoiding an extra f32 rounding at
+                // grid boundaries.
+                let grid_position = f64::from(value) / spacing;
+                let floor = grid_position.floor();
+                let ceil = grid_position.ceil();
+                min_grid[component] = min_grid[component].min(floor);
+                max_grid[component] = max_grid[component].max(ceil);
+            }
+        }
+
+        let max_intervals = ((1u64 << 30) - 1) as f64;
+        let mut origin = [0.0f32; 3];
+        let mut needed_intervals = 0u64;
+        for component in 0..3 {
+            let intervals = max_grid[component] - min_grid[component];
+            if !intervals.is_finite() || intervals < 0.0 || intervals > max_intervals {
+                return Err(DracoError::invalid_parameter(format!(
+                    "Grid quantization needs {intervals} intervals on POSITION component {component}; the maximum is {}",
+                    max_intervals as u64
+                )));
+            }
+            needed_intervals = needed_intervals.max(intervals as u64);
+
+            let origin_value = min_grid[component] * spacing;
+            let narrowed_origin = origin_value as f32;
+            if !origin_value.is_finite() || !narrowed_origin.is_finite() {
+                return Err(DracoError::invalid_parameter(format!(
+                    "Grid quantization origin on POSITION component {component} is not representable as Float32"
+                )));
+            }
+            origin[component] = narrowed_origin;
+        }
+
+        let num_grid_values = needed_intervals + 1;
+        let bits = (u64::BITS - (num_grid_values - 1).leading_zeros()).max(1) as i32;
+        let max_quantized_value = (1u64 << bits) - 1;
+        let range_value = max_quantized_value as f64 * spacing;
+        let range = range_value as f32;
+        if !range_value.is_finite() || !range.is_finite() || range <= 0.0 {
+            return Err(DracoError::invalid_parameter(
+                "Grid quantization range is not representable as a positive Float32",
+            ));
+        }
+
+        self.set_attribute_explicit_quantization(att_id, bits, 3, &origin, range);
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -717,6 +879,107 @@ mod tests {
         assert_eq!(
             cloned.get_attribute_float_opt(0, "quantization_range"),
             Some(2.0)
+        );
+    }
+
+    #[test]
+    fn set_attribute_grid_quantization_computes_origin_bits_and_range() {
+        use crate::geometry_attribute::PointAttribute;
+
+        let mut cloud = PointCloud::new();
+        cloud.set_num_points(2);
+        let mut positions = PointAttribute::new();
+        positions.init(
+            GeometryAttributeType::Position,
+            3,
+            DataType::Float32,
+            false,
+            2,
+        );
+        positions.buffer_mut().update(
+            &[
+                0.25f32, -1.75, 2.0, // floor grid: (0, -4, 4), ceil: (1, -3, 4)
+                2.5, 0.5, 2.0, // floor grid: (5, 1, 4), ceil: (5, 1, 4)
+            ]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect::<Vec<_>>(),
+            Some(0),
+        );
+        let att_id = cloud.add_attribute(positions);
+
+        let mut options = EncoderOptions::new();
+        options
+            .set_attribute_grid_quantization(&cloud, att_id, 0.5)
+            .expect("valid grid quantization");
+
+        // Spans: x = 5 - 0 = 5, y = 1 - (-4) = 5, z = 4 - 4 = 0 -> 6 grid values -> 3 bits (max 7).
+        assert_eq!(options.get_attribute_quantization(att_id), 3);
+        assert_eq!(
+            options.get_attribute_floats(att_id, "quantization_origin"),
+            Some(&[0.0, -2.0, 2.0][..])
+        );
+        assert_eq!(
+            options.get_attribute_float_opt(att_id, "quantization_range"),
+            Some(3.5)
+        );
+    }
+
+    #[test]
+    fn set_attribute_grid_quantization_rejects_invalid_inputs_without_mutating() {
+        use crate::geometry_attribute::PointAttribute;
+
+        let mut cloud = PointCloud::new();
+        cloud.set_num_points(1);
+        let mut positions = PointAttribute::new();
+        positions.init(
+            GeometryAttributeType::Position,
+            3,
+            DataType::Float32,
+            false,
+            1,
+        );
+        positions.buffer_mut().update(
+            &[1.0f32, 2.0, 3.0]
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<_>>(),
+            Some(0),
+        );
+        let pos_id = cloud.add_attribute(positions);
+
+        let mut options = EncoderOptions::new();
+        assert!(options
+            .set_attribute_grid_quantization(&cloud, pos_id, 0.0)
+            .is_err());
+        assert!(options
+            .set_attribute_grid_quantization(&cloud, pos_id, -1.0)
+            .is_err());
+        assert!(options
+            .set_attribute_grid_quantization(&cloud, pos_id, f32::NAN)
+            .is_err());
+        assert_eq!(options.get_attribute_quantization(pos_id), -1);
+        assert_eq!(
+            options.get_attribute_floats(pos_id, "quantization_origin"),
+            None
+        );
+        assert_eq!(
+            options.get_attribute_float_opt(pos_id, "quantization_range"),
+            None
+        );
+
+        // Single grid vertex uses 1 bit.
+        options
+            .set_attribute_grid_quantization(&cloud, pos_id, 1.0)
+            .expect("single vertex grid");
+        assert_eq!(options.get_attribute_quantization(pos_id), 1);
+        assert_eq!(
+            options.get_attribute_floats(pos_id, "quantization_origin"),
+            Some(&[1.0, 2.0, 3.0][..])
+        );
+        assert_eq!(
+            options.get_attribute_float_opt(pos_id, "quantization_range"),
+            Some(1.0)
         );
     }
 }

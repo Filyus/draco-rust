@@ -545,6 +545,13 @@ Common knobs: `get_encoding_speed`, `get_decoding_speed`, `get_speed`,
 CLI-equivalent convenience: `set_compression_level`, `get_compression_level`,
 `set_attribute_quantization`, and `get_attribute_quantization`.
 
+Explicit quantization: `set_attribute_explicit_quantization` accepts an
+attribute's bit count, origin, and range directly. For a shared 3D POSITION
+grid, `set_attribute_grid_quantization` computes the origin, range, and
+supported bit count from a positive grid spacing and the point cloud's bounds.
+Both methods write the same option keys; the grid helper refuses non-position,
+non-3D, non-`Float32`, empty, non-finite, or too-wide inputs.
+
 Point-cloud options upstream does not have: `set_prediction_search`,
 `prediction_search`, `set_spatial_point_order`, `spatial_point_order`,
 `set_point_order_search`, and `point_order_search`. All are off by default, and

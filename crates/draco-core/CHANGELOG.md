@@ -10,6 +10,8 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `EncoderOptions::set_attribute_grid_quantization` computes a shared 3D
+  POSITION grid's origin, range, and bit count from a requested step size.
 - **Encoding reports include byte-level size statistics.** `EncodedMeshInfo`
   and `EncodedPointCloudInfo` report header and metadata, mesh connectivity,
   per-attribute payload and transform sizes, plus the joint payload used by

@@ -1725,6 +1725,48 @@ mod compression_tests {
         }
     }
 
+    #[cfg(feature = "draco-encode")]
+    #[test]
+    fn draco_compression_honours_explicit_position_quantization_grid() {
+        let source = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]}"#;
+        let mut import = parse(source, ValidationProfile::Gltf20).unwrap();
+        let mut options = crate::CompressionOptions::default();
+        options.quantization.position = Some(10);
+        options.position_quantization_grid = Some(crate::PositionQuantizationGrid {
+            origin: [-2.0, -2.0, -2.0],
+            range: 8.0,
+        });
+        import
+            .compress_primitive(crate::MeshIndex(0), 0, options)
+            .expect("compress with explicit position grid");
+
+        // Missing position bits must be rejected.
+        let mut import = parse(source, ValidationProfile::Gltf20).unwrap();
+        let mut bad_options = crate::CompressionOptions::default();
+        bad_options.position_quantization_grid = Some(crate::PositionQuantizationGrid {
+            origin: [0.0, 0.0, 0.0],
+            range: 4.0,
+        });
+        let err = import
+            .compress_primitive(crate::MeshIndex(0), 0, bad_options)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("requires quantization.position bits"), "{err}");
+
+        // Non-positive range must be rejected.
+        let mut bad_range = crate::CompressionOptions::default();
+        bad_range.quantization.position = Some(10);
+        bad_range.position_quantization_grid = Some(crate::PositionQuantizationGrid {
+            origin: [0.0, 0.0, 0.0],
+            range: 0.0,
+        });
+        let err = import
+            .compress_primitive(crate::MeshIndex(0), 0, bad_range)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("finite and positive"), "{err}");
+    }
+
     /// Extensions Khronos ratified or released after the list was first
     /// written, checked against their published schemas: factors, booleans and
     /// texture bindings, no accessor or buffer view.
