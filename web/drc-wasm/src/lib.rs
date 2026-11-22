@@ -922,6 +922,17 @@ fn mesh_input_from_js(value: &JsValue) -> Result<MeshInput, String> {
     })
 }
 
+/// Treats `value` as a dictionary object, accepting `Object.create(null)` maps
+/// (for which `dyn_ref::<Object>()` fails because `instanceof Object` is false)
+/// while rejecting primitives and arrays.
+#[cfg(feature = "write")]
+fn plain_object(value: &JsValue, error: impl FnOnce() -> String) -> Result<&Object, String> {
+    if !value.is_object() || Array::is_array(value) {
+        return Err(error());
+    }
+    Ok(value.unchecked_ref::<Object>())
+}
+
 /// Reads a metadata block in the shape [`crate::parse_drc_bytes`] and
 /// [`decode_draco`][crate::decode_draco] report one: `entries` of byte arrays
 /// keyed by name, and optional nested `subMetadata`.
@@ -933,9 +944,7 @@ fn mesh_input_from_js(value: &JsValue) -> Result<MeshInput, String> {
 fn metadata_from_js(value: &JsValue, label: &str) -> Result<Metadata, String> {
     let entries = get_field(value, "entries")
         .ok_or_else(|| format!("{label} must carry entries, even empty ones"))?;
-    let entries = entries
-        .dyn_ref::<Object>()
-        .ok_or_else(|| format!("{label} entries must be an object"))?;
+    let entries = plain_object(&entries, || format!("{label} entries must be an object"))?;
     let mut metadata = Metadata::new();
     for key in Object::keys(entries) {
         let name = key
@@ -949,9 +958,7 @@ fn metadata_from_js(value: &JsValue, label: &str) -> Result<Metadata, String> {
             .map_err(|error| format!("{label}: entry {name}: {error}"))?;
     }
     if let Some(sub) = get_field(value, "subMetadata") {
-        let sub = sub
-            .dyn_ref::<Object>()
-            .ok_or_else(|| format!("{label} subMetadata must be an object"))?;
+        let sub = plain_object(&sub, || format!("{label} subMetadata must be an object"))?;
         for key in Object::keys(sub) {
             let name = key
                 .as_string()

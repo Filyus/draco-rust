@@ -214,4 +214,121 @@ for (const missing of [undefined, null]) {
   assert.ok(mesh.positions instanceof Float32Array, 'positions crossed as a plain array');
 }
 
+// ---------------------------------------------------------------------------
+// Explicit quantization grid validates source values
+// ---------------------------------------------------------------------------
+
+for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+  const result = drc.encode_draco({
+    name: 'non-finite',
+    positions: new Float32Array([0, bad, 0, 1, 0, 0, 1, 1, 0]),
+    indices,
+  }, {
+    position_bits: 10,
+    position_origin: [0, 0, 0],
+    position_range: 1,
+  });
+  assert.equal(result.success, false, `explicit grid accepted ${bad} in positions`);
+  assert.match(result.error, /NaN|infinite|finite/i, `explicit grid (${bad}): ${result.error}`);
+}
+
+// ---------------------------------------------------------------------------
+// Metadata dictionaries preserve `__proto__` across decode and recode
+// ---------------------------------------------------------------------------
+
+{
+  const utf8 = (text: string) => new TextEncoder().encode(text);
+  const topEntries = Object.create(null) as Record<string, Uint8Array>;
+  topEntries.__proto__ = utf8('top-proto');
+  topEntries.normal = utf8('ok');
+  const childEntries = Object.create(null) as Record<string, Uint8Array>;
+  childEntries.__proto__ = utf8('child-proto');
+  const subMetadata = Object.create(null) as Record<string, unknown>;
+  subMetadata.__proto__ = { entries: childEntries };
+  const extraEntries = Object.create(null) as Record<string, Uint8Array>;
+  extraEntries.__proto__ = utf8('attr-proto');
+
+  const meshInput = {
+    name: 'proto-meta',
+    positions,
+    indices,
+    extras: [{
+      type: 'GENERIC',
+      components: 1,
+      dataType: 'float32',
+      uniqueId: 10,
+      normalized: false,
+      name: 'weights',
+      metadata: { entries: extraEntries },
+      values: new Float32Array([0.25, 0.5, 0.75]),
+    }],
+    metadata: { entries: topEntries, subMetadata },
+  };
+
+  const firstEncode = drc.encode_draco(meshInput, {});
+  assert.ok(firstEncode.success, `encode with __proto__ metadata: ${firstEncode.error}`);
+
+  const checkMetadata = (meta: any, label: string) => {
+    assert.ok(meta, `${label}: metadata missing`);
+    assert.equal(Object.getPrototypeOf(meta.entries), null, `${label}: entries prototype`);
+    assert.equal(Object.getPrototypeOf(meta.strings), null, `${label}: strings prototype`);
+    assert.equal(Object.getPrototypeOf(meta.subMetadata), null, `${label}: subMetadata prototype`);
+    assert.ok(Object.keys(meta.entries).includes('__proto__'), `${label}: __proto__ in entries keys`);
+    assert.deepEqual(meta.entries.__proto__, utf8('top-proto'), `${label}: entries.__proto__ bytes`);
+    assert.equal(meta.strings.__proto__, 'top-proto', `${label}: strings.__proto__`);
+    assert.ok(Object.keys(meta.subMetadata).includes('__proto__'), `${label}: __proto__ in subMetadata keys`);
+    const child = meta.subMetadata.__proto__;
+    assert.equal(Object.getPrototypeOf(child.entries), null, `${label}: child entries prototype`);
+    assert.ok(Object.keys(child.entries).includes('__proto__'), `${label}: child __proto__ key`);
+    assert.equal(child.strings.__proto__, 'child-proto', `${label}: child strings.__proto__`);
+  };
+
+  const parsed = drc.parse_drc_bytes(firstEncode.bytes);
+  assert.ok(parsed.success, `parse_drc_bytes: ${parsed.error}`);
+  checkMetadata(parsed.metadata, 'parse_drc_bytes');
+  const parsedExtraMeta = parsed.meshes[0].extras[0].metadata;
+  assert.equal(Object.getPrototypeOf(parsedExtraMeta.entries), null);
+  assert.ok(Object.keys(parsedExtraMeta.entries).includes('__proto__'));
+  assert.equal(parsedExtraMeta.strings.__proto__, 'attr-proto');
+
+  const decoded = drc.decode_draco(firstEncode.bytes, undefined);
+  assert.ok(decoded.success, `decode_draco: ${decoded.error}`);
+  checkMetadata(decoded.metadata, 'decode_draco');
+  const decodedExtra = decoded.attributes.find((a: any) => a.uniqueId === 10);
+  assert.ok(decodedExtra?.metadata, 'decode_draco extra metadata missing');
+  assert.equal(Object.getPrototypeOf(decodedExtra.metadata.entries), null);
+  assert.equal(decodedExtra.metadata.strings.__proto__, 'attr-proto');
+
+  // Re-encode directly from decoded output (null-prototype dicts must be accepted).
+  const recoded = drc.encode_draco({
+    name: 'proto-meta-recode',
+    positions: parsed.meshes[0].positions,
+    indices: parsed.meshes[0].indices,
+    extras: parsed.meshes[0].extras,
+    metadata: parsed.metadata,
+  }, {});
+  assert.ok(recoded.success, `recode with decoded __proto__ metadata: ${recoded.error}`);
+
+  const reparsed = drc.parse_drc_bytes(recoded.bytes);
+  assert.ok(reparsed.success, `reparse: ${reparsed.error}`);
+  checkMetadata(reparsed.metadata, 'reparsed');
+  assert.equal(reparsed.meshes[0].extras[0].metadata.strings.__proto__, 'attr-proto');
+
+  // Also ensure a normal object with an own `__proto__` property works as input.
+  const ownProtoEntries = Object.defineProperty({}, '__proto__', {
+    value: utf8('own-proto'),
+    enumerable: true,
+  });
+  const ownEncoded = drc.encode_draco({
+    name: 'own-proto-meta',
+    positions,
+    indices,
+    metadata: { entries: ownProtoEntries },
+  }, {});
+  assert.ok(ownEncoded.success, `encode with own __proto__ entry: ${ownEncoded.error}`);
+  const ownDecoded = drc.decode_draco(ownEncoded.bytes, undefined);
+  assert.ok(ownDecoded.success, `decode own __proto__: ${ownDecoded.error}`);
+  assert.equal(ownDecoded.metadata.strings.__proto__, 'own-proto');
+}
+
 console.log('wasm bridge contract passed');

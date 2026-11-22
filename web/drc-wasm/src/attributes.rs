@@ -22,6 +22,13 @@ use js_sys::{
 use wasm_bindgen::prelude::*;
 use wasm_bridge::{set_bool, set_js, set_opt_string, set_string_array};
 
+/// A dictionary with a `null` prototype, so arbitrary metadata keys such as
+/// `__proto__` or `toString` become own data properties rather than mutating
+/// or shadowing `Object.prototype`.
+fn null_proto_object() -> Object {
+    Object::create(JsValue::NULL.unchecked_ref())
+}
+
 /// One metadata block, as JavaScript reads it: raw byte entries by key, the
 /// entries that are valid UTF-8 again as text, and nested blocks.
 ///
@@ -30,8 +37,8 @@ use wasm_bridge::{set_bool, set_js, set_opt_string, set_string_array};
 /// one; a typed read is a `DataView` over the array when neither fits.
 pub(crate) fn metadata_to_js(metadata: &Metadata) -> JsValue {
     let obj = Object::new();
-    let entries = Object::new();
-    let strings = Object::new();
+    let entries = null_proto_object();
+    let strings = null_proto_object();
     for (name, value) in metadata.entries() {
         set_js(&entries, name, &Uint8Array::from(value.as_slice()).into());
         if let Ok(text) = std::str::from_utf8(value) {
@@ -41,7 +48,7 @@ pub(crate) fn metadata_to_js(metadata: &Metadata) -> JsValue {
     set_js(&obj, "entries", &entries.into());
     set_js(&obj, "strings", &strings.into());
     if !metadata.sub_metadata().is_empty() {
-        let sub = Object::new();
+        let sub = null_proto_object();
         for (name, nested) in metadata.sub_metadata() {
             set_js(&sub, name, &metadata_to_js(nested));
         }
