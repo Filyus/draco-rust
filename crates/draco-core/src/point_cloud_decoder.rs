@@ -3,8 +3,9 @@ use crate::compression_config::EncodedGeometryType;
 use crate::decoder_buffer::DecoderBuffer;
 #[cfg(feature = "point_cloud_decode")]
 use crate::draco_types::DataType;
+use crate::geometry_attribute::GeometryAttributeType;
 #[cfg(feature = "point_cloud_decode")]
-use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
+use crate::geometry_attribute::PointAttribute;
 #[cfg(feature = "point_cloud_decode")]
 use crate::kd_tree_attributes_decoder::KdTreeAttributesDecoder;
 #[cfg(feature = "point_cloud_decode")]
@@ -28,6 +29,8 @@ use crate::attribute_octahedron_transform::AttributeOctahedronTransform;
 use crate::attribute_quantization_transform::AttributeQuantizationTransform;
 #[cfg(feature = "point_cloud_decode")]
 use crate::attribute_transform::AttributeTransform;
+#[cfg(feature = "point_cloud_decode")]
+use crate::attribute_transform_data::AttributeTransformData;
 #[cfg(feature = "point_cloud_decode")]
 use crate::sequential_generic_attribute_decoder::SequentialGenericAttributeDecoder;
 #[cfg(feature = "point_cloud_decode")]
@@ -78,6 +81,7 @@ pub struct PointCloudDecoder {
     /// mesh path exists without `point_cloud_decode`.
     version_major: u8,
     version_minor: u8,
+    skip_attribute_transforms: Vec<GeometryAttributeType>,
     #[cfg(feature = "point_cloud_decode")]
     threads: i32,
 }
@@ -147,6 +151,7 @@ fn dequantize_in_parallel(
     pc: &mut PointCloud,
     mut pending: Vec<PendingQuant>,
     threads: usize,
+    skip_attribute_transforms: &[GeometryAttributeType],
 ) -> Status {
     pending.sort_by_key(|q| q.att_id);
     let mut work: Vec<(PendingQuant, PointAttribute, Option<DracoError>)> =
@@ -157,7 +162,12 @@ fn dequantize_in_parallel(
     }
     parallel::for_each_chunk_mut(&mut work, 1, threads, |_, chunk| {
         let (q, dst, error) = &mut chunk[0];
-        if let Err(e) = q.transform.inverse_transform_attribute(&q.portable, dst) {
+        if skip_attribute_transforms.contains(&dst.attribute_type()) {
+            let mut transform_data = AttributeTransformData::new();
+            q.transform
+                .copy_to_attribute_transform_data(&mut transform_data);
+            dst.set_transformed_values(std::mem::take(&mut q.portable), transform_data);
+        } else if let Err(e) = q.transform.inverse_transform_attribute(&q.portable, dst) {
             *error = Some(DracoError::general(format!(
                 "Failed to dequantize attribute: {e}"
             )));
@@ -177,6 +187,7 @@ fn undo_octahedra_in_parallel(
     pc: &mut PointCloud,
     mut pending: Vec<PendingNormal>,
     threads: usize,
+    skip_attribute_transforms: &[GeometryAttributeType],
 ) -> Status {
     pending.sort_by_key(|n| n.att_id);
     let mut work: Vec<(PendingNormal, PointAttribute, Option<DracoError>)> =
@@ -188,10 +199,15 @@ fn undo_octahedra_in_parallel(
     parallel::for_each_chunk_mut(&mut work, 1, threads, |_, chunk| {
         let (n, dst, error) = &mut chunk[0];
         let mut oct = AttributeOctahedronTransform::new(-1);
-        let done = oct
-            .set_parameters(n.quantization_bits as i32)
-            .and_then(|()| oct.inverse_transform_attribute(&n.portable, dst));
-        if let Err(e) = done {
+        if let Err(e) = oct.set_parameters(n.quantization_bits as i32) {
+            *error = Some(DracoError::general(format!(
+                "Failed to decode normals: {e}"
+            )));
+        } else if skip_attribute_transforms.contains(&dst.attribute_type()) {
+            let mut transform_data = AttributeTransformData::new();
+            oct.copy_to_attribute_transform_data(&mut transform_data);
+            dst.set_transformed_values(std::mem::take(&mut n.portable), transform_data);
+        } else if let Err(e) = oct.inverse_transform_attribute(&n.portable, dst) {
             *error = Some(DracoError::general(format!(
                 "Failed to decode normals: {e}"
             )));
@@ -251,9 +267,24 @@ impl PointCloudDecoder {
             flags: 0,
             version_major: 0,
             version_minor: 0,
+            skip_attribute_transforms: Vec::new(),
             #[cfg(feature = "point_cloud_decode")]
             threads: 1,
         }
+    }
+
+    /// Leaves portable integer values for attributes of this semantic type
+    /// and stores their transform parameters on each decoded attribute.
+    /// Repeating the same type is harmless.
+    pub fn set_skip_attribute_transform(&mut self, attribute_type: GeometryAttributeType) {
+        if !self.skip_attribute_transforms.contains(&attribute_type) {
+            self.skip_attribute_transforms.push(attribute_type);
+        }
+    }
+
+    #[cfg(feature = "point_cloud_decode")]
+    fn should_skip_attribute_transform(&self, attribute_type: GeometryAttributeType) -> bool {
+        self.skip_attribute_transforms.contains(&attribute_type)
     }
 
     /// Caps the threads a decode may use: `1`, the default, keeps everything on
@@ -424,6 +455,9 @@ impl PointCloudDecoder {
             // KD-tree encoding.
             for _ in 0..num_attributes_decoders {
                 let mut att_decoder = KdTreeAttributesDecoder::new(0);
+                for &attribute_type in &self.skip_attribute_transforms {
+                    att_decoder.set_skip_attribute_transform(attribute_type);
+                }
                 att_decoder
                     .decode_attributes_decoder_data(pc, buffer)
                     .map_err(|err| err.context("Failed to decode attribute metadata"))?;
@@ -666,25 +700,56 @@ impl PointCloudDecoder {
                 }
 
                 if in_parallel {
-                    dequantize_in_parallel(pc, pending_quant, threads)?;
-                    undo_octahedra_in_parallel(pc, pending_normals, threads)?;
+                    dequantize_in_parallel(
+                        pc,
+                        pending_quant,
+                        threads,
+                        &self.skip_attribute_transforms,
+                    )?;
+                    undo_octahedra_in_parallel(
+                        pc,
+                        pending_normals,
+                        threads,
+                        &self.skip_attribute_transforms,
+                    )?;
                 } else {
                     for q in pending_quant {
+                        let skip = self.should_skip_attribute_transform(
+                            pc.try_attribute(q.att_id)?.attribute_type(),
+                        );
                         let dst = pc.try_attribute_mut(q.att_id)?;
-                        q.transform
-                            .inverse_transform_attribute(&q.portable, dst)
-                            .map_err(|e| {
-                                DracoError::general(format!("Failed to dequantize attribute: {e}"))
-                            })?;
+                        if skip {
+                            let mut transform_data = AttributeTransformData::new();
+                            q.transform
+                                .copy_to_attribute_transform_data(&mut transform_data);
+                            dst.set_transformed_values(q.portable, transform_data);
+                        } else {
+                            q.transform
+                                .inverse_transform_attribute(&q.portable, dst)
+                                .map_err(|e| {
+                                    DracoError::general(format!(
+                                        "Failed to dequantize attribute: {e}"
+                                    ))
+                                })?;
+                        }
                     }
                     for n in pending_normals {
                         let mut oct = AttributeOctahedronTransform::new(-1);
                         oct.set_parameters(n.quantization_bits as i32)?;
+                        let skip = self.should_skip_attribute_transform(
+                            pc.try_attribute(n.att_id)?.attribute_type(),
+                        );
                         let dst = pc.try_attribute_mut(n.att_id)?;
-                        oct.inverse_transform_attribute(&n.portable, dst)
-                            .map_err(|e| {
-                                DracoError::general(format!("Failed to decode normals: {e}"))
-                            })?;
+                        if skip {
+                            let mut transform_data = AttributeTransformData::new();
+                            oct.copy_to_attribute_transform_data(&mut transform_data);
+                            dst.set_transformed_values(n.portable, transform_data);
+                        } else {
+                            oct.inverse_transform_attribute(&n.portable, dst)
+                                .map_err(|e| {
+                                    DracoError::general(format!("Failed to decode normals: {e}"))
+                                })?;
+                        }
                     }
                 }
             }

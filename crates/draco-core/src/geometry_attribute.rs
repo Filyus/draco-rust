@@ -722,6 +722,41 @@ impl PointAttribute {
         self.attribute_transform_data = Some(Box::new(data));
     }
 
+    /// Replaces the values with their portable transformed representation,
+    /// retaining the semantic type, unique id, and point mapping of this
+    /// attribute. The transform parameters travel with the new values so a
+    /// caller can apply the inverse transform later.
+    #[cfg(feature = "decoder")]
+    pub(crate) fn set_transformed_values(
+        &mut self,
+        mut transformed: PointAttribute,
+        transform_data: AttributeTransformData,
+    ) {
+        let attribute_type = self.attribute_type();
+        let unique_id = self.unique_id();
+        let num_components = transformed.num_components();
+        let data_type = transformed.data_type();
+        let byte_stride = i64::from(num_components) * data_type.byte_length() as i64;
+
+        self.base.init(
+            attribute_type,
+            None,
+            num_components,
+            data_type,
+            false,
+            byte_stride,
+            0,
+        );
+        self.base.set_unique_id(unique_id);
+        self.buffer = std::mem::take(&mut transformed.buffer);
+        self.num_unique_entries = transformed.num_unique_entries;
+        if !transformed.identity_mapping {
+            self.identity_mapping = false;
+            self.indices_map = std::mem::take(&mut transformed.indices_map);
+        }
+        self.attribute_transform_data = Some(Box::new(transform_data));
+    }
+
     /// Returns transform metadata associated with this attribute, if present.
     pub fn attribute_transform_data(&self) -> Option<&AttributeTransformData> {
         self.attribute_transform_data.as_deref()

@@ -16,6 +16,7 @@ use crate::status::{DracoError, Status};
 use crate::attribute_octahedron_transform::AttributeOctahedronTransform;
 use crate::attribute_quantization_transform::AttributeQuantizationTransform;
 use crate::attribute_transform::AttributeTransform;
+use crate::attribute_transform_data::AttributeTransformData;
 use crate::corner_table::CornerTable;
 use crate::geometry_indices::AttributeValueIndex;
 use crate::geometry_indices::{
@@ -180,6 +181,7 @@ pub struct MeshDecoder {
     edgebreaker_vertex_to_corner_map: Vec<u32>,
     edgebreaker_is_vert_hole: Vec<bool>,
     traversal_method: u8,
+    skip_attribute_transforms: Vec<GeometryAttributeType>,
     #[cfg(feature = "point_cloud_decode")]
     threads: i32,
 }
@@ -208,8 +210,18 @@ impl MeshDecoder {
             edgebreaker_vertex_to_corner_map: Vec::new(),
             edgebreaker_is_vert_hole: Vec::new(),
             traversal_method: 0,
+            skip_attribute_transforms: Vec::new(),
             #[cfg(feature = "point_cloud_decode")]
             threads: 1,
+        }
+    }
+
+    /// Leaves portable integer values for attributes of this semantic type
+    /// and stores their transform parameters on each decoded attribute.
+    /// Repeating the same type is harmless.
+    pub fn set_skip_attribute_transform(&mut self, attribute_type: GeometryAttributeType) {
+        if !self.skip_attribute_transforms.contains(&attribute_type) {
+            self.skip_attribute_transforms.push(attribute_type);
         }
     }
 
@@ -266,6 +278,9 @@ impl MeshDecoder {
                 // directly into the Mesh's underlying PointCloud.
                 let mut pc_decoder = crate::point_cloud_decoder::PointCloudDecoder::new();
                 pc_decoder.set_threads(self.threads);
+                for &attribute_type in &self.skip_attribute_transforms {
+                    pc_decoder.set_skip_attribute_transform(attribute_type);
+                }
                 return pc_decoder.decode_after_header(
                     self.version_major,
                     self.version_minor,
@@ -883,6 +898,7 @@ impl MeshDecoder {
 
         // (3) Attribute decoder payloads.
         let mut portable_attributes_by_id: Vec<(i32, PointAttribute)> = Vec::new();
+        let mut skipped_attribute_transforms: Vec<(i32, AttributeTransformData)> = Vec::new();
         // Every edgebreaker attribute decoder asks for the same seed-free depth-first
         // traversal of the same corner table, and that walk is a seventh of a decode on
         // a 69k-face mesh. The corner table is fixed once connectivity is decoded, so
@@ -1252,7 +1268,9 @@ impl MeshDecoder {
                 }
             }
 
-            // Apply inverse transforms.
+            // Apply inverse transforms for decoder state. Attributes requested
+            // in portable form are switched back after all decoder groups,
+            // because legacy prediction can read parent values from the mesh.
             for q in &pending_quant {
                 let dst = mesh.try_attribute_mut(q.att_id)?;
                 if dst.size() != q.portable.size() {
@@ -1349,6 +1367,15 @@ impl MeshDecoder {
                     &mut portable,
                     mesh.num_points(),
                 )?;
+                if self
+                    .skip_attribute_transforms
+                    .contains(&mesh.try_attribute(q.att_id)?.attribute_type())
+                {
+                    let mut transform_data = AttributeTransformData::new();
+                    q.transform
+                        .copy_to_attribute_transform_data(&mut transform_data);
+                    skipped_attribute_transforms.push((q.att_id, transform_data));
+                }
                 upsert_portable_attribute(&mut portable_attributes_by_id, q.att_id, portable);
             }
             for n in pending_normals {
@@ -1358,8 +1385,32 @@ impl MeshDecoder {
                     &mut portable,
                     mesh.num_points(),
                 )?;
+                if self
+                    .skip_attribute_transforms
+                    .contains(&mesh.try_attribute(n.att_id)?.attribute_type())
+                {
+                    let mut oct = AttributeOctahedronTransform::new(-1);
+                    oct.set_parameters(n.quantization_bits as i32)?;
+                    let mut transform_data = AttributeTransformData::new();
+                    oct.copy_to_attribute_transform_data(&mut transform_data);
+                    skipped_attribute_transforms.push((n.att_id, transform_data));
+                }
                 upsert_portable_attribute(&mut portable_attributes_by_id, n.att_id, portable);
             }
+        }
+
+        for (att_id, transform_data) in skipped_attribute_transforms {
+            let portable = portable_attributes_by_id
+                .iter_mut()
+                .find(|(id, _)| *id == att_id)
+                .map(|(_, attribute)| std::mem::take(attribute))
+                .ok_or_else(|| {
+                    DracoError::general(format!(
+                        "Skipped attribute {att_id} has no portable values"
+                    ))
+                })?;
+            mesh.try_attribute_mut(att_id)?
+                .set_transformed_values(portable, transform_data);
         }
 
         Ok(())

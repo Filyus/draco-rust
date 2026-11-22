@@ -6,7 +6,8 @@
 //! `kd_tree_attributes_decoder.h`.
 
 use crate::attribute_quantization_transform::AttributeQuantizationTransform;
-use crate::attribute_transform::AttributeTransform;
+use crate::attribute_transform::{AttributeTransform, AttributeTransformType};
+use crate::attribute_transform_data::AttributeTransformData;
 use crate::decoder_buffer::DecoderBuffer;
 use crate::draco_types::DataType;
 use crate::dynamic_integer_points_kd_tree::DynamicIntegerPointsKdTreeDecoder;
@@ -17,6 +18,7 @@ use crate::status::{DracoError, Status};
 
 pub struct KdTreeAttributesDecoder {
     attribute_ids: Vec<i32>,
+    skip_attribute_transforms: Vec<GeometryAttributeType>,
     quantized_portable_attributes: Vec<PointAttribute>,
     attribute_quantization_transforms: Vec<AttributeQuantizationTransform>,
     min_signed_values: Vec<i32>,
@@ -45,6 +47,7 @@ impl KdTreeAttributesDecoder {
     pub fn new(first_att_id: i32) -> Self {
         Self {
             attribute_ids: vec![first_att_id],
+            skip_attribute_transforms: Vec::new(),
             quantized_portable_attributes: Vec::new(),
             attribute_quantization_transforms: Vec::new(),
             min_signed_values: Vec::new(),
@@ -56,6 +59,14 @@ impl KdTreeAttributesDecoder {
 
     pub fn add_attribute_id(&mut self, att_id: i32) {
         self.attribute_ids.push(att_id);
+    }
+
+    /// Leaves portable integer values for attributes of this semantic type
+    /// and stores their quantization parameters on each decoded attribute.
+    pub fn set_skip_attribute_transform(&mut self, attribute_type: GeometryAttributeType) {
+        if !self.skip_attribute_transforms.contains(&attribute_type) {
+            self.skip_attribute_transforms.push(attribute_type);
+        }
     }
 
     pub fn decode_attributes_decoder_data(
@@ -580,6 +591,39 @@ impl KdTreeAttributesDecoder {
         // `int32_t`, which the wrapping cast below reproduces.
         let max_quantized_value = (1u32 << bits) - 1;
         let delta = range / max_quantized_value as f32;
+        let attribute_type = point_cloud.try_attribute(att_id)?.attribute_type();
+        if self.skip_attribute_transforms.contains(&attribute_type) {
+            let mut portable = PointAttribute::new();
+            portable.try_init(
+                attribute_type,
+                3,
+                DataType::Int32,
+                false,
+                num_points as usize,
+            )?;
+            for (point, row) in decoded.as_chunks::<3>().0.iter().enumerate() {
+                let base = point * 12;
+                for (component, &value) in row.iter().enumerate() {
+                    let quantized = value.wrapping_sub(max_quantized_value) as i32;
+                    portable
+                        .buffer_mut()
+                        .write(base + component * 4, &quantized.to_le_bytes());
+                }
+            }
+
+            let mut transform_data = AttributeTransformData::new();
+            transform_data.set_transform_type(AttributeTransformType::QuantizationTransform);
+            transform_data.append_parameter_value(bits as i32);
+            for _ in 0..3 {
+                transform_data.append_parameter_value(0.0f32);
+            }
+            transform_data.append_parameter_value(range);
+            point_cloud
+                .try_attribute_mut(att_id)?
+                .set_transformed_values(portable, transform_data);
+            return Ok(());
+        }
+
         let att = point_cloud.try_attribute_mut(att_id)?;
         let stride = att.byte_stride() as usize;
         for (point, row) in decoded.as_chunks::<3>().0.iter().enumerate() {
@@ -660,14 +704,6 @@ impl KdTreeAttributesDecoder {
             let attribute = point_cloud.try_attribute(att_id)?;
             let dt = attribute.data_type();
             if dt == DataType::Float32 {
-                let portable = self
-                    .quantized_portable_attributes
-                    .get(float_attr_index)
-                    .ok_or_else(|| {
-                        DracoError::general(format!(
-                            "Attribute {att_id} has no portable copy at index {float_attr_index}"
-                        ))
-                    })?;
                 let transform = self
                     .attribute_quantization_transforms
                     .get(float_attr_index)
@@ -676,9 +712,34 @@ impl KdTreeAttributesDecoder {
                             "Attribute {att_id} has no quantization parameters at index {float_attr_index}"
                         ))
                     })?;
-
-                let target = point_cloud.try_attribute_mut(att_id)?;
-                transform.inverse_transform_attribute(portable, target)?;
+                if self
+                    .skip_attribute_transforms
+                    .contains(&attribute.attribute_type())
+                {
+                    let mut transform_data = AttributeTransformData::new();
+                    transform.copy_to_attribute_transform_data(&mut transform_data);
+                    let portable = self
+                        .quantized_portable_attributes
+                        .get_mut(float_attr_index)
+                        .ok_or_else(|| {
+                            DracoError::general(format!(
+                                "Attribute {att_id} has no portable copy at index {float_attr_index}"
+                            ))
+                        })?;
+                    let target = point_cloud.try_attribute_mut(att_id)?;
+                    target.set_transformed_values(std::mem::take(portable), transform_data);
+                } else {
+                    let portable = self
+                        .quantized_portable_attributes
+                        .get(float_attr_index)
+                        .ok_or_else(|| {
+                            DracoError::general(format!(
+                                "Attribute {att_id} has no portable copy at index {float_attr_index}"
+                            ))
+                        })?;
+                    let target = point_cloud.try_attribute_mut(att_id)?;
+                    transform.inverse_transform_attribute(portable, target)?;
+                }
 
                 float_attr_index += 1;
             }
