@@ -1,201 +1,106 @@
 import type { ResourceMap } from '../scene-resources.ts';
-import { basename } from '../scene-resources.ts';
-import { debugLog } from './log.ts';
-import { mtlMapPath } from './model-intake.ts';
-import { modules, state } from './state.ts';
+import { debugLog, log } from './log.ts';
+import { CACHE_BUST } from './modules.ts';
+import { createParseClient } from './parse-client.ts';
+import type { ParseCallResult } from './parse-client.ts';
+import { MODULE_LABELS, parseObjMaterials } from './parse-tasks.ts';
+import type { ParseFormat } from './parse-tasks.ts';
+import { modules } from './state.ts';
 
 /**
  * Reading a dropped file into whatever its format's module returns.
  *
- * Each parser owns its format's quirks — MTL lookup for OBJ, container and
- * companion resolution for glTF, semantic scene extraction for FBX — and hands
- * back the parse result the rest of the shell carries in state.
+ * Each parser runs in the background parse worker (`parse-worker.ts`) using
+ * the already-compiled `WebAssembly.Module` from `modules.ts`, with input
+ * buffers transferred across and handed straight back so large files neither
+ * freeze the main thread nor double peak memory. If workers are unavailable,
+ * `parse-client.ts` runs the exact same `executeParseTask` on this thread.
  */
 
-// Parse OBJ file
-export async function parseObjFile(data: Uint8Array, resources = Object.create(null)) {
-  if (!modules.obj.loaded) {
-    return { success: false, error: 'OBJ module not loaded' };
-  }
-
-  // The geometry crosses as bytes; the text is still decoded here because the
-  // MTL scraping below works on lines.
-  const result = modules.obj.module.read_obj(data);
-  if (result?.success) {
-    const textContent = new TextDecoder().decode(data);
-    result.materials = parseObjMaterials(textContent, resources, result.warnings || (result.warnings = []));
-  }
-  return result;
-}
-
-export function parseObjMaterials(objText: string, resources: ResourceMap, warnings: string[]) {
-  const materials = Object.create(null);
-  const libraries = [];
-  for (const line of objText.split(/\r\n|[\r\n]/)) {
-    const match = line.trim().match(/^mtllib\s+(.+)$/i);
-    if (match) libraries.push(match[1].trim());
-  }
-  for (const library of libraries) {
-    const bytes = resources[library] || resources[basename(library)];
-    if (!bytes) {
-      warnings.push(`OBJ material library not selected: ${library}`);
-      continue;
-    }
-    let current = null;
-    const text = new TextDecoder().decode(bytes);
-    for (const line of text.split(/\r\n|[\r\n]/)) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) continue;
-      const [directive, ...values] = trimmed.split(/\s+/);
-      if (directive === 'newmtl') {
-        current = values.join(' ');
-        if (current) materials[current] ||= { diffuse: [1, 1, 1], alpha: 1 };
-      } else if (directive === 'Kd' && current && values.length >= 3) {
-        const diffuse = values.slice(0, 3).map(Number);
-        if (diffuse.every(Number.isFinite)) materials[current].diffuse = diffuse;
-      } else if ((directive === 'd' || directive === 'Tr') && current && values.length >= 1) {
-        const value = Number(values[0]);
-        if (Number.isFinite(value)) materials[current].alpha = directive === 'Tr' ? 1 - value : value;
-      } else if (directive.toLowerCase() === 'map_kd' && current) {
-        const texture = mtlMapPath(values);
-        if (texture) materials[current].baseColorTextureUri = texture;
-      }
-    }
-  }
-  return materials;
-}
-
-// One implementation, in the module that also decides which textures have to be
-// read: a second copy here would be the same rule written twice, and the two
-// would answer differently the first time either was corrected.
 export { mtlMapPath } from './model-intake.ts';
+export { parseObjMaterials } from './parse-tasks.ts';
+export type { ParseFormat, ParseOutcome } from './parse-tasks.ts';
 
-import { isSplatPly, readSplatCloud, selectedFromNamedAttributes } from '../splat.ts';
+const parseClient = createParseClient({
+  cacheBust: CACHE_BUST,
+  onWorkerRestart: (format) => {
+    log(`${format} parse worker restarted with empty memory`, 'info');
+  },
+});
 
-// Parse PLY file
-export async function parsePlyFile(data: Uint8Array) {
-  if (!modules.ply.loaded) {
-    return { success: false, error: 'PLY module not loaded' };
+/** Cancel any in-flight off-thread parse and terminate a busy worker immediately. */
+export function cancelActiveParse() {
+  parseClient.cancel();
+}
+
+/**
+ * Parse a loaded model off the main thread, transferring `data` and `resources`
+ * into the worker and returning them alongside the parsed outcome.
+ */
+export async function parseFile(
+  format: ParseFormat,
+  data: Uint8Array,
+  resources: ResourceMap,
+  extension: string,
+  options: { transfer?: boolean; signal?: AbortSignal } = {},
+): Promise<ParseCallResult> {
+  const slot = modules[format];
+  if (!slot?.loaded) {
+    return {
+      outcome: { result: { success: false, error: `${MODULE_LABELS[format]} module not loaded` } },
+      data,
+      resources,
+      offMainThread: false,
+    };
   }
 
-  const result = modules.ply.module.read_ply(data);
-  debugLog('PLY parse result:', result);
+  const response = await parseClient.parse(
+    {
+      format,
+      extension,
+      data,
+      resources,
+      glueUrl: slot.glueUrl ?? null,
+      wasmModule: slot.wasmModule ?? null,
+      fallbackModule: slot.module,
+    },
+    options,
+  );
 
-  // A Gaussian splat is an ordinary point cloud to the reader above and a
-  // scene to a renderer, and the difference is entirely in property names it
-  // has no slot for. The reader carries those as named extras -- which is also
-  // what lets an export keep them -- so the splat is read from the same parse
-  // rather than from a second pass over the file.
-  const properties: string[] = result?.header?.properties ?? [];
-  const plyMesh = result?.meshes?.[0];
-  if (isSplatPly(properties) && plyMesh) {
-    const count = (plyMesh.positions?.length ?? 0) / 3;
-    const selected = selectedFromNamedAttributes(count, plyMesh.positions ?? [], plyMesh.extras ?? []);
-    const cloud = readSplatCloud(selected);
-    if (cloud) {
-      result.splats = cloud;
-      debugLog('PLY splat cloud:', cloud.count, 'splats');
-    } else {
-      debugLog('PLY looked like a splat by its header but did not read as one');
-    }
-  }
-
-  if (result.meshes) {
+  const result = response.outcome.result;
+  debugLog(`${MODULE_LABELS[format]} parse result (worker=${response.offMainThread}):`, result);
+  if (format === 'ply' && result.meshes) {
     for (const mesh of result.meshes) {
       debugLog('PLY mesh: positions=', mesh.positions?.length,
         ', indices=', mesh.indices?.length,
         ', normals=', mesh.normals?.length);
     }
   }
-  return result;
+  return response;
 }
 
-// Parse STL file
+// Per-format convenience wrappers kept for callers that expect the original
+// single-result shape without buffer transfer.
+export async function parseObjFile(data: Uint8Array, resources: ResourceMap = Object.create(null)) {
+  return (await parseFile('obj', data, resources, 'obj')).outcome.result;
+}
+
+export async function parsePlyFile(data: Uint8Array) {
+  return (await parseFile('ply', data, Object.create(null), 'ply')).outcome.result;
+}
+
 export async function parseStlFile(data: Uint8Array) {
-  if (!modules.stl.loaded) {
-    return { success: false, error: 'STL module not loaded' };
-  }
-
-  const result = modules.stl.module.read_stl(data);
-  debugLog('STL parse result:', result);
-  return result;
+  return (await parseFile('stl', data, Object.create(null), 'stl')).outcome.result;
 }
 
-/**
- * Parse a standalone Draco payload.
- *
- * Wrapped, unlike its neighbours, because this is the only reader whose input
- * is a compressed bitstream: the decoder walks lengths the payload itself
- * states. It returns errors for every malformed payload tested against it, and
- * nothing inside the module catches a panic — wasm32 has no unwinding to catch
- * with. So a panic would arrive here as a trap, and this is what keeps it a
- * named file that could not be read rather than a bare RuntimeError.
- */
 export async function parseDrcFile(data: Uint8Array) {
-  if (!modules.drc.loaded) {
-    return { success: false, error: 'DRC module not loaded' };
-  }
-
-  try {
-    const result = modules.drc.module.parse_drc_bytes(data);
-    debugLog('DRC parse result:', result);
-
-    // The same recognition the PLY path does, one layer lower. A splat payload
-    // is an ordinary point cloud to the decoder and a scene to a renderer, and
-    // what tells them apart is attribute names -- which Draco carries in
-    // metadata rather than in the attribute type, so they arrive with the
-    // extras rather than with the geometry.
-    const mesh = result?.meshes?.[0];
-    const extras = mesh?.extras ?? [];
-    if (mesh && extras.length > 0) {
-      const count = (mesh.positions?.length ?? 0) / 3;
-      const selected = selectedFromNamedAttributes(count, mesh.positions ?? [], extras);
-      if (isSplatPly(Object.keys(selected.properties))) {
-        const cloud = readSplatCloud(selected);
-        if (cloud) {
-          result.splats = cloud;
-          debugLog('DRC splat cloud:', cloud.count, 'splats');
-        } else {
-          debugLog('DRC carried the splat names but did not read as one');
-        }
-      }
-    }
-    return result;
-  } catch (error) {
-    return {
-      success: false,
-      error: `Malformed Draco payload: ${error instanceof Error ? error.message : String(error)}`,
-    };
-  }
+  return (await parseFile('drc', data, Object.create(null), 'drc')).outcome.result;
 }
 
-/**
- * Parse a glTF/GLB file for the summary panel.
- *
- * Only the container-level summary comes from here. The geometry figures are
- * counted from the SceneDocument by `summarizeSceneDocumentGeometry`, because
- * that document is built from the same bytes moments later anyway and counting
- * them here meant opening — and fully walking — the asset a second time for
- * numbers already in hand.
- */
 export async function parseGltfFile(data: Uint8Array, extension: string) {
-  if (!modules.gltf.loaded) {
-    return { success: false, error: 'glTF module not loaded' };
-  }
-
-  const summary = modules.gltf.module.inspect_gltf(data);
-  return { ...summary, document: true, format: extension };
+  return (await parseFile('gltf', data, Object.create(null), extension)).outcome.result;
 }
 
-// Parse FBX file
 export async function parseFbxFile(data: Uint8Array) {
-  // ASCII and binary both go through the WASM reader now; it produces the
-  // same node tree from either container, so the regex fallback that used to
-  // scrape ASCII geometry -- without transforms, materials, skins or
-  // animation -- is gone.
-  if (!modules.fbx.loaded) {
-    return { success: false, error: 'FBX module not loaded' };
-  }
-
-  return modules.fbx.module.read_fbx(data);
+  return (await parseFile('fbx', data, Object.create(null), 'fbx')).outcome.result;
 }

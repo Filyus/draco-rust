@@ -445,6 +445,8 @@ jobs:
           npm run test:splat-dialect
           npm run test:splat-pass
           npm run test:gltf-splat
+          npm run test:model-intake
+          npm run test:parse-worker
         working-directory: web
 
       # The gates compare against the reference Basis transcoder built in

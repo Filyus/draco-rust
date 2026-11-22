@@ -20,7 +20,7 @@ import { modules, state } from './state.ts';
  * page cannot pair with modules from the deploy after it. Served without the
  * stamp, as the dev server does, every load fetches them afresh.
  */
-const CACHE_BUST = `?v=${
+export const CACHE_BUST = `?v=${
   document.querySelector<HTMLMetaElement>('meta[name="build-id"]')?.content || Date.now()
 }`;
 
@@ -101,19 +101,42 @@ const WASM32_MEMORY_CAP = 2 ** 32;
 let instances = 0;
 
 /**
+ * Compile a wasm binary once so the main thread (exports, version check) and
+ * the parse worker share one compiled module instead of fetching and compiling
+ * it twice.
+ */
+async function compileWasm(wasmUrl: URL): Promise<WebAssembly.Module> {
+  const response = await fetch(wasmUrl);
+  if (!response.ok) throw new Error(`Failed to fetch ${wasmUrl}: ${response.status}`);
+  if (
+    typeof WebAssembly.compileStreaming === 'function'
+    && response.headers.get('content-type')?.includes('application/wasm')
+  ) {
+    return WebAssembly.compileStreaming(response);
+  }
+  return WebAssembly.compile(await response.arrayBuffer());
+}
+
+/**
  * A fresh instance of a module, with every plain function it exports guarded.
  *
  * The glue keeps its instance in module scope and will not initialise twice,
  * so a fresh one needs the glue imported again under a URL it has not been
- * imported under. The wasm is the same file and comes from the cache.
+ * imported under. The compiled `WebAssembly.Module` is kept on the slot so
+ * restarts and the parse worker instantiate directly from it.
  */
 async function instantiate(key: string, path: string) {
   const fresh = instances++ === 0 ? path : `${path}${path.includes('?') ? '&' : '?'}instance=${instances}`;
-  const module = await import(fresh);
   const wasmUrl = new URL(path.replace(/\.js(\?.*)?$/, '_bg.wasm$1'), window.location.href);
+  const [module, compiled] = await Promise.all([
+    import(fresh),
+    modules[key].wasmModule ?? compileWasm(wasmUrl),
+  ]);
+  modules[key].wasmModule = compiled;
+  modules[key].glueUrl = path;
   // wasm-bindgen deprecated the positional form and warns about it on
   // every load; the object is what current glue expects.
-  const exports = await module.default({ module_or_path: wasmUrl });
+  const exports = await module.default({ module_or_path: compiled });
   return guard(key, path, module, exports.memory as WebAssembly.Memory);
 }
 

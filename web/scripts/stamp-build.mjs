@@ -16,7 +16,7 @@
 // A page and everything it loads then share one query: all of it is cached or
 // all of it is fetched. The dev server serves the site unstamped.
 
-import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 
 const [siteDir, buildId] = process.argv.slice(2);
@@ -68,4 +68,19 @@ replaceOnce(
 );
 
 writeFileSync(indexPath, html);
+
+// Module workers neither inherit the page's import map nor propagate the worker
+// URL's `?v=` query to static relative imports, so the worker entry must be
+// self-contained (bundled by `npm run build:worker`) rather than importing
+// sibling scripts unversioned.
+const workerPath = join(siteDir, 'app', 'parse-worker.js');
+if (existsSync(workerPath)) {
+  const workerSource = readFileSync(workerPath, 'utf8');
+  const relativeStaticImport = /(?:^|[;\n])\s*(?:import|export)\s+(?:[^'"]*?\s+from\s+)?['"]\.\.?\//;
+  if (relativeStaticImport.test(workerSource)) {
+    console.error(`${workerPath} contains relative static imports that bypass build stamping`);
+    process.exit(1);
+  }
+}
+
 console.log(`stamped ${indexPath} with ${buildId}: ${Object.keys(imports).length} scripts mapped`);

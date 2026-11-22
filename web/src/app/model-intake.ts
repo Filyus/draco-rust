@@ -137,12 +137,52 @@ export function mtlMapPath(values: string[]): string {
   return values.slice(index).join(' ').trim();
 }
 
-/** Every `mtllib` an OBJ names. */
-function objLibraries(text: string): string[] {
+/**
+ * Every `mtllib` an OBJ names, scanned straight out of the raw bytes.
+ *
+ * Decoding a hundred-megabyte OBJ into a string and splitting it into millions
+ * of lines just to read the few `mtllib` directives at the top stalls the main
+ * thread and allocates hundreds of megabytes of temporary strings. Scanning the
+ * bytes line by line allocates one string per directive and nothing else.
+ */
+export function objLibraries(data: Uint8Array): string[] {
   const libraries: string[] = [];
-  for (const line of text.split(/\r\n|[\r\n]/)) {
-    const match = line.trim().match(/^mtllib\s+(.+)$/i);
-    if (match) libraries.push(match[1].trim());
+  const decoder = new TextDecoder();
+  const len = data.length;
+  let offset = 0;
+  // Strip UTF-8 BOM if present so a leading `mtllib` still matches.
+  if (len >= 3 && data[0] === 0xef && data[1] === 0xbb && data[2] === 0xbf) offset = 3;
+
+  while (offset < len) {
+    let lineEnd = offset;
+    while (lineEnd < len && data[lineEnd] !== 0x0a && data[lineEnd] !== 0x0d) lineEnd += 1;
+
+    let pos = offset;
+    while (pos < lineEnd && (data[pos] === 0x20 || data[pos] === 0x09)) pos += 1;
+
+    // ASCII case-insensitive match for `mtllib` followed by whitespace.
+    if (
+      pos + 7 <= lineEnd
+      && (data[pos] | 0x20) === 0x6d
+      && (data[pos + 1] | 0x20) === 0x74
+      && (data[pos + 2] | 0x20) === 0x6c
+      && (data[pos + 3] | 0x20) === 0x6c
+      && (data[pos + 4] | 0x20) === 0x69
+      && (data[pos + 5] | 0x20) === 0x62
+      && (data[pos + 6] === 0x20 || data[pos + 6] === 0x09)
+    ) {
+      let valueStart = pos + 7;
+      while (valueStart < lineEnd && (data[valueStart] === 0x20 || data[valueStart] === 0x09)) valueStart += 1;
+      let valueEnd = lineEnd;
+      while (valueEnd > valueStart && (data[valueEnd - 1] === 0x20 || data[valueEnd - 1] === 0x09)) valueEnd -= 1;
+      if (valueEnd > valueStart) {
+        libraries.push(decoder.decode(data.subarray(valueStart, valueEnd)));
+      }
+    }
+
+    offset = lineEnd;
+    if (offset < len && data[offset] === 0x0d) offset += 1;
+    if (offset < len && data[offset] === 0x0a) offset += 1;
   }
   return libraries;
 }
@@ -270,9 +310,9 @@ export async function readModel(model: IntakeEntry, entries: IntakeEntry[]): Pro
     return bytes;
   };
 
-  if (extensionOf(model.path) === 'obj') {
-    const text = new TextDecoder().decode(data);
-    for (const library of objLibraries(text)) {
+  const extension = extensionOf(model.path);
+  if (extension === 'obj') {
+    for (const library of objLibraries(data)) {
       const bytes = await take(library);
       if (!bytes) continue;
       // Texture paths in an MTL are written relative to the MTL, which is
@@ -285,7 +325,7 @@ export async function readModel(model: IntakeEntry, entries: IntakeEntry[]): Pro
         else if (!missing.includes(texture)) missing.push(texture);
       }
     }
-  } else if (extensionOf(model.path) === 'fbx') {
+  } else if (extension === 'fbx') {
     // An FBX names its textures by a path from the machine that authored it, so
     // the directory is worthless and the file name is all that survives. Match
     // on that, against the selection as supplied.
@@ -307,7 +347,7 @@ export async function readModel(model: IntakeEntry, entries: IntakeEntry[]): Pro
       resources[named] = bytes;
       resources[baseNameOf(named)] = bytes;
     }
-  } else {
+  } else if (extension === 'gltf' || extension === 'glb') {
     const document = documentJson(data);
     const named = [...(document?.buffers as { uri?: string }[] ?? []),
       ...(document?.images as { uri?: string }[] ?? [])];

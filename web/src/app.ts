@@ -14,12 +14,10 @@ import type { SceneDocument } from './scene-document.ts';
 import type { ResourceMap } from './scene-resources.ts';
 import type { FbxSceneProvenance } from './fbx-scene-provenance.ts';
 import { buildFbxSceneFromGltf, buildFlatMeshesFromGltf, buildSceneFromGltf } from './gltf-loader.ts';
-import { buildSceneDocumentWithGltfProvenance } from './gltf-scene-document.ts';
 import { buildSceneFromFbx, buildSceneFromMeshes } from './mesh-loader.ts';
-import { buildSceneDocumentWithFbxProvenance } from './fbx-scene-document.ts';
 import { buildFbxSceneFromDocument } from './fbx-scene-document-writer.ts';
 import { serializeSceneDocumentToGlb } from './scene-document-gltf.ts';
-import { assertValidSceneDocument, summarizeSceneDocumentGeometry } from './scene-document.ts';
+import { assertValidSceneDocument } from './scene-document.ts';
 import { basename } from './scene-resources.ts';
 import {
   animClipSelect,
@@ -72,8 +70,8 @@ import {
   setWarningSource,
 } from './app/warnings.ts';
 import { loadAllModules, updateDracoEncoderAvailability } from './app/modules.ts';
-import { parseDrcFile, parseFbxFile, parseGltfFile, parseObjFile, parsePlyFile, parseStlFile } from './app/parsers.ts';
-import { splatCloudFromSceneDocument } from './gltf-splat.ts';
+import { cancelActiveParse, parseFile } from './app/parsers.ts';
+import type { ParseFormat } from './app/parsers.ts';
 import {
   describeSceneCapabilities,
   displayMeshInfo,
@@ -468,7 +466,40 @@ function entriesFromFileList(fileList: FileList): IntakeEntry[] {
   }));
 }
 
+/**
+ * Which file load is the current one.
+ *
+ * File reading and off-thread decoding are asynchronous, so a second drop, a
+ * folder-picker switch, or a click on Clear can supersede a load still in
+ * flight. Incrementing this and aborting the previous controller stops the
+ * stale worker immediately and guarantees its result never overwrites state.
+ */
+let loadGeneration = 0;
+let activeLoadAbort: AbortController | null = null;
+
+function formatForExtension(extension: string): ParseFormat | null {
+  switch (extension) {
+    case 'obj':
+    case 'ply':
+    case 'stl':
+    case 'drc':
+    case 'fbx':
+      return extension;
+    case 'gltf':
+    case 'glb':
+      return 'gltf';
+    default:
+      return null;
+  }
+}
+
 async function handleModel(model: IntakeEntry, entries: IntakeEntry[]) {
+  const generation = ++loadGeneration;
+  activeLoadAbort?.abort();
+  cancelActiveParse();
+  const abortController = new AbortController();
+  activeLoadAbort = abortController;
+
   const file = model.file as File;
   const extension = model.path.split('.').pop()!.toLowerCase();
 
@@ -491,9 +522,12 @@ async function handleModel(model: IntakeEntry, entries: IntakeEntry[]) {
 
   try {
     const intake = await readModel(model, entries);
+    if (generation !== loadGeneration) return;
     const data = intake.data;
-    state.currentSourceData = new Uint8Array(data);
-    state.currentSourceResources = intake.resources;
+    const resources = intake.resources;
+    state.currentMeshData = null;
+    state.currentSourceData = null;
+    state.currentSourceResources = Object.create(null);
     // Set with the bytes rather than before them: the field says which model is
     // open, and until the read returns the answer is still the previous one.
     state.currentModelPath = model.path;
@@ -507,10 +541,10 @@ async function handleModel(model: IntakeEntry, entries: IntakeEntry[]) {
     // Counted rather than assumed: with a folder the selection is arbitrarily
     // large and the number that means anything is what the model actually
     // pulled in.
-    const companions = Object.keys(intake.resources).length;
+    const companions = Object.keys(resources).length;
     fileName.textContent = companions > 0 ? `${file.name} (+${companions} resources)` : file.name;
     fileSize.textContent = formatFileSize(
-      Object.values(intake.resources).reduce((sum, bytes) => sum + bytes.length, data.length),
+      Object.values(resources).reduce((sum, bytes) => sum + bytes.length, data.length),
     );
     for (const uri of intake.missing) {
       log(`Referenced file not in the selection: ${uri}`, 'warning');
@@ -520,66 +554,30 @@ async function handleModel(model: IntakeEntry, entries: IntakeEntry[]) {
       log(missingResourceAdvice(reportedMissing, entries.length, model.path), 'warning');
     }
 
-    // Parse file based on extension
-    let result;
-    switch (extension) {
-      case 'obj':
-        result = await parseObjFile(data, state.currentSourceResources);
-        break;
-      case 'ply':
-        result = await parsePlyFile(data);
-        break;
-      case 'stl':
-        result = await parseStlFile(data);
-        break;
-      case 'drc':
-        result = await parseDrcFile(data);
-        break;
-      case 'gltf':
-      case 'glb':
-        result = await parseGltfFile(data, extension);
-        if (result?.success && result.document) {
-          try {
-            const adapted = buildSceneDocumentWithGltfProvenance(data, state.currentSourceResources as Record<string, Uint8Array>, modules.gltf.module);
-            state.currentSceneDocument = adapted.document;
-            state.currentGltfProvenance = adapted.provenance;
-            // The geometry figures come from the document rather than from a
-            // second walk of the same asset; when it could not be built there
-            // is nothing to count, and the panel says so below.
-            Object.assign(result, summarizeSceneDocumentGeometry(state.currentSceneDocument));
-            // A KHR_gaussian_splatting primitive is a point cloud to every
-            // other reader of the document and a scene to the splat pass, the
-            // same way a splat PLY is; it reaches the preview the same way.
-            const splats = splatCloudFromSceneDocument(state.currentSceneDocument);
-            for (const warning of splats.warnings) log(warning, 'warning');
-            if (splats.cloud) result.splats = splats.cloud;
-          } catch (error) {
-            // A document that merely fails the portability rules still
-            // previews, so that stays a warning. Missing companion files are
-            // different: nothing can be read at all, and the outer handler is
-            // the one that tells the user which files to select. Geometry that
-            // will not decode is the same kind of thing: the container summary
-            // above it comes from the JSON alone and would otherwise report a
-            // successful parse of an asset whose meshes are unreadable, which
-            // is the answer the same corruption gets in a .drc file.
-            const message = errorMessage(error);
-            if (message.includes('External resource denied:') || message.includes('Draco decode error:')) {
-              throw error;
-            }
-            log(`Scene details unavailable: ${message}`, 'warning');
-          }
-        }
-        break;
-      case 'fbx':
-        result = await parseFbxFile(data);
-        if (result?.success && result.scene) {
-          const adapted = buildSceneDocumentWithFbxProvenance(result, state.currentSourceResources);
-          state.currentSceneDocument = adapted.document;
-          state.currentFbxProvenance = adapted.provenance;
-        }
-        break;
+    // Parse and decode off the main thread; input buffers move to the worker
+    // by transfer and return with the result so large files are never copied.
+    const format = formatForExtension(extension);
+    if (!format) {
+      log(`Failed to parse file: Unsupported file format .${extension}`, 'error');
+      return;
     }
-    
+
+    const parsed = await parseFile(format, data, resources, extension, {
+      transfer: true,
+      signal: abortController.signal,
+    });
+    if (generation !== loadGeneration) return;
+
+    state.currentSourceData = parsed.data;
+    state.currentSourceResources = parsed.resources;
+    state.currentSceneDocument = parsed.outcome.sceneDocument ?? null;
+    state.currentFbxProvenance = parsed.outcome.fbxProvenance ?? null;
+    state.currentGltfProvenance = parsed.outcome.gltfProvenance ?? null;
+    for (const warning of parsed.outcome.warnings ?? []) {
+      log(warning, 'warning');
+    }
+
+    const result = parsed.outcome.result;
     if (result && result.success) {
       state.currentMeshData = result;
       displayMeshInfo(result);
@@ -595,6 +593,8 @@ async function handleModel(model: IntakeEntry, entries: IntakeEntry[]) {
       log(`Failed to parse file: ${result?.error || 'Unknown error'}`, 'error');
     }
   } catch (error) {
+    if (generation !== loadGeneration) return;
+    if (error instanceof Error && error.name === 'AbortError') return;
     const message = errorMessage(error);
     // A model whose companions sit in a sibling folder cannot be selected file
     // by file at all, so the advice names the way that always works -- unless
@@ -605,6 +605,8 @@ async function handleModel(model: IntakeEntry, entries: IntakeEntry[]) {
       ? ' Drop the whole folder instead, or select the .gltf together with every referenced .bin and image.'
       : '';
     log(`Error reading file: ${message}.${resourceHint}`, 'error');
+  } finally {
+    if (activeLoadAbort === abortController) activeLoadAbort = null;
   }
 }
 
@@ -658,6 +660,10 @@ requestAnimationFrame(animationTick);
 
 // Clear loaded file
 function clearFile() {
+  loadGeneration += 1;
+  activeLoadAbort?.abort();
+  activeLoadAbort = null;
+  cancelActiveParse();
   state.currentMeshData = null;
   state.currentFileType = null;
   state.currentSourceData = null;

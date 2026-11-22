@@ -2808,7 +2808,7 @@ test('an FBX previews with the texture coordinates it exports', async ({ page })
     mimeType: 'application/octet-stream',
     buffer: await readFile((await (await download).path())!),
   });
-  await expect(page.locator('#console')).toContainText('Preview ready');
+  await expect(page.locator('#console')).toHaveText(/Successfully parsed uvs\.fbx[\s\S]*Preview ready/);
 
   const uvs = await page.evaluate(async () => {
     const { state } = await import('/app/state.js' as string);
@@ -5253,4 +5253,57 @@ test('a folder chosen with the button opens the same way a dropped one does', as
   // One model in the folder, so nothing to choose between and no picker.
   expect(observed.pickerShown).toBe(false);
   expect(observed.selected).toBeGreaterThan(observed.resources.length);
+});
+
+test('converter parses files in a background Web Worker rather than on the main thread', async ({ page }) => {
+  await page.addInitScript(() => {
+    const spawned: string[] = [];
+    const NativeWorker = window.Worker;
+    (window as unknown as { __spawnedWorkers: string[] }).__spawnedWorkers = spawned;
+    window.Worker = new Proxy(NativeWorker, {
+      construct(target, args, newTarget) {
+        spawned.push(String(args[0]));
+        return Reflect.construct(target, args, newTarget);
+      },
+    });
+  });
+
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+
+  const workerScriptRequests: string[] = [];
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.endsWith('.js')) {
+      workerScriptRequests.push(`${url.pathname}${url.search}`);
+    }
+  });
+
+  const drcBytes = await readFile(path.join(repoRoot, 'testdata', 'car.drc'));
+  await page.locator('#file-input').setInputFiles({
+    name: 'car.drc',
+    mimeType: 'application/octet-stream',
+    buffer: drcBytes,
+  });
+
+  await expect(page.locator('#console')).toContainText('Successfully parsed car.drc');
+  await expect(page.locator('#console')).toContainText('Preview ready');
+
+  const workerUrls = await page.evaluate(
+    () => (window as unknown as { __spawnedWorkers: string[] }).__spawnedWorkers,
+  );
+  expect(workerUrls.some((url) => url.includes('parse-worker.js?v='))).toBe(true);
+  // Every JS request triggered by the worker must be versioned: because module
+  // workers ignore the page's import map, parse-worker.js must be bundled with
+  // no unversioned relative imports like parse-tasks.js.
+  expect(workerScriptRequests.some((url) => url.startsWith('/app/parse-worker.js?v='))).toBe(true);
+  expect(workerScriptRequests.filter((url) => !url.includes('?v='))).toEqual([]);
+
+  // Source bytes transferred to the worker must be transferred back so export
+  // and state inspection still hold the full file.
+  const sourceLength = await page.evaluate(async () => {
+    const { state } = await import('/app/state.js' as string);
+    return state.currentSourceData?.byteLength ?? 0;
+  });
+  expect(sourceLength).toBe(drcBytes.length);
 });

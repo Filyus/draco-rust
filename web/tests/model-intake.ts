@@ -20,7 +20,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
 
-const { findModels, missingResourceAdvice, readModel, resolveUriPath } = await import(
+const { findModels, missingResourceAdvice, objLibraries, readModel, resolveUriPath } = await import(
   pathToFileURL(resolve(here, '..', 'src', 'app', 'model-intake.ts')).href
 );
 
@@ -241,6 +241,27 @@ for (const ascii of [false, true]) {
         /file name alone/,
         'a glTF URI is a real path, so that caveat is not its',
     );
+}
+
+// ---- byte-level OBJ mtllib scan and non-glTF binary skip ------------------
+{
+  const objText = '\uFEFF# comment\r\n  MTLLIB\tfirst.mtl  \nnotmtllib nope.mtl\nmtllib second with spaces.mtl\r\nv 0 0 0\n';
+  assert.deepEqual(
+    objLibraries(new TextEncoder().encode(objText)),
+    ['first.mtl', 'second with spaces.mtl'],
+    'objLibraries scans UTF-8 bytes directly across BOM, CRLF, tabs and case',
+  );
+
+  // Binary formats (PLY, STL, DRC) have no companion URIs and must not attempt
+  // JSON parsing on their payload even if it happens to look like JSON.
+  const fakeJson = new TextEncoder().encode(JSON.stringify({ buffers: [{ uri: 'secret.bin' }] }));
+  const plyEntry = bytesEntry('cloud.ply', fakeJson);
+  const sibling = bytesEntry('secret.bin', new Uint8Array([1, 2, 3]));
+  opened.length = 0;
+  const plyRead = await readModel(plyEntry, [plyEntry, sibling]);
+  assert.deepEqual(opened, ['cloud.ply'], 'PLY never opens companion files or parses its bytes as glTF JSON');
+  assert.deepEqual(plyRead.missing, []);
+  assert.deepEqual(Object.keys(plyRead.resources), []);
 }
 
 console.log('model-intake: OK');

@@ -25,19 +25,23 @@ import type { Viewer } from '../viewer.ts';
 interface ModuleSlot {
   loaded: boolean;
   module: any;
+  /** Compiled WebAssembly module shared with the parse worker so it never re-fetches or re-compiles. */
+  wasmModule?: WebAssembly.Module | null;
+  /** Cache-busted glue module URL matching `wasmModule`. */
+  glueUrl?: string | null;
 }
 
 /** The lazily loaded wasm-pack modules, by format key. */
 export const modules: Record<string, ModuleSlot> = {
-  obj: { loaded: false, module: null },
-  ply: { loaded: false, module: null },
-  stl: { loaded: false, module: null },
-  drc: { loaded: false, module: null },
-  gltf: { loaded: false, module: null },
-  fbx: { loaded: false, module: null },
+  obj: { loaded: false, module: null, wasmModule: null, glueUrl: null },
+  ply: { loaded: false, module: null, wasmModule: null, glueUrl: null },
+  stl: { loaded: false, module: null, wasmModule: null, glueUrl: null },
+  drc: { loaded: false, module: null, wasmModule: null, glueUrl: null },
+  gltf: { loaded: false, module: null, wasmModule: null, glueUrl: null },
+  fbx: { loaded: false, module: null, wasmModule: null, glueUrl: null },
   // Fetched only when a file turns out to carry a KTX2 texture: it is the
   // largest of the modules and the rarest to be needed.
-  ktx2: { loaded: false, module: null },
+  ktx2: { loaded: false, module: null, wasmModule: null, glueUrl: null },
 };
 
 /**
