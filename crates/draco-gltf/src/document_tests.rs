@@ -3538,10 +3538,7 @@ fn an_unknown_splat_semantic_is_refused() {
 #[cfg(feature = "draco-encode")]
 #[test]
 fn the_host_neutral_encoder_takes_a_points_primitive_when_allowed() {
-    use crate::{
-        CompressionOptions, DracoPrimitiveEncoding, GeometryWriteOptions, Import, MeshIndex,
-        PrimitiveMode, QuantizationBits,
-    };
+    use crate::{CompressionOptions, DracoPrimitiveEncoding, PrimitiveMode, QuantizationBits};
 
     // Refused without the option, exactly as the document path refuses it.
     let refused = DracoPrimitiveEncoding::encode(&splat_geometry(), &CompressionOptions::default())
