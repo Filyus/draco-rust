@@ -227,9 +227,13 @@ fn mesh_and_kd_tree_decoders_keep_portable_position_values() {
         assert_eq!(position.data_type(), expected_data_type);
         assert!(position.attribute_transform_data().is_some());
         if version == Some((2, 2)) {
-            assert!(position.buffer().data().chunks_exact(4).any(|bytes| {
-                i32::from_le_bytes(bytes.try_into().expect("four-byte portable component")) < 0
-            }));
+            assert!(position
+                .buffer()
+                .data()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|&bytes| i32::from_le_bytes(bytes) < 0));
         }
 
         let mut quantization = AttributeQuantizationTransform::new();
