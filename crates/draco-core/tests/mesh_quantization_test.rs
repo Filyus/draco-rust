@@ -214,3 +214,40 @@ fn an_explicit_grid_of_the_wrong_width_is_refused() {
         "the error should name the grid, got: {error}"
     );
 }
+
+/// Geometry carrying a NaN must be refused with an explicit grid just as it is
+/// when parameters are computed from the data, rather than silently quantizing
+/// the NaN to the grid origin.
+#[test]
+fn explicit_grid_refuses_nan_values() {
+    let positions = [0.0f32, 0.0, 0.0, 1.0, f32::NAN, 0.0, 0.0, 1.0, 0.0];
+    let mut mesh = Mesh::new();
+    let mut pos_att = PointAttribute::new();
+    pos_att.init(
+        GeometryAttributeType::Position,
+        3,
+        DataType::Float32,
+        false,
+        3,
+    );
+    for (i, position) in positions.iter().enumerate() {
+        pos_att.buffer_mut().write(i * 4, &position.to_le_bytes());
+    }
+    mesh.add_attribute(pos_att);
+    mesh.set_num_faces(1);
+    mesh.set_face(FaceIndex(0), [PointIndex(0), PointIndex(1), PointIndex(2)]);
+
+    let mut options = EncoderOptions::new();
+    options.set_attribute_explicit_quantization(0, 10, 3, &[0.0, 0.0, 0.0], 1.0);
+    let mut encoder = MeshEncoder::new();
+    encoder.set_mesh(mesh);
+    let mut buffer = EncoderBuffer::new();
+    let error = encoder
+        .encode(&options, &mut buffer)
+        .expect_err("NaN must not encode onto an explicit grid")
+        .to_string();
+    assert!(
+        error.contains("NaN"),
+        "the error should mention NaN, got: {error}"
+    );
+}

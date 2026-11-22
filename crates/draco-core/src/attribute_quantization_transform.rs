@@ -1004,6 +1004,86 @@ impl AttributeTransform for AttributeQuantizationTransform {
     }
 }
 
+/// Rejects source values that cannot be quantized onto an explicit grid.
+///
+/// The computed path walks every entry while measuring bounds and rejects an
+/// empty attribute, a non-float32 attribute, a truncated buffer, and any `NaN`
+/// or infinite value. An explicit grid skips `compute_parameters`, so without
+/// this check a `NaN` would pass straight into `Quantizer::quantize_float`,
+/// where Rust's saturating float-to-integer cast turns it into `0` and silently
+/// places the vertex at the grid's origin.
+#[cfg(feature = "encoder")]
+fn validate_quantizable_attribute(attribute: &PointAttribute, threads: usize) -> Status {
+    let num_entries = attribute.size();
+    if num_entries == 0 {
+        return Err(DracoError::invalid_parameter(
+            "Cannot quantize an empty attribute".to_string(),
+        ));
+    }
+    if attribute.data_type() != DataType::Float32 {
+        return Err(DracoError::invalid_parameter(format!(
+            "Quantization needs a float32 attribute, got {:?}",
+            attribute.data_type()
+        )));
+    }
+    let num_components = attribute.num_components() as usize;
+    let byte_stride = attribute.byte_stride() as usize;
+    let data = attribute.buffer().data();
+
+    let check_range = |start: usize, end: usize| -> Status {
+        let Some(entry_width) = num_components.checked_mul(4) else {
+            return Err(DracoError::general(
+                "Attribute byte offset overflow".to_string(),
+            ));
+        };
+        for i in start..end {
+            let Some(offset) = i.checked_mul(byte_stride) else {
+                return Err(DracoError::general(
+                    "Attribute byte offset overflow".to_string(),
+                ));
+            };
+            let Some(entry_end) = offset.checked_add(entry_width) else {
+                return Err(DracoError::general(
+                    "Attribute byte offset overflow".to_string(),
+                ));
+            };
+            let Some(entry) = data.get(offset..entry_end) else {
+                return Err(DracoError::general(
+                    "Attribute source data is truncated relative to its value count".to_string(),
+                ));
+            };
+            for raw in entry.as_chunks::<4>().0 {
+                let val = f32::from_le_bytes(*raw);
+                if val.is_nan() {
+                    return Err(DracoError::invalid_parameter(
+                        "Attribute value is NaN and cannot be quantized".to_string(),
+                    ));
+                }
+                if val.is_infinite() {
+                    return Err(DracoError::invalid_parameter(
+                        "Attribute value is non-finite and cannot be quantized".to_string(),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    };
+
+    if threads > 1 && num_entries.saturating_mul(num_components) >= PASS_MIN_VALUES {
+        let pieces = crate::parallel::map(num_entries.div_ceil(PIECE), threads, |piece| {
+            let start = piece * PIECE;
+            let end = (start + PIECE).min(num_entries);
+            check_range(start, end)
+        });
+        for piece in pieces {
+            piece?;
+        }
+        return Ok(());
+    }
+
+    check_range(0, num_entries)
+}
+
 /// The quantization transform one float attribute is encoded through, from the
 /// encoder options.
 ///
@@ -1021,9 +1101,9 @@ impl AttributeTransform for AttributeQuantizationTransform {
 /// A grid whose origin does not have one component per attribute component, or
 /// whose range is not a finite value above zero, or whose origin is not
 /// finite, is refused rather than silently replaced by computed parameters:
-/// the caller named the grid, so a fault in it is theirs to see. The computed
-/// path's own refusals -- a non-float attribute, an empty one, a NaN --
-/// surface here as they always did.
+/// the caller named the grid, so a fault in it is theirs to see. Source-value
+/// refusals -- a non-float attribute, an empty one, a `NaN` or infinite
+/// value -- apply on both paths.
 ///
 /// `quantization_bits` below one is refused as well; every caller that reaches
 /// here has already decided quantization applies to the attribute, which
@@ -1044,6 +1124,7 @@ pub(crate) fn init_quantization_transform(
     let origin = options.get_attribute_floats(att_id, "quantization_origin");
     let range = options.get_attribute_float_opt(att_id, "quantization_range");
     let mut transform = AttributeQuantizationTransform::new();
+    transform.set_threads(threads);
     if let (Some(origin), Some(range)) = (origin, range) {
         if origin.len() != attribute.num_components() as usize {
             return Err(DracoError::invalid_parameter(format!(
@@ -1070,12 +1151,12 @@ pub(crate) fn init_quantization_transform(
                  component {component} is not finite"
             )));
         }
+        validate_quantizable_attribute(attribute, threads)?;
         transform.set_parameters(quantization_bits, origin, range)?;
         transform.set_clamp_to_grid(true);
     } else {
         transform.compute_parameters(attribute, quantization_bits)?;
     }
-    transform.set_threads(threads);
     Ok(transform)
 }
 
@@ -1425,6 +1506,7 @@ mod tests {
     /// a range that is zero, negative or not finite, or an origin component
     /// that is not finite. Every one of those would write a stream the
     /// quantizer divides by zero or fills with NaN.
+    #[cfg(feature = "encoder")]
     #[test]
     fn init_quantization_transform_refuses_a_grid_it_cannot_quantize_against() {
         let refused = |range: f32, origin: &[f32]| {
@@ -1496,10 +1578,62 @@ mod tests {
         assert_eq!(transform.round_trip_component(2, 7.5).unwrap(), 1.0);
     }
 
+    /// An explicitly set grid skips `compute_parameters`, so it must still
+    /// reject non-finite values (`NaN`, `±Inf`), non-float32 data, and empty
+    /// attributes rather than letting `NaN` saturate to `0` at the grid origin.
+    #[cfg(feature = "encoder")]
+    #[test]
+    fn init_quantization_transform_refuses_non_finite_values_with_explicit_grid() {
+        let mut options = crate::encoder_options::EncoderOptions::new();
+        options.set_attribute_explicit_quantization(0, 12, 3, &[0.0, 0.0, 0.0], 1.0);
+
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut attribute = PointAttribute::new();
+            attribute.init(
+                GeometryAttributeType::Position,
+                3,
+                DataType::Float32,
+                false,
+                2,
+            );
+            for (i, value) in [0.1f32, 0.2, 0.3, 0.4, bad, 0.6].iter().enumerate() {
+                attribute.buffer_mut().write(i * 4, &value.to_le_bytes());
+            }
+            let err = init_quantization_transform(&attribute, &options, 0, 1)
+                .err()
+                .expect("non-finite source value must be refused even with an explicit grid");
+            assert!(
+                err.to_string().contains("cannot be quantized"),
+                "expected quantization refusal for {bad}, got: {err}"
+            );
+        }
+
+        let mut empty = PointAttribute::new();
+        empty.init(
+            GeometryAttributeType::Position,
+            3,
+            DataType::Float32,
+            false,
+            0,
+        );
+        assert!(init_quantization_transform(&empty, &options, 0, 1).is_err());
+
+        let mut f64_attr = PointAttribute::new();
+        f64_attr.init(
+            GeometryAttributeType::Position,
+            3,
+            DataType::Float64,
+            false,
+            1,
+        );
+        assert!(init_quantization_transform(&f64_attr, &options, 0, 1).is_err());
+    }
+
     /// A value outside an explicitly named grid is pulled back onto it rather
     /// than quantized past its ends: below the origin it would ride the
     /// portable attribute's `u32` storage as its wrap-around, and past the top
     /// it would push a kd-tree coder's bit length to thirty-two.
+    #[cfg(feature = "encoder")]
     #[test]
     fn values_outside_an_explicit_grid_are_pulled_back_onto_it() {
         let mut attribute = PointAttribute::new();
