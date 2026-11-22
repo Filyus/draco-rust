@@ -298,7 +298,28 @@ impl Import {
             }
             Ok(())
         }
-        visit(self.document().as_json(), &self.extensions)
+        let document = self.document();
+        let root = document.as_json();
+        visit(root, &self.extensions)?;
+
+        // Some registered extensions are transform-safe only for particular
+        // documents. Collecting references validates those contracts before
+        // encoding starts; `compact_draco_only_resources` repeats the walk to
+        // build its actual keep sets after adding the Draco payload.
+        let mut accessors = vec![
+            false;
+            root.get("accessors")
+                .and_then(JsonRef::as_array)
+                .map_or(0, |values| values.len())
+        ];
+        let mut buffer_views = vec![
+            false;
+            root.get("bufferViews")
+                .and_then(JsonRef::as_array)
+                .map_or(0, |values| values.len())
+        ];
+        self.extensions
+            .collect_binary_references(document, &mut accessors, &mut buffer_views)
     }
 
     /// Iterates primitives carrying the built-in Draco extension.

@@ -13,6 +13,9 @@ use crate::{Document, Error, Result};
 /// Extension name for the Khronos Draco mesh compression contract.
 pub const KHR_DRACO_MESH_COMPRESSION: &str = "KHR_draco_mesh_compression";
 
+/// Extension name for animation channels targeting JSON Pointer properties.
+pub const KHR_ANIMATION_POINTER: &str = "KHR_animation_pointer";
+
 /// Extension name for the meshoptimizer buffer view compression contract.
 ///
 /// The import path decodes it eagerly into the fallback buffers, so the rest of
@@ -331,6 +334,109 @@ impl ExtensionHandler for BinaryFreeExtension {
     }
     fn allows_binary_transform(&self) -> bool {
         true
+    }
+}
+
+/// Animation pointers may target any mutable glTF property, including the
+/// binary collections Draco-only output compacts. Those targets are checked
+/// before a transform; pointers into stable collections need no remapping.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AnimationPointerExtension;
+impl ExtensionHandler for AnimationPointerExtension {
+    fn name(&self) -> &'static str {
+        KHR_ANIMATION_POINTER
+    }
+
+    fn allows_binary_transform(&self) -> bool {
+        true
+    }
+
+    fn collect_binary_references(
+        &self,
+        document: &Document,
+        _accessors: &mut [bool],
+        _buffer_views: &mut [bool],
+    ) -> Result<()> {
+        for extension in animation_pointer_extensions(document.as_json()) {
+            let pointer = extension
+                .get("pointer")
+                .and_then(JsonRef::as_str)
+                .ok_or_else(|| {
+                    Error::Extension(
+                        "KHR_animation_pointer pointer is missing or is not a string".into(),
+                    )
+                })?;
+            if pointer.is_empty() {
+                return Err(Error::Extension(
+                    "KHR_animation_pointer target must point to an asset property; the empty JSON Pointer selects the asset root".into(),
+                ));
+            }
+            if !is_valid_json_pointer(pointer) {
+                return Err(Error::Extension(format!(
+                    "KHR_animation_pointer target {pointer:?} is not a valid JSON Pointer"
+                )));
+            }
+            if let Some(collection) = binary_collection_targeted_by(pointer) {
+                return Err(Error::Extension(format!(
+                    "cannot preserve KHR_animation_pointer target {pointer:?} through Draco-only output: /{collection} is compacted"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn animation_pointer_extensions(root: JsonRef<'_>) -> Vec<JsonRef<'_>> {
+    let mut extensions = Vec::new();
+    for animation in root
+        .get("animations")
+        .and_then(JsonRef::as_array)
+        .unwrap_or_default()
+    {
+        for channel in animation
+            .get("channels")
+            .and_then(JsonRef::as_array)
+            .unwrap_or_default()
+        {
+            if let Some(extension) = channel
+                .get("target")
+                .and_then(|target| target.get("extensions"))
+                .and_then(|extensions| extensions.get(KHR_ANIMATION_POINTER))
+            {
+                extensions.push(extension);
+            }
+        }
+    }
+    extensions
+}
+
+fn is_valid_json_pointer(pointer: &str) -> bool {
+    // RFC 6901 permits the empty pointer to identify the whole JSON document.
+    if pointer.is_empty() {
+        return true;
+    }
+    let Some(tokens) = pointer.strip_prefix('/') else {
+        return false;
+    };
+    tokens.split('/').all(|token| {
+        let mut characters = token.chars();
+        while let Some(character) = characters.next() {
+            if character == '~' && !matches!(characters.next(), Some('0' | '1')) {
+                return false;
+            }
+        }
+        true
+    })
+}
+
+fn binary_collection_targeted_by(pointer: &str) -> Option<&'static str> {
+    let token = pointer.strip_prefix('/')?.split('/').next()?;
+    match token {
+        "accessors" => Some("accessors"),
+        "bufferViews" => Some("bufferViews"),
+        // Draco-only compaction consolidates every buffer into buffers[0].
+        "buffers" => Some("buffers"),
+        _ => None,
     }
 }
 
@@ -735,6 +841,9 @@ impl Default for ExtensionRegistry {
                 .expect("built-in extension names are unique");
             registry
                 .register(StructuralMetadataExtension)
+                .expect("built-in extension names are unique");
+            registry
+                .register(AnimationPointerExtension)
                 .expect("built-in extension names are unique");
             for name in BINARY_FREE_EXTENSIONS {
                 registry

@@ -1651,6 +1651,80 @@ mod compression_tests {
         );
     }
 
+    #[cfg(feature = "draco-encode")]
+    #[test]
+    fn draco_only_accepts_animation_pointers_outside_compacted_binary_collections() {
+        let source = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}],"materials":[{"pbrMetallicRoughness":{"baseColorFactor":[1,1,1,1]}}],"nodes":[{"translation":[0,0,0]}],"extensions":{"KHR_lights_punctual":{"lights":[{"intensity":1}]}},"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],"animations":[{"samplers":[{"input":0,"output":0}],"channels":[{"sampler":0,"target":{"path":"pointer","extensions":{"KHR_animation_pointer":{"pointer":"/materials/0/pbrMetallicRoughness/baseColorFactor"}}}},{"sampler":0,"target":{"path":"pointer","extensions":{"KHR_animation_pointer":{"pointer":"/nodes/0/translation"}}}},{"sampler":0,"target":{"path":"pointer","extensions":{"KHR_animation_pointer":{"pointer":"/extensions/KHR_lights_punctual/lights/0/intensity"}}}}]}],"extensionsUsed":["KHR_animation_pointer","KHR_lights_punctual"]}"#;
+        let mut import = parse(source, ValidationProfile::Gltf20).unwrap();
+        import
+            .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
+            .unwrap();
+
+        let pointers: Vec<_> = import.document().as_value()["animations"][0]["channels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|channel| {
+                channel["target"]["extensions"][crate::KHR_ANIMATION_POINTER]["pointer"]
+                    .as_str()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(
+            pointers,
+            [
+                "/materials/0/pbrMetallicRoughness/baseColorFactor",
+                "/nodes/0/translation",
+                "/extensions/KHR_lights_punctual/lights/0/intensity",
+            ]
+        );
+    }
+
+    #[cfg(feature = "draco-encode")]
+    #[test]
+    fn draco_only_rejects_animation_pointers_into_compacted_binary_collections() {
+        let template = r#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],"animations":[{"samplers":[{"input":0,"output":0}],"channels":[{"sampler":0,"target":{"path":"pointer","extensions":{"KHR_animation_pointer":POINTER_EXTENSION}}}]}],"extensionsUsed":["KHR_animation_pointer"]}"#;
+        for (pointer, expected) in [
+            ("/accessors/0/count", "/accessors is compacted"),
+            ("/bufferViews/0/byteLength", "/bufferViews is compacted"),
+            ("/buffers/0/byteLength", "/buffers is compacted"),
+            ("/materials/0/name~2invalid", "not a valid JSON Pointer"),
+            ("materials/0/name", "not a valid JSON Pointer"),
+            ("", "must point to an asset property"),
+        ] {
+            let extension = format!(r#"{{"pointer":"{pointer}"}}"#);
+            let source = template.replace("POINTER_EXTENSION", &extension);
+            let mut import = parse(source.as_bytes(), ValidationProfile::Gltf20).unwrap();
+            let before = import.document().to_json_bytes().unwrap();
+            let error = import
+                .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains(expected),
+                "{pointer:?} should be rejected with {expected:?}, got {error}"
+            );
+            assert_eq!(
+                import.document().to_json_bytes().unwrap(),
+                before,
+                "failed compression must leave the source document unchanged"
+            );
+        }
+
+        for extension in ["{}", r#"{"pointer":42}"#] {
+            let source = template.replace("POINTER_EXTENSION", extension);
+            let mut import = parse(source.as_bytes(), ValidationProfile::Gltf20).unwrap();
+            let error = import
+                .compress_primitive(crate::MeshIndex(0), 0, crate::CompressionOptions::default())
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("pointer is missing or is not a string"),
+                "malformed extension {extension} should fail, got {error}"
+            );
+        }
+    }
+
     /// Extensions Khronos ratified or released after the list was first
     /// written, checked against their published schemas: factors, booleans and
     /// texture bindings, no accessor or buffer view.

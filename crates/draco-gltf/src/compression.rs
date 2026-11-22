@@ -1313,8 +1313,9 @@ impl Import {
     ///
     /// The document and resolved resources are updated only after encoding,
     /// validation, reference remapping, and output-limit checks all succeed.
-    /// In [`CompressionMode::DracoOnly`] the operation rejects unregistered
-    /// extensions whose binary references cannot be remapped safely.
+    /// In [`CompressionMode::DracoOnly`] the operation rejects extensions
+    /// whose binary references cannot be remapped safely, including animation
+    /// pointers into collections that the operation compacts.
     pub fn compress_primitive(
         &mut self,
         mesh: crate::MeshIndex,

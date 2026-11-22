@@ -952,7 +952,7 @@ fn validate_references(root: JsonRef<'_>, profile: ValidationProfile) -> Result<
                 let pointed = path == "pointer"
                     && target
                         .get("extensions")
-                        .and_then(|extensions| extensions.get("KHR_animation_pointer"))
+                        .and_then(|extensions| extensions.get(crate::KHR_ANIMATION_POINTER))
                         .is_some();
                 if !pointed && !matches!(path, "translation" | "rotation" | "scale" | "weights") {
                     return Err(Error::Validation(vec![format!(
