@@ -4,7 +4,7 @@ Lossless glTF 2.0 and pinned 2.1-draft scene handling with optional
 `KHR_draco_mesh_compression` geometry.
 
 ```toml
-draco-gltf = "0.8"
+draco-gltf = "0.9"
 ```
 
 ```rust,no_run
@@ -81,6 +81,12 @@ by the caller and resource limits.
 - `write`: raw geometry construction and document mutation.
 - `draco-encode`: Draco writing; depends on `write` and `draco-decode`.
 - `full`: the default complete profile.
+
+With `draco-encode`, `CompressionOptions::allow_points` opts into compressing
+`POINTS` primitives through Draco's point-cloud coder. The point-cloud ordering
+and prediction options apply on that path; primitives with morph targets are
+not supported. `KHR_gaussian_splatting` attributes are read as generic geometry
+attributes with the extension's component types and shapes checked.
 
 Use `default-features = false, features = ["read", "draco-decode"]` for a
 small Draco-capable reader. Add `strict-validation` when opening untrusted

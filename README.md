@@ -96,7 +96,7 @@ holds.
 
 ```toml
 [dependencies]
-draco-gltf = "0.8"
+draco-gltf = "0.9"
 ```
 
 Read a primitive, whether or not it arrived Draco-compressed:

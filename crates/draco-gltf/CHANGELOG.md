@@ -9,6 +9,19 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.8.1...draco-gltf-v0.9.0) - 2026-11-22
+
+### API
+
+- **Breaking:** `CompressionOptions` adds the public `allow_points` field;
+  callers constructing it with a struct literal must initialize the new field.
+  Enabling it compresses glTF `POINTS` primitives through Draco's point-cloud
+  encoder. Point ordering and prediction options are available; point-cloud
+  compression remains opt-in, and primitives with morph targets are not
+  supported on this path.
+- Read the `KHR_gaussian_splatting` attributes as generic Draco geometry
+  attributes, with the extension's component types and shapes validated.
+
 ## [0.8.1](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.8.0...draco-gltf-v0.8.1) - 2026-11-18
 
 ### Safety and Hardening
