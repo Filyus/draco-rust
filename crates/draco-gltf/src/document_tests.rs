@@ -1742,11 +1742,13 @@ mod compression_tests {
 
         // Missing position bits must be rejected.
         let mut import = parse(source, ValidationProfile::Gltf20).unwrap();
-        let mut bad_options = crate::CompressionOptions::default();
-        bad_options.position_quantization_grid = Some(crate::PositionQuantizationGrid {
-            origin: [0.0, 0.0, 0.0],
-            range: 4.0,
-        });
+        let bad_options = crate::CompressionOptions {
+            position_quantization_grid: Some(crate::PositionQuantizationGrid {
+                origin: [0.0, 0.0, 0.0],
+                range: 4.0,
+            }),
+            ..Default::default()
+        };
         let err = import
             .compress_primitive(crate::MeshIndex(0), 0, bad_options)
             .unwrap_err()
