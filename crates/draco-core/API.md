@@ -15,6 +15,7 @@ Complete API documentation for the draco-core crate.
 - [Encoding API](#encoding-api)
   - [MeshEncoder](#meshencoder)
   - [EncodedMeshInfo](#encodedmeshinfo)
+  - [EncodedSizeStats](#encodedsizestats)
   - [EncodedAttributeInfo](#encodedattributeinfo)
   - [PointCloudEncoder](#pointcloudencoder)
   - [EncodedPointCloudInfo](#encodedpointcloudinfo)
@@ -325,6 +326,7 @@ pub struct EncodedMeshInfo {
     pub num_encoded_faces: usize,
     pub num_encoded_points: usize,
     pub attributes: Vec<EncodedAttributeInfo>,
+    pub encode_stats: EncodedSizeStats,
 }
 ```
 
@@ -342,6 +344,45 @@ their own corner tables rather than the position's.
 
 The struct is `#[non_exhaustive]`: match it with `..` and construct it only
 through the encoder.
+
+---
+
+### EncodedSizeStats
+
+`EncodedSizeStats` is included in both `EncodedMeshInfo` and
+`EncodedPointCloudInfo`. It accounts for the bytes appended by that encode,
+including when the output buffer already contained data. The sections sum to
+`total_bytes`.
+
+```rust
+#[non_exhaustive]
+pub struct EncodedSizeStats {
+    pub total_bytes: usize,
+    pub header_and_metadata_bytes: usize,
+    pub connectivity_bytes: usize,
+    pub joint_portable_attributes_bytes: usize,
+    pub per_attribute_portable_bytes_exact: bool,
+    pub attributes: Vec<EncodedAttributeSizeStats>,
+}
+
+#[non_exhaustive]
+pub struct EncodedAttributeSizeStats {
+    pub source_attribute_id: i32,
+    pub attribute_type: GeometryAttributeType,
+    pub unique_id: u32,
+    pub portable_attribute_bytes: usize,
+    pub transform_data_bytes: usize,
+}
+```
+
+`header_and_metadata_bytes` includes the Draco header, optional metadata,
+geometry and attribute metadata, and encoder descriptors. Mesh connectivity is
+reported separately. Sequential encoding attributes its portable payloads to
+each source attribute. Point-cloud KD-tree encoding reports its shared payload
+in `joint_portable_attributes_bytes` and sets
+`per_attribute_portable_bytes_exact` to `false`; transform parameters remain
+attributed to their source attributes. `total_attribute_bytes()` on an
+`EncodedAttributeSizeStats` adds that attribute's portable and transform bytes.
 
 ---
 
@@ -425,6 +466,7 @@ pub struct EncodedPointCloudInfo {
     pub speed: i32,
     pub num_encoded_points: usize,
     pub attributes: Vec<EncodedAttributeInfo>,
+    pub encode_stats: EncodedSizeStats,
 }
 ```
 

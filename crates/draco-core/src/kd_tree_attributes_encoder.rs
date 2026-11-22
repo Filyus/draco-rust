@@ -11,6 +11,7 @@ use crate::attribute_quantization_transform::{
 use crate::attribute_transform::AttributeTransform;
 use crate::draco_types::DataType;
 use crate::dynamic_integer_points_kd_tree::{DynamicIntegerPointsKdTreeEncoder, PointDVector};
+use crate::encode_stats::EncodedSizeStats;
 use crate::encoder_buffer::EncoderBuffer;
 use crate::encoder_options::EncoderOptions;
 use crate::geometry_indices::PointIndex;
@@ -21,9 +22,9 @@ use crate::status::{DracoError, Status};
 pub struct KdTreeAttributesEncoder {
     attribute_ids: Vec<i32>,
     num_components: u32,
-    attribute_quantization_transforms: Vec<AttributeQuantizationTransform>,
+    attribute_quantization_transforms: Vec<(i32, AttributeQuantizationTransform)>,
     quantized_portable_attributes: Vec<crate::geometry_attribute::PointAttribute>,
-    min_signed_values: Vec<i32>,
+    min_signed_values: Vec<(i32, i32)>,
 }
 
 impl KdTreeAttributesEncoder {
@@ -106,7 +107,8 @@ impl KdTreeAttributesEncoder {
                         &mut portable_att,
                     )?;
 
-                    self.attribute_quantization_transforms.push(transform);
+                    self.attribute_quantization_transforms
+                        .push((att_id, transform));
                     self.quantized_portable_attributes.push(portable_att);
                 }
                 DataType::Int32 | DataType::Int16 | DataType::Int8 => {
@@ -129,7 +131,8 @@ impl KdTreeAttributesEncoder {
                             }
                         }
                     }
-                    self.min_signed_values.extend_from_slice(&min_vals);
+                    self.min_signed_values
+                        .extend(min_vals.into_iter().map(|value| (att_id, value)));
                 }
                 _ => {}
             }
@@ -235,7 +238,8 @@ impl KdTreeAttributesEncoder {
                                 base + c * component_size,
                                 src.data_type(),
                             );
-                            let minv = self.min_signed_values[num_processed_signed_components + c];
+                            let minv =
+                                self.min_signed_values[num_processed_signed_components + c].1;
                             // Wrapping, as C++ `signed_point[c] - min_signed_values_[..]`
                             // assigned to a uint32_t is: the difference of two
                             // i32 does not fit i32 when the attribute spans the
@@ -413,12 +417,37 @@ impl KdTreeAttributesEncoder {
         &self,
         out_buffer: &mut EncoderBuffer,
     ) -> Status {
-        for t in &self.attribute_quantization_transforms {
-            t.encode_parameters(out_buffer)?;
+        self.encode_data_needed_by_portable_transforms_impl(out_buffer, None)
+    }
+
+    pub(crate) fn encode_data_needed_by_portable_transforms_with_stats(
+        &self,
+        out_buffer: &mut EncoderBuffer,
+        stats: &mut EncodedSizeStats,
+    ) -> Status {
+        self.encode_data_needed_by_portable_transforms_impl(out_buffer, Some(stats))
+    }
+
+    fn encode_data_needed_by_portable_transforms_impl(
+        &self,
+        out_buffer: &mut EncoderBuffer,
+        mut stats: Option<&mut EncodedSizeStats>,
+    ) -> Status {
+        for (att_id, transform) in &self.attribute_quantization_transforms {
+            let start = out_buffer.data().len();
+            transform.encode_parameters(out_buffer)?;
+            if let Some(stats) = stats.as_deref_mut() {
+                stats.attribute_mut(*att_id).transform_data_bytes +=
+                    out_buffer.data().len() - start;
+            }
         }
 
-        for &minv in &self.min_signed_values {
-            out_buffer.encode_varint_signed_i32(minv);
+        for &(att_id, min_value) in &self.min_signed_values {
+            let start = out_buffer.data().len();
+            out_buffer.encode_varint_signed_i32(min_value);
+            if let Some(stats) = stats.as_deref_mut() {
+                stats.attribute_mut(att_id).transform_data_bytes += out_buffer.data().len() - start;
+            }
         }
 
         Ok(())

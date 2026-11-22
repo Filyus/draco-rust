@@ -15,6 +15,7 @@ use draco_core::point_cloud_encoder::PointCloudEncoder;
 use draco_core::prediction_scheme::{PredictionSchemeMethod, PredictionSchemeTransformType};
 use draco_core::sequential_attribute_encoder::SequentialAttributeEncoderType;
 use draco_core::version::{has_header_flags, DEFAULT_MESH_VERSION, DEFAULT_POINT_CLOUD_VERSION};
+use draco_core::EncodedSizeStats;
 
 fn write_f32s(attribute: &mut PointAttribute, values: &[f32]) {
     for (i, value) in values.iter().enumerate() {
@@ -276,6 +277,85 @@ fn assert_info_matches_decoded(info: &EncodedMeshInfo, decoded: &Mesh) {
             assert!(actual.position_min.is_none());
             assert!(actual.position_max.is_none());
         }
+    }
+}
+
+fn assert_size_stats_cover_stream(stats: &EncodedSizeStats, expected_total: usize) {
+    let attribute_bytes = stats
+        .attributes
+        .iter()
+        .map(|attribute| attribute.total_attribute_bytes())
+        .sum::<usize>();
+    assert_eq!(stats.total_bytes, expected_total);
+    assert_eq!(
+        stats.header_and_metadata_bytes
+            + stats.connectivity_bytes
+            + stats.joint_portable_attributes_bytes
+            + attribute_bytes,
+        stats.total_bytes,
+        "the reported sections must account for the whole appended stream"
+    );
+}
+
+#[test]
+fn encoded_size_stats_partition_mesh_streams_and_count_appended_bytes() {
+    let mut sequential = EncoderOptions::new();
+    sequential.set_global_int("encoding_method", 0);
+    sequential.set_attribute_int(0, "quantization_bits", 10);
+
+    let mut split_edgebreaker = EncoderOptions::new();
+    split_edgebreaker.set_global_int("encoding_method", 1);
+    split_edgebreaker.set_global_int("split_mesh_on_seams", 0);
+    split_edgebreaker.set_attribute_int(0, "quantization_bits", 10);
+    split_edgebreaker.set_attribute_int(1, "quantization_bits", 10);
+
+    let mut shared_edgebreaker = EncoderOptions::new();
+    shared_edgebreaker.set_global_int("encoding_method", 1);
+    shared_edgebreaker.set_global_int("split_mesh_on_seams", 1);
+    shared_edgebreaker.set_attribute_int(0, "quantization_bits", 10);
+    shared_edgebreaker.set_attribute_int(1, "quantization_bits", 10);
+
+    let cases = [
+        ("sequential", build_triangle(), sequential),
+        ("split EdgeBreaker", build_uv_seam_mesh(), split_edgebreaker),
+        (
+            "shared EdgeBreaker",
+            build_uv_seam_mesh(),
+            shared_edgebreaker,
+        ),
+    ];
+
+    for (label, mesh, options) in cases {
+        let mut encoder = MeshEncoder::new();
+        encoder.set_mesh(mesh);
+        let mut bytes = EncoderBuffer::new();
+        bytes.encode_data(b"existing prefix");
+        let prefix_size = bytes.data().len();
+        let info = encoder
+            .encode_with_info(&options, &mut bytes)
+            .expect("encode and report sizes");
+        let stats = &info.encode_stats;
+
+        assert_size_stats_cover_stream(stats, bytes.data().len() - prefix_size);
+        assert!(stats.header_and_metadata_bytes > 0, "{label}");
+        assert!(stats.connectivity_bytes > 0, "{label}");
+        assert_eq!(stats.joint_portable_attributes_bytes, 0, "{label}");
+        assert!(stats.per_attribute_portable_bytes_exact, "{label}");
+        assert_eq!(stats.attributes.len(), info.attributes.len(), "{label}");
+        assert!(
+            stats
+                .attributes
+                .iter()
+                .all(|attribute| attribute.portable_attribute_bytes > 0),
+            "{label}: every attribute's portable bytes should be attributed"
+        );
+        assert!(
+            stats
+                .attributes
+                .iter()
+                .any(|attribute| attribute.transform_data_bytes > 0),
+            "{label}: quantization parameters should be counted"
+        );
     }
 }
 
@@ -559,6 +639,13 @@ fn encoded_point_cloud_info_reports_the_method_chosen() {
         );
         pc.set_num_points(3);
         pc.add_attribute(position);
+
+        let mut signed = PointAttribute::new();
+        signed.init(GeometryAttributeType::Generic, 1, DataType::Int16, false, 3);
+        for (index, value) in [-3i16, 0, 8].into_iter().enumerate() {
+            signed.buffer_mut().write(index * 2, &value.to_le_bytes());
+        }
+        pc.add_attribute(signed);
         pc
     }
 
@@ -571,6 +658,7 @@ fn encoded_point_cloud_info_reports_the_method_chosen() {
             .encoded_point_cloud_info()
             .cloned()
             .expect("successful encode should expose point cloud info");
+        assert_size_stats_cover_stream(&info.encode_stats, bytes.data().len());
         // The method also sits in the header, one byte after the geometry type.
         assert_eq!(
             bytes.data()[8] as i32,
@@ -590,6 +678,9 @@ fn encoded_point_cloud_info_reports_the_method_chosen() {
         info.attributes[0].encoder_type,
         SequentialAttributeEncoderType::Generic
     );
+    assert!(info.encode_stats.per_attribute_portable_bytes_exact);
+    assert_eq!(info.encode_stats.joint_portable_attributes_bytes, 0);
+    assert!(info.encode_stats.attributes[0].portable_attribute_bytes > 0);
 
     // Quantized: every attribute is eligible, so the KD-tree coder is chosen
     // without the caller asking. It has no per-attribute report.
@@ -598,6 +689,13 @@ fn encoded_point_cloud_info_reports_the_method_chosen() {
     let info = encode(quantized);
     assert_eq!(info.encoding_method, 1);
     assert!(info.attributes.is_empty());
+    assert!(!info.encode_stats.per_attribute_portable_bytes_exact);
+    assert!(info.encode_stats.joint_portable_attributes_bytes > 0);
+    assert_eq!(info.encode_stats.attributes.len(), 2);
+    assert_eq!(info.encode_stats.attributes[0].portable_attribute_bytes, 0);
+    assert!(info.encode_stats.attributes[0].transform_data_bytes > 0);
+    assert_eq!(info.encode_stats.attributes[1].portable_attribute_bytes, 0);
+    assert!(info.encode_stats.attributes[1].transform_data_bytes > 0);
 
     // Asked for sequential explicitly, the same quantized cloud reports it.
     let mut sequential = EncoderOptions::new();
@@ -610,6 +708,9 @@ fn encoded_point_cloud_info_reports_the_method_chosen() {
         SequentialAttributeEncoderType::Quantization
     );
     assert_eq!(info.attributes[0].quantization_bits, Some(12));
+    assert!(info.encode_stats.per_attribute_portable_bytes_exact);
+    assert!(info.encode_stats.attributes[0].portable_attribute_bytes > 0);
+    assert!(info.encode_stats.attributes[0].transform_data_bytes > 0);
 }
 
 /// A welded grid with deduplicated values: a normal seam down the middle

@@ -1,5 +1,6 @@
 use crate::compression_config::EncodedGeometryType;
 use crate::draco_types::DataType;
+use crate::encode_stats::EncodedSizeStats;
 use crate::encoder_buffer::EncoderBuffer;
 use crate::encoder_options::EncoderOptions;
 use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
@@ -377,6 +378,8 @@ pub struct EncodedPointCloudInfo {
     /// KD-tree method, which encodes every attribute through one coder with no
     /// per-attribute choice to report.
     pub attributes: Vec<EncodedAttributeInfo>,
+    /// Byte-level breakdown of the stream produced by this encode.
+    pub encode_stats: EncodedSizeStats,
 }
 
 /// What one attribute's encoder leaves behind: its bytes, and the encoder
@@ -467,7 +470,20 @@ impl PointCloudEncoder {
         };
         crate::version::validate_encodable_version(major, minor, target)?;
 
-        let attributes = self.encode_geometry(out_buffer, method)?;
+        let initial_buffer_size = out_buffer.data().len();
+        let mut encode_stats =
+            EncodedSizeStats::with_attributes((0..pc.num_attributes()).map(|attribute_id| {
+                let attribute = pc.attribute(attribute_id);
+                (
+                    attribute_id,
+                    attribute.attribute_type(),
+                    attribute.unique_id(),
+                )
+            }));
+        encode_stats.per_attribute_portable_bytes_exact = method != 1;
+        let attributes = self.encode_geometry(out_buffer, method, &mut encode_stats)?;
+        encode_stats.total_bytes = out_buffer.data().len() - initial_buffer_size;
+        debug_assert_eq!(encode_stats.accounted_bytes(), encode_stats.total_bytes);
 
         let (mut major, mut minor) = self.options.get_version();
         if major == 0 && minor == 0 {
@@ -483,6 +499,7 @@ impl PointCloudEncoder {
                 .expect("point cloud set")
                 .num_points(),
             attributes,
+            encode_stats,
         });
         Ok(())
     }
@@ -494,8 +511,10 @@ impl PointCloudEncoder {
         &mut self,
         out_buffer: &mut EncoderBuffer,
         method: i32,
+        encode_stats: &mut EncodedSizeStats,
     ) -> Result<Vec<EncodedAttributeInfo>, DracoError> {
         let pc = self.point_cloud.as_ref().expect("point cloud set");
+        let header_start = out_buffer.data().len();
 
         // 1. Encode Header
         self.encode_header(out_buffer, method)?;
@@ -516,6 +535,7 @@ impl PointCloudEncoder {
             // cloud that has none.
             if pc.num_attributes() == 0 {
                 out_buffer.encode_u8(0);
+                encode_stats.header_and_metadata_bytes = out_buffer.data().len() - header_start;
                 return Ok(Vec::new());
             }
 
@@ -534,9 +554,13 @@ impl PointCloudEncoder {
                 att_encoder
                     .encode_attributes_encoder_data(pc, out_buffer)
                     .map_err(|err| err.context("Failed to encode attribute metadata"))?;
+                encode_stats.header_and_metadata_bytes = out_buffer.data().len() - header_start;
+                let joint_portable_start = out_buffer.data().len();
                 att_encoder
                     .encode_pre_2_3(pc, &self.options, out_buffer)
                     .map_err(|err| err.context("Failed to encode attributes"))?;
+                encode_stats.joint_portable_attributes_bytes +=
+                    out_buffer.data().len() - joint_portable_start;
                 return Ok(Vec::new());
             }
 
@@ -554,15 +578,19 @@ impl PointCloudEncoder {
             att_encoder
                 .encode_attributes_encoder_data(pc, out_buffer)
                 .map_err(|err| err.context("Failed to encode attribute metadata"))?;
+            encode_stats.header_and_metadata_bytes = out_buffer.data().len() - header_start;
 
             // Encode Attributes (Portable Data)
+            let joint_portable_start = out_buffer.data().len();
             att_encoder
                 .encode_attributes(pc, &self.options, out_buffer)
                 .map_err(|err| err.context("Failed to encode attributes"))?;
+            encode_stats.joint_portable_attributes_bytes +=
+                out_buffer.data().len() - joint_portable_start;
 
             // Encode Attributes Transform Data
             att_encoder
-                .encode_data_needed_by_portable_transforms(out_buffer)
+                .encode_data_needed_by_portable_transforms_with_stats(out_buffer, encode_stats)
                 .map_err(|err| err.context("Failed to encode attribute transform data"))?;
         } else {
             // Sequential Encoding (Draco v1.3)
@@ -588,6 +616,7 @@ impl PointCloudEncoder {
             // For empty point clouds (0 attributes), we write 0 encoders
             if num_attributes == 0 {
                 out_buffer.encode_u8(0);
+                encode_stats.header_and_metadata_bytes = out_buffer.data().len() - header_start;
                 return Ok(Vec::new());
             }
 
@@ -632,6 +661,7 @@ impl PointCloudEncoder {
             for &encoder_type in &encoder_types {
                 out_buffer.encode_u8(encoder_type as u8);
             }
+            encode_stats.header_and_metadata_bytes = out_buffer.data().len() - header_start;
 
             // Encoding follows C++ order:
             // 1. EncodePortableAttributes (encode_values for each attribute)
@@ -742,8 +772,11 @@ impl PointCloudEncoder {
                     Ok(values)
                 },
             );
-            for result in encoded {
+            for (attribute_id, result) in encoded.into_iter().enumerate() {
                 let values = result?;
+                encode_stats
+                    .attribute_mut(attribute_id as i32)
+                    .portable_attribute_bytes += values.bytes.data().len();
                 out_buffer.encode_data(values.bytes.data());
                 integer_encoders.push(values.integer);
                 normal_encoders.push(values.normal);
@@ -751,6 +784,7 @@ impl PointCloudEncoder {
 
             // Second pass: encode transform parameters (EncodeDataNeededByPortableTransforms)
             for i in 0..num_attributes as usize {
+                let transform_start = out_buffer.data().len();
                 if encoder_types[i] == SequentialAttributeEncoderType::Normals {
                     if let Some(ref att_encoder) = normal_encoders[i] {
                         let (major, minor) = self.options.get_version();
@@ -775,6 +809,8 @@ impl PointCloudEncoder {
                             ))
                         })?;
                 }
+                encode_stats.attribute_mut(i as i32).transform_data_bytes +=
+                    out_buffer.data().len() - transform_start;
             }
 
             // Read back off the encoders that just ran: the prediction scheme

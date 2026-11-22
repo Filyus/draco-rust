@@ -8,6 +8,13 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Encoding reports include byte-level size statistics.** `EncodedMeshInfo`
+  and `EncodedPointCloudInfo` report header and metadata, mesh connectivity,
+  per-attribute payload and transform sizes, plus the joint payload used by
+  point-cloud KD-tree encoding.
+
 ## [2.4.0](https://github.com/Filyus/draco-rust/compare/draco-core-v2.3.3...draco-core-v2.4.0) - 2026-11-22
 
 ### Added

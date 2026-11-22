@@ -6,6 +6,7 @@ use crate::compression_config::EncodedGeometryType;
 use crate::compression_config::MeshEncodingMethod;
 use crate::corner_table::CornerTable;
 use crate::draco_types::DataType;
+use crate::encode_stats::EncodedSizeStats;
 use crate::encoder_buffer::EncoderBuffer;
 use crate::encoder_options::EncoderOptions;
 use crate::geometry_attribute::{GeometryAttributeType, PointAttribute};
@@ -60,11 +61,11 @@ type PositionBounds = (Option<Vec<f64>>, Option<Vec<f64>>);
 /// sequential), prediction schemes, and quantization are selected from the
 /// options, mirroring the C++ `MeshEncoder`/`ExpertEncoder` configuration.
 ///
-/// [`encode`](MeshEncoder::encode) produces the bitstream and nothing else.
-/// A caller who also wants per-attribute and per-face details of what the
-/// encode did uses [`encode_with_info`](MeshEncoder::encode_with_info), which
-/// derives them; they are not a byproduct of encoding and are not computed
-/// for callers who do not ask.
+/// [`encode`](MeshEncoder::encode) produces the bitstream without deriving a
+/// geometry summary. A caller who also wants per-attribute and per-face details
+/// uses [`encode_with_info`](MeshEncoder::encode_with_info), which derives
+/// them. Byte-size counters are recorded inline with the writes and returned in
+/// that report without another pass over the geometry.
 ///
 /// # Examples
 ///
@@ -146,6 +147,8 @@ pub struct MeshEncoder {
     /// would otherwise recompute these, and recomputing means a second full
     /// min/max sweep of the attribute -- a pass the reference never makes.
     attribute_quantization: Vec<(i32, AttributeQuantizationTransform)>,
+    /// Byte sizes written by the last successful encode.
+    encode_stats: EncodedSizeStats,
 }
 
 /// Geometry shape, encoder choices and attribute metadata produced by a
@@ -178,6 +181,8 @@ pub struct EncodedMeshInfo {
     pub num_encoded_points: usize,
     /// Per-attribute information captured during encoding.
     pub attributes: Vec<EncodedAttributeInfo>,
+    /// Byte-level breakdown of the stream produced by this encode.
+    pub encode_stats: EncodedSizeStats,
 }
 
 /// Attribute metadata produced by a successful mesh encode.
@@ -457,6 +462,7 @@ impl MeshEncoder {
             use_single_connectivity: false,
             attribute_predictions: Vec::new(),
             attribute_quantization: Vec::new(),
+            encode_stats: EncodedSizeStats::default(),
         }
     }
 
@@ -517,10 +523,9 @@ impl MeshEncoder {
     /// Encodes the assigned mesh into an output buffer.
     ///
     /// A mesh must have been provided with [`set_mesh`](MeshEncoder::set_mesh)
-    /// first. On success the bitstream is appended to `out_buffer` and nothing
-    /// else is computed; use
-    /// [`encode_with_info`](MeshEncoder::encode_with_info) to also get a
-    /// description of the encode.
+    /// first. On success the bitstream is appended to `out_buffer`. No geometry
+    /// summary is derived; use [`encode_with_info`](MeshEncoder::encode_with_info)
+    /// to also get the encode description and byte-size breakdown.
     ///
     /// # Errors
     ///
@@ -529,41 +534,71 @@ impl MeshEncoder {
     pub fn encode(&mut self, options: &EncoderOptions, out_buffer: &mut EncoderBuffer) -> Status {
         self.options = options.clone();
         self.reset_derived_state();
+        self.encode_stats = EncodedSizeStats::default();
+        let initial_buffer_size = out_buffer.data().len();
 
-        if self.mesh.is_none() {
-            return Err(DracoError::general("Mesh not set".to_string()));
-        }
-        crate::point_cloud_encoder::validate_encodable_attributes(self.mesh.as_ref().unwrap())?;
-        let (major, minor) = self.options.get_version();
-        let target = if select_mesh_encoding_method(&self.options) == 1 {
-            crate::version::EncodeTarget::MeshEdgebreaker
+        let result = (|| {
+            let mesh = self
+                .mesh
+                .as_ref()
+                .ok_or_else(|| DracoError::general("Mesh not set".to_string()))?;
+            self.encode_stats =
+                EncodedSizeStats::with_attributes((0..mesh.num_attributes()).map(|attribute_id| {
+                    let attribute = mesh.attribute(attribute_id);
+                    (
+                        attribute_id,
+                        attribute.attribute_type(),
+                        attribute.unique_id(),
+                    )
+                }));
+
+            crate::point_cloud_encoder::validate_encodable_attributes(mesh)?;
+            let (major, minor) = self.options.get_version();
+            let target = if select_mesh_encoding_method(&self.options) == 1 {
+                crate::version::EncodeTarget::MeshEdgebreaker
+            } else {
+                crate::version::EncodeTarget::MeshSequential
+            };
+            crate::version::validate_encodable_version(major, minor, target)?;
+            Self::validate_face_indices(mesh)?;
+            self.validate_predictive_traversal()?;
+            self.validate_prediction_schemes(mesh)?;
+            self.validate_attribute_versions(mesh)?;
+
+            // 1. Encode Header
+            self.encode_header(out_buffer)?;
+            self.encode_metadata(out_buffer)?;
+            self.encode_stats.header_and_metadata_bytes =
+                out_buffer.data().len() - initial_buffer_size;
+
+            // 2. Encode geometry data (connectivity + attributes)
+            self.encode_geometry_data(out_buffer)?;
+
+            Ok(())
+        })();
+
+        if result.is_ok() {
+            self.encode_stats.total_bytes = out_buffer.data().len() - initial_buffer_size;
+            debug_assert_eq!(
+                self.encode_stats.accounted_bytes(),
+                self.encode_stats.total_bytes
+            );
         } else {
-            crate::version::EncodeTarget::MeshSequential
-        };
-        crate::version::validate_encodable_version(major, minor, target)?;
-        Self::validate_face_indices(self.mesh.as_ref().unwrap())?;
-        self.validate_predictive_traversal()?;
-        self.validate_prediction_schemes(self.mesh.as_ref().unwrap())?;
-        self.validate_attribute_versions(self.mesh.as_ref().unwrap())?;
-
-        // 1. Encode Header
-        self.encode_header(out_buffer)?;
-        self.encode_metadata(out_buffer)?;
-
-        // 2. Encode geometry data (connectivity + attributes)
-        self.encode_geometry_data(out_buffer)?;
-
-        Ok(())
+            self.encode_stats = EncodedSizeStats::default();
+        }
+        result
     }
 
     /// Encodes the assigned mesh and describes what the encode did.
     ///
-    /// The description is derived from the encode rather than produced by it,
-    /// and deriving it costs a sweep of every position for its bounds, a pass
-    /// over the corners of each attribute with interior seams, and a walk
-    /// around every vertex for the point count. So it is the caller who
-    /// decides whether that work happens: [`encode`](MeshEncoder::encode) never
-    /// does it, and this does it exactly once, here, where it was asked for.
+    /// The geometry description is derived from the encode rather than
+    /// produced by it, and deriving it costs a sweep of every position for its
+    /// bounds, a pass over the corners of each attribute with interior seams,
+    /// and a walk around every vertex for the point count. Byte-size counters
+    /// are recorded inline with the writes. So it is the caller who decides
+    /// whether the geometry-summary work happens:
+    /// [`encode`](MeshEncoder::encode) never does it, and this does it exactly
+    /// once, here, where it was asked for.
     ///
     /// # Errors
     ///
@@ -826,7 +861,9 @@ impl MeshEncoder {
 
     fn encode_geometry_data(&mut self, out_buffer: &mut EncoderBuffer) -> Status {
         // First encode connectivity
+        let connectivity_start = out_buffer.data().len();
         self.encode_connectivity(out_buffer)?;
+        self.encode_stats.connectivity_bytes += out_buffer.data().len() - connectivity_start;
 
         // Check if we should store the number of encoded faces
         if self
@@ -1207,6 +1244,8 @@ impl MeshEncoder {
             return self.encode_edgebreaker_attributes_split(out_buffer);
         }
 
+        let attribute_header_start = out_buffer.data().len();
+
         // Encode number of attribute decoders (u8).
         // For both sequential and edgebreaker with single-connectivity mode:
         // there's only ONE attribute encoder containing ALL attributes.
@@ -1301,6 +1340,9 @@ impl MeshEncoder {
             }
         }
 
+        self.encode_stats.header_and_metadata_bytes +=
+            out_buffer.data().len() - attribute_header_start;
+
         // Phase 3: Encode attribute values (all attributes first)
         // C++ order: all EncodePortableAttribute calls, then all EncodeDataNeededByPortableTransform calls
 
@@ -1316,6 +1358,7 @@ impl MeshEncoder {
         for i in 0..num_attributes {
             let att = self.point_cloud().expect("point_cloud set").attribute(i);
             let decoder_type = decoder_types[i as usize];
+            let portable_start = out_buffer.data().len();
 
             match decoder_type {
                 3 => {
@@ -1460,11 +1503,15 @@ impl MeshEncoder {
                     )));
                 }
             }
+
+            self.encode_stats.attribute_mut(i).portable_attribute_bytes +=
+                out_buffer.data().len() - portable_start;
         }
 
         // Second pass: encode all TRANSFORM DATA
         for i in 0..num_attributes {
             let decoder_type = decoder_types[i as usize];
+            let transform_start = out_buffer.data().len();
 
             match decoder_type {
                 3 => {
@@ -1503,6 +1550,9 @@ impl MeshEncoder {
                 }
                 _ => {}
             }
+
+            self.encode_stats.attribute_mut(i).transform_data_bytes +=
+                out_buffer.data().len() - transform_start;
         }
 
         self.attribute_predictions.extend(predictions);
@@ -1542,6 +1592,7 @@ impl MeshEncoder {
                 u8::MAX
             )));
         }
+        let attribute_header_start = out_buffer.data().len();
         out_buffer.encode_u8(groups.len() as u8);
 
         let major = out_buffer.version_major();
@@ -1604,6 +1655,9 @@ impl MeshEncoder {
             }
             decoder_types_by_group.push(decoder_types);
         }
+
+        self.encode_stats.header_and_metadata_bytes +=
+            out_buffer.data().len() - attribute_header_start;
 
         for (group_i, (att_data_id, attr_ids)) in groups.iter().enumerate() {
             let point_ids = if *att_data_id >= 0 {
@@ -1827,6 +1881,7 @@ impl MeshEncoder {
         for (local_i, &att_id) in attr_ids.iter().enumerate() {
             let att = mesh.attribute(att_id);
             let decoder_type = decoder_types[local_i];
+            let portable_start = out_buffer.data().len();
             let _ = att;
 
             match decoder_type {
@@ -1916,6 +1971,10 @@ impl MeshEncoder {
                     )));
                 }
             }
+
+            self.encode_stats
+                .attribute_mut(att_id)
+                .portable_attribute_bytes += out_buffer.data().len() - portable_start;
         }
 
         // Pass three, EncodeDataNeededByPortableTransforms: the parameters a
@@ -1924,6 +1983,7 @@ impl MeshEncoder {
         // every attribute's values first and only then every attribute's
         // transform data, so the two cannot be interleaved.
         for (local_i, &decoder_type) in decoder_types.iter().enumerate() {
+            let transform_start = out_buffer.data().len();
             match decoder_type {
                 3 => {
                     let major = out_buffer.version_major();
@@ -1957,6 +2017,10 @@ impl MeshEncoder {
                 1 | 0 => {}
                 _ => {}
             }
+
+            self.encode_stats
+                .attribute_mut(attr_ids[local_i])
+                .transform_data_bytes += out_buffer.data().len() - transform_start;
         }
 
         self.attribute_predictions.extend(predictions);
@@ -2069,6 +2133,7 @@ impl MeshEncoder {
             num_encoded_faces: self.encoded_num_faces(),
             num_encoded_points: encoded_num_points,
             attributes,
+            encode_stats: self.encode_stats.clone(),
         })
     }
 

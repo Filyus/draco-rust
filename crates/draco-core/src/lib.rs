@@ -307,6 +307,8 @@ pub mod sequential_quantization_attribute_decoder;
 #[doc(hidden)]
 pub mod direct_bit_encoder;
 #[cfg(feature = "encoder")]
+mod encode_stats;
+#[cfg(feature = "encoder")]
 #[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 /// Encoder output buffer.
 pub mod encoder_buffer;
@@ -424,6 +426,9 @@ pub use point_cloud_decoder::PointCloudDecoder;
 // Encoder re-exports
 // =============================================================================
 
+#[cfg(feature = "encoder")]
+#[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
+pub use encode_stats::{EncodedAttributeSizeStats, EncodedSizeStats};
 #[cfg(feature = "encoder")]
 #[cfg_attr(docsrs, doc(cfg(feature = "encoder")))]
 pub use encoder_buffer::EncoderBuffer;
