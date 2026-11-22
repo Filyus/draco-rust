@@ -8,6 +8,15 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.4.0](https://github.com/Filyus/draco-rust/compare/draco-core-v2.3.3...draco-core-v2.4.0) - 2026-11-22
+
+### Added
+
+- **Explicit quantization grids.** `EncoderOptions` can set an attribute's
+  quantization bits, origin and range, allowing separate encodes to share a
+  grid. Values outside the grid are clamped to its edges. Invalid grids and
+  non-finite source values are rejected.
+
 ## [2.3.3](https://github.com/Filyus/draco-rust/compare/draco-core-v2.3.2...draco-core-v2.3.3) - 2026-11-01
 
 ### Changed
