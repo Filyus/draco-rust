@@ -173,11 +173,9 @@ fn host_neutral_draco_encode_matches_compress_primitive() {
         mesh: MeshIndex(0),
         primitive: 0,
     };
-    let options = CompressionOptions {
-        mode: CompressionMode::DracoOnly,
-        quantization: QuantizationBits::GLTF,
-        ..CompressionOptions::default()
-    };
+    let mut options = CompressionOptions::default();
+    options.mode = CompressionMode::DracoOnly;
+    options.quantization = QuantizationBits::GLTF;
     let source = open(
         fixture("testdata/Box/glTF_Binary/Box.glb"),
         ValidationProfile::Gltf20,
@@ -384,16 +382,9 @@ fn compressed_accessors_match_the_decoded_stream() {
         ),
     ] {
         let mut import = open(fixture(file), ValidationProfile::Gltf20).unwrap();
-        import
-            .compress_primitive(
-                MeshIndex(0),
-                0,
-                CompressionOptions {
-                    mode,
-                    ..CompressionOptions::default()
-                },
-            )
-            .unwrap();
+        let mut options = CompressionOptions::default();
+        options.mode = mode;
+        import.compress_primitive(MeshIndex(0), 0, options).unwrap();
         let primitive = import.document().primitive(MeshIndex(0), 0).unwrap();
         let stream = import.decode_draco_primitive(primitive).unwrap();
         for (semantic, index) in primitive.attribute_indices() {
@@ -456,16 +447,9 @@ fn compressing_morph_targets_keeps_vertex_order() {
         (QuantizationBits::GLTF, 1e-3),
     ] {
         let mut import = source.clone();
-        import
-            .compress_primitive(
-                MeshIndex(0),
-                0,
-                CompressionOptions {
-                    quantization,
-                    ..CompressionOptions::default()
-                },
-            )
-            .unwrap();
+        let mut options = CompressionOptions::default();
+        options.quantization = quantization;
+        import.compress_primitive(MeshIndex(0), 0, options).unwrap();
         let after = positions(&import.read_primitive(first).unwrap());
         assert_eq!(after.len(), before.len());
         for (before, after) in before.iter().zip(&after) {
@@ -476,15 +460,10 @@ fn compressing_morph_targets_keeps_vertex_order() {
     }
 
     let mut forced = source.clone();
+    let mut options = CompressionOptions::default();
+    options.encoding_method = 2;
     let error = forced
-        .compress_primitive(
-            MeshIndex(0),
-            0,
-            CompressionOptions {
-                encoding_method: 2,
-                ..CompressionOptions::default()
-            },
-        )
+        .compress_primitive(MeshIndex(0), 0, options)
         .unwrap_err();
     assert!(error.to_string().contains("morph targets"), "{error}");
 }
@@ -532,14 +511,9 @@ fn host_neutral_draco_encode_describes_the_decoded_stream() {
         decoded
     );
 
-    let sequential = DracoPrimitiveEncoding::encode(
-        &geometry,
-        &CompressionOptions {
-            encoding_method: 1,
-            ..CompressionOptions::default()
-        },
-    )
-    .unwrap();
+    let mut options = CompressionOptions::default();
+    options.encoding_method = 1;
+    let sequential = DracoPrimitiveEncoding::encode(&geometry, &options).unwrap();
     assert!(sequential.keeps_vertex_order(&geometry).unwrap());
 }
 

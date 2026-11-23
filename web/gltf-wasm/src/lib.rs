@@ -613,24 +613,19 @@ impl GltfAsset {
         encoding_method: u8,
     ) -> Result<JsValue, JsValue> {
         let bits = |value: u8| (value > 0).then_some(value);
+        let mut options = CompressionOptions::default();
+        options.encoding_speed = encoding_speed;
+        options.decoding_speed = decoding_speed;
+        options.quantization = QuantizationBits {
+            position: bits(position_bits),
+            normal: bits(normal_bits),
+            tex_coord: bits(texcoord_bits),
+            color: bits(color_bits),
+            generic: bits(generic_bits),
+        };
+        options.encoding_method = i32::from(encoding_method);
         self.import
-            .compress_primitive(
-                MeshIndex(mesh),
-                primitive,
-                CompressionOptions {
-                    encoding_speed,
-                    decoding_speed,
-                    quantization: QuantizationBits {
-                        position: bits(position_bits),
-                        normal: bits(normal_bits),
-                        tex_coord: bits(texcoord_bits),
-                        color: bits(color_bits),
-                        generic: bits(generic_bits),
-                    },
-                    encoding_method: i32::from(encoding_method),
-                    ..CompressionOptions::default()
-                },
-            )
+            .compress_primitive(MeshIndex(mesh), primitive, options)
             .map(compression_report_to_js)
             .map_err(wasm_error)
     }
@@ -883,16 +878,15 @@ impl GeometryWriteOptions {
     #[cfg(feature = "draco-encode")]
     #[wasm_bindgen(js_name = useDraco)]
     pub fn use_draco(&mut self, encoding_speed: u8, decoding_speed: u8, fallback: bool) {
-        self.inner.encoding = GeometryEncoding::Draco(draco_gltf::CompressionOptions {
-            encoding_speed,
-            decoding_speed,
-            mode: if fallback {
-                draco_gltf::CompressionMode::Fallback
-            } else {
-                draco_gltf::CompressionMode::DracoOnly
-            },
-            ..draco_gltf::CompressionOptions::default()
-        });
+        let mut options = draco_gltf::CompressionOptions::default();
+        options.encoding_speed = encoding_speed;
+        options.decoding_speed = decoding_speed;
+        options.mode = if fallback {
+            draco_gltf::CompressionMode::Fallback
+        } else {
+            draco_gltf::CompressionMode::DracoOnly
+        };
+        self.inner.encoding = GeometryEncoding::Draco(options);
     }
 }
 

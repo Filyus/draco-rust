@@ -1006,7 +1006,6 @@ fn remap_index(value: &mut crate::JsonValue, map: &[Option<usize>], kind: &str) 
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug)]
 /// Controls document-preserving Draco compression.
 ///
 /// [`CompressionMode::DracoOnly`] is the default: it requires the Draco
@@ -1016,12 +1015,12 @@ fn remap_index(value: &mut crate::JsonValue, map: &[Option<usize>], kind: &str) 
 ///
 /// ```
 /// # use draco_gltf::{CompressionMode, CompressionOptions};
-/// let options = CompressionOptions {
-///     mode: CompressionMode::Fallback,
-///     ..CompressionOptions::default()
-/// };
+/// let mut options = CompressionOptions::default();
+/// options.mode = CompressionMode::Fallback;
 /// assert_eq!(options.mode, CompressionMode::Fallback);
 /// ```
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct CompressionOptions {
     /// Draco encoder speed in the range accepted by `draco-core`.
     pub encoding_speed: u8,
