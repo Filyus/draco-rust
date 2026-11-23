@@ -126,6 +126,14 @@ export interface DracoDecodeOptions {
    * halves what a worker sends back.
    */
   index?: "Uint32Array" | "auto";
+  /** Maximum points in one point-cloud stream. Defaults to 256,000,000. */
+  max_points?: number;
+  /** Maximum decoded faces in one stream. Defaults to 512,000,000. */
+  max_faces?: number;
+  /** Maximum decoded attribute bytes in one stream. Defaults to 2 GiB. */
+  max_decoded_bytes?: number;
+  /** Accepted for API parity; this WebAssembly build decodes on one thread. */
+  threads?: number;
 }
 
 export interface DracoDecodeResult {
@@ -222,7 +230,8 @@ enum Target {
 fn decode(data: &[u8], attributes: &JsValue, options: Option<&Object>) -> Result<Object, String> {
     let requests = parse_requests(attributes)?;
     let compact_index = parse_compact_index(options)?;
-    let mesh = crate::decode_mesh(data)?;
+    let decode_options = crate::decode_options_from_js(options)?;
+    let mesh = crate::decode_mesh_with_options(data, &decode_options)?;
     // Byte 7 of the header is the encoder type, which upstream's
     // `GetEncodedGeometryType` reads: 0 a point cloud, 1 a triangular mesh.
     let is_mesh = data.get(7) == Some(&1);

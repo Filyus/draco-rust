@@ -5,13 +5,16 @@ use std::collections::BTreeMap;
 #[cfg(feature = "accessors")]
 use draco_gltf::AccessorData;
 use draco_gltf::{
-    parse, parse_with_options, Document, DracoDecodeOptions, ExtensionRegistry, Import,
-    OutputFormat, ResourceLimits, ResourceResolver, ValidationProfile,
+    parse_with_options, Document, DracoDecodeOptions, ExtensionRegistry, Import, OutputFormat,
+    ResourceLimits, ResourceResolver, ValidationProfile,
 };
 #[cfg(feature = "read")]
 use draco_gltf::{ComponentType, PackedAttribute, PackedIndices, PrimitiveIndex, PrimitiveMode};
 #[cfg(feature = "draco-encode")]
-use draco_gltf::{CompressionOptions, GeometryEncoding, MeshIndex, QuantizationBits};
+use draco_gltf::{
+    CompressionMode, CompressionOptions, GeometryEncoding, MeshIndex, PositionQuantizationGrid,
+    QuantizationBits,
+};
 use js_sys::{Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
 
@@ -66,6 +69,210 @@ impl ResourceResolver for BrowserResourceResolver {
 
 fn wasm_error(error: impl std::fmt::Display) -> JsValue {
     JsValue::from_str(&error.to_string())
+}
+
+fn option_property(object: &Object, name: &str) -> Result<Option<JsValue>, JsValue> {
+    let value = Reflect::get(object, &JsValue::from_str(name))?;
+    Ok((!value.is_undefined()).then_some(value))
+}
+
+fn option_u64(object: &Object, name: &str) -> Result<Option<u64>, JsValue> {
+    let Some(value) = option_property(object, name)? else {
+        return Ok(None);
+    };
+    let Some(number) = value.as_f64() else {
+        return Err(JsValue::from_str(&format!(
+            "{name} must be a safe non-negative integer"
+        )));
+    };
+    if !number.is_finite()
+        || number.fract() != 0.0
+        || !(0.0..=9_007_199_254_740_991.0).contains(&number)
+    {
+        return Err(JsValue::from_str(&format!(
+            "{name} must be a safe non-negative integer"
+        )));
+    }
+    Ok(Some(number as u64))
+}
+
+fn decode_options_from_js(value: Option<Object>) -> Result<DracoDecodeOptions, JsValue> {
+    let Some(object) = value else {
+        return Ok(DracoDecodeOptions::default());
+    };
+    let mut options = DracoDecodeOptions::default();
+    let mut limits = options.limits;
+    if let Some(value) = option_u64(&object, "max_points")? {
+        limits.max_points = value;
+    }
+    if let Some(value) = option_u64(&object, "max_faces")? {
+        limits.max_faces = value;
+    }
+    if let Some(value) = option_u64(&object, "max_decoded_bytes")? {
+        limits.max_decoded_bytes = value;
+    }
+    options.limits = limits;
+    if let Some(value) = option_u64(&object, "threads")? {
+        options.threads = i32::try_from(value)
+            .map_err(|_| JsValue::from_str("threads must fit in a non-negative 32-bit integer"))?;
+    }
+    Ok(options)
+}
+
+#[cfg(feature = "draco-encode")]
+fn option_bool(object: &Object, name: &str) -> Result<Option<bool>, JsValue> {
+    let Some(value) = option_property(object, name)? else {
+        return Ok(None);
+    };
+    value
+        .as_bool()
+        .map(Some)
+        .ok_or_else(|| JsValue::from_str(&format!("{name} must be a boolean")))
+}
+
+#[cfg(feature = "draco-encode")]
+fn option_u8(object: &Object, name: &str) -> Result<Option<u8>, JsValue> {
+    option_u64(object, name)?
+        .map(|value| {
+            u8::try_from(value)
+                .map_err(|_| JsValue::from_str(&format!("{name} must fit in an unsigned byte")))
+        })
+        .transpose()
+}
+
+#[cfg(feature = "draco-encode")]
+fn option_i32(object: &Object, name: &str) -> Result<Option<i32>, JsValue> {
+    option_u64(object, name)?
+        .map(|value| {
+            i32::try_from(value).map_err(|_| {
+                JsValue::from_str(&format!("{name} must fit in a non-negative 32-bit integer"))
+            })
+        })
+        .transpose()
+}
+
+#[cfg(feature = "draco-encode")]
+fn position_grid_from_js(value: JsValue) -> Result<Option<PositionQuantizationGrid>, JsValue> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    if !value.is_object() {
+        return Err(JsValue::from_str(
+            "position_quantization_grid must be an object or null",
+        ));
+    }
+    let object = Object::from(value);
+    let origin = Reflect::get(&object, &JsValue::from_str("origin"))?;
+    if !origin.is_object() {
+        return Err(JsValue::from_str(
+            "position_quantization_grid.origin must be a three-item array",
+        ));
+    }
+    let origin = js_sys::Array::from(&origin);
+    if origin.length() != 3 {
+        return Err(JsValue::from_str(
+            "position_quantization_grid.origin must contain three numbers",
+        ));
+    }
+    let mut components = [0.0; 3];
+    for (index, value) in origin.iter().enumerate() {
+        let Some(number) = value.as_f64() else {
+            return Err(JsValue::from_str(
+                "position_quantization_grid.origin must contain three numbers",
+            ));
+        };
+        components[index] = number as f32;
+    }
+    let range = Reflect::get(&object, &JsValue::from_str("range"))?
+        .as_f64()
+        .map(|value| value as f32)
+        .ok_or_else(|| JsValue::from_str("position_quantization_grid.range must be a number"))?;
+    Ok(Some(PositionQuantizationGrid {
+        origin: components,
+        range,
+    }))
+}
+
+#[cfg(feature = "draco-encode")]
+fn apply_compression_options(
+    options: &mut CompressionOptions,
+    value: Option<Object>,
+    allow_mode: bool,
+) -> Result<(), JsValue> {
+    let Some(object) = value else {
+        return Ok(());
+    };
+    if let Some(value) = option_u8(&object, "encoding_speed")? {
+        options.encoding_speed = value;
+    }
+    if let Some(value) = option_u8(&object, "decoding_speed")? {
+        options.decoding_speed = value;
+    }
+    for (name, option) in [
+        ("position_bits", &mut options.quantization.position),
+        ("normal_bits", &mut options.quantization.normal),
+        ("texcoord_bits", &mut options.quantization.tex_coord),
+        ("color_bits", &mut options.quantization.color),
+        ("generic_bits", &mut options.quantization.generic),
+    ] {
+        if let Some(value) = option_u8(&object, name)? {
+            *option = (value > 0).then_some(value);
+        }
+    }
+    if let Some(value) = option_i32(&object, "encoding_method")? {
+        options.encoding_method = value;
+    }
+    if let Some(value) = option_property(&object, "fallback")? {
+        if !allow_mode {
+            return Err(JsValue::from_str(
+                "fallback is set by the useDraco fallback argument",
+            ));
+        }
+        options.mode = if value
+            .as_bool()
+            .ok_or_else(|| JsValue::from_str("fallback must be a boolean"))?
+        {
+            CompressionMode::Fallback
+        } else {
+            CompressionMode::DracoOnly
+        };
+    }
+    if let Some(value) = option_property(&object, "max_output_bytes")? {
+        options.max_output_bytes = if value.is_null() {
+            None
+        } else {
+            let Some(value) = value.as_f64() else {
+                return Err(JsValue::from_str(
+                    "max_output_bytes must be a safe non-negative integer or null",
+                ));
+            };
+            if !value.is_finite()
+                || value.fract() != 0.0
+                || !(0.0..=9_007_199_254_740_991.0).contains(&value)
+            {
+                return Err(JsValue::from_str(
+                    "max_output_bytes must be a safe non-negative integer or null",
+                ));
+            }
+            Some(usize::try_from(value as u64).map_err(|_| {
+                JsValue::from_str("max_output_bytes exceeds this platform's address space")
+            })?)
+        };
+    }
+    if let Some(value) = option_property(&object, "position_quantization_grid")? {
+        options.position_quantization_grid = position_grid_from_js(value)?;
+    }
+    for (name, option) in [
+        ("allow_points", &mut options.allow_points),
+        ("spatial_point_order", &mut options.spatial_point_order),
+        ("point_order_search", &mut options.point_order_search),
+        ("prediction_search", &mut options.prediction_search),
+    ] {
+        if let Some(value) = option_bool(&object, name)? {
+            *option = value;
+        }
+    }
+    Ok(())
 }
 
 fn profile(name: &str) -> Result<ValidationProfile, JsValue> {
@@ -265,13 +472,26 @@ pub fn inspect_gltf(data: &[u8]) -> JsValue {
 impl GltfAsset {
     /// Opens JSON glTF or GLB v2/v3 with embedded or data-URI resources.
     #[wasm_bindgen(constructor)]
-    pub fn new(data: &[u8], validation_profile: &str) -> Result<GltfAsset, JsValue> {
-        parse(data, profile(validation_profile)?)
-            .map(|import| Self {
-                import,
-                resolver: BrowserResourceResolver::default(),
-            })
-            .map_err(wasm_error)
+    pub fn new(
+        data: &[u8],
+        validation_profile: &str,
+        decode_options: Option<Object>,
+    ) -> Result<GltfAsset, JsValue> {
+        let decode_options = decode_options_from_js(decode_options)?;
+        parse_with_options(
+            data,
+            None,
+            None,
+            &ResourceLimits::default(),
+            &decode_options,
+            profile(validation_profile)?,
+            &ExtensionRegistry::default(),
+        )
+        .map(|import| Self {
+            import,
+            resolver: BrowserResourceResolver::default(),
+        })
+        .map_err(wasm_error)
     }
 
     /// Opens a document with an explicit URI-to-`Uint8Array` resource map.
@@ -280,14 +500,16 @@ impl GltfAsset {
         data: &[u8],
         resources: JsValue,
         validation_profile: &str,
+        decode_options: Option<Object>,
     ) -> Result<GltfAsset, JsValue> {
         let resolver = browser_resources(resources)?;
+        let decode_options = decode_options_from_js(decode_options)?;
         parse_with_options(
             data,
             None,
             Some(&resolver),
             &ResourceLimits::default(),
-            &DracoDecodeOptions::default(),
+            &decode_options,
             profile(validation_profile)?,
             &ExtensionRegistry::default(),
         )
@@ -611,6 +833,7 @@ impl GltfAsset {
         color_bits: u8,
         generic_bits: u8,
         encoding_method: u8,
+        options_js: Option<Object>,
     ) -> Result<JsValue, JsValue> {
         let bits = |value: u8| (value > 0).then_some(value);
         let mut options = CompressionOptions::default();
@@ -624,6 +847,7 @@ impl GltfAsset {
             generic: bits(generic_bits),
         };
         options.encoding_method = i32::from(encoding_method);
+        apply_compression_options(&mut options, options_js, true)?;
         self.import
             .compress_primitive(MeshIndex(mesh), primitive, options)
             .map(compression_report_to_js)
@@ -877,7 +1101,13 @@ impl GeometryWriteOptions {
     /// Selects Draco-only or Draco-with-fallback storage.
     #[cfg(feature = "draco-encode")]
     #[wasm_bindgen(js_name = useDraco)]
-    pub fn use_draco(&mut self, encoding_speed: u8, decoding_speed: u8, fallback: bool) {
+    pub fn use_draco(
+        &mut self,
+        encoding_speed: u8,
+        decoding_speed: u8,
+        fallback: bool,
+        options_js: Option<Object>,
+    ) -> Result<(), JsValue> {
         let mut options = draco_gltf::CompressionOptions::default();
         options.encoding_speed = encoding_speed;
         options.decoding_speed = decoding_speed;
@@ -886,7 +1116,9 @@ impl GeometryWriteOptions {
         } else {
             draco_gltf::CompressionMode::DracoOnly
         };
+        apply_compression_options(&mut options, options_js, false)?;
         self.inner.encoding = GeometryEncoding::Draco(options);
+        Ok(())
     }
 }
 

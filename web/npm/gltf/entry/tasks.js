@@ -24,8 +24,10 @@ function plainGeometry(geometry) {
 }
 
 /** The document's JSON and every primitive of every mesh, Draco or not. */
-export function read_gltf(data, resources, profile = '2.0') {
-  const asset = resources ? GltfAsset.withResources(data, resources, profile) : new GltfAsset(data, profile);
+export function read_gltf(data, resources, profile = '2.0', decodeOptions) {
+  const asset = resources
+    ? GltfAsset.withResources(data, resources, profile, decodeOptions)
+    : new GltfAsset(data, profile, decodeOptions);
   try {
     const meshes = [];
     for (let mesh = 0; mesh < asset.meshCount(); mesh += 1) {

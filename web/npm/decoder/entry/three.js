@@ -27,7 +27,9 @@ export class DRACOLoader extends ThreeDRACOLoader {
 
   constructor(manager, options = {}) {
     super(manager);
-    this.pool = options.pool ?? createDecoderPool(options);
+    const { pool, decode_options = {}, ...poolOptions } = options;
+    this.decodeOptions = decode_options;
+    this.pool = pool ?? createDecoderPool(poolOptions);
   }
 
   // The buffer goes to a worker by transfer, which leaves nothing here to
@@ -46,7 +48,10 @@ export class DRACOLoader extends ThreeDRACOLoader {
       ...(useUniqueIDs ? { id: attributeIDs[name] } : { semantic: attributeIDs[name] }),
       type: attributeTypes[name],
     }));
-    const promise = this.pool.decode(buffer, requests, { transfer: buffer instanceof ArrayBuffer }).then((result) => {
+    const promise = this.pool.decode(buffer, requests, {
+      ...this.decodeOptions,
+      transfer: buffer instanceof ArrayBuffer,
+    }).then((result) => {
       if (!result.success) throw new Error(`THREE.DRACOLoader: Decoding failed: ${result.error}`);
       return this._createGeometry({
         index: result.index ? { array: result.index, itemSize: 1 } : null,

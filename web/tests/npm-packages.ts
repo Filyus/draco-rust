@@ -87,6 +87,13 @@ for (const [spec, decodes] of Object.entries(decoders)) {
   }
 }
 
+{
+  const { parse_drc_bytes } = await load('@draco-rust/decoder');
+  const overLimit = parse_drc_bytes(streams.cloud, { max_points: 1 });
+  assert.equal(overLimit.success, false, 'parse_drc_bytes enforces a caller point ceiling');
+  assert.match(overLimit.error, /limit|points/i);
+}
+
 const { encode_draco } = await load('@draco-rust/encoder');
 const quad = { positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0]), indices: new Uint32Array([0, 1, 2, 2, 1, 3]) };
 const encoded = encode_draco(quad, { position_bits: 14 });
@@ -96,7 +103,67 @@ const decoded = parse_drc_bytes(encoded.bytes);
 assert.ok(decoded.success, decoded.error);
 assert.equal(decoded.meshes[0].indices.length, 6);
 
+const colors = new Uint8Array([
+  0, 32, 64, 255,
+  128, 160, 192, 255,
+  255, 224, 192, 255,
+  32, 255, 128, 255,
+]);
+const colorEncoded = encode_draco({ ...quad, colors }, { color_bits: 2 });
+assert.ok(colorEncoded.success, colorEncoded.error);
+const { decode_draco: decodeDracoForColor } = await load('@draco-rust/decoder');
+const colorDecoded = decodeDracoForColor(colorEncoded.bytes, [{ semantic: 'COLOR' }]);
+assert.ok(colorDecoded.success, colorDecoded.error);
+const decodedColors = colorDecoded.attributes[0].array;
+assert.ok(decodedColors instanceof Float32Array, 'color_bits must emit a quantized float attribute');
+const colorMinima = [0, 32 / 255, 64 / 255, 1];
+for (let i = 0; i < decodedColors.length; i += 1) {
+  const steps = (decodedColors[i] - colorMinima[i % 4]) * 3;
+  assert.ok(Math.abs(steps - Math.round(steps)) < 1e-4, 'color was not quantized to two bits');
+}
+const byteColors = encode_draco({ ...quad, colors }, { color_bits: 0 });
+assert.ok(byteColors.success, byteColors.error);
+const byteColorDecode = decodeDracoForColor(byteColors.bytes, [{ semantic: 'COLOR' }]);
+assert.ok(byteColorDecode.success, byteColorDecode.error);
+assert.ok(byteColorDecode.attributes[0].array instanceof Uint8Array, 'zero color_bits must keep byte colors');
+const invalidColorBits = encode_draco({ ...quad, colors }, { color_bits: -1 });
+assert.equal(invalidColorBits.success, false, 'negative color_bits must be rejected');
+assert.match(invalidColorBits.error, /color_bits/);
+
 const glb = await fixture('bun_zipper.glb');
+{
+  const { GltfAsset, PackedGeometry, GeometryWriteOptions } = await load('@draco-rust/gltf/writer');
+  const positions = new Uint8Array(new Float32Array([
+    0, 0, 0,
+    1, 0, 0,
+    0, 1, 0,
+  ]).buffer);
+  const indices = new Uint8Array(new Uint16Array([0, 1, 2]).buffer);
+  const geometry = new PackedGeometry(4);
+  geometry.addAttribute('POSITION', 3, 3, 5126, false, positions);
+  geometry.setIndices(3, 5123, indices);
+  const asset = GltfAsset.fromGeometry(geometry, '2.0', new GeometryWriteOptions());
+  asset.compressPrimitive(0, 0, 5, 5, 14, 0, 0, 0, 0, 0, {
+    position_quantization_grid: { origin: [0, 0, 0], range: 1 },
+  });
+  const compressed = asset.glb(2);
+
+  for (const spec of ['@draco-rust/gltf', '@draco-rust/gltf/writer']) {
+    const { GltfAsset: Reader } = await load(spec);
+    const limited = new Reader(compressed, '2.0', { max_faces: 0 });
+    assert.throws(() => limited.readPrimitive(0, 0), /limit|points/i, spec + ' decode ceiling');
+    const withResources = Reader.withResources(compressed, {}, '2.0', { max_faces: 0 });
+    assert.throws(() => withResources.readPrimitive(0, 0), /limit|points/i, spec + ' resource decode ceiling');
+  }
+
+  const pool = (await import('@draco-rust/gltf/pool')).createPool({ workers: 1 });
+  await assert.rejects(
+    pool.read(compressed, { decode_options: { max_faces: 0 } }),
+    /limit|points/i,
+    'glTF worker forwards decode ceilings',
+  );
+  pool.dispose();
+}
 for (const spec of ['@draco-rust/gltf', '@draco-rust/gltf/validate', '@draco-rust/gltf/writer']) {
   const { GltfAsset } = await load(spec);
   const asset = new GltfAsset(glb, '2.0');
@@ -217,6 +284,13 @@ for (const spec of Object.keys(decoders)) {
   pool.dispose();
   local.dispose();
 }
+
+{
+  const { decode_draco } = await load('@draco-rust/decoder');
+  const overLimit = decode_draco(streams.cloud, undefined, { max_points: 1 });
+  assert.equal(overLimit.success, false, 'decode_draco enforces a caller point ceiling');
+  assert.match(overLimit.error, /limit|points/i);
+}
 {
   const { createDecoderPool } = await import('@draco-rust/decoder/pool');
   const pool = createDecoderPool({ workers: 1 });
@@ -231,6 +305,8 @@ for (const spec of Object.keys(decoders)) {
   const narrow = await pool.decode(streams.mesh, undefined, { index: 'auto' });
   assert.ok(wide.index instanceof Uint32Array && narrow.index instanceof Uint16Array);
   assert.deepEqual(Array.from(narrow.index), Array.from(wide.index));
+  const limited = await pool.decode(streams.cloud, undefined, { max_points: 1 });
+  assert.equal(limited.success, false, 'worker decode forwards caller ceilings');
 
   // An abort settles the caller at once; the worker's result is dropped and
   // the pool goes on decoding.
@@ -272,6 +348,15 @@ assert.ok(cloud instanceof BufferGeometry);
 const reference = decode_draco(streams.cloud, [{ semantic: 'POSITION', type: 'Float32Array' }]);
 assert.deepEqual(cloud.attributes.position.array, reference.attributes[0].array);
 assert.equal(cloud.index, null, 'a point cloud has no index');
+
+const limitedLoader = new DRACOLoader(undefined, {
+  workers: 1,
+  decode_options: { max_points: 1 },
+});
+await assert.rejects(new Promise((resolve, reject) =>
+  limitedLoader.parse(streams.cloud.slice().buffer, resolve, reject),
+), /limit|points/i);
+limitedLoader.dispose();
 
 // GLTFLoader's call: attributes by unique id, in the accessor's types. A
 // three-byte colour is padded to four from r181, as three's own does it.

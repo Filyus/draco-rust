@@ -1,10 +1,13 @@
 import type { LoadingManager } from 'three';
 import { DRACOLoader as ThreeDRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import type { DecoderPool, DecoderPoolOptions } from './pool.js';
+import type { DracoDecodeOptions } from './index.js';
 
 export interface DRACOLoaderOptions extends DecoderPoolOptions {
   /** A pool to share with other loaders, instead of one of the loader's own. */
   pool?: DecoderPool;
+  /** Per-stream output ceilings; WebAssembly currently decodes on one thread. */
+  decode_options?: DracoDecodeOptions;
 }
 
 /**

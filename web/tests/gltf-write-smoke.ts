@@ -59,6 +59,65 @@ if (draco) {
     throw new Error(`official draco3d metadata mismatch: ${JSON.stringify(decoded)}`);
   }
 }
+
+if (draco) {
+  const advanced = new api.GeometryWriteOptions();
+  advanced.useDraco(5, 5, false, {
+    position_bits: 14,
+    position_quantization_grid: { origin: [0, 0, 0], range: 1 },
+    max_output_bytes: 1024,
+  });
+  const advancedAsset = api.GltfAsset.fromGeometry(geometry, '2.0', advanced);
+  const advancedGeometry = advancedAsset.readPrimitive(0, 0);
+  if (advancedGeometry.attributeElementCount(0) !== 3) {
+    throw new Error('advanced GeometryWriteOptions Draco roundtrip failed');
+  }
+
+  const capped = new api.GeometryWriteOptions();
+  capped.useDraco(5, 5, false, { max_output_bytes: 1 });
+  let capRefused = false;
+  try {
+    api.GltfAsset.fromGeometry(geometry, '2.0', capped);
+  } catch (error) {
+    capRefused = /limit/i.test(String(error));
+  }
+  if (!capRefused) throw new Error('max_output_bytes did not reject an oversized glTF result');
+
+  const raw = api.GltfAsset.fromGeometry(geometry, '2.0', new api.GeometryWriteOptions());
+  raw.compressPrimitive(0, 0, 5, 5, 14, 0, 0, 0, 0, 0, {
+    position_quantization_grid: { origin: [0, 0, 0], range: 1 },
+    max_output_bytes: 1024,
+  });
+  const direct = raw.readPrimitive(0, 0);
+  if (direct.attributeElementCount(0) !== 3) {
+    throw new Error('advanced compressPrimitive Draco roundtrip failed');
+  }
+
+  const points = new api.PackedGeometry(0);
+  points.addAttribute('POSITION', 3, 3, 5126, false, positions);
+  points.validate('2.0');
+  const pointAsset = api.GltfAsset.fromGeometry(
+    points,
+    '2.0',
+    new api.GeometryWriteOptions(),
+  );
+  let pointsRefused = false;
+  try {
+    pointAsset.compressPrimitive(0, 0, 5, 5, 14, 0, 0, 0, 0, 0);
+  } catch (error) {
+    pointsRefused = /allow_points/i.test(String(error));
+  }
+  if (!pointsRefused) throw new Error('POINTS compression was not opt-in');
+  pointAsset.compressPrimitive(0, 0, 5, 5, 14, 0, 0, 0, 0, 0, {
+    allow_points: true,
+    prediction_search: true,
+    point_order_search: true,
+  });
+  const pointGeometry = pointAsset.readPrimitive(0, 0);
+  if (pointGeometry.mode() !== 0 || pointGeometry.attributeElementCount(0) !== 3) {
+    throw new Error('opt-in Draco point-cloud roundtrip failed');
+  }
+}
 const bundle = document.gltfBundle();
 if (bundle.resourceCount() !== 1 || bundle.resourceBytes(0).length === 0) {
   throw new Error('glTF JSON bundle is incomplete');

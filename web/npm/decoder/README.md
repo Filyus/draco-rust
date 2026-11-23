@@ -86,6 +86,25 @@ Without the second argument every attribute comes back in its own type. The
 index is a `Uint32Array`; a third argument `{ index: "auto" }` makes it a
 `Uint16Array` wherever the points number at most 65536, half the bytes.
 
+The same options object accepts output ceilings and point-cloud decoder
+threads:
+
+```js
+const result = decode_draco(bytes, requests, {
+  index: "auto",
+  max_points: 4_000_000, // point-cloud streams
+  max_faces: 8_000_000,
+  max_decoded_bytes: 256 * 1024 * 1024,
+});
+```
+
+Defaults are 256,000,000 points for point-cloud streams, 512,000,000 faces,
+and 2 GiB of decoded attribute bytes. The `threads` field is accepted for API
+parity, but these WebAssembly packages decode on one thread. These ceilings
+also work with `parse_drc_bytes`, `pool.decode`, and the three.js loader's
+`decode_options` constructor option. Pool settings such as `transfer`,
+`signal`, and `workers` remain separate.
+
 ### On workers
 
 Decoding runs on the calling thread. `createDecoderPool` runs it on workers
@@ -104,8 +123,8 @@ them. The stream is copied to the worker; `pool.decode(bytes, requests, {
 transfer: true })` hands over the buffer itself instead. The pool runs on Web
 Workers, on Node's worker threads (Node 20.16 and later), and from a CDN. With
 `workers: 0`, or where there are no workers, it decodes on the calling thread.
-`pool.decode` also takes `index`, as `decode_draco` does, and an `AbortSignal`
-as `signal`: aborting rejects the promise at once. A decode a worker has
+`pool.decode` also takes the decode options above and an `AbortSignal` as
+`signal`: aborting rejects the promise at once. A decode a worker has
 already started still runs to its end and its result is dropped; one not yet
 sent is never sent.
 A bundler that follows `new URL("./worker.js", import.meta.url)`, as Vite and

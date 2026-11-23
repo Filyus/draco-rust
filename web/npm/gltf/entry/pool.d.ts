@@ -32,6 +32,19 @@ export interface ReadOptions extends TaskOptions {
   resources?: Record<string, Uint8Array>;
   /** `"2.0"`, the default, or `"2.1"`. */
   profile?: string;
+  /** Draco output ceilings; this WebAssembly build decodes on one thread. */
+  decode_options?: GltfDracoDecodeOptions;
+}
+
+export interface GltfDracoDecodeOptions {
+  /** Maximum points in one Draco point-cloud primitive. */
+  max_points?: number;
+  /** Maximum decoded faces in one Draco primitive. */
+  max_faces?: number;
+  /** Maximum total decoded attribute bytes in one Draco primitive. */
+  max_decoded_bytes?: number;
+  /** Accepted for API parity; this WebAssembly build decodes on one thread. */
+  threads?: number;
 }
 
 export interface GltfPool extends Pool {

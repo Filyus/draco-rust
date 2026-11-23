@@ -10,7 +10,7 @@
 
 use wasm_bindgen::prelude::*;
 
-use js_sys::{Array, Object};
+use js_sys::{Array, Object, Reflect};
 
 // The conversion layer is `wasm-bridge`, shared with the other four modules:
 // geometry crosses as typed arrays, and everything read back from JavaScript is
@@ -58,12 +58,69 @@ use draco_core::geometry_indices::{FaceIndex, PointIndex};
 use draco_core::mesh::Mesh;
 #[cfg(any(feature = "read", feature = "write"))]
 use draco_core::metadata::Metadata;
-#[cfg(feature = "write")]
-use js_sys::Reflect;
-
 // ===========================================================================
 // Reader
 // ===========================================================================
+
+/// Per-call ceilings and worker count for decoding a standalone stream.
+#[cfg(feature = "read")]
+#[derive(Clone, Copy)]
+pub(crate) struct DecodeOptions {
+    limits: draco_core::DecodeLimits,
+    threads: i32,
+}
+
+#[cfg(feature = "read")]
+impl Default for DecodeOptions {
+    fn default() -> Self {
+        Self {
+            limits: draco_core::DecodeLimits::default(),
+            threads: 1,
+        }
+    }
+}
+
+#[cfg(feature = "read")]
+fn decode_option_u64(object: &Object, name: &str) -> Result<Option<u64>, String> {
+    let value = Reflect::get(object, &JsValue::from_str(name))
+        .map_err(|_| "decode options could not be read".to_string())?;
+    if value.is_undefined() {
+        return Ok(None);
+    }
+    let number = value
+        .as_f64()
+        .filter(|number| {
+            number.is_finite()
+                && number.fract() == 0.0
+                && (0.0..=9_007_199_254_740_991.0).contains(number)
+        })
+        .ok_or_else(|| format!("{name} must be a safe non-negative integer"))?;
+    Ok(Some(number as u64))
+}
+
+#[cfg(feature = "read")]
+pub(crate) fn decode_options_from_js(object: Option<&Object>) -> Result<DecodeOptions, String> {
+    let Some(object) = object else {
+        return Ok(DecodeOptions::default());
+    };
+    let mut options = DecodeOptions::default();
+    let mut limits = options.limits;
+    if let Some(value) = decode_option_u64(object, "max_points")? {
+        limits.max_points = value;
+    }
+    if let Some(value) = decode_option_u64(object, "max_faces")? {
+        limits.max_faces = value;
+    }
+    if let Some(value) = decode_option_u64(object, "max_decoded_bytes")? {
+        limits.max_decoded_bytes = value;
+    }
+    options.limits = limits;
+    if let Some(value) = decode_option_u64(object, "threads")? {
+        options.threads = i32::try_from(value)
+            .map_err(|_| "threads must fit in a non-negative 32-bit integer".to_string())?;
+    }
+    Ok(options)
+}
 
 /// Mesh data produced by the decoder, for JavaScript interop.
 #[cfg(feature = "read")]
@@ -207,8 +264,19 @@ pub struct AttributeInfo {
 /// Decode a standalone Draco payload.
 #[cfg(feature = "read")]
 #[wasm_bindgen]
-pub fn parse_drc_bytes(data: &[u8]) -> JsValue {
-    parse_result_to_js(&parse_drc_internal(data))
+pub fn parse_drc_bytes(data: &[u8], options: Option<Object>) -> JsValue {
+    let result = match decode_options_from_js(options.as_ref()) {
+        Ok(options) => parse_drc_internal_with_options(data, &options),
+        Err(error) => ParseResult {
+            success: false,
+            meshes: Vec::new(),
+            error: Some(error),
+            warnings: Vec::new(),
+            attributes: Vec::new(),
+            metadata: None,
+        },
+    };
+    parse_result_to_js(&result)
 }
 
 #[cfg(feature = "read")]
@@ -296,7 +364,10 @@ fn parse_result_to_js(result: &ParseResult) -> JsValue {
 
 /// Decodes a stream with the decoder this build carries.
 #[cfg(feature = "read")]
-pub(crate) fn decode_mesh(data: &[u8]) -> Result<Mesh, String> {
+pub(crate) fn decode_mesh_with_options(
+    data: &[u8],
+    options: &DecodeOptions,
+) -> Result<Mesh, String> {
     use draco_core::decoder_buffer::DecoderBuffer;
 
     let mut mesh = Mesh::new();
@@ -306,7 +377,9 @@ pub(crate) fn decode_mesh(data: &[u8]) -> Result<Mesh, String> {
     let mut decoder = draco_core::PointCloudDecoder::new();
     #[cfg(not(feature = "point-cloud-only"))]
     let mut decoder = draco_core::mesh_decoder::MeshDecoder::new();
-    let mut buffer = DecoderBuffer::new(data);
+    #[cfg(feature = "point-cloud-decode")]
+    decoder.set_threads(options.threads);
+    let mut buffer = DecoderBuffer::new(data).with_limits(options.limits);
     // Nothing catches a panic here. The decoder returns errors for every
     // malformed payload tried against it -- truncation at each of a payload's
     // byte offsets, and garbage -- and on wasm32 a catch would be theatre
@@ -320,8 +393,14 @@ pub(crate) fn decode_mesh(data: &[u8]) -> Result<Mesh, String> {
 }
 
 #[cfg(feature = "read")]
+#[cfg(test)]
 fn parse_drc_internal(data: &[u8]) -> ParseResult {
-    match decode_mesh(data) {
+    parse_drc_internal_with_options(data, &DecodeOptions::default())
+}
+
+#[cfg(feature = "read")]
+fn parse_drc_internal_with_options(data: &[u8], options: &DecodeOptions) -> ParseResult {
+    match decode_mesh_with_options(data, options) {
         Ok(mesh) => {
             let mut warnings = Vec::new();
             if mesh.num_faces() == 0 && cfg!(not(feature = "point-cloud-only")) {
@@ -668,6 +747,8 @@ pub struct ExportOptions {
     pub normal_bits: Option<i32>,
     /// Quantization bits for texture coordinates.
     pub texcoord_bits: Option<i32>,
+    /// Quantization bits for colors.
+    pub color_bits: Option<i32>,
     /// Whether to write normals, when the mesh has them.
     pub include_normals: Option<bool>,
     /// Whether to write texture coordinates, when the mesh has them.
@@ -1042,6 +1123,23 @@ fn extra_attribute_from_js(value: &JsValue) -> Result<ExtraAttribute, String> {
 }
 
 #[cfg(feature = "write")]
+fn color_bits_from_js(value: &JsValue) -> Result<Option<i32>, String> {
+    let Some(value) = get_field(value, "color_bits") else {
+        return Ok(None);
+    };
+    if value.is_null() || value.is_undefined() {
+        return Ok(None);
+    }
+    let Some(bits) = value.as_f64() else {
+        return Err("color_bits must be an integer from 0 through 30".to_string());
+    };
+    if !bits.is_finite() || bits.fract() != 0.0 || !(0.0..=30.0).contains(&bits) {
+        return Err("color_bits must be an integer from 0 through 30".to_string());
+    }
+    Ok((bits > 0.0).then_some(bits as i32))
+}
+
+#[cfg(feature = "write")]
 fn export_options_from_js(value: &JsValue) -> Result<ExportOptions, String> {
     Ok(ExportOptions {
         encoding_speed: opt_i32_from_js(value, "encoding_speed"),
@@ -1053,6 +1151,7 @@ fn export_options_from_js(value: &JsValue) -> Result<ExportOptions, String> {
             .map(|value| value as f32),
         normal_bits: opt_i32_from_js(value, "normal_bits"),
         texcoord_bits: opt_i32_from_js(value, "texcoord_bits"),
+        color_bits: color_bits_from_js(value)?,
         include_normals: opt_bool_from_js(value, "include_normals"),
         include_uvs: opt_bool_from_js(value, "include_uvs"),
         include_colors: opt_bool_from_js(value, "include_colors"),
@@ -1331,16 +1430,38 @@ fn mesh_input_to_core_mesh(
 
     if options.include_colors.unwrap_or(true) {
         if let Some(colors) = channel(&input.colors, vertex_count * 4) {
-            let mut attribute = PointAttribute::new();
-            attribute.init(
-                GeometryAttributeType::Color,
-                4,
-                DataType::Uint8,
-                true,
-                vertex_count,
-            );
-            attribute.buffer_mut().write(0, &colors[..vertex_count * 4]);
-            mesh.add_attribute(attribute);
+            // Draco's quantization transform is defined for float attributes.
+            // Preserve the historical Uint8 stream when the option is absent;
+            // when requested, normalize the byte colors so `color_bits` reaches
+            // the same transform used for the other named channels.
+            let (attribute, quantization_bits) = if let Some(bits) = options.color_bits {
+                let normalized: Vec<f32> = colors[..vertex_count * 4]
+                    .iter()
+                    .map(|value| f32::from(*value) / 255.0)
+                    .collect();
+                let attribute =
+                    float_attribute(GeometryAttributeType::Color, 4, &normalized, vertex_count);
+                (attribute, Some(bits))
+            } else {
+                let mut attribute = PointAttribute::new();
+                attribute.init(
+                    GeometryAttributeType::Color,
+                    4,
+                    DataType::Uint8,
+                    true,
+                    vertex_count,
+                );
+                attribute.buffer_mut().write(0, &colors[..vertex_count * 4]);
+                (attribute, None)
+            };
+            let id = mesh.add_attribute(attribute);
+            if let Some(bits) = quantization_bits {
+                quantization.push(QuantizationRequest {
+                    attribute_id: id,
+                    bits,
+                    grid: None,
+                });
+            }
         }
     }
 

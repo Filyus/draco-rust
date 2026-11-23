@@ -8,6 +8,19 @@ has changed in them; each package version has a section of its own.
 
 ## Unreleased
 
+- `@draco-rust/gltf/writer` accepts the remaining Draco compression options,
+  including shared POSITION grids, output limits, point-cloud opt-in and point
+  ordering/prediction controls. Existing positional calls remain valid.
+- `@draco-rust/encoder` accepts `color_bits` for its named color attribute,
+  matching the glTF writer's color quantization control. Explicit quantization
+  uses a normalized float color attribute; the default byte path is unchanged.
+- `@draco-rust/gltf` and `@draco-rust/decoder` accept per-stream Draco decode
+  ceilings. Worker and three.js paths forward the same settings; the `threads`
+  field is accepted for API parity, while WebAssembly currently stays
+  single-threaded.
+- Clarify which glTF build profiles include point-cloud decoding; the published
+  reader intentionally omits the non-standard `POINTS` extension case.
+
 ## [0.4.1] - 2026-11-18
 
 - `@draco-rust/gltf` rejects malformed `EXT_meshopt_compression` streams with

@@ -8,9 +8,9 @@ const bytesOf = (data) =>
 export function createDecoderPool(options = {}) {
   const pool = createTaskPool(options);
   return {
-    decode(data, attributes, { transfer = false, signal, index } = {}) {
-      const decodeOptions = index === undefined ? undefined : { index };
-      return pool.run('decode_draco', [bytesOf(data), attributes, decodeOptions], { transfer, signal });
+    decode(data, attributes, { transfer = false, signal, ...decodeOptions } = {}) {
+      const wasmOptions = Object.keys(decodeOptions).length > 0 ? decodeOptions : undefined;
+      return pool.run('decode_draco', [bytesOf(data), attributes, wasmOptions], { transfer, signal });
     },
     preload: () => pool.preload(),
     setWorkerLimit: (workers) => pool.setWorkerLimit(workers),

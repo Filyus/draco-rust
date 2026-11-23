@@ -16,7 +16,7 @@ import init, { encode_draco } from "@draco-rust/encoder";
 await init();
 const result = encode_draco(
   { positions, indices, normals, uvs, colors },  // typed arrays; all but positions optional
-  { position_bits: 14, normal_bits: 10, texcoord_bits: 12, encoding_speed: 5, decoding_speed: 5 },
+  { position_bits: 14, normal_bits: 10, texcoord_bits: 12, color_bits: 10, encoding_speed: 5, decoding_speed: 5 },
 );
 if (!result.success) throw new Error(result.error);
 const drc = result.bytes; // Uint8Array
@@ -41,9 +41,15 @@ Per attribute, `quantizationBits` names a bit budget and, with it,
 `quantizationOrigin` and `quantizationRange` name the grid the values are
 quantized on -- the same three options `ExpertEncoder::SetAttributeExplicitQuantization`
 takes. Positions take `position_origin` and `position_range` beside
-`position_bits`. The grid goes into the stream as the transform's own
-parameters, so any decoder reads it the same way; values outside it come back
-on its edges rather than off it.
+`position_bits`; the named `colors` channel takes `color_bits`. The grid goes
+into the stream as the transform's own parameters, so any decoder reads it the
+same way; values outside it come back on its edges rather than off it.
+
+When `color_bits` is between 1 and 30, the byte colors are normalized to
+`[0, 1]` and encoded as a quantized float attribute. Zero leaves the colors in
+their original byte representation. `parse_drc_bytes` still returns RGBA bytes;
+`decode_draco` without a requested output type reflects the stream's float
+attribute when color quantization is enabled.
 
 The mesh can carry `metadata` -- and each extra attribute its own -- in the
 same shape `parse_drc_bytes` reports it: `{ entries, subMetadata? }`, entries

@@ -38,6 +38,36 @@ const plyOptions = {
   include_normals: false, include_uvs: false, include_colors: true, precision: 6, format: 'ascii',
 };
 
+// The standalone encoder's named color channel has the same explicit bit
+// control as the glTF encoder. It must reach the quantizer rather than merely
+// be accepted by the JavaScript option parser.
+{
+  const input = {
+    name: 'color-quantization',
+    positions,
+    indices,
+    colors: new Uint8Array([
+      0, 32, 64, 255,
+      128, 160, 192, 255,
+      255, 224, 192, 255,
+    ]),
+  };
+  const exact = drc.encode_draco(input, {});
+  const quantized = drc.encode_draco(input, { color_bits: 2 });
+  assert.ok(exact.success, `unquantized color encode: ${exact.error}`);
+  assert.ok(quantized.success, `color_bits encode: ${quantized.error}`);
+  const exactColors = drc.decode_draco(exact.bytes, [{ semantic: 'COLOR' }]);
+  const quantizedColors = drc.decode_draco(quantized.bytes, [{ semantic: 'COLOR' }]);
+  assert.ok(exactColors.success && quantizedColors.success);
+  assert.ok(exactColors.attributes[0].array instanceof Uint8Array);
+  assert.ok(quantizedColors.attributes[0].array instanceof Float32Array);
+  assert.notDeepEqual(
+    quantizedColors.attributes[0].array,
+    exactColors.attributes[0].array,
+    'color_bits did not affect the stream',
+  );
+}
+
 /** The vertex rows of an ASCII PLY, which is where colours land. */
 function plyVertexRows(result: { success: boolean; text?: string; error?: string }) {
   assert.ok(result.success, `expected a PLY, got: ${result.error}`);

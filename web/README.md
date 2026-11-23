@@ -617,8 +617,10 @@ something only beside the build that carries the same set:
 
 `gltf-wasm` has no counterpart in either: it also parses the glTF and
 materialises accessors, which a three.js page does in JavaScript around the
-decoder. Its `draco-decode` keeps point clouds, since a POINTS primitive and a
-splat are glTF, so it is one feature wider than the upstream glTF build.
+decoder. The converter profile adds `point-cloud-decode` for `POINTS`
+primitives and splats. The published reader omits that non-standard extension
+case; the writer profile includes the decoder because it verifies the streams
+it encodes.
 
 Compress both sides with one command (`gzip -9c`), not a CDN response against a
 local file, and count the JavaScript glue as well as the module: Emscripten's

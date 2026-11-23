@@ -31,6 +31,23 @@ for (let mesh = 0; mesh < asset.meshCount(); mesh++) {
 }
 ```
 
+The reader uses Draco decode ceilings well above the largest checked assets.
+Pass a third argument to set the per-stream ceilings:
+
+```js
+const asset = new GltfAsset(glbBytes, "2.0", {
+  max_points: 4_000_000,
+  max_faces: 8_000_000,
+  max_decoded_bytes: 256 * 1024 * 1024,
+});
+```
+
+The same object is the fourth argument to `GltfAsset.withResources`. Defaults
+are 256,000,000 points for point-cloud streams, 512,000,000 faces, and 2 GiB of
+decoded attribute bytes. `threads` is accepted for API parity, but this
+WebAssembly build decodes on one thread. The release reader omits the optional
+point-cloud decoder; the writer build and converter include it.
+
 For a `.gltf` with external files, pass the files by URI:
 `GltfAsset.withResources(jsonBytes, { "scene.bin": binBytes }, "2.0")`.
 `readPrimitives(pairs)` reads many primitives in one call, and
@@ -56,6 +73,15 @@ const summary = await pool.inspect(glbBytes); // what inspect_gltf returns
 pool.dispose();
 ```
 
+`pool.read` accepts the same settings as `decode_options` alongside its
+`resources` and `profile`:
+
+```js
+const { json, meshes } = await pool.read(glbBytes, {
+  decode_options: { max_points: 4_000_000 },
+});
+```
+
 A `.gltf` with external files takes them as `pool.read(jsonBytes, { resources })`,
 the way `GltfAsset.withResources` does, and `profile` picks `"2.0"` or `"2.1"`.
 
@@ -72,3 +98,36 @@ For loading from a CDN or in Node, see the
 `init` options apply, with this package's `index_bg.wasm` files.
 
 Licensed under Apache-2.0.
+
+## Writing Draco
+
+Import the writer entry for geometry writes and Draco encoding:
+
+```js
+import init, { GltfAsset } from "@draco-rust/gltf/writer";
+
+await init();
+const asset = new GltfAsset(glbBytes, "2.0");
+asset.compressPrimitive(0, 0, 5, 5, 14, 10, 12, 10, 12, 0, {
+  position_quantization_grid: { origin: [0, 0, 0], range: 100 },
+  max_output_bytes: 64 * 1024 * 1024,
+});
+const compressed = asset.glb(2);
+```
+
+`compressPrimitive` keeps its positional arguments: mesh, primitive, encoding
+speed, decoding speed, position/normal/texture-coordinate/color/generic bits,
+and method (`0` auto, `1` sequential, `2` EdgeBreaker). The final options object
+is optional. It also accepts those speeds, the five `*_bits` values, and
+`encoding_method`; object values override the corresponding positional ones.
+`fallback: true` retains ordinary geometry alongside Draco. `max_output_bytes`
+caps the final resolved buffers.
+
+`GeometryWriteOptions.useDraco(encodingSpeed, decodingSpeed, fallback, options)`
+accepts the same optional settings object. Its positional `fallback` argument
+selects the storage mode. `position_quantization_grid` takes a three-number
+`origin` and finite positive `range`, and requires position bits. Point-cloud
+compression is opt-in with `allow_points`; it writes `POINTS` under an
+extension whose specification does not define that mode.
+`spatial_point_order` and `point_order_search` can change the decoded point
+order. Point-cloud search options have no effect on triangle meshes.
