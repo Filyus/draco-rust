@@ -8,14 +8,26 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.5.0](https://github.com/Filyus/draco-rust/compare/draco-core-v2.4.0...draco-core-v2.5.0) - 2026-11-24
+
 ### Added
 
-- `EncoderOptions::set_attribute_grid_quantization` computes a shared 3D
-  POSITION grid's origin, range, and bit count from a requested step size.
-- **Encoding reports include byte-level size statistics.** `EncodedMeshInfo`
-  and `EncodedPointCloudInfo` report header and metadata, mesh connectivity,
-  per-attribute payload and transform sizes, plus the joint payload used by
-  point-cloud KD-tree encoding.
+- **Keep quantized data for custom rendering.**
+  `MeshDecoder::set_skip_attribute_transform` and
+  `PointCloudDecoder::set_skip_attribute_transform` leave selected positions
+  or normals in integer form; `PointAttribute::attribute_transform_data()`
+  exposes the parameters. A custom renderer can apply the inverse transform in
+  a shader instead of converting the values to floats during decoding.
+- **Keep separately encoded chunks on one position grid.**
+  `EncoderOptions::set_attribute_grid_quantization` takes a world-space
+  spacing; use the same spacing for each tile so its quantization levels share
+  a coordinate lattice and reduce seams caused by per-chunk grids.
+- **Find which sections consume the compressed bytes.**
+  `MeshEncoder::encode_with_info` and
+  `PointCloudEncoder::encoded_point_cloud_info` report header and metadata,
+  mesh connectivity, per-attribute or joint point-cloud payload, and transform
+  sizes. Use this to see where bytes go when tuning a storage or network
+  budget.
 
 ## [2.4.0](https://github.com/Filyus/draco-rust/compare/draco-core-v2.3.3...draco-core-v2.4.0) - 2026-11-22
 

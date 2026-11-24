@@ -71,21 +71,21 @@ For the detailed algorithm matrix, see
 
 ```toml
 [dependencies]
-draco-core = "2.4"
+draco-core = "2.5"
 ```
 
 Decoder-only builds:
 
 ```toml
 [dependencies]
-draco-core = { version = "2.4", default-features = false, features = ["decoder"] }
+draco-core = { version = "2.5", default-features = false, features = ["decoder"] }
 ```
 
 Encoder-only builds:
 
 ```toml
 [dependencies]
-draco-core = { version = "2.4", default-features = false, features = ["encoder"] }
+draco-core = { version = "2.5", default-features = false, features = ["encoder"] }
 ```
 
 ## Feature Flags
