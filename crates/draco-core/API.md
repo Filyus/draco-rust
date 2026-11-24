@@ -734,7 +734,13 @@ println!("Faces: {}", mesh.num_faces());
 println!("Points: {}", mesh.num_points());
 ```
 
-**API Surface:** `new`, `decode`, and `set_threads` (with
+Before decoding, call `set_skip_attribute_transform(attribute_type)` to keep
+matching attributes in portable integer form. The decoded attribute's
+`PointAttribute::attribute_transform_data()` retains the parameters needed for
+a later inverse transform. Repeating an attribute type has no effect.
+
+**API Surface:** `new`, `decode`, `set_skip_attribute_transform`, and
+`set_threads` (with
 `point_cloud_decode`), which caps the threads of a point-cloud stream read
 through the mesh decoder as `PointCloudDecoder::set_threads` does.
 
@@ -756,7 +762,13 @@ let mut pc = PointCloud::new();
 decoder.decode(&mut buffer, &mut pc)?;
 ```
 
-**API Surface:** `new`, `decode`, `get_geometry_type`, and `set_threads`,
+Before decoding, call `set_skip_attribute_transform(attribute_type)` to keep
+matching attributes in portable integer form. The decoded attribute's
+`PointAttribute::attribute_transform_data()` retains the parameters needed for
+a later inverse transform. Repeating an attribute type has no effect.
+
+**API Surface:** `new`, `decode`, `get_geometry_type`,
+`set_skip_attribute_transform`, and `set_threads`,
 whose default `1` keeps the decode on the calling thread and whose `0` takes
 as many threads as the machine has up to sixteen.
 
