@@ -22,6 +22,33 @@ The deliberate differences fall into two layers, kept apart below:
 For which algorithms exist at all, see
 [`crates/draco-core/SUPPORT_MATRIX.md`](crates/draco-core/SUPPORT_MATRIX.md).
 
+## Feature and API coverage
+
+This is a feature-level comparison, not a promise that Rust method names or
+signatures mirror C++. The C++ column refers to the 1.5.7 library and its
+documented tools; the Rust column names the crate that owns the feature.
+
+| Feature area | C++ Draco 1.5.7 | draco-rust | Compatibility notes |
+|---|---|---|---|
+| Raw `.drc` geometry | Meshes and point clouds; encode and decode | `draco-core`: `MeshEncoder`, `PointCloudEncoder`, `MeshDecoder`, `PointCloudDecoder` | Same feature family; exact method, version and byte-parity coverage is in the [support matrix](crates/draco-core/SUPPORT_MATRIX.md). The behavioral exceptions are listed below. |
+| Point-cloud coding | Sequential and KD-tree | `draco-core`: sequential and KD-tree | The default paths match C++ bytes. Rust also has opt-in prediction search and point reordering; those produce valid streams C++ can decode, but not the bytes C++'s encoder would choose. |
+| Triangle-mesh coding | Sequential and EdgeBreaker | `draco-core`: sequential, standard and valence EdgeBreaker | Historical predictive traversal and legacy encode paths require explicit selection/features in Rust; the exact encode targets are in the [support matrix](crates/draco-core/SUPPORT_MATRIX.md#legacy--compatibility). |
+| Attributes, prediction and transforms | Integer, generic, quantization and normal coding; semantic attributes and prediction schemes | `draco-core` implements the same codec families and schemes | 64-bit values round-trip through generic raw-byte coding; they are not prediction-compressed. See the [attribute matrix](crates/draco-core/SUPPORT_MATRIX.md#attribute-encoders--semantics). |
+| Skip an attribute transform while decoding | `Decoder::SetSkipAttributeTransform` | `MeshDecoder::set_skip_attribute_transform`, `PointCloudDecoder::set_skip_attribute_transform` | Same capability: retain transformed values and the transform parameters for caller-side processing. |
+| Geometry and attribute metadata | Yes | `draco-core` | Binary and typed metadata, including nested sub-metadata, round-trips with the same bitstream representation. |
+| Keyframe animation bitstream | Library type and codec; no standard CLI or JavaScript workflow | `draco-core`: keyframe animation container, encoder and decoder | The Rust port covers this legacy bitstream path; it is separate from glTF node animation. |
+| OBJ, PLY and STL | The upstream command-line tools import these for encoding and export them after decoding | `draco-io` reads and writes them as independent formats | These adapters convert to/from geometry; they do not contain a Draco bitstream. Matching codec output does not imply identical file-reader behavior. |
+| FBX | Not in the documented upstream CLI format set | `draco-io` reads and writes FBX 7.x scenes | Rust adds this format path; see [`crates/draco-io/FBX.md`](crates/draco-io/FBX.md) for its format-specific support and limits. |
+| glTF / GLB and `KHR_draco_mesh_compression` | `draco_transcoder` adds Draco compression; `draco3dgltf` exposes codec routines but does not read or write glTF documents | `draco-gltf` owns containers, resources, accessors, scene documents and Draco compression | Overlapping purpose, different API boundary: Rust provides the document and container layer as well as the codec integration. Unknown binary references are rejected instead of guessed. |
+| Browser / npm | `draco3d` and `draco3dgltf` expose JavaScript codec bindings | `@draco-rust/*` packages expose codec, glTF and OBJ/PLY/STL/FBX modules | The packages are split by capability and are not drop-in replacements for Google's JavaScript API. See [`web/README.md`](web/README.md#npm-packages) for package entries. |
+| Rust-specific helpers | No direct counterpart documented in the C++ API | Shared position quantization grid and encoded-section size reports in `draco-core` | Convenience and diagnostics only; they do not change the Draco bitstream format. |
+
+The upstream tool and package boundaries above are documented in the
+[google/draco 1.5.7 README](https://github.com/google/draco/blob/1.5.7/README.md)
+and the [`draco3dgltf` 1.5.7 package documentation](https://github.com/google/draco/blob/1.5.7/javascript/npm/draco3dgltf/README.md).
+The table describes feature coverage, not identical accepted inputs or results
+for every edge case; see the differences that follow.
+
 ## The codec, `draco-core`
 
 | difference | same bytes as C++? | C++ decodes ours? | we decode C++'s? |
