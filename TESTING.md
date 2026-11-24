@@ -141,7 +141,7 @@ cargo test --manifest-path crates/Cargo.toml -p draco-core --features legacy_bit
 File: `web/tests/draco-attribute-parity.ts`
 
 Purpose: `decode_draco`, which the npm decoder's three.js loader drives,
-against the `draco3d` 1.5.7 package. For every `.drc` fixture, every attribute
+against the `draco3d` 1.5.9 package. For every `.drc` fixture, every attribute
 and every typed array a loader can ask for, the values match
 `GetAttributeDataArrayForAllPoints` byte for byte or both refuse; the index,
 the geometry type and a lookup by semantic agree too. Fourteen streams written

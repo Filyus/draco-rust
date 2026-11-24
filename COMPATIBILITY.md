@@ -1,8 +1,8 @@
 # Compatibility with upstream Draco
 
-This port targets byte-exact parity with the latest released C++ Draco, 1.5.9,
-and mostly reaches it. The same mesh and options give the same bytes, and each
-implementation reads what the other writes.
+This port targets byte-exact parity with C++ Draco 1.5.9 as a fixed compatibility
+baseline, and mostly reaches it. The same mesh and options give the same bytes,
+and each implementation reads what the other writes.
 
 The repository's [C++ parity job](.github/workflows/ci.yml#L620) checks out the
 `google/draco` tag `1.5.9`; unless a row says otherwise, "C++" means that
@@ -403,7 +403,7 @@ overflows `f32`, because the values sit near both ends of the range (about
 decode to NaN. This encoder returns an invalid-parameter error instead, before
 writing anything.
 
-The latest baseline matches this refusal: C++ Draco 1.5.9 rejects the range too,
+The pinned baseline matches this refusal: C++ Draco 1.5.9 rejects the range too,
 through PR [#1234](https://github.com/google/draco/pull/1234); its test
 `TestQuantizationRangeWiderThanFloatIsRefused` covers it.
 This is a historical difference from 1.5.7, not a current stream difference.

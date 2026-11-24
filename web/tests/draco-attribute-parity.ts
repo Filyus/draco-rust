@@ -5,7 +5,7 @@
  * `GetAttributeByUniqueId` and `GetAttributeDataArrayForAllPoints`, asking for
  * the typed array the glTF accessor needs; the loader built on `decode_draco`
  * has to hand back the same bytes. For every `.drc` fixture upstream's
- * `draco3d` 1.5.7 decodes, every attribute, and every array type the loader
+ * `draco3d` 1.5.9 decodes, every attribute, and every array type the loader
  * can ask for, this compares the two: the values byte for byte, and a refusal
  * where upstream's conversion returns false. The index and the stream's
  * geometry type are compared as well, and a request by semantic finds the

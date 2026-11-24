@@ -90,7 +90,7 @@
   "devDependencies": {
     "@playwright/test": "1.61.1",
     "@types/node": "^24.13.3",
-    "draco3d": "1.5.7",
+    "draco3d": "1.5.9",
     "esbuild": "^0.28.2",
     "gltf-validator": "2.0.0-dev.3.10",
     "three": "0.186.1",

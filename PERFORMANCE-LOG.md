@@ -36,7 +36,7 @@ figure at all.
 `rejected` -- tried, deliberately not kept. `retracted` -- an earlier claim
 here was withdrawn. `diagnostic` -- measured only, no change proposed.
 
-95 rounds: 59 landed, 15 diagnostic, 11 null, 8 retracted, 2 rejected.
+96 rounds: 59 landed, 16 diagnostic, 11 null, 8 retracted, 2 rejected.
 
 | Round | Verdict | Headline |
 | --- | --- | ---: |
@@ -140,6 +140,7 @@ here was withdrawn. `diagnostic` -- measured only, no change proposed.
 | [KTX2 In WASM: zrip, And The Transcoder's Optimization Level](#ktx2-in-wasm-zrip-and-the-transcoders-optimization-level) | landed (opt 2), deferred (zrip) | `zrip: 3x native, 1.9x WASM Zstd, 1.01x WASM decode; opt 2: 0.87x for +8.7 kB` |
 | [`decode_draco` Against draco3d, And The Pool](#decode_draco-against-draco3d-and-the-pool) | diagnostic | `0.99-2.48x draco3d's speed; 8 streams 98 -> 42 ms on 4 workers` |
 | [`createDracoLoader` Against DRACOLoader, In The Browser](#createdracoloader-against-dracoloader-in-the-browser) | diagnostic | `1.33-2.01x warm, 1.03-1.10x cold` |
+| [Draco 1.5.7 vs 1.5.9 On The Same Rust Commit](#draco-157-vs-159-on-the-same-rust-commit) | diagnostic | `all output cells equal; Rust ahead in every 1.5.9 family and speed` |
 
 
 ## The 2026-08-17 Snapshot, Against The Patched Reference
@@ -5528,6 +5529,64 @@ Verdict: `diagnostic`. The warm ratios sit near the single-thread ones in the
 round above, so the pool passes the decoder's speed through without eating
 it.
 
+### Draco 1.5.7 vs 1.5.9 On The Same Rust Commit
+
+2026-11-24, `180b9de7`, AMD Ryzen AI 7 350 with Radeon 860M, Windows, 16
+threads, rustc 1.100.0, MSVC 19.44.35223.0. The same Rust tree was measured
+against both stock C++ tags, each built x64 Release with the same Visual Studio
+generator and compiler. The source refs were `1.5.7`
+(`8786740086a9f4d83f44aa83badfbea4dce7a1b5`) and `1.5.9`
+(`554628821c3448319d7d4ae48db170b8c63e1aaf`). Five uncommitted documentation
+and npm-pin edits were present; no Rust source was modified. The perf-suite used
+`--allow-dirty` and recorded that state in each report.
+
+Both full suites completed with 950 rows each. The 1.5.7 and 1.5.9 runs each
+repeated the seeded sweep three times (264 rows per sweep), and every compared
+output matched. KTX2 also completed; Zstd was skipped because no
+`ZSTD_SOURCE_DIR` was supplied. Reports: [C++ 1.5.7](.scratch/perf-suite/2026-11-24-180b9de7-draco-1.5.7-rerun/report.md),
+[C++ 1.5.9](.scratch/perf-suite/2026-11-24-180b9de7/report.md).
+
+Seeded sweep speedup (`C++ time / Rust time`), across the 12 position-only
+meshes and all four families:
+
+| Speed | Encode 1.5.7 | Encode 1.5.9 | Decode 1.5.7 | Decode 1.5.9 |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 | `1.64x` | `1.67x` | `1.36x` | `1.38x` |
+| 1 | `1.74x` | `1.73x` | `1.43x` | `1.43x` |
+| 2 | `1.97x` | `1.94x` | `1.52x` | `1.72x` |
+| 3 | `1.99x` | `1.92x` | `1.40x` | `1.48x` |
+| 4 | `1.96x` | `2.02x` | `1.38x` | `1.54x` |
+| 5 | `2.05x` | `2.07x` | `1.32x` | `1.35x` |
+| 6 | `2.01x` | `2.11x` | `1.33x` | `1.36x` |
+| 7 | `2.07x` | `2.07x` | `1.34x` | `1.30x` |
+| 8 | `2.17x` | `2.15x` | `1.44x` | `1.46x` |
+| 9 | `2.14x` | `2.13x` | `1.40x` | `1.46x` |
+| 10 | `3.02x` | `3.14x` | `2.13x` | `2.02x` |
+
+Per-family ranges across the 11 speeds, computed with the same per-run median
+over meshes and then median over the three runs:
+
+| Family | Encode 1.5.7 | Encode 1.5.9 | Decode 1.5.7 | Decode 1.5.9 |
+| --- | ---: | ---: | ---: | ---: |
+| fan | `3.12–21.86x` | `3.24–23.86x` | `1.32–2.12x` | `1.31–2.29x` |
+| grid | `1.61–2.82x` | `1.59–3.24x` | `1.25–1.82x` | `1.18–2.01x` |
+| ribbon | `1.46–3.16x` | `1.53–2.60x` | `0.99–2.54x` | `1.43–1.98x` |
+| torus | `1.64–2.77x` | `1.66–2.83x` | `1.08–2.07x` | `1.22–1.99x` |
+
+On Draco 1.5.9, all 88 family/operation/speed cells favor Rust; the slowest
+ratio is `1.18x` on grid decode. Against 1.5.7, ribbon decode had one
+near-parity cell at `0.99x`. The aggregate ratios move modestly by mode; there
+is no broad performance reversal on the new baseline. The family table also
+resolves the previous snapshot's blind spot: the overall median could hide a
+family that was behind, while the 1.5.9 ranges show each family separately.
+
+The 1.5.9 compatibility rerun passed the six C++-tool test targets from CI
+(18 tests), the complete `draco-cpp-test-bridge` suite (55 passed; the external
+corpus probe was ignored because `DRACO_CORPUS_DIR` was not set; one doctest is
+also marked ignored), and the npm interop check on `draco3d@1.5.9` (661
+attribute arrays, 67 indices and 228 matching refusals). `test:gltf-draco-write`
+passed as well. No code change was made from these measurements.
+
 ## Unexplored
 
 Leads this document has evidence for and has not followed, roughly by size of
@@ -5811,14 +5870,14 @@ attempted.
 
 ### Owed to the document itself
 
-- **Every bridge-measured C++ figure carries the `4.8x` patched-reference
-  factor** described at the top: the seeded sweep, the real corpus, encode and
-  decode alike. They need re-taking with `DRACO_CPP_BUILD_DIR` pinned to
-  pristine 1.5.7. Until then those tables are internally consistent and
-  externally meaningless.
-- **The `[Speed Snapshot]` headline is an average over the seeded sweep**,
-  which this session showed is a composite whose members disagree in sign. It
-  should be re-taken per family, or stop being quoted as one ratio.
+- ~~**Every bridge-measured C++ figure carries the `4.8x` patched-reference
+  factor** described at the top.~~ The headline suite was re-taken against
+  stock 1.5.7 and 1.5.9 on 2026-11-24; the current snapshot in
+  `PERFORMANCE.md` uses 1.5.9. The older detailed bridge tables remain
+  historical measurements.
+- ~~**The `[Speed Snapshot]` headline is an average over the seeded sweep**,
+  which could hide a family that was behind.~~ The new snapshot includes
+  per-family ranges; every family is ahead on encode and decode against 1.5.9.
 
 ### Sweeps worth widening
 

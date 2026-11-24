@@ -37,8 +37,12 @@ and libraries within `3%` of each other in size, so nothing about the build
 configuration reveals which one is linked.
 
 So: set `DRACO_CPP_BUILD_DIR`/`DRACO_CPP_SOURCE_DIR` explicitly for every
-comparison, and say in the write-up which build a figure is against. Every
-number in this document is against pristine upstream 1.5.7.
+comparison, and say in the write-up which build a figure is against. The older
+Draco bridge figures below are historical measurements against the locally
+patched build described above. On 2026-11-24, the full suite was re-run against
+stock Draco 1.5.7 and 1.5.9 at the same Rust commit. The fixed 1.5.9 baseline is
+shown in the Speed Snapshot; both reports and the side-by-side comparison are
+in [`PERFORMANCE-LOG.md`](PERFORMANCE-LOG.md#draco-157-vs-159-on-the-same-rust-commit).
 
 ## Re-Taking Every Figure
 
@@ -57,7 +61,8 @@ DRACO_CPP_BUILD_DIR=... DRACO_CPP_SOURCE_DIR=... ZSTD_SOURCE_DIR=... \
 
 It refuses to start when the reference is unpinned, a Debug build, or carries
 the `DRACO_VERBOSE` patch (looked for in the linked library and in the
-headers the bridge compiles), and when the tree has uncommitted changes. It
+headers the bridge compiles), and when the tree has uncommitted changes unless
+`--allow-dirty` is passed. It records the dirty change count in that case. It
 builds every harness before timing any, with `DRACO_REQUIRE_CPP_BRIDGE=1`, so a
 missing bridge fails the build instead of skipping the comparisons. The
 harnesses then run one at a time. Each appends its rows to the
@@ -75,26 +80,30 @@ Without `ZSTD_SOURCE_DIR` the Zstd step is skipped and the report says so.
 
 Seeded synthetic sweep, position-only, 12 meshes over 4 families: `us` per
 1,000 faces, the median over the meshes of a run, then the median over three
-runs. Measured 2026-10-10 at `57d8cb22` with `tools/perf-suite`:
+runs. Measured 2026-11-24 at `180b9de7` with `tools/perf-suite`, against stock
+C++ Draco 1.5.9:
 
 | Speed | Encode C++ / Rust | Encode | Decode C++ / Rust | Decode |
 | ---: | ---: | ---: | ---: | ---: |
-| 0 | `420.3` / `259.1` | `1.62x` | `92.0` / `72.3` | `1.27x` |
-| 1 | `613.7` / `293.5` | `2.09x` | `87.9` / `64.6` | `1.36x` |
-| 2 | `229.1` / `122.9` | `1.86x` | `73.2` / `49.6` | `1.48x` |
-| 3 | `227.2` / `121.0` | `1.88x` | `70.2` / `53.6` | `1.31x` |
-| 4 | `232.0` / `124.7` | `1.86x` | `63.2` / `48.2` | `1.31x` |
-| 5 | `202.5` / `103.3` | `1.96x` | `52.5` / `39.8` | `1.32x` |
-| 6 | `205.8` / `111.1` | `1.85x` | `53.6` / `40.8` | `1.31x` |
-| 7 | `200.7` / `114.4` | `1.75x` | `51.1` / `39.6` | `1.29x` |
-| 8 | `190.0` / `93.0` | `2.04x` | `45.1` / `32.9` | `1.37x` |
-| 9 | `201.0` / `97.9` | `2.05x` | `44.6` / `33.7` | `1.32x` |
-| 10 | `52.3` / `17.0` | `3.08x` | `21.2` / `9.9` | `2.13x` |
+| 0 | `400.8` / `239.9` | `1.67x` | `67.4` / `48.7` | `1.38x` |
+| 1 | `404.9` / `233.4` | `1.73x` | `62.3` / `43.6` | `1.43x` |
+| 2 | `161.7` / `83.5` | `1.94x` | `53.2` / `30.9` | `1.72x` |
+| 3 | `161.6` / `84.4` | `1.92x` | `46.1` / `31.1` | `1.48x` |
+| 4 | `164.7` / `81.4` | `2.02x` | `46.7` / `30.3` | `1.54x` |
+| 5 | `143.1` / `69.0` | `2.07x` | `35.9` / `26.6` | `1.35x` |
+| 6 | `142.5` / `67.4` | `2.11x` | `36.8` / `27.0` | `1.36x` |
+| 7 | `141.7` / `68.4` | `2.07x` | `36.0` / `27.8` | `1.30x` |
+| 8 | `133.7` / `62.3` | `2.15x` | `31.8` / `21.8` | `1.46x` |
+| 9 | `133.0` / `62.6` | `2.13x` | `32.4` / `22.1` | `1.46x` |
+| 10 | `35.5` / `11.3` | `3.14x` | `13.8` / `6.8` | `2.02x` |
 
-The port is ahead at every speed on both operations: `1.6x`-`3.1x` on encode
-and `1.3x`-`2.1x` on decode, widest at speed 10, the sequential coder. The
-named-model and real-model tables below show the same on real meshes, with
-narrower margins on decode.
+On this baseline, the port is ahead at every speed: `1.67x`-`3.14x` on encode
+and `1.30x`-`2.02x` on decode, with the widest margins at speed 10. The fresh
+per-family ranges are `1.59x`-`23.86x` on encode and `1.18x`-`2.29x` on decode;
+the report breaks these out by family. All 88 family/operation/speed cells
+favor Rust against 1.5.9. The named-model and real-model tables below retain
+their original measurements; current 1.5.9 results are in the linked
+full-suite report.
 
 ## Benchmarks
 
