@@ -130,14 +130,14 @@ jobs:
           echo "$SHA is the tip of main and its checks passed. Deploying."
           echo "deploy=true" >> "$GITHUB_OUTPUT"
 
-  deploy:
-    name: deploy
+  # Keep artifact upload and deployment in separate jobs. deploy-pages looks
+  # up the artifact through the Actions API, which may not list it immediately
+  # after upload has finalized.
+  build:
+    name: build
     runs-on: ubuntu-latest
     needs: gate
     if: needs.gate.outputs.deploy == 'true'
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
       # `workflow_run` starts this workflow from the default branch, so the
@@ -233,6 +233,16 @@ jobs:
         with:
           path: web/www
 
+  deploy:
+    name: deploy
+    runs-on: ubuntu-latest
+    needs: [gate, build]
+    if: needs.gate.outputs.deploy == 'true'
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
