@@ -118,14 +118,18 @@ const compressed = asset.glb(2);
 `compressPrimitive` keeps its positional arguments: mesh, primitive, encoding
 speed, decoding speed, position/normal/texture-coordinate/color/generic bits,
 and method (`0` auto, `1` sequential, `2` EdgeBreaker). The final options object
-is optional. It also accepts those speeds, the five `*_bits` values, and
-`encoding_method`; object values override the corresponding positional ones.
-`fallback: true` retains ordinary geometry alongside Draco. `max_output_bytes`
-caps the final resolved buffers.
+is optional. It accepts `encoding_speed`, `decoding_speed`, `position_bits`,
+`normal_bits`, `texcoord_bits`, `color_bits`, `generic_bits`,
+`encoding_method`, `fallback`, `max_output_bytes`,
+`position_quantization_grid`, `allow_points`, `spatial_point_order`,
+`point_order_search`, and `prediction_search`. When an option also has a
+positional argument, the object value wins. `fallback: true` retains ordinary
+geometry alongside Draco. `max_output_bytes` caps the final resolved buffers.
 
 `GeometryWriteOptions.useDraco(encodingSpeed, decodingSpeed, fallback, options)`
-accepts the same optional settings object. Its positional `fallback` argument
-selects the storage mode. `position_quantization_grid` takes a three-number
+accepts the other settings above; its positional `fallback` argument selects
+the storage mode, so do not pass `fallback` in that options object.
+`position_quantization_grid` takes a three-number
 `origin` and finite positive `range`, and requires position bits. Point-cloud
 compression is opt-in with `allow_points`; it writes `POINTS` under an
 extension whose specification does not define that mode.
