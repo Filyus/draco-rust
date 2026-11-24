@@ -2214,17 +2214,16 @@ fn integer_normals_grid() -> Mesh {
 /// predicts in octahedral coordinates the wrap transform does not have. The
 /// encoder codes a delta instead. C++ Draco 1.5.7 built the scheme over the
 /// wrap transform anyway and wrote a stream that decodes to other normals;
-/// upstream `main` falls back to the delta since google/draco#1239, and the
-/// fixture is the stream its own test writes for this mesh.
+/// C++ Draco 1.5.9 falls back to the delta, as its own round-trip test does.
 #[test]
-fn integer_normals_below_speed_four_encode_a_delta_as_upstream_main_does() {
+fn integer_normals_below_speed_four_match_cpp_1_5_9() {
     let mut options = EncoderOptions::new();
     options.set_global_int("encoding_speed", 0);
     options.set_global_int("decoding_speed", 0);
     options.set_attribute_int(0, "quantization_bits", 11);
     let bytes = encode_mesh(integer_normals_grid(), &options).expect("encode");
-    let upstream = include_bytes!("../../../testdata/cpp_main_integer_normals_speed_0.drc");
-    assert_eq!(bytes, upstream, "not the stream upstream main writes");
+    let upstream = include_bytes!("../../../testdata/cpp_draco_1_5_9_integer_normals_speed_0.drc");
+    assert_eq!(bytes, upstream, "not the stream C++ Draco 1.5.9 writes");
 
     let mut decoded = Mesh::new();
     MeshDecoder::new()

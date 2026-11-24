@@ -19,7 +19,7 @@ This project is independent and is not an official Google Draco release.
 
 ## Status
 
-Parity with C++ Draco 1.5.7 is byte-exact and mostly reached. The same mesh and
+Parity with C++ Draco 1.5.9 is byte-exact and mostly reached. The same mesh and
 options give the same bytes, and each implementation reads what the other
 writes. The deliberate exceptions are in
 [`COMPATIBILITY.md`](https://github.com/Filyus/draco-rust/blob/main/COMPATIBILITY.md).

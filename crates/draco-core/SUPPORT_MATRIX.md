@@ -1,7 +1,8 @@
 # Support Matrix: draco-core vs C++ Draco
 
-How `draco-core` maps onto upstream C++ Draco. `draco-core` is the raw `.drc`
-**bitstream** layer only; file and scene formats live one level up in `draco-io`
+How `draco-core` maps onto upstream C++ Draco 1.5.9, the version pinned by the
+repository's C++ parity job. `draco-core` is the raw `.drc` **bitstream** layer
+only; file and scene formats live one level up in `draco-io`
 (OBJ / PLY / STL / FBX) and `draco-gltf` (full glTF / GLB scenes). The C++ reference is
 a local checkout of upstream Draco, wherever it is kept; the tools that compare
 against it take its path from the environment rather than assuming one.
@@ -24,6 +25,7 @@ at a different level of abstraction.
 | `.drc` point-cloud / triangle-mesh / keyframe bitstream | yes | `draco-core` |
 | `.drc` geometry & attribute metadata | yes | `draco-core` |
 | glTF / GLB scenes + `KHR_draco_mesh_compression` | yes | `draco-gltf` (containers, accessors and document-preserving compression, all geometry via `draco-core`) |
+| Experimental AOMedia PMC compression in glTF | yes (added in C++ Draco 1.5.8) | Not implemented; Rust handles standard Draco compression through `KHR_draco_mesh_compression` |
 | glTF materials / textures / nodes / animations / skins / lights / extensions | yes (transcoder) | `draco-gltf` — understood references are preserved across a Draco round-trip; opaque unknown binary references are rejected rather than guessed |
 | glTF `EXT_structural_metadata` / `EXT_mesh_features` | yes (glTF path) | `draco-gltf` — property-table buffer views are kept alive and remapped across compaction; feature IDs ride on vertex attributes the encoder returns unchanged. Richer semantic interpretation is future scene-layer work |
 | glTF extensions across a Draco transform | yes (glTF path) | `draco-gltf` — extensions with no binary references are declared, the two that own references remap them, and anything unregistered still refuses rather than being guessed at. See `GLTF_2_1_SUPPORT.md` |

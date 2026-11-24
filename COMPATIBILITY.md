@@ -1,14 +1,13 @@
 # Compatibility with upstream Draco
 
-This port targets byte-exact parity with C++ Draco 1.5.7, and mostly reaches it.
-The same mesh and options give the same bytes, and each implementation reads
-what the other writes.
+This port targets byte-exact parity with the latest released C++ Draco, 1.5.9,
+and mostly reaches it. The same mesh and options give the same bytes, and each
+implementation reads what the other writes.
 
-Upstream's `main` has since taken fixes from this port for three of the
-differences below, and a section says so where it applies. No release carries
-them yet: 1.5.7, of January 2024, is still the latest, and it is what "C++"
-means in the tables. Each claim about `main` was checked against a build of
-google/draco `eb7c044` (2026-10-10).
+The repository's [C++ parity job](.github/workflows/ci.yml#L620) checks out the
+`google/draco` tag `1.5.9`; unless a row says otherwise, "C++" means that
+release. Three differences from 1.5.7 were fixed by upstream PRs included in
+1.5.9. Their historical behavior remains below, separated from current results.
 
 The deliberate differences fall into two layers, kept apart below:
 
@@ -25,54 +24,64 @@ For which algorithms exist at all, see
 ## Feature and API coverage
 
 This is a feature-level comparison, not a promise that Rust method names or
-signatures mirror C++. The C++ column refers to the 1.5.7 library and its
+signatures mirror C++. The C++ column refers to the 1.5.9 library and its
 documented tools; the Rust column names the crate that owns the feature.
 
-| Feature area | C++ Draco 1.5.7 | draco-rust | Compatibility notes |
+| Feature area | C++ Draco 1.5.9 | draco-rust | Compatibility notes |
 |---|---|---|---|
 | Raw `.drc` geometry | Meshes and point clouds; encode and decode | `draco-core`: `MeshEncoder`, `PointCloudEncoder`, `MeshDecoder`, `PointCloudDecoder` | Same feature family; exact method, version and byte-parity coverage is in the [support matrix](crates/draco-core/SUPPORT_MATRIX.md). The behavioral exceptions are listed below. |
 | Point-cloud coding | Sequential and KD-tree | `draco-core`: sequential and KD-tree | The default paths match C++ bytes. Rust also has opt-in prediction search and point reordering; those produce valid streams C++ can decode, but not the bytes C++'s encoder would choose. |
-| Triangle-mesh coding | Sequential and EdgeBreaker | `draco-core`: sequential, standard and valence EdgeBreaker | Historical predictive traversal and legacy encode paths require explicit selection/features in Rust; the exact encode targets are in the [support matrix](crates/draco-core/SUPPORT_MATRIX.md#legacy--compatibility). |
+| Triangle-mesh coding | Sequential and EdgeBreaker; experimental AOMedia PMC in the glTF transcoder | `draco-core`: sequential, standard and valence EdgeBreaker | Rust does not implement the separate experimental PMC path. Historical predictive traversal and legacy encode paths require explicit selection/features; exact encode targets are in the [support matrix](crates/draco-core/SUPPORT_MATRIX.md#legacy--compatibility). |
 | Attributes, prediction and transforms | Integer, generic, quantization and normal coding; semantic attributes and prediction schemes | `draco-core` implements the same codec families and schemes | 64-bit values round-trip through generic raw-byte coding; they are not prediction-compressed. See the [attribute matrix](crates/draco-core/SUPPORT_MATRIX.md#attribute-encoders--semantics). |
 | Skip an attribute transform while decoding | `Decoder::SetSkipAttributeTransform` | `MeshDecoder::set_skip_attribute_transform`, `PointCloudDecoder::set_skip_attribute_transform` | Same capability: retain transformed values and the transform parameters for caller-side processing. |
 | Geometry and attribute metadata | Yes | `draco-core` | Binary and typed metadata, including nested sub-metadata, round-trips with the same bitstream representation. |
 | Keyframe animation bitstream | Library type and codec; no standard CLI or JavaScript workflow | `draco-core`: keyframe animation container, encoder and decoder | The Rust port covers this legacy bitstream path; it is separate from glTF node animation. |
-| OBJ, PLY and STL | The upstream command-line tools import these for encoding and export them after decoding | `draco-io` reads and writes them as independent formats | These adapters convert to/from geometry; they do not contain a Draco bitstream. Matching codec output does not imply identical file-reader behavior. |
+| OBJ, PLY and STL | The upstream command-line tools import these for encoding and export them after decoding; 1.5.8 added big-endian binary PLY reading | `draco-io` reads and writes them as independent formats, including big-endian binary PLY | These adapters convert to/from geometry; they do not contain a Draco bitstream. Matching codec output does not imply identical file-reader behavior. |
 | FBX | Not in the documented upstream CLI format set | `draco-io` reads and writes FBX 7.x scenes | Rust adds this format path; see [`crates/draco-io/FBX.md`](crates/draco-io/FBX.md) for its format-specific support and limits. |
-| glTF / GLB and `KHR_draco_mesh_compression` | `draco_transcoder` adds Draco compression; `draco3dgltf` exposes codec routines but does not read or write glTF documents | `draco-gltf` owns containers, resources, accessors, scene documents and Draco compression | Overlapping purpose, different API boundary: Rust provides the document and container layer as well as the codec integration. Unknown binary references are rejected instead of guessed. |
-| Browser / npm | `draco3d` and `draco3dgltf` expose JavaScript codec bindings | `@draco-rust/*` packages expose codec, glTF and OBJ/PLY/STL/FBX modules | The packages are split by capability and are not drop-in replacements for Google's JavaScript API. See [`web/README.md`](web/README.md#npm-packages) for package entries. |
+| glTF / GLB and `KHR_draco_mesh_compression` | `draco_transcoder` adds Draco compression; `draco3dgltf` exposes codec routines but does not read or write glTF documents | `draco-gltf` owns containers, resources, accessors, scene documents and standard Draco compression | Overlapping purpose, different API boundary: Rust provides the document and container layer. C++ 1.5.8+ also has experimental PMC compression; Rust does not. Unknown binary references are rejected instead of guessed. |
+| Newer glTF accessors and extensions | 1.5.8 added signed integer and normalized accessors, more `TEXCOORD_n` sets, and support for `KHR_materials_emissive_strength`, `KHR_materials_iridescence`, `KHR_materials_anisotropy`, `KHR_materials_diffuse_transmission`, `KHR_animation_pointer` and `KHR_interactivity` | `draco-gltf` supports signed/normalized accessor storage and preserves extension JSON; the web scene path interprets a selected set | Preservation is not semantic support for every extension. For example, `KHR_interactivity` survives document serialization but is not registered for Draco transforms, so current transforms refuse a document carrying it. |
+| Browser / npm | `draco3d` and `draco3dgltf` expose JavaScript codec bindings; 1.5.9 fixed Emscripten `HEAP*` exports and `wasmBinary` support | `@draco-rust/*` packages expose codec, glTF and OBJ/PLY/STL/FBX modules | The packages use a different JavaScript/WASM API and are not drop-in replacements for Google's bindings. See [`web/README.md`](web/README.md#npm-packages) for package entries. |
 | Rust-specific helpers | No direct counterpart documented in the C++ API | Shared position quantization grid and encoded-section size reports in `draco-core` | Convenience and diagnostics only; they do not change the Draco bitstream format. |
 
 The upstream tool and package boundaries above are documented in the
-[google/draco 1.5.7 README](https://github.com/google/draco/blob/1.5.7/README.md)
-and the [`draco3dgltf` 1.5.7 package documentation](https://github.com/google/draco/blob/1.5.7/javascript/npm/draco3dgltf/README.md).
+[google/draco 1.5.9 README](https://github.com/google/draco/blob/1.5.9/README.md)
+and the [`draco3dgltf` 1.5.9 package documentation](https://github.com/google/draco/blob/1.5.9/javascript/npm/draco3dgltf/README.md).
 The table describes feature coverage, not identical accepted inputs or results
 for every edge case; see the differences that follow.
 
 ## The codec, `draco-core`
 
-| difference | same bytes as C++? | C++ decodes ours? | we decode C++'s? |
+| difference from C++ 1.5.9 | same bytes as C++? | C++ 1.5.9 decodes ours? | we decode C++ 1.5.9's? |
 |---|---|---|---|
 | [`uint32` > `i32::MAX`][uint32] | C++ refuses | yes | yes |
-| [Overflowing corrections][wrap] | yes | no, nor its own; `main` yes | yes |
 | [Integer details][minor] | yes | yes | old `uint32` parents differ |
 | [Point-cloud options][options] | only when off | yes | yes |
 | [`Mesh::finalize`][finalize] | yes; the mesh differs | yes | yes |
 | [64-bit dedup][dedup] | n/a | yes | yes |
-| [Range wider than `f32`][range] | we refuse; C++ writes NaN, `main` refuses | n/a | yes, to NaN |
-| [Unquantized integer normals][intnormals] | no: C++ writes other normals; `main` yes | yes | its stream holds other normals |
 
 [uint32]: #uint32-attribute-values-above-i32max
-[wrap]: #prediction-corrections-that-overflow-int32
+[wrap]: #prediction-corrections-that-overflow-int32-fixed-in-1-5-9
 [minor]: #minor-differences-in-integer-attribute-handling
 [options]: #point-cloud-encoder-options-not-in-upstream
 [finalize]: #meshfinalize-drops-unused-points-and-values
 [dedup]: #deduplication-of-64-bit-attribute-values
-[range]: #quantizing-a-range-wider-than-f32
-[intnormals]: #unquantized-integer-normals-below-speed-4
+[range]: #quantizing-a-range-wider-than-f32-fixed-in-1-5-9
+[intnormals]: #unquantized-integer-normals-below-speed-4-fixed-in-1-5-9
 
-"C++ refuses": C++ Draco will not encode that input. "n/a": nothing upstream
-builds reaches that code.
+"C++ refuses": C++ Draco 1.5.9 will not encode that input. "n/a": nothing
+upstream builds reaches that code.
+
+### Behaviors fixed upstream in 1.5.9
+
+These were real differences from 1.5.7 and remain useful compatibility history.
+Each fix was merged before the 1.5.9 release; they are no longer differences
+from the current baseline.
+
+| Behavior | C++ Draco 1.5.7 | C++ Draco 1.5.9 | draco-rust |
+|---|---|---|---|
+| [Prediction corrections overflowing `int32`][wrap] | Could fail to decode its own stream | Uses exact-width reconstruction; PR [#1238](https://github.com/google/draco/pull/1238) | Exact-width reconstruction |
+| [Quantization range wider than `f32`][range] | Could write a stream that decodes to NaN | Refuses the range; PR [#1234](https://github.com/google/draco/pull/1234) | Refuses the range |
+| [Unquantized integer normals below speed 4][intnormals] | Could write a stream that decodes to different normals | Uses delta prediction; PR [#1239](https://github.com/google/draco/pull/1239) | Uses delta prediction |
 
 ### `uint32` attribute values above `i32::MAX`
 
@@ -158,7 +167,7 @@ ranges into one `uint32` attribute pays for it.
 
 All four run on CI. The first three need nothing outside this repository. The
 fourth links the C++ library through `draco-cpp-test-bridge`, so it runs in the
-`draco C++ parity` job, which builds Draco at the 1.5.7 tag and compares against
+`draco C++ parity` job, which builds Draco at the 1.5.9 tag and compares against
 it both by spawning its command-line tools and by linking its library.
 
 That job sets `DRACO_REQUIRE_CPP_TOOLS` and `DRACO_REQUIRE_CPP_BRIDGE`. Keep this
@@ -174,8 +183,8 @@ quantization, where prediction residuals leave `int32` and both encoders
 overflow; there it measures rather than asserts. In that region upstream built
 with gcc asks for memory without bound on one case, reaching 11.5 GB before
 `std::bad_alloc` ends the process. An MSVC build of the same sources survives
-it, so the compiler decides this, not the version: released 1.5.7 and upstream
-`main` have identical entropy sources and both do it.
+it, so the compiler decides this, not the version: released 1.5.9 has the same
+entropy source and both compiler builds do it.
 
 `SWEEP_ASSERTED_ONLY` limits the sweep to the asserted region, and the parity
 job sets it. Nothing asserted is lost: 349 comparisons across grid, soup and
@@ -228,45 +237,47 @@ What it costs:
 The refusal buys no interoperability, since C++ Draco already reads what this
 encoder writes. It only narrows the accepted input to upstream's.
 
-### Prediction corrections that overflow `int32`
+### Prediction corrections that overflow `int32` (fixed in 1.5.9)
 
 #### Effect on streams
 
-Two behaviours around prediction corrections differ from upstream. In both,
-this port reconstructs exactly what the encoder coded:
+Two behaviours around prediction corrections differed from C++ Draco 1.5.7.
+This port reconstructs exactly what the encoder coded, and C++ Draco 1.5.9 now
+does as well:
 
 - When a prediction plus its correction overflows `int32`, this decoder
-  recovers the coded value. C++ Draco does that addition in `uint32` to avoid
+  recovers the coded value. C++ Draco 1.5.7 did that addition in `uint32` to avoid
   signed overflow, and where the `uint32` sum wraps, its single wrap step cannot
   undo it: the value lands a whole span away, and every later prediction reads
   the wrong number. Upstream then either decodes different geometry or, when the
   drifted values trip its own overflow guards, refuses a stream it wrote itself.
-- The portable tex-coord predictor wraps wherever upstream wraps and refuses
-  only where upstream refuses (the three guards in its `ComputePredictedValue`).
+- The portable tex-coord predictor wraps wherever C++ Draco 1.5.7 wraps and
+  refuses only where it refuses (the three guards in its `ComputePredictedValue`).
   An earlier version of this port checked every step on decode, and refused
   streams whose scaled arithmetic left `i64` — streams C++ Draco decodes —
   while its encoder wrapped, so the two halves of this codec could not read each
   other's output. They now share one predictor with upstream's rules.
 
-Only decoding differs, and upstream's behaviour here is measured. Built through
-C++ Draco 1.5.7's `ExpertEncoder` with the same six points and forty-five
-faces, the same `uint16` position and `int32` tex coords, and EdgeBreaker at
-speeds 0/4 with the same two prediction schemes, the reproducer mesh encodes to
-911 bytes, **byte-identical to what this encoder writes**. C++ Draco then fails
-to decode its own stream with "Failed to decode point attributes", because its
-overflow guards fire on the wrong reconstruction. So no encoder choice helps:
-upstream cannot round-trip this mesh, and only this decoder reads the stream
-both encoders produce.
+Only decoding differed in C++ Draco 1.5.7, and its behaviour here is measured.
+Built through C++ Draco 1.5.7's `ExpertEncoder` with the same six points and
+forty-five faces, the same `uint16` position and `int32` tex coords, and
+EdgeBreaker at speeds 0/4 with the same two prediction schemes, the reproducer
+mesh encodes to 911 bytes, **byte-identical to what this encoder writes**. C++
+Draco then fails to decode its own stream with "Failed to decode point
+attributes", because its overflow guards fire on the wrong reconstruction. So
+no encoder choice helps: upstream cannot round-trip this mesh, and only this
+decoder reads the stream both encoders produce.
 
 Files that decode identically in both implementations still do. Every
 correction that stays inside the wrap range reconstructs exactly as before; the
 results differ only where C++'s own arithmetic wraps.
 
-Upstream's `main` decodes these streams too, since google/draco#1238 (merged
-2026-10-09) moved its addition to `int64_t`. Its test
-`TestTexCoordPredictionThatWrapsRoundTrips` round-trips the 911-byte stream.
-The change touched only the decoder, so `main` still writes the bytes this
-encoder writes.
+C++ Draco 1.5.9 decodes these streams too: PR
+[#1238](https://github.com/google/draco/pull/1238) moved the reconstruction
+addition to `int64_t`. Its test
+`TestTexCoordPredictionThatWrapsRoundTrips` round-trips the same 911-byte
+stream. The change touched only the decoder, so its encoder still writes the
+bytes this encoder writes.
 
 #### How each implementation handles it
 
@@ -277,9 +288,10 @@ and correction would overflow, the decoder adds them in `i64` instead
 [`prediction_scheme_wrap.rs`](crates/draco-core/src/prediction_scheme_wrap.rs)).
 The exact sum is at most half a span outside `[min, max]`, so the single wrap
 step provably lands on the original value for every correction the encoder can
-produce. Upstream's `ComputeOriginalValue`
+produce. C++ Draco 1.5.7's `ComputeOriginalValue`
 (`prediction_scheme_wrap_decoding_transform.h`) does the addition in `uint32`,
-where the wrap loses information that the `i64` sum keeps.
+where the wrap loses information that the `i64` sum keeps; 1.5.9 uses the
+`int64_t` addition from PR #1238.
 
 Both tex-coord schemes run one predictor
 (`MeshPredictionSchemeTexCoordsPortablePredictor`,
@@ -382,21 +394,19 @@ attribute, and for every type it handles the result is the same. The
 difference lets a caller finalize a mesh carrying a 64-bit attribute, which
 used to fail here as it does upstream.
 
-### Quantizing a range wider than `f32`
+### Quantizing a range wider than `f32` (fixed in 1.5.9)
 
 Quantization scales by `max - min` of each component. NaN and infinite values
 are refused on both sides. When every value is finite but the difference still
 overflows `f32`, because the values sit near both ends of the range (about
-±1.7·10³⁸), the scale is infinite. C++ Draco encodes anyway and writes a stream
-whose values decode to NaN. This encoder returns an invalid-parameter error
-instead, before writing anything.
+±1.7·10³⁸), C++ Draco 1.5.7 encoded anyway and wrote a stream whose values
+decode to NaN. This encoder returns an invalid-parameter error instead, before
+writing anything.
 
-No usable stream changes: the only input affected is one where C++'s output
-does not hold the geometry it was given. Both decoders read the C++ stream the
-same way, to NaN.
-
-Upstream's `main` refuses the range as well, since google/draco#1234 (merged
-2026-10-09); its test `TestQuantizationRangeWiderThanFloatIsRefused` covers it.
+The latest baseline matches this refusal: C++ Draco 1.5.9 rejects the range too,
+through PR [#1234](https://github.com/google/draco/pull/1234); its test
+`TestQuantizationRangeWiderThanFloatIsRefused` covers it.
+This is a historical difference from 1.5.7, not a current stream difference.
 
 #### Tests
 
@@ -404,7 +414,7 @@ Upstream's `main` refuses the range as well, since google/draco#1234 (merged
 |---|---|---|
 | `a_range_wider_than_f32_is_refused` | [`draco-core/src/attribute_quantization_transform.rs`](crates/draco-core/src/attribute_quantization_transform.rs) | The encode going back to writing a NaN stream. |
 
-### Unquantized integer normals below speed 4
+### Unquantized integer normals below speed 4 (fixed in 1.5.9)
 
 A normal attribute whose values are already integers, and that is given no
 quantization, keeps the wrap transform. Below speed 4 both encoders select
@@ -421,9 +431,10 @@ other normals, with every step reporting success.
 This encoder codes a delta instead, the fallback upstream's factory takes for
 any mesh scheme it cannot build
 ([`sequential_integer_attribute_encoder.rs`](crates/draco-core/src/sequential_integer_attribute_encoder.rs)).
-Upstream's `main` does the same since google/draco#1239 (merged 2026-10-09),
-and for the mesh of its test `TestIntegerNormalsAtSpeedZeroRoundTrip` the two
-encoders write the same 216 bytes. Every decoder reads the delta stream. Normals
+The 1.5.9 release does the same, through PR
+[#1239](https://github.com/google/draco/pull/1239). For the mesh of its test
+`TestIntegerNormalsAtSpeedZeroRoundTrip` the two encoders write the same 216
+bytes. Every decoder reads the delta stream. Normals
 that are quantized, which is how any normal from a float source arrives, are not
 affected and encode as before.
 
@@ -431,7 +442,7 @@ affected and encode as before.
 
 | test | file | what it pins |
 |---|---|---|
-| `integer_normals_below_speed_four_encode_a_delta_as_upstream_main_does` | [`draco-core/tests/encoder_hardening_test.rs`](crates/draco-core/tests/encoder_hardening_test.rs) | The bytes `main` writes for that mesh ([`testdata/cpp_main_integer_normals_speed_0.drc`](testdata/cpp_main_integer_normals_speed_0.drc)), and that they decode to the input's normals. |
+| Integer normals below speed four | [`draco-core/tests/encoder_hardening_test.rs`](crates/draco-core/tests/encoder_hardening_test.rs) | The bytes captured from C++ Draco 1.5.9 for that mesh ([upstream fixture](testdata/cpp_draco_1_5_9_integer_normals_speed_0.drc)), and that they decode to the input's normals. |
 
 ## File readers, `draco-io` and `draco-gltf`
 
