@@ -605,7 +605,7 @@ jobs:
     # while a green CI said nothing about them.
     #
     # Two things make the result mean something. The reference is pinned to the
-    # 1.5.7 tag, the version COMPATIBILITY.md records this port as targeting,
+    # 1.5.9 tag, the version COMPATIBILITY.md records this port as targeting,
     # so a divergence reports a change here rather than upstream moving. And
     # DRACO_REQUIRE_CPP_TOOLS turns a tool that cannot be found into a failure:
     # every one of these tests otherwise returns quietly and passes, which is
@@ -621,7 +621,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           repository: google/draco
-          ref: '1.5.7'
+          ref: '1.5.9'
           path: draco-cpp
 
       # The ubuntu-26.04 runner image is the amd64v3 cloud variant: its apt
@@ -667,7 +667,7 @@ jobs:
       # ask for memory without bound, reaching 11.5 GB before `std::bad_alloc`
       # takes the process down. The same case survives against an MSVC build, so
       # this is the toolchain the reference was built with and not the version:
-      # released 1.5.7 and upstream `main` both do it.
+      # released 1.5.9 does it too.
       #
       # Dropping that exploration costs no assertion. What remains is every
       # claim the sweep makes -- no panics, both encoders agreeing on what is

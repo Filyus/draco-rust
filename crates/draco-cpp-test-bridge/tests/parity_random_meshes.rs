@@ -36,7 +36,7 @@
 //!    The estimate is a cost heuristic, never a value in the stream, so this
 //!    port reproduces upstream's arithmetic instead and writes C++ Draco's
 //!    bytes -- 22 fewer of them, on that mesh. The parameter is still
-//!    `int32_t` in released 1.5.7 and in upstream `main`.
+//!    `int32_t` in released 1.5.9.
 //! 6. The encoding half of the portable texcoord predictor was missing the
 //!    three overflow guards upstream applies before its scaled-space
 //!    multiplications. Upstream shares one predictor between encoder and
