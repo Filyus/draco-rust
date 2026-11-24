@@ -254,19 +254,18 @@ fn derived_options(data: &[u8]) -> CompressionOptions {
         0 => None,
         _ => Some(1 + take(30) as u8),
     };
-    CompressionOptions {
-        mode,
-        encoding_speed: speed,
-        decoding_speed: speed,
-        quantization: QuantizationBits {
-            position: bits(),
-            normal: bits(),
-            tex_coord: bits(),
-            color: bits(),
-            generic: bits(),
-        },
-        ..CompressionOptions::default()
-    }
+    let mut options = CompressionOptions::default();
+    options.mode = mode;
+    options.encoding_speed = speed;
+    options.decoding_speed = speed;
+    options.quantization = QuantizationBits {
+        position: bits(),
+        normal: bits(),
+        tex_coord: bits(),
+        color: bits(),
+        generic: bits(),
+    };
+    options
 }
 
 /// A refusal to decode past a limit, which is the limit working, not a bug.
