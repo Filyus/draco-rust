@@ -9,12 +9,28 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.0](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.10.0...draco-gltf-v0.11.0) - 2026-11-25
+
 ### API
 
-- Set precision separately for Gaussian splat scale, opacity and spherical
-  harmonics. SH settings apply per degree or per coefficient, with an option
-  to preserve zero exactly. Rotation and integer accessors retain their
-  precision. Point-cloud compression requires `allow_points`.
+- Gaussian splat quantization now has independent controls for Float32 scale,
+  opacity, and spherical harmonics (SH), with SH rules configurable by degree
+  or coefficient. Explicit grids are supported, including a centered grid that
+  preserves exact zero. Rotation quaternions and integer splat attributes
+  retain their input precision. With Float32 rotation, automatic encoding uses
+  the sequential method and an explicit KD-tree request is rejected.
+  Point-cloud compression remains opt-in via `allow_points`.
+
+### Fixes
+
+- Quantized Float32 opacity uses the observed range for values within `[0, 1]`
+  when rounding keeps the decoded maximum in range, preserving distinctions in
+  narrow ranges. If values fall outside `[0, 1]` or rounding would decode
+  opacity above 1, encoding uses a fixed `[0, 1]` grid.
+- SH coefficient names must use a single ASCII digit for each placeholder in
+  `SH_DEGREE_<l>_COEF_<n>`, with degree 0–3 and coefficient index 0–2×degree. A
+  malformed name such as `SH_DEGREE_01_COEF_00` is rejected instead of aliasing
+  `SH_DEGREE_1_COEF_0`.
 
 ## [0.10.0](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.9.0...draco-gltf-v0.10.0) - 2026-11-25
 
