@@ -8,18 +8,28 @@ has changed in them; each package version has a section of its own.
 
 ## Unreleased
 
+## [0.4.2] - 2026-11-25
+
 - `@draco-rust/gltf/writer` accepts the remaining Draco compression options,
   including shared POSITION grids, output limits, point-cloud opt-in and point
   ordering/prediction controls. Existing positional calls remain valid.
-- `@draco-rust/encoder` accepts `color_bits` for its named color attribute,
-  matching the glTF writer's color quantization control. Explicit quantization
-  uses a normalized float color attribute; the default byte path is unchanged.
+- `@draco-rust/decoder` exposes geometry and per-attribute Draco metadata,
+  including nested blocks. `@draco-rust/encoder` accepts the same shape so a
+  `.drc` decode/re-encode can preserve metadata entries and their raw bytes.
 - `@draco-rust/gltf` and `@draco-rust/decoder` accept per-stream Draco decode
   ceilings. Worker and three.js paths forward the same settings; the `threads`
   field is accepted for API parity, while WebAssembly currently stays
   single-threaded.
-- Clarify which glTF build profiles include point-cloud decoding; the published
-  reader intentionally omits the non-standard `POINTS` extension case.
+- `@draco-rust/encoder` accepts `color_bits` for its named color attribute and
+  explicit position and extra-attribute quantization grids. Explicit color
+  quantization uses a normalized float attribute; the default byte path is
+  unchanged. Partial grids, wrong component counts and non-float attributes
+  are rejected.
+- The docs clarify that the standard `@draco-rust/gltf` reader does not decode
+  Draco-compressed `POINTS` primitives: `KHR_draco_mesh_compression` defines
+  triangle meshes.
+  The `/writer` build and converter include point-cloud decoding; writing
+  `POINTS` stays opt-in.
 
 ## [0.4.1] - 2026-11-18
 
