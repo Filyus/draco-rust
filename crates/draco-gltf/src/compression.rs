@@ -1161,7 +1161,7 @@ pub struct GaussianSplatQuantization {
     /// Quantization bits for Float32 `KHR_gaussian_splatting:SCALE` (1..=30).
     pub scale_bits: Option<u8>,
     /// Quantization bits for Float32 `KHR_gaussian_splatting:OPACITY` (1..=30).
-    /// Uses a fixed grid over [0, 1].
+    /// Uses the observed range when it can be quantized within [0, 1].
     pub opacity_bits: Option<u8>,
     /// Default rule for all SH coefficients in each degree, indexed 0 through 3.
     pub sh_degrees: [Option<ShQuantization>; 4],
@@ -1402,15 +1402,16 @@ fn set_quantization_options(
                         "{semantic}: quantization bits must be in 1..=30"
                     )));
                 }
-                // The fixed endpoints avoid a data-derived range rounding
-                // the highest decoded opacity above 1.0.
-                settings.set_attribute_explicit_quantization(
-                    attribute_id,
-                    bits.into(),
-                    1,
-                    &[0.0],
-                    1.0,
-                );
+                settings.set_attribute_int(attribute_id, "quantization_bits", bits.into());
+                if opacity_needs_unit_grid(attribute, bits) {
+                    settings.set_attribute_explicit_quantization(
+                        attribute_id,
+                        bits.into(),
+                        1,
+                        &[0.0],
+                        1.0,
+                    );
+                }
             }
             continue;
         }
@@ -1429,6 +1430,42 @@ fn set_quantization_options(
         }
     }
     Ok(())
+}
+
+fn opacity_needs_unit_grid(attribute: &draco_core::PointAttribute, bits: u8) -> bool {
+    // The glTF geometry builder copies OPACITY's Float32 scalar values into a
+    // tightly packed Draco attribute. Use the same Float32 bounds as Draco.
+    let mut min = f32::INFINITY;
+    let mut max = f32::NEG_INFINITY;
+    for bytes in attribute.buffer().data().as_chunks::<4>().0 {
+        let value = f32::from_le_bytes(*bytes);
+        if !value.is_finite() {
+            // Let the encoder report its normal quantization error.
+            return false;
+        }
+        min = min.min(value);
+        max = max.max(value);
+    }
+    if min > max {
+        return false;
+    }
+    if min < 0.0 || max > 1.0 {
+        return true;
+    }
+    let range = max - min;
+    if range == 0.0 {
+        return false;
+    }
+    let max_code = (1 << bits) - 1;
+    if !(max_code as f32 / range).is_finite() {
+        return true;
+    }
+    // Both transforms are monotone, so checking the largest input is enough.
+    let mut encoder = Quantizer::new();
+    encoder.init(range, max_code);
+    let mut decoder = Dequantizer::new();
+    decoder.init(range, max_code);
+    decoder.dequantize_float(encoder.quantize_float(range)) + min > 1.0
 }
 
 fn apply_splat_quantization(
@@ -1662,6 +1699,72 @@ mod quantization_tests {
         assert!(splat
             .set_sh_coefficient("KHR_gaussian_splatting:SH_DEGREE_1_COEF_3", None)
             .is_err());
+        for suffix in [
+            "SH_DEGREE_01_COEF_00",
+            "SH_DEGREE_+1_COEF_0",
+            "SH_DEGREE_1_COEF_00",
+        ] {
+            let semantic = format!("{KHR_GAUSSIAN_SPLATTING_PREFIX}{suffix}");
+            assert!(splat
+                .set_sh_coefficient(&semantic, Some(ShCoefficientQuantization::Preserve))
+                .is_err());
+            assert!(crate::geometry::supported_semantic_spec(&semantic).is_err());
+        }
+    }
+
+    #[test]
+    fn float_opacity_uses_the_observed_range_when_safe() {
+        let semantic = "KHR_gaussian_splatting:OPACITY";
+        let attribute = |name, components, values: &[f32]| {
+            PackedAttribute::new(
+                name,
+                3,
+                components,
+                ComponentType::F32,
+                false,
+                values
+                    .iter()
+                    .flat_map(|value| value.to_le_bytes())
+                    .collect(),
+            )
+            .unwrap()
+        };
+        for source in [[0.0005, 0.001, 0.0015], [0.0013, 0.5, 1.0]] {
+            let geometry = PackedGeometry::new(
+                PrimitiveMode::Points,
+                vec![
+                    attribute(
+                        "POSITION",
+                        3,
+                        &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 2.0, 0.0, 0.0],
+                    ),
+                    attribute(semantic, 1, &source),
+                ],
+                None,
+            )
+            .unwrap();
+            let mut options = CompressionOptions {
+                allow_points: true,
+                encoding_method: 1,
+                ..CompressionOptions::default()
+            };
+            for (generic, opacity) in [(Some(8), None), (None, Some(8))] {
+                options.quantization.generic = generic;
+                options.gaussian_splat_quantization.opacity_bits = opacity;
+                let encoded = DracoPrimitiveEncoding::encode(&geometry, &options).unwrap();
+                let opacity = &encoded.decoded().unwrap().attributes()[1];
+                let values = opacity
+                    .bytes()
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .copied()
+                    .map(f32::from_le_bytes)
+                    .collect::<Vec<_>>();
+                assert!(values[0] < values[1] && values[1] < values[2]);
+                assert_eq!(values[2], source[2]);
+            }
+        }
     }
 
     #[test]

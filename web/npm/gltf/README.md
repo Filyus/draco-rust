@@ -162,5 +162,6 @@ RGB grid. Values outside the grid are clamped. Coefficient overrides accept a
 bit count or `'preserve'`. An omitted or `null` rule inherits the degree
 setting or `generic_bits`. Rotation and integer splat attributes
 retain their precision. A cloud with Float32 rotation uses sequential in
-auto mode and rejects an explicit KD-tree request. Float32 opacity uses a
-fixed `[0, 1]` grid when quantized.
+auto mode and rejects an explicit KD-tree request. Quantized Float32 opacity
+uses the source range when possible and falls back to a `[0, 1]` grid when
+needed to keep decoded opacity within that interval.

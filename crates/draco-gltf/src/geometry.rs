@@ -254,8 +254,14 @@ pub(crate) fn sh_coefficient_indices(rest: &str) -> Option<(usize, usize)> {
     let (degree, order) = rest
         .strip_prefix("SH_DEGREE_")
         .and_then(|rest| rest.split_once("_COEF_"))?;
-    let degree = degree.parse::<usize>().ok()?;
-    let order = order.parse::<usize>().ok()?;
+    let &[degree @ b'0'..=b'3'] = degree.as_bytes() else {
+        return None;
+    };
+    let &[order @ b'0'..=b'6'] = order.as_bytes() else {
+        return None;
+    };
+    let degree = usize::from(degree - b'0');
+    let order = usize::from(order - b'0');
     (degree <= 3 && order <= 2 * degree).then_some((degree, order))
 }
 

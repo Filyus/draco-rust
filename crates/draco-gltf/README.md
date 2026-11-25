@@ -123,8 +123,9 @@ its degree rule, and an unset degree inherits `quantization.generic`.
 
 Rotation quaternions and integer splat accessors retain their source
 precision. Float32 rotation makes Draco choose sequential in auto mode.
-Forcing KD-tree on such a cloud returns an error. Float32 opacity uses a
-fixed `[0, 1]` grid when quantized.
+Forcing KD-tree on such a cloud returns an error. Quantized Float32 opacity
+uses the source range when possible and falls back to a `[0, 1]` grid when
+needed to keep decoded opacity within that interval.
 
 These settings do not enable point-cloud compression by themselves. The
 `allow_points` opt-in remains required because the Draco glTF extension
