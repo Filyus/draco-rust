@@ -9,14 +9,21 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.0](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.9.0...draco-gltf-v0.10.0) - 2026-11-25
+
 ### API
 
-- **Breaking:** `CompressionOptions` adds `position_quantization_grid` and is
-  now `#[non_exhaustive]`. External struct literals, including literals using
-  `..Default::default()`, must migrate to `CompressionOptions::default()` plus
-  field assignments. Pair the grid's 3D origin and range with
-  `QuantizationBits::position` to encode multiple primitives on one shared
-  POSITION grid.
+- **Breaking: Construct `CompressionOptions` from its default.** The struct
+  is now `#[non_exhaustive]` and adds `position_quantization_grid`, so callers
+  outside the crate can no longer use struct literals, including those with
+  `..Default::default()`. Set fields after `CompressionOptions::default()`.
+  Use `PositionQuantizationGrid` with `QuantizationBits::position` when
+  separately encoded primitives need a shared POSITION grid.
+- **Preserve `KHR_animation_pointer` during Draco-only compression.** Targets
+  to stable document properties are retained; pointers into `/accessors`,
+  `/bufferViews`, or `/buffers` are rejected because compression compacts
+  those collections. `AnimationPointerExtension` and `KHR_ANIMATION_POINTER`
+  are publicly re-exported for extension registries.
 
 ## [0.9.0](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.8.1...draco-gltf-v0.9.0) - 2026-11-22
 

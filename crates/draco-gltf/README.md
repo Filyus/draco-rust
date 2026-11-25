@@ -4,7 +4,7 @@ Lossless glTF 2.0 and pinned 2.1-draft scene handling with optional
 `KHR_draco_mesh_compression` geometry.
 
 ```toml
-draco-gltf = "0.9"
+draco-gltf = "0.10"
 ```
 
 ```rust,no_run
