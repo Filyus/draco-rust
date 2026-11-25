@@ -9,6 +9,13 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### API
+
+- Set precision separately for Gaussian splat scale, opacity and spherical
+  harmonics. SH settings apply per degree or per coefficient, with an option
+  to preserve zero exactly. Rotation and integer accessors retain their
+  precision. Point-cloud compression requires `allow_points`.
+
 ## [0.10.0](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.9.0...draco-gltf-v0.10.0) - 2026-11-25
 
 ### API

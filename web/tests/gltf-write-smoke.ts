@@ -108,14 +108,73 @@ if (draco) {
     pointsRefused = /allow_points/i.test(String(error));
   }
   if (!pointsRefused) throw new Error('POINTS compression was not opt-in');
-  pointAsset.compressPrimitive(0, 0, 5, 5, 14, 0, 0, 0, 0, 0, {
+  const pointReport = pointAsset.compressPrimitive(0, 0, 5, 5, 14, 0, 0, 0, 0, 0, {
     allow_points: true,
     prediction_search: true,
     point_order_search: true,
   });
+  if (pointReport.method !== 'kd-tree') {
+    throw new Error(`Expected KD-tree compression report, got ${pointReport.method}`);
+  }
   const pointGeometry = pointAsset.readPrimitive(0, 0);
   if (pointGeometry.mode() !== 0 || pointGeometry.attributeElementCount(0) !== 3) {
     throw new Error('opt-in Draco point-cloud roundtrip failed');
+  }
+
+  const splat = new api.PackedGeometry(0);
+  const prefix = 'KHR_gaussian_splatting:';
+  const rotation = `${prefix}ROTATION`;
+  const opacity = `${prefix}OPACITY`;
+  const sh = `${prefix}SH_DEGREE_0_COEF_0`;
+  const rotations = new Float32Array([Math.SQRT1_2, 0, 0, Math.SQRT1_2, 0, 0, 0, 1, 1, 0, 0, 0]);
+  const shValues = new Float32Array([-0.22, -0.22, -0.22, 0, 0, 0, 0.25, 0.25, 0.25]);
+  splat.addAttribute('POSITION', 3, 3, 5126, false, positions);
+  splat.addAttribute(rotation, 3, 4, 5126, false, new Uint8Array(rotations.buffer));
+  splat.addAttribute(`${prefix}SCALE`, 3, 3, 5121, false, new Uint8Array(9).fill(1));
+  splat.addAttribute(opacity, 3, 1, 5126, false, new Uint8Array(new Float32Array([0.0013, 0.5, 1]).buffer));
+  splat.addAttribute(sh, 3, 3, 5126, false, new Uint8Array(shValues.buffer));
+  const splatOptions = {
+    allow_points: true,
+    generic_bits: 8,
+    gaussian_splat_quantization: {
+      scale_bits: 8,
+      sh_degrees: [{ bits: 3, max_abs: 0.25 }],
+    },
+  };
+  const splatWriter = new api.GeometryWriteOptions();
+  splatWriter.useDraco(5, 5, false, splatOptions);
+  const writtenSplat = api.GltfAsset.fromGeometry(splat, '2.0', splatWriter);
+  const compressedSplat = api.GltfAsset.fromGeometry(splat, '2.0', new api.GeometryWriteOptions());
+  compressedSplat.compressPrimitive(0, 0, 5, 5, 14, 0, 0, 0, 0, 0, {
+    ...splatOptions,
+    gaussian_splat_quantization: {
+      ...splatOptions.gaussian_splat_quantization,
+      sh_coefficients: { [sh]: 'preserve' },
+    },
+  });
+  for (const asset of [writtenSplat, compressedSplat]) {
+    const decoded = new api.GltfAsset(asset.glb(2), '2.0').readPrimitive(0, 0);
+    const readFloats = (semantic: string) => {
+      for (let i = 0; i < decoded.attributeCount(); i++) {
+        if (decoded.attributeSemantic(i) === semantic) {
+          return new Float32Array(Uint8Array.from(decoded.attributeBytes(i)).buffer);
+        }
+      }
+      throw new Error(`Missing splat attribute ${semantic}`);
+    };
+    const coefficients = readFloats(sh);
+    if (asset === writtenSplat && (coefficients[0] === shValues[0] || coefficients[3] !== 0)) {
+      throw new Error('SH grid did not quantize while preserving zero');
+    }
+    if (asset === compressedSplat && coefficients.some((value, i) => value !== shValues[i])) {
+      throw new Error('SH coefficient override did not preserve the original data');
+    }
+    if (readFloats(rotation).some((value, i) => value !== rotations[i])) {
+      throw new Error('Splat rotation did not retain Float32 precision');
+    }
+    if (Math.max(...readFloats(opacity)) !== 1) {
+      throw new Error('Quantized splat opacity did not preserve the upper endpoint');
+    }
   }
 }
 const bundle = document.gltfBundle();

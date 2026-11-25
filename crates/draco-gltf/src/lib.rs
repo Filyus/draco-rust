@@ -33,8 +33,8 @@ pub mod document;
 pub use accessor::{AccessorData, DocumentAccessorSource};
 #[cfg(feature = "draco-encode")]
 pub use compression::{
-    CompressionMode, CompressionOptions, CompressionReport, PositionQuantizationGrid,
-    QuantizationBits,
+    CompressionMode, CompressionOptions, CompressionReport, GaussianSplatQuantization,
+    PositionQuantizationGrid, QuantizationBits, ShCoefficientQuantization, ShQuantization,
 };
 mod json;
 pub use document::{

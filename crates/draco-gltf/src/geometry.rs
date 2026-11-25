@@ -181,7 +181,7 @@ const GENERIC_COMPONENT_TYPES: &[u32] = &[
 /// extension defines them: `KHR_gaussian_splatting:ROTATION`,
 /// `KHR_gaussian_splatting:SCALE`, `KHR_gaussian_splatting:OPACITY` and the
 /// `KHR_gaussian_splatting:SH_DEGREE_l_COEF_n` coefficients.
-const KHR_GAUSSIAN_SPLATTING_PREFIX: &str = "KHR_gaussian_splatting:";
+pub(crate) const KHR_GAUSSIAN_SPLATTING_PREFIX: &str = "KHR_gaussian_splatting:";
 
 /// The spec for one `KHR_gaussian_splatting:*` attribute, by the name the
 /// extension puts after its prefix; `None` for a name the spec does not
@@ -233,10 +233,10 @@ fn splat_semantic_spec(rest: &str) -> Option<SemanticSpec> {
             ],
             normalization: NormalizationPolicy::RequiredForInteger,
         })
-    } else if sh_coefficient_order(rest).is_some() {
+    } else if sh_coefficient_indices(rest).is_some() {
         // A spherical-harmonics RGB coefficient, float only, on the pattern
         // the spec names: `SH_DEGREE_<l>_COEF_<n>`, degree 0..=3 and an order
-        // of at most two per degree.
+        // of at most twice the degree.
         Some(SemanticSpec {
             attribute_type: GeometryAttributeType::Generic,
             expected_accessor_types: &["VEC3"],
@@ -248,15 +248,15 @@ fn splat_semantic_spec(rest: &str) -> Option<SemanticSpec> {
     }
 }
 
-/// The order of a spherical-harmonics coefficient named on the spec's
+/// The degree and index of a spherical-harmonics coefficient named on the spec's
 /// `SH_DEGREE_<l>_COEF_<n>` pattern, or `None` for a name that is not one.
-fn sh_coefficient_order(rest: &str) -> Option<u32> {
+pub(crate) fn sh_coefficient_indices(rest: &str) -> Option<(usize, usize)> {
     let (degree, order) = rest
         .strip_prefix("SH_DEGREE_")
         .and_then(|rest| rest.split_once("_COEF_"))?;
-    let degree = degree.parse::<u32>().ok()?;
-    let order = order.parse::<u32>().ok()?;
-    (degree <= 3 && order <= 2 * degree).then_some(order)
+    let degree = degree.parse::<usize>().ok()?;
+    let order = order.parse::<usize>().ok()?;
+    (degree <= 3 && order <= 2 * degree).then_some((degree, order))
 }
 
 /// Decodes a non-Draco primitive's geometry into a [`Mesh`] plus its

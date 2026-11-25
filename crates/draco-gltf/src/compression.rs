@@ -1,9 +1,11 @@
+use crate::geometry::{sh_coefficient_indices, KHR_GAUSSIAN_SPLATTING_PREFIX};
 use crate::{Error, Import, Result};
 use draco_core::{
     encoder_buffer::EncoderBuffer,
     encoder_options::EncoderOptions,
     geometry_attribute::GeometryAttributeType,
     mesh_encoder::{EncodedAttributeInfo, EncodedMeshInfo, MeshEncoder},
+    quantization_utils::{Dequantizer, Quantizer},
 };
 
 /// How the exported primitive exposes its Draco payload.
@@ -308,7 +310,7 @@ pub(crate) fn encode_primitive(
     mapping: Vec<(String, u32)>,
     options: &CompressionOptions,
 ) -> Result<EncodedPrimitive> {
-    let (bytes, info) = encode_draco_mesh(mesh, options)?;
+    let (bytes, info) = encode_draco_mesh(mesh, &mapping, options)?;
     let layout = DracoGeometryLayout::from_encoded_info(&info, &mapping)?;
     Ok(EncodedPrimitive {
         encoding: (info.encoding_method, info.speed),
@@ -333,7 +335,7 @@ pub(crate) fn encode_point_cloud_primitive(
     options: &CompressionOptions,
 ) -> Result<EncodedPrimitive> {
     let num_points = mesh.num_points();
-    let (bytes, info) = encode_draco_point_cloud(mesh, options)?;
+    let (bytes, info) = encode_draco_point_cloud(mesh, &mapping, options)?;
     let decoded = crate::draco_primitive::decode_payload(
         &bytes,
         &crate::DracoDecodeOptions::default().with_limits(draco_core::DecodeLimits::permissive()),
@@ -356,12 +358,13 @@ pub(crate) fn encode_point_cloud_primitive(
 
 /// Encodes the built geometry through Draco's point-cloud coder.
 ///
-/// The quantization table is keyed by attribute type exactly as the mesh path
-/// keys it, and the three point-cloud options are read from
+/// Both paths resolve quantization against the glTF attribute mapping. The
+/// three point-cloud options are read from
 /// [`CompressionOptions`], which leaves them unset for a mesh encode: they
 /// name a point order and a prediction search the mesh coder does not take.
 fn encode_draco_point_cloud(
     mesh: draco_core::Mesh,
+    mapping: &[(String, u32)],
     options: &CompressionOptions,
 ) -> Result<(Vec<u8>, draco_core::EncodedPointCloudInfo)> {
     use draco_core::point_cloud_encoder::PointCloudEncoder;
@@ -377,7 +380,19 @@ fn encode_draco_point_cloud(
         2 => settings.set_encoding_method(1), // force kd-tree
         _ => {}
     }
-    set_quantization_options(&mut settings, &mesh, options)?;
+    set_quantization_options(&mut settings, &mesh, mapping, options)?;
+    if options.encoding_method == 2
+        && mapping.iter().any(|(semantic, id)| {
+            semantic == "KHR_gaussian_splatting:ROTATION"
+                && mesh
+                    .attribute_by_unique_id(*id)
+                    .is_some_and(|attribute| attribute.data_type() == draco_core::DataType::Float32)
+        })
+    {
+        return Err(Error::Extension(
+            "kd-tree requires quantized float attributes; Gaussian splat ROTATION must retain its precision. Use auto or sequential".into(),
+        ));
+    }
     settings.set_prediction_search(options.prediction_search);
     settings.set_spatial_point_order(options.spatial_point_order);
     settings.set_point_order_search(options.point_order_search);
@@ -1041,6 +1056,13 @@ pub struct CompressionOptions {
     /// default so that existing callers keep the bytes they already produce;
     /// anything writing assets for delivery wants values here.
     pub quantization: QuantizationBits,
+    /// Overrides the type-wide `generic` bit count for Gaussian splat scale,
+    /// opacity and SH. Rotation and integer splat accessors retain their
+    /// precision. These options do not
+    /// enable point-cloud compression: [`Self::allow_points`] remains an
+    /// explicit opt-in because `KHR_draco_mesh_compression` specifies
+    /// triangle primitives, not `POINTS`.
+    pub gaussian_splat_quantization: GaussianSplatQuantization,
     /// Explicit three-dimensional POSITION grid to use with
     /// [`QuantizationBits::position`]. When position quantization is enabled,
     /// `None` keeps Draco's data-derived grid.
@@ -1064,6 +1086,8 @@ pub struct CompressionOptions {
     /// On a `POINTS` primitive the same two values pick between the point
     /// cloud's own coders instead: `1` forces the sequential coder, `2` the
     /// kd-tree one. There is no EdgeBreaker for a cloud to force.
+    /// A cloud with a Float32 splat rotation uses sequential in auto mode.
+    /// Forcing kd-tree on such a cloud returns an error.
     pub encoding_method: i32,
     /// Whether a `POINTS` (mode 0) primitive may be compressed.
     ///
@@ -1105,6 +1129,7 @@ impl Default for CompressionOptions {
             mode: CompressionMode::DracoOnly,
             max_output_bytes: None,
             quantization: QuantizationBits::default(),
+            gaussian_splat_quantization: GaussianSplatQuantization::default(),
             position_quantization_grid: None,
             encoding_method: 0,
             allow_points: false,
@@ -1126,9 +1151,168 @@ pub struct PositionQuantizationGrid {
     pub range: f32,
 }
 
+/// Quantization settings for `KHR_gaussian_splatting` attributes.
+///
+/// Unset values inherit [`QuantizationBits::generic`]. Integer accessors and
+/// rotation quaternions keep their original precision.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GaussianSplatQuantization {
+    /// Quantization bits for Float32 `KHR_gaussian_splatting:SCALE` (1..=30).
+    pub scale_bits: Option<u8>,
+    /// Quantization bits for Float32 `KHR_gaussian_splatting:OPACITY` (1..=30).
+    /// Uses a fixed grid over [0, 1].
+    pub opacity_bits: Option<u8>,
+    /// Default rule for all SH coefficients in each degree, indexed 0 through 3.
+    pub sh_degrees: [Option<ShQuantization>; 4],
+    sh_coefficients: [Option<ShCoefficientQuantization>; 16],
+}
+
+impl GaussianSplatQuantization {
+    /// Overrides one SH coefficient named by its full glTF semantic.
+    /// Pass `None` to remove the override and inherit the degree rule again.
+    pub fn set_sh_coefficient(
+        &mut self,
+        semantic: &str,
+        rule: Option<ShCoefficientQuantization>,
+    ) -> Result<()> {
+        let (degree, index) = semantic
+            .strip_prefix(KHR_GAUSSIAN_SPLATTING_PREFIX)
+            .and_then(sh_coefficient_indices)
+            .ok_or_else(|| {
+                Error::Extension(format!("invalid Gaussian splat SH semantic {semantic}"))
+            })?;
+        self.sh_coefficients[degree * degree + index] = rule;
+        Ok(())
+    }
+
+    fn sh_rule(&self, semantic: &str) -> Option<ShQuantization> {
+        let (degree, index) = sh_coefficient_indices(semantic)?;
+        self.sh_coefficients[degree * degree + index]
+            .map(ShQuantization::from)
+            .or(self.sh_degrees[degree])
+    }
+}
+
+/// An override for one RGB spherical harmonics coefficient.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ShCoefficientQuantization {
+    /// Store the source Float32 values without quantization.
+    Preserve,
+    /// Quantize to 1..=30 bits using bounds derived from this coefficient.
+    Bits(u8),
+}
+
+/// The default rule for RGB spherical harmonics coefficients in one degree.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum ShQuantization {
+    /// Store the source Float32 values without quantization.
+    Preserve,
+    /// Quantize to 1..=30 bits using bounds derived from each coefficient.
+    Bits(u8),
+    /// Use the same explicit grid for every coefficient this rule covers.
+    /// Values outside the grid are clamped to its nearest endpoint.
+    Grid {
+        /// Quantization bits, in 1..=30.
+        bits: u8,
+        /// Grid origin for the R, G and B components.
+        origin: [f32; 3],
+        /// Shared extent for each component.
+        range: f32,
+    },
+    /// Fit a grid covering `[-max_abs, max_abs]` that decodes zero exactly.
+    /// Values beyond the grid are clamped to its nearest endpoint.
+    CenteredOnZero {
+        /// Quantization bits, in 2..=30.
+        bits: u8,
+        /// A positive finite bound on the absolute value in all components.
+        max_abs: f32,
+    },
+}
+
+impl From<ShCoefficientQuantization> for ShQuantization {
+    fn from(rule: ShCoefficientQuantization) -> Self {
+        match rule {
+            ShCoefficientQuantization::Preserve => Self::Preserve,
+            ShCoefficientQuantization::Bits(bits) => Self::Bits(bits),
+        }
+    }
+}
+
+fn round_up_to_f32(value: f64) -> f32 {
+    let rounded = value as f32;
+    if f64::from(rounded) < value {
+        rounded.next_up()
+    } else {
+        rounded
+    }
+}
+
+fn centered_sh_grid(bits: u8, max_abs: f32) -> std::result::Result<([f32; 3], f32), &'static str> {
+    if !(2..=30).contains(&bits) || !max_abs.is_finite() || max_abs <= 0.0 {
+        return Err("a grid centered on zero requires 2..=30 bits and a finite positive max_abs");
+    }
+    let max_code = (1 << bits) - 1;
+    let zero_code = max_code / 2;
+    // Round up to keep both sides of the requested interval. Draco decodes
+    // using Float32 codes and step, so derive the origin from its decoded
+    // offset at the middle code. Adding that same offset then cancels exactly.
+    let span = f64::from(max_code as f32);
+    let step = round_up_to_f32(f64::from(max_abs) / f64::from(zero_code as f32));
+    let range = round_up_to_f32(f64::from(step) * span);
+    if let Some(grid) = check_centered_sh_grid(max_code, zero_code, range, max_abs) {
+        return Ok(grid);
+    }
+
+    // If Float32 rounding moves zero to a different decoded level, use a
+    // power-of-two step. Multiplication and division by that step are exact
+    // exponent shifts in the normal range. Choose the upper middle code (a
+    // power of two), so Draco's Float32 addition of 0.5 also keeps that code.
+    let zero_code = (max_code + 1) / 2;
+    let zero = f64::from(zero_code as f32);
+    let min_step = f64::from(max_abs) / zero.min(span - zero);
+    let exponent = min_step.to_bits() & !((1u64 << 52) - 1);
+    let step = if f64::from_bits(exponent) < min_step {
+        f64::from_bits(exponent + (1u64 << 52))
+    } else {
+        f64::from_bits(exponent)
+    };
+    check_centered_sh_grid(max_code, zero_code, (step * span) as f32, max_abs)
+        .ok_or("grid cannot cover the requested bounds and represent zero exactly in Float32")
+}
+
+fn check_centered_sh_grid(
+    max_code: i32,
+    zero_code: i32,
+    range: f32,
+    max_abs: f32,
+) -> Option<([f32; 3], f32)> {
+    if !range.is_finite() || !(max_code as f32 / range).is_finite() {
+        return None;
+    }
+    let mut decoder = Dequantizer::new();
+    decoder.init(range, max_code);
+    let offset = decoder.dequantize_float(zero_code);
+    let upper = decoder.dequantize_float(max_code) - offset;
+    let mut encoder = Quantizer::new();
+    encoder.init(range, max_code);
+    let encoded_zero = encoder.quantize_float(offset).clamp(0, max_code);
+    if offset < max_abs
+        || upper < max_abs
+        || !upper.is_finite()
+        || decoder.dequantize_float(encoded_zero) != offset
+    {
+        return None;
+    }
+    Some(([-offset; 3], range))
+}
+
 fn set_quantization_options(
     settings: &mut EncoderOptions,
     point_cloud: &draco_core::PointCloud,
+    mapping: &[(String, u32)],
     options: &CompressionOptions,
 ) -> Result<()> {
     let grid = options.position_quantization_grid;
@@ -1195,6 +1379,101 @@ fn set_quantization_options(
             settings.set_attribute_int(attribute_id, "quantization_bits", bits as i32);
         }
     }
+
+    for (semantic, unique_id) in mapping {
+        let Some(splat_semantic) = semantic.strip_prefix(KHR_GAUSSIAN_SPLATTING_PREFIX) else {
+            continue;
+        };
+        let attribute_id = point_cloud.attribute_id_by_unique_id(*unique_id);
+        if attribute_id < 0 {
+            return Err(Error::Extension(format!(
+                "Gaussian splat attribute {semantic} maps to missing Draco unique id {unique_id}"
+            )));
+        }
+        let attribute = point_cloud.attribute(attribute_id);
+        let splat = &options.gaussian_splat_quantization;
+        if splat_semantic == "OPACITY" && attribute.data_type() == draco_core::DataType::Float32 {
+            let bits = splat
+                .opacity_bits
+                .or(options.quantization.generic.filter(|&bits| bits != 0));
+            if let Some(bits) = bits {
+                if !(1..=30).contains(&bits) {
+                    return Err(Error::Extension(format!(
+                        "{semantic}: quantization bits must be in 1..=30"
+                    )));
+                }
+                // The fixed endpoints avoid a data-derived range rounding
+                // the highest decoded opacity above 1.0.
+                settings.set_attribute_explicit_quantization(
+                    attribute_id,
+                    bits.into(),
+                    1,
+                    &[0.0],
+                    1.0,
+                );
+            }
+            continue;
+        }
+        let rule = match splat_semantic {
+            // Generic quantization cannot preserve a unit quaternion.
+            "ROTATION" => Some(ShQuantization::Preserve),
+            _ if attribute.data_type() != draco_core::DataType::Float32 => {
+                Some(ShQuantization::Preserve)
+            }
+            "SCALE" => splat.scale_bits.map(ShQuantization::Bits),
+            _ => splat.sh_rule(splat_semantic),
+        };
+        if let Some(rule) = rule {
+            apply_splat_quantization(settings, attribute_id, rule)
+                .map_err(|error| Error::Extension(format!("{semantic}: {error}")))?;
+        }
+    }
+    Ok(())
+}
+
+fn apply_splat_quantization(
+    settings: &mut EncoderOptions,
+    attribute_id: i32,
+    rule: ShQuantization,
+) -> std::result::Result<(), &'static str> {
+    let (bits, grid) = match rule {
+        ShQuantization::Preserve => {
+            settings.set_attribute_int(attribute_id, "quantization_bits", 0);
+            return Ok(());
+        }
+        ShQuantization::Bits(bits) => (bits, None),
+        ShQuantization::Grid {
+            bits,
+            origin,
+            range,
+        } => (bits, Some((origin, range))),
+        ShQuantization::CenteredOnZero { bits, max_abs } => {
+            (bits, Some(centered_sh_grid(bits, max_abs)?))
+        }
+    };
+    if !(1..=30).contains(&bits) {
+        return Err("quantization bits must be in 1..=30");
+    }
+    if let Some((origin, range)) = grid {
+        let max_code = (1 << bits) - 1;
+        let scale = max_code as f32 / range;
+        let step = range / max_code as f32;
+        let span = max_code as f32 * step;
+        if !scale.is_finite()
+            || scale <= 0.0
+            || step <= 0.0
+            || origin
+                .iter()
+                .any(|&value| !value.is_finite() || !(value + span).is_finite())
+        {
+            return Err(
+                "grid must have finite Float32 endpoints and a usable positive scale and step",
+            );
+        }
+        settings.set_attribute_explicit_quantization(attribute_id, bits.into(), 3, &origin, range);
+    } else {
+        settings.set_attribute_int(attribute_id, "quantization_bits", bits.into());
+    }
     Ok(())
 }
 
@@ -1248,6 +1527,161 @@ impl QuantizationBits {
         }
     }
 }
+
+#[cfg(test)]
+mod quantization_tests {
+    use super::*;
+    use crate::{
+        ComponentType, DracoPrimitiveEncoding, PackedAttribute, PackedGeometry, PrimitiveMode,
+    };
+
+    #[test]
+    fn float_rotation_and_integer_splat_attributes_keep_their_precision() {
+        let mut options = CompressionOptions {
+            allow_points: true,
+            quantization: QuantizationBits::GLTF,
+            ..CompressionOptions::default()
+        };
+        options.gaussian_splat_quantization.scale_bits = Some(6);
+        options.gaussian_splat_quantization.opacity_bits = Some(6);
+        options.gaussian_splat_quantization.sh_degrees[0] = Some(ShQuantization::CenteredOnZero {
+            bits: 3,
+            max_abs: 0.25,
+        });
+        let prefix = crate::geometry::KHR_GAUSSIAN_SPLATTING_PREFIX;
+        let attr = |name: &str, components, data: &[f32]| {
+            PackedAttribute::new(
+                name,
+                3,
+                components,
+                ComponentType::F32,
+                false,
+                data.iter().flat_map(|value| value.to_le_bytes()).collect(),
+            )
+            .unwrap()
+        };
+        let rotation = format!("{prefix}ROTATION");
+        let scale = format!("{prefix}SCALE");
+        let opacity = format!("{prefix}OPACITY");
+        let sh = format!("{prefix}SH_DEGREE_0_COEF_0");
+
+        for (rotation_type, normalized, rotation_bytes, method) in [
+            (
+                ComponentType::F32,
+                false,
+                [
+                    std::f32::consts::FRAC_1_SQRT_2,
+                    0.0,
+                    0.0,
+                    std::f32::consts::FRAC_1_SQRT_2,
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0,
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                ]
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect::<Vec<_>>(),
+                0,
+            ),
+            (ComponentType::I8, true, [0, 0, 0, 127].repeat(3), 2),
+        ] {
+            options.encoding_method = method;
+            let geometry = PackedGeometry::new(
+                PrimitiveMode::Points,
+                vec![
+                    attr(
+                        "POSITION",
+                        3,
+                        &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 2.0, 0.0, 0.0],
+                    ),
+                    PackedAttribute::new(
+                        &rotation,
+                        3,
+                        4,
+                        rotation_type,
+                        normalized,
+                        rotation_bytes.clone(),
+                    )
+                    .unwrap(),
+                    PackedAttribute::new(&scale, 3, 3, ComponentType::U8, false, vec![3; 9])
+                        .unwrap(),
+                    PackedAttribute::new(&opacity, 3, 1, ComponentType::U8, true, vec![127; 3])
+                        .unwrap(),
+                    attr(&sh, 3, &[0.0; 9]),
+                ],
+                None,
+            )
+            .unwrap();
+            let encoded = DracoPrimitiveEncoding::encode(&geometry, &options).unwrap();
+            let decoded = encoded.decoded().unwrap();
+            for source in &geometry.attributes()[1..] {
+                let attr = decoded
+                    .attributes()
+                    .iter()
+                    .find(|attr| attr.semantic() == source.semantic())
+                    .unwrap();
+                assert_eq!(attr, source);
+            }
+            if rotation_type == ComponentType::F32 {
+                options.encoding_method = 2;
+                let error = DracoPrimitiveEncoding::encode(&geometry, &options).unwrap_err();
+                assert!(error
+                    .to_string()
+                    .contains("ROTATION must retain its precision"));
+            }
+        }
+    }
+
+    #[test]
+    fn sh_coefficient_rules_override_the_degree() {
+        let mut splat = GaussianSplatQuantization::default();
+        splat.sh_degrees[1] = Some(ShQuantization::Bits(8));
+        let full_semantic = "KHR_gaussian_splatting:SH_DEGREE_1_COEF_0";
+        splat
+            .set_sh_coefficient(full_semantic, Some(ShCoefficientQuantization::Preserve))
+            .unwrap();
+        assert_eq!(
+            splat.sh_rule("SH_DEGREE_1_COEF_0"),
+            Some(ShQuantization::Preserve)
+        );
+        assert_eq!(
+            splat.sh_rule("SH_DEGREE_1_COEF_1"),
+            Some(ShQuantization::Bits(8))
+        );
+        assert_eq!(splat.sh_rule("SH_DEGREE_0_COEF_0"), None);
+        splat.set_sh_coefficient(full_semantic, None).unwrap();
+        assert_eq!(
+            splat.sh_rule("SH_DEGREE_1_COEF_0"),
+            Some(ShQuantization::Bits(8))
+        );
+        assert!(splat
+            .set_sh_coefficient("KHR_gaussian_splatting:SH_DEGREE_1_COEF_3", None)
+            .is_err());
+    }
+
+    #[test]
+    fn centered_sh_grid_checks_codec_arithmetic() {
+        use draco_core::attribute_quantization_transform::AttributeQuantizationTransform;
+        for bits in 2..=30 {
+            for bound in [0.01, 0.25, 1.0, 170.3] {
+                let (origin, range) = centered_sh_grid(bits, bound).unwrap();
+                let mut transform = AttributeQuantizationTransform::new();
+                transform
+                    .set_parameters(bits.into(), &origin, range)
+                    .unwrap();
+                assert_eq!(transform.round_trip_component(0, 0.0).unwrap(), 0.0);
+            }
+        }
+        assert!(centered_sh_grid(10, 1e-38).is_err());
+        assert!(centered_sh_grid(1, 0.25).is_err());
+        assert!(centered_sh_grid(10, f32::MAX).is_err());
+    }
+}
 #[derive(Clone, Debug, Default)]
 /// Measured result of one [`Import::compress_primitive`] operation.
 pub struct CompressionReport {
@@ -1264,7 +1698,8 @@ pub struct CompressionReport {
     /// Bytes removed from the resolved binary store; zero for a fallback that
     /// retains all ordinary geometry.
     pub reclaimed_bytes: usize,
-    /// Numeric Draco mesh encoding method selected for the payload.
+    /// Numeric Draco method used in the payload. `0` is sequential. `1` is
+    /// EdgeBreaker for a mesh or KD-tree for a point cloud.
     pub encoding_method: i32,
     /// Resolved Draco speed used by the encoder.
     pub encoding_speed: i32,
@@ -1353,6 +1788,7 @@ fn prediction_summary(
 /// Encodes an already decoded mesh to a raw Draco payload and its report.
 pub(crate) fn encode_draco_mesh(
     mesh: draco_core::Mesh,
+    mapping: &[(String, u32)],
     options: &CompressionOptions,
 ) -> Result<(Vec<u8>, EncodedMeshInfo)> {
     let mut settings = EncoderOptions::new();
@@ -1369,7 +1805,7 @@ pub(crate) fn encode_draco_mesh(
     // Quantization is keyed by attribute id here, while the caller names
     // attribute types, so the mapping has to happen against the mesh that is
     // about to be encoded rather than in the options.
-    set_quantization_options(&mut settings, &mesh, options)?;
+    set_quantization_options(&mut settings, &mesh, mapping, options)?;
     let mut encoder = MeshEncoder::new();
     encoder.set_mesh(mesh);
     let mut output = EncoderBuffer::new();

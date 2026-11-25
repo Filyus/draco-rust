@@ -92,6 +92,44 @@ Set `CompressionOptions::position_quantization_grid` together with
 `QuantizationBits::position` to encode separate primitives with the same 3D
 POSITION origin and range.
 
+For an explicitly opted-in splat point cloud, set
+`CompressionOptions::gaussian_splat_quantization` to override the shared
+`generic` bit count for Float32 scale, opacity and spherical harmonics (SH).
+Set SH rules by degree and override individual coefficients when needed.
+
+```rust
+use draco_gltf::{CompressionOptions, ShCoefficientQuantization, ShQuantization};
+
+let mut options = CompressionOptions::default();
+options.allow_points = true; // POINTS under KHR_draco_mesh_compression is opt-in.
+options.quantization.position = Some(14);
+let splat = &mut options.gaussian_splat_quantization;
+splat.scale_bits = Some(10);
+splat.opacity_bits = Some(8);
+splat.sh_degrees = [10, 8, 7, 6].map(|bits| Some(ShQuantization::Bits(bits)));
+splat.sh_degrees[0] = Some(ShQuantization::CenteredOnZero { bits: 10, max_abs: 0.25 });
+splat.set_sh_coefficient(
+    "KHR_gaussian_splatting:SH_DEGREE_2_COEF_3",
+    Some(ShCoefficientQuantization::Preserve),
+).expect("valid SH semantic");
+```
+
+`CenteredOnZero` guarantees exact decoded zero on a successful encode.
+Use a `max_abs` covering all the coefficients the rule applies to. Values
+outside the resulting grid are clamped. `ShQuantization::Grid` takes explicit
+RGB origins, range and bits. A coefficient can override the degree with its
+own bit count or retain its source precision. An unset coefficient inherits
+its degree rule, and an unset degree inherits `quantization.generic`.
+
+Rotation quaternions and integer splat accessors retain their source
+precision. Float32 rotation makes Draco choose sequential in auto mode.
+Forcing KD-tree on such a cloud returns an error. Float32 opacity uses a
+fixed `[0, 1]` grid when quantized.
+
+These settings do not enable point-cloud compression by themselves. The
+`allow_points` opt-in remains required because the Draco glTF extension
+specifies triangle primitives, not `POINTS`.
+
 Use `default-features = false, features = ["read", "draco-decode"]` for a
 small Draco-capable reader. Add `strict-validation` when opening untrusted
 assets requires a full graph pass, `write` for raw output or `draco-encode` for

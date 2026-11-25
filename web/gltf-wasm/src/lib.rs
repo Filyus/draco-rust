@@ -12,8 +12,8 @@ use draco_gltf::{
 use draco_gltf::{ComponentType, PackedAttribute, PackedIndices, PrimitiveIndex, PrimitiveMode};
 #[cfg(feature = "draco-encode")]
 use draco_gltf::{
-    CompressionMode, CompressionOptions, GeometryEncoding, MeshIndex, PositionQuantizationGrid,
-    QuantizationBits,
+    CompressionMode, CompressionOptions, GaussianSplatQuantization, GeometryEncoding, MeshIndex,
+    PositionQuantizationGrid, QuantizationBits, ShCoefficientQuantization, ShQuantization,
 };
 use js_sys::{Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
@@ -156,41 +156,162 @@ fn position_grid_from_js(value: JsValue) -> Result<Option<PositionQuantizationGr
     if value.is_null() {
         return Ok(None);
     }
+    let (origin, range) = grid_from_js(value, "position_quantization_grid")?;
+    Ok(Some(PositionQuantizationGrid { origin, range }))
+}
+
+#[cfg(feature = "draco-encode")]
+fn grid_from_js(value: JsValue, name: &str) -> Result<([f32; 3], f32), JsValue> {
     if !value.is_object() {
-        return Err(JsValue::from_str(
-            "position_quantization_grid must be an object or null",
-        ));
+        return Err(wasm_error(format_args!("{name} must be a grid object")));
     }
     let object = Object::from(value);
     let origin = Reflect::get(&object, &JsValue::from_str("origin"))?;
     if !origin.is_object() {
-        return Err(JsValue::from_str(
-            "position_quantization_grid.origin must be a three-item array",
-        ));
+        return Err(wasm_error(format_args!(
+            "{name}.origin must be a three-item array"
+        )));
     }
     let origin = js_sys::Array::from(&origin);
     if origin.length() != 3 {
-        return Err(JsValue::from_str(
-            "position_quantization_grid.origin must contain three numbers",
-        ));
+        return Err(wasm_error(format_args!(
+            "{name}.origin must contain three numbers"
+        )));
     }
     let mut components = [0.0; 3];
     for (index, value) in origin.iter().enumerate() {
         let Some(number) = value.as_f64() else {
-            return Err(JsValue::from_str(
-                "position_quantization_grid.origin must contain three numbers",
-            ));
+            return Err(wasm_error(format_args!(
+                "{name}.origin must contain three numbers"
+            )));
         };
         components[index] = number as f32;
     }
     let range = Reflect::get(&object, &JsValue::from_str("range"))?
         .as_f64()
         .map(|value| value as f32)
-        .ok_or_else(|| JsValue::from_str("position_quantization_grid.range must be a number"))?;
-    Ok(Some(PositionQuantizationGrid {
-        origin: components,
+        .ok_or_else(|| wasm_error(format_args!("{name}.range must be a number")))?;
+    Ok((components, range))
+}
+
+#[cfg(feature = "draco-encode")]
+fn sh_coefficient_from_js(value: JsValue) -> Result<Option<ShCoefficientQuantization>, JsValue> {
+    if value.is_null() || value.is_undefined() {
+        return Ok(None);
+    }
+    if value.as_string().as_deref() == Some("preserve") {
+        return Ok(Some(ShCoefficientQuantization::Preserve));
+    }
+    if let Some(bits) = value.as_f64() {
+        if bits.fract() == 0.0 && (1.0..=30.0).contains(&bits) {
+            return Ok(Some(ShCoefficientQuantization::Bits(bits as u8)));
+        }
+        return Err(JsValue::from_str(
+            "SH quantization bits must be an integer in 1..=30",
+        ));
+    }
+    Err(JsValue::from_str("expected an SH bit count or 'preserve'"))
+}
+
+#[cfg(feature = "draco-encode")]
+fn sh_quantization_from_js(value: JsValue) -> Result<Option<ShQuantization>, JsValue> {
+    if !value.is_object() || value.is_null() || js_sys::Array::is_array(&value) {
+        return sh_coefficient_from_js(value).map(|rule| rule.map(ShQuantization::from));
+    }
+    let grid = Object::from(value);
+    let bits = option_u8(&grid, "bits")?
+        .filter(|bits| (1..=30).contains(bits))
+        .ok_or_else(|| JsValue::from_str("SH grid requires bits in 1..=30"))?;
+    if let Some(value) = option_property(&grid, "max_abs")? {
+        if option_property(&grid, "origin")?.is_some() || option_property(&grid, "range")?.is_some()
+        {
+            return Err(JsValue::from_str(
+                "SH grid max_abs cannot be combined with origin or range",
+            ));
+        }
+        let max_abs = value
+            .as_f64()
+            .map(|value| value as f32)
+            .filter(|&value| value.is_finite() && value > 0.0)
+            .ok_or_else(|| {
+                JsValue::from_str("SH grid max_abs must be finite and positive in Float32")
+            })?;
+        if bits < 2 {
+            return Err(JsValue::from_str(
+                "SH grid centered on zero requires at least 2 bits",
+            ));
+        }
+        return Ok(Some(ShQuantization::CenteredOnZero { bits, max_abs }));
+    }
+    let (origin, range) = grid_from_js(grid.into(), "SH grid")?;
+    Ok(Some(ShQuantization::Grid {
+        bits,
+        origin,
         range,
     }))
+}
+
+#[cfg(feature = "draco-encode")]
+fn splat_quantization_from_js(value: JsValue) -> Result<GaussianSplatQuantization, JsValue> {
+    if !value.is_object() || js_sys::Array::is_array(&value) {
+        return Err(JsValue::from_str(
+            "gaussian_splat_quantization must be an object",
+        ));
+    }
+    let object = Object::from(value);
+    let mut options = GaussianSplatQuantization::default();
+    for name in Object::keys(&object).iter() {
+        let name = name.as_string().unwrap_or_default();
+        match name.as_str() {
+            "scale_bits" | "opacity_bits" => {
+                let bits = option_u8(&object, &name)?;
+                if bits.is_some_and(|bits| !(1..=30).contains(&bits)) {
+                    return Err(wasm_error(format_args!("{name} must be in 1..=30")));
+                }
+                if name == "scale_bits" {
+                    options.scale_bits = bits;
+                } else {
+                    options.opacity_bits = bits;
+                }
+            }
+            "sh_degrees" => {
+                let value = Reflect::get(&object, &name.into())?;
+                if !js_sys::Array::is_array(&value) {
+                    return Err(JsValue::from_str("sh_degrees must be an array"));
+                }
+                let degrees = js_sys::Array::from(&value);
+                if degrees.length() > 4 {
+                    return Err(JsValue::from_str(
+                        "sh_degrees accepts only degrees 0 through 3",
+                    ));
+                }
+                for (slot, rule) in options.sh_degrees.iter_mut().zip(degrees.iter()) {
+                    *slot = sh_quantization_from_js(rule)?;
+                }
+            }
+            "sh_coefficients" => {
+                let value = Reflect::get(&object, &name.into())?;
+                if !value.is_object() || js_sys::Array::is_array(&value) {
+                    return Err(JsValue::from_str(
+                        "sh_coefficients must be an object keyed by glTF semantic",
+                    ));
+                }
+                for entry in Object::entries(&Object::from(value)).iter() {
+                    let pair = js_sys::Array::from(&entry);
+                    let semantic = pair.get(0).as_string().unwrap_or_default();
+                    options
+                        .set_sh_coefficient(&semantic, sh_coefficient_from_js(pair.get(1))?)
+                        .map_err(wasm_error)?;
+                }
+            }
+            _ => {
+                return Err(wasm_error(format_args!(
+                    "unknown Gaussian splat quantization option {name}"
+                )))
+            }
+        }
+    }
+    Ok(options)
 }
 
 #[cfg(feature = "draco-encode")]
@@ -261,6 +382,9 @@ fn apply_compression_options(
     }
     if let Some(value) = option_property(&object, "position_quantization_grid")? {
         options.position_quantization_grid = position_grid_from_js(value)?;
+    }
+    if let Some(value) = option_property(&object, "gaussian_splat_quantization")? {
+        options.gaussian_splat_quantization = splat_quantization_from_js(value)?;
     }
     for (name, option) in [
         ("allow_points", &mut options.allow_points),
@@ -387,9 +511,10 @@ fn summary_to_js(summary: AssetSummary) -> JsValue {
 }
 
 #[cfg(feature = "draco-encode")]
-fn compression_report_to_js(report: draco_gltf::CompressionReport) -> JsValue {
+fn compression_report_to_js(report: draco_gltf::CompressionReport, points: bool) -> JsValue {
     let method = match report.encoding_method {
         0 => "sequential".to_string(),
+        1 if points => "kd-tree".to_string(),
         1 => "edgebreaker".to_string(),
         other => format!("method {other}"),
     };
@@ -848,9 +973,15 @@ impl GltfAsset {
         };
         options.encoding_method = i32::from(encoding_method);
         apply_compression_options(&mut options, options_js, true)?;
+        let mesh = MeshIndex(mesh);
+        let points = self
+            .import
+            .document()
+            .primitive(mesh, primitive)
+            .is_some_and(|source| source.mode() == PrimitiveMode::Points.to_gltf());
         self.import
-            .compress_primitive(MeshIndex(mesh), primitive, options)
-            .map(compression_report_to_js)
+            .compress_primitive(mesh, primitive, options)
+            .map(|report| compression_report_to_js(report, points))
             .map_err(wasm_error)
     }
 }

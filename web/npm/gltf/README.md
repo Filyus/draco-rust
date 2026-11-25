@@ -117,12 +117,14 @@ const compressed = asset.glb(2);
 
 `compressPrimitive` keeps its positional arguments: mesh, primitive, encoding
 speed, decoding speed, position/normal/texture-coordinate/color/generic bits,
-and method (`0` auto, `1` sequential, `2` EdgeBreaker). The final options object
+and method (`0` auto, `1` sequential, `2` EdgeBreaker for meshes or KD-tree for
+point clouds). The final options object
 is optional. It accepts `encoding_speed`, `decoding_speed`, `position_bits`,
 `normal_bits`, `texcoord_bits`, `color_bits`, `generic_bits`,
 `encoding_method`, `fallback`, `max_output_bytes`,
 `position_quantization_grid`, `allow_points`, `spatial_point_order`,
-`point_order_search`, and `prediction_search`. When an option also has a
+`point_order_search`, `prediction_search`, and `gaussian_splat_quantization`.
+When an option also has a
 positional argument, the object value wins. `fallback: true` retains ordinary
 geometry alongside Draco. `max_output_bytes` caps the final resolved buffers.
 
@@ -135,3 +137,30 @@ compression is opt-in with `allow_points`; it writes `POINTS` under an
 extension whose specification does not define that mode.
 `spatial_point_order` and `point_order_search` can change the decoded point
 order. Point-cloud search options have no effect on triangle meshes.
+
+Both encoding entry points accept Gaussian splat settings in the options
+object:
+
+```js
+const splatOptions = {
+  allow_points: true,
+  position_bits: 14,
+  gaussian_splat_quantization: {
+    scale_bits: 10,
+    opacity_bits: 8,
+    sh_degrees: [{ bits: 10, max_abs: 0.25 }, 8, 7, 6],
+    sh_coefficients: {
+      'KHR_gaussian_splatting:SH_DEGREE_2_COEF_3': 'preserve',
+    },
+  },
+};
+```
+
+An SH degree rule can be a bit count, `'preserve'`, `{ bits, max_abs }` for a
+grid that decodes zero exactly, or `{ bits, origin, range }` for an explicit
+RGB grid. Values outside the grid are clamped. Coefficient overrides accept a
+bit count or `'preserve'`. An omitted or `null` rule inherits the degree
+setting or `generic_bits`. Rotation and integer splat attributes
+retain their precision. A cloud with Float32 rotation uses sequential in
+auto mode and rejects an explicit KD-tree request. Float32 opacity uses a
+fixed `[0, 1]` grid when quantized.
