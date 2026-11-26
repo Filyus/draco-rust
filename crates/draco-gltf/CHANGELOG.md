@@ -9,6 +9,25 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.1](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.11.0...draco-gltf-v0.11.1) - 2026-11-26
+
+### API
+
+- **Opt-in Float32 rotation quantization for Gaussian splats.**
+  `GaussianSplatQuantization` adds `rotation_bits: Option<u8>` (1..=30).
+  `None` (the default) continues to store Float32 `KHR_gaussian_splatting:ROTATION`
+  without quantization; setting `rotation_bits` quantizes it and allows explicit
+  KD-tree encoding on that cloud.
+
+### glTF
+
+- **Default Gaussian splat `POINTS` to sequential encoding.** In auto mode
+  (`encoding_method == 0`), `POINTS` primitives carrying
+  `KHR_gaussian_splatting:*` attributes now choose the sequential point-cloud
+  coder instead of letting KD-tree inflate multi-attribute splat payloads when
+  all attributes are integer or quantized. Explicit KD-tree (`encoding_method == 2`)
+  remains available when all attributes are compatible.
+
 ## [0.11.0](https://github.com/Filyus/draco-rust/compare/draco-gltf-v0.10.0...draco-gltf-v0.11.0) - 2026-11-25
 
 ### API
