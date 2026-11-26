@@ -8,6 +8,31 @@ has changed in them; each package version has a section of its own.
 
 ## Unreleased
 
+## [0.4.3] - 2026-11-26
+
+- `@draco-rust/gltf/writer` and `GeometryWriteOptions.useDraco` accept
+  `gaussian_splat_quantization` for per-group precision controls over Gaussian
+  splat Float32 rotation (`rotation_bits`), scale, opacity, and spherical
+  harmonics (SH). SH rules can be set by degree or coefficient and support
+  explicit grids, including a centered grid that preserves exact zero. Integer
+  splat attributes always retain their input precision; Float32 rotation retains
+  its precision by default and is quantized only when `rotation_bits` is set.
+  `KHR_gaussian_splatting` point clouds default to sequential encoding in auto
+  mode, and forcing KD-tree with unquantized Float32 rotation is rejected unless
+  `rotation_bits` is set.
+- `@draco-rust/encoder` automatic point-cloud method selection now caps KD-tree
+  at 12 total components across all attributes, falling back to sequential
+  encoding for wider clouds such as Gaussian splats while still honoring
+  explicit KD-tree requests.
+- Quantized Float32 opacity uses the observed range when decoded values stay
+  within `[0, 1]`, preserving distinctions in narrow ranges. If source values
+  fall outside that interval or rounding would decode opacity above 1, the
+  writer uses a fixed `[0, 1]` grid.
+- SH coefficient names require one ASCII digit per placeholder in
+  `SH_DEGREE_<l>_COEF_<n>`, with degree 0–3 and index 0–2×degree. A malformed
+  name such as `SH_DEGREE_01_COEF_00` is rejected instead of aliasing
+  `SH_DEGREE_1_COEF_0`.
+
 ## [0.4.2] - 2026-11-25
 
 - `@draco-rust/gltf/writer` accepts the remaining Draco compression options,
