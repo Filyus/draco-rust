@@ -263,15 +263,15 @@ fn splat_quantization_from_js(value: JsValue) -> Result<GaussianSplatQuantizatio
     for name in Object::keys(&object).iter() {
         let name = name.as_string().unwrap_or_default();
         match name.as_str() {
-            "scale_bits" | "opacity_bits" => {
+            "rotation_bits" | "scale_bits" | "opacity_bits" => {
                 let bits = option_u8(&object, &name)?;
                 if bits.is_some_and(|bits| !(1..=30).contains(&bits)) {
                     return Err(wasm_error(format_args!("{name} must be in 1..=30")));
                 }
-                if name == "scale_bits" {
-                    options.scale_bits = bits;
-                } else {
-                    options.opacity_bits = bits;
+                match name.as_str() {
+                    "rotation_bits" => options.rotation_bits = bits,
+                    "scale_bits" => options.scale_bits = bits,
+                    _ => options.opacity_bits = bits,
                 }
             }
             "sh_degrees" => {

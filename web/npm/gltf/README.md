@@ -146,6 +146,7 @@ const splatOptions = {
   allow_points: true,
   position_bits: 14,
   gaussian_splat_quantization: {
+    rotation_bits: 10,
     scale_bits: 10,
     opacity_bits: 8,
     sh_degrees: [{ bits: 10, max_abs: 0.25 }, 8, 7, 6],
@@ -160,8 +161,10 @@ An SH degree rule can be a bit count, `'preserve'`, `{ bits, max_abs }` for a
 grid that decodes zero exactly, or `{ bits, origin, range }` for an explicit
 RGB grid. Values outside the grid are clamped. Coefficient overrides accept a
 bit count or `'preserve'`. An omitted or `null` rule inherits the degree
-setting or `generic_bits`. Rotation and integer splat attributes
-retain their precision. A cloud with Float32 rotation uses sequential in
-auto mode and rejects an explicit KD-tree request. Quantized Float32 opacity
-uses the source range when possible and falls back to a `[0, 1]` grid when
-needed to keep decoded opacity within that interval.
+setting or `generic_bits`. Integer splat attributes always retain their precision. Float32 rotation also
+retains its precision by default, and can be quantized explicitly with
+`rotation_bits`. `KHR_gaussian_splatting` point clouds use sequential in auto
+mode; forcing KD-tree with an unquantized Float32 rotation is rejected unless
+`rotation_bits` is set. Quantized Float32 opacity uses the source range when
+possible and falls back to a `[0, 1]` grid when needed to keep decoded opacity
+within that interval.

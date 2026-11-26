@@ -372,16 +372,24 @@ fn encode_draco_point_cloud(
     let mut settings = EncoderOptions::new();
     settings.set_global_int("encoding_speed", options.encoding_speed as i32);
     settings.set_global_int("decoding_speed", options.decoding_speed as i32);
+    let is_gaussian_splat = mapping
+        .iter()
+        .any(|(semantic, _)| semantic.starts_with(KHR_GAUSSIAN_SPLATTING_PREFIX));
     // The caller-facing method convention is the mesh one -- 1 sequential,
     // 2 the connectivity coder -- and a point cloud has no connectivity, so 2
     // lands on the kd-tree coder, the other thing the choice is between.
+    // Gaussian splats carry many attributes with differing bit budgets, where
+    // the kd-tree coder's shared bit depth inflates the stream, so auto mode
+    // defaults them to sequential.
     match options.encoding_method {
         1 => settings.set_encoding_method(0), // force sequential
         2 => settings.set_encoding_method(1), // force kd-tree
+        0 if is_gaussian_splat => settings.set_encoding_method(0),
         _ => {}
     }
     set_quantization_options(&mut settings, &mesh, mapping, options)?;
     if options.encoding_method == 2
+        && options.gaussian_splat_quantization.rotation_bits.is_none()
         && mapping.iter().any(|(semantic, id)| {
             semantic == "KHR_gaussian_splatting:ROTATION"
                 && mesh
@@ -390,7 +398,7 @@ fn encode_draco_point_cloud(
         })
     {
         return Err(Error::Extension(
-            "kd-tree requires quantized float attributes; Gaussian splat ROTATION must retain its precision. Use auto or sequential".into(),
+            "kd-tree requires quantized float attributes; Gaussian splat ROTATION must retain its precision unless rotation_bits is set. Use auto, sequential, or set rotation_bits".into(),
         ));
     }
     settings.set_prediction_search(options.prediction_search);
@@ -1056,12 +1064,13 @@ pub struct CompressionOptions {
     /// default so that existing callers keep the bytes they already produce;
     /// anything writing assets for delivery wants values here.
     pub quantization: QuantizationBits,
-    /// Overrides the type-wide `generic` bit count for Gaussian splat scale,
-    /// opacity and SH. Rotation and integer splat accessors retain their
-    /// precision. These options do not
-    /// enable point-cloud compression: [`Self::allow_points`] remains an
-    /// explicit opt-in because `KHR_draco_mesh_compression` specifies
-    /// triangle primitives, not `POINTS`.
+    /// Overrides the type-wide `generic` bit count for Gaussian splat rotation,
+    /// scale, opacity and SH. By default, Float32 rotation and integer splat
+    /// accessors retain their precision; Float32 rotation can be quantized
+    /// explicitly via [`GaussianSplatQuantization::rotation_bits`]. These
+    /// options do not enable point-cloud compression: [`Self::allow_points`]
+    /// remains an explicit opt-in because `KHR_draco_mesh_compression`
+    /// specifies triangle primitives, not `POINTS`.
     pub gaussian_splat_quantization: GaussianSplatQuantization,
     /// Explicit three-dimensional POSITION grid to use with
     /// [`QuantizationBits::position`]. When position quantization is enabled,
@@ -1086,8 +1095,10 @@ pub struct CompressionOptions {
     /// On a `POINTS` primitive the same two values pick between the point
     /// cloud's own coders instead: `1` forces the sequential coder, `2` the
     /// kd-tree one. There is no EdgeBreaker for a cloud to force.
-    /// A cloud with a Float32 splat rotation uses sequential in auto mode.
-    /// Forcing kd-tree on such a cloud returns an error.
+    /// `KHR_gaussian_splatting` point clouds default to sequential in auto
+    /// mode. Forcing kd-tree on a cloud with an unquantized Float32 splat
+    /// rotation returns an error unless
+    /// [`GaussianSplatQuantization::rotation_bits`] is set.
     pub encoding_method: i32,
     /// Whether a `POINTS` (mode 0) primitive may be compressed.
     ///
@@ -1153,11 +1164,16 @@ pub struct PositionQuantizationGrid {
 
 /// Quantization settings for `KHR_gaussian_splatting` attributes.
 ///
-/// Unset values inherit [`QuantizationBits::generic`]. Integer accessors and
-/// rotation quaternions keep their original precision.
+/// Unset `scale_bits`, `opacity_bits`, and SH rules inherit
+/// [`QuantizationBits::generic`]. Integer accessors keep their original
+/// precision, and Float32 rotation quaternions keep their original precision
+/// unless [`Self::rotation_bits`] is set explicitly.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct GaussianSplatQuantization {
+    /// Quantization bits for Float32 `KHR_gaussian_splatting:ROTATION` (1..=30).
+    /// `None` (the default) stores Float32 rotation without quantization.
+    pub rotation_bits: Option<u8>,
     /// Quantization bits for Float32 `KHR_gaussian_splatting:SCALE` (1..=30).
     pub scale_bits: Option<u8>,
     /// Quantization bits for Float32 `KHR_gaussian_splatting:OPACITY` (1..=30).
@@ -1416,11 +1432,16 @@ fn set_quantization_options(
             continue;
         }
         let rule = match splat_semantic {
-            // Generic quantization cannot preserve a unit quaternion.
-            "ROTATION" => Some(ShQuantization::Preserve),
             _ if attribute.data_type() != draco_core::DataType::Float32 => {
                 Some(ShQuantization::Preserve)
             }
+            // Generic quantization cannot preserve a unit quaternion; only
+            // quantize Float32 rotation when requested explicitly.
+            "ROTATION" => Some(
+                splat
+                    .rotation_bits
+                    .map_or(ShQuantization::Preserve, ShQuantization::Bits),
+            ),
             "SCALE" => splat.scale_bits.map(ShQuantization::Bits),
             _ => splat.sh_rule(splat_semantic),
         };
@@ -1783,6 +1804,160 @@ mod quantization_tests {
         assert!(centered_sh_grid(10, 1e-38).is_err());
         assert!(centered_sh_grid(1, 0.25).is_err());
         assert!(centered_sh_grid(10, f32::MAX).is_err());
+    }
+
+    #[test]
+    fn gaussian_splat_points_default_to_sequential_in_auto_mode() {
+        let prefix = crate::geometry::KHR_GAUSSIAN_SPLATTING_PREFIX;
+        let positions = [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 2.0, 0.0, 0.0]
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        // 11 total components (below draco-core's 12-component KD-tree cap),
+        // with integer ROTATION/SCALE/OPACITY so KD-tree is eligible.
+        let geometry = PackedGeometry::new(
+            PrimitiveMode::Points,
+            vec![
+                PackedAttribute::new("POSITION", 3, 3, ComponentType::F32, false, positions)
+                    .unwrap(),
+                PackedAttribute::new(
+                    format!("{prefix}ROTATION"),
+                    3,
+                    4,
+                    ComponentType::I8,
+                    true,
+                    [0, 0, 0, 127].repeat(3),
+                )
+                .unwrap(),
+                PackedAttribute::new(
+                    format!("{prefix}SCALE"),
+                    3,
+                    3,
+                    ComponentType::U8,
+                    false,
+                    vec![3; 9],
+                )
+                .unwrap(),
+                PackedAttribute::new(
+                    format!("{prefix}OPACITY"),
+                    3,
+                    1,
+                    ComponentType::U8,
+                    true,
+                    vec![127; 3],
+                )
+                .unwrap(),
+            ],
+            None,
+        )
+        .unwrap();
+
+        let mut options = CompressionOptions {
+            allow_points: true,
+            quantization: QuantizationBits::GLTF,
+            ..CompressionOptions::default()
+        };
+        let auto = DracoPrimitiveEncoding::encode(&geometry, &options).unwrap();
+        assert_eq!(
+            auto.bytes()[8],
+            0,
+            "KHR_gaussian_splatting POINTS must default to sequential in auto mode"
+        );
+
+        // Explicit KD-tree remains available when all attributes are compatible.
+        options.encoding_method = 2;
+        let forced = DracoPrimitiveEncoding::encode(&geometry, &options).unwrap();
+        assert_eq!(forced.bytes()[8], 1);
+    }
+
+    #[test]
+    fn float_rotation_quantizes_when_rotation_bits_is_set() {
+        let prefix = crate::geometry::KHR_GAUSSIAN_SPLATTING_PREFIX;
+        let rotation_semantic = format!("{prefix}ROTATION");
+        let positions = [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 2.0, 0.0, 0.0]
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        let source_rotations = [
+            0.123_456_7_f32,
+            -0.234_567_8,
+            0.345_678_9,
+            0.899_123_4,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            -0.5,
+            0.5,
+            -0.5,
+            0.5,
+        ];
+        let geometry = PackedGeometry::new(
+            PrimitiveMode::Points,
+            vec![
+                PackedAttribute::new("POSITION", 3, 3, ComponentType::F32, false, positions)
+                    .unwrap(),
+                PackedAttribute::new(
+                    &rotation_semantic,
+                    3,
+                    4,
+                    ComponentType::F32,
+                    false,
+                    source_rotations
+                        .iter()
+                        .flat_map(|value| value.to_le_bytes())
+                        .collect(),
+                )
+                .unwrap(),
+            ],
+            None,
+        )
+        .unwrap();
+
+        let mut options = CompressionOptions {
+            allow_points: true,
+            quantization: QuantizationBits::GLTF,
+            ..CompressionOptions::default()
+        };
+        options.gaussian_splat_quantization.rotation_bits = Some(8);
+        let encoded = DracoPrimitiveEncoding::encode(&geometry, &options).unwrap();
+        assert_eq!(encoded.bytes()[8], 0);
+        let decoded = encoded.decoded().unwrap();
+        let decoded_rotations = decoded
+            .attributes()
+            .iter()
+            .find(|attr| attr.semantic() == rotation_semantic)
+            .unwrap()
+            .bytes()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .copied()
+            .map(f32::from_le_bytes)
+            .collect::<Vec<_>>();
+        assert_ne!(
+            decoded_rotations.as_slice(),
+            source_rotations.as_slice(),
+            "rotation_bits = Some(8) should quantize Float32 ROTATION"
+        );
+        for (decoded, expected) in decoded_rotations.iter().zip(source_rotations.iter()) {
+            assert!(
+                (decoded - expected).abs() < 0.02,
+                "quantized rotation {decoded} drifted too far from {expected}"
+            );
+        }
+
+        // With rotation_bits set, forcing KD-tree is allowed.
+        options.encoding_method = 2;
+        let forced = DracoPrimitiveEncoding::encode(&geometry, &options).unwrap();
+        assert_eq!(forced.bytes()[8], 1);
+
+        // Out-of-range rotation_bits is rejected.
+        options.encoding_method = 0;
+        for invalid in [0, 31] {
+            options.gaussian_splat_quantization.rotation_bits = Some(invalid);
+            assert!(DracoPrimitiveEncoding::encode(&geometry, &options).is_err());
+        }
     }
 }
 #[derive(Clone, Debug, Default)]

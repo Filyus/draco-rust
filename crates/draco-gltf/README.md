@@ -104,6 +104,7 @@ let mut options = CompressionOptions::default();
 options.allow_points = true; // POINTS under KHR_draco_mesh_compression is opt-in.
 options.quantization.position = Some(14);
 let splat = &mut options.gaussian_splat_quantization;
+splat.rotation_bits = Some(10); // Optional: None preserves Float32 rotation.
 splat.scale_bits = Some(10);
 splat.opacity_bits = Some(8);
 splat.sh_degrees = [10, 8, 7, 6].map(|bits| Some(ShQuantization::Bits(bits)));
@@ -121,11 +122,13 @@ RGB origins, range and bits. A coefficient can override the degree with its
 own bit count or retain its source precision. An unset coefficient inherits
 its degree rule, and an unset degree inherits `quantization.generic`.
 
-Rotation quaternions and integer splat accessors retain their source
-precision. Float32 rotation makes Draco choose sequential in auto mode.
-Forcing KD-tree on such a cloud returns an error. Quantized Float32 opacity
-uses the source range when possible and falls back to a `[0, 1]` grid when
-needed to keep decoded opacity within that interval.
+Integer splat accessors always retain their source precision. Float32 rotation
+quaternions also retain their precision by default, and can be quantized
+explicitly with `rotation_bits`. `KHR_gaussian_splatting` point clouds default
+to the sequential coder in auto mode; forcing KD-tree with an unquantized
+Float32 rotation returns an error unless `rotation_bits` is set. Quantized
+Float32 opacity uses the source range when possible and falls back to a
+`[0, 1]` grid when needed to keep decoded opacity within that interval.
 
 These settings do not enable point-cloud compression by themselves. The
 `allow_points` opt-in remains required because the Draco glTF extension

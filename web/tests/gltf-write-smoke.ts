@@ -176,6 +176,29 @@ if (draco) {
       throw new Error('Quantized splat opacity did not preserve the upper endpoint');
     }
   }
+
+  const quantizedRotationSplat = api.GltfAsset.fromGeometry(splat, '2.0', new api.GeometryWriteOptions());
+  const quantizedRotationReport = quantizedRotationSplat.compressPrimitive(0, 0, 5, 5, 14, 0, 0, 0, 0, 0, {
+    ...splatOptions,
+    gaussian_splat_quantization: {
+      ...splatOptions.gaussian_splat_quantization,
+      rotation_bits: 8,
+    },
+  });
+  if (quantizedRotationReport.method !== 'sequential') {
+    throw new Error(`Expected sequential report for splat, got ${quantizedRotationReport.method}`);
+  }
+  const decodedQuantized = new api.GltfAsset(quantizedRotationSplat.glb(2), '2.0').readPrimitive(0, 0);
+  let quantizedRotationBytes: Float32Array | null = null;
+  for (let i = 0; i < decodedQuantized.attributeCount(); i++) {
+    if (decodedQuantized.attributeSemantic(i) === rotation) {
+      quantizedRotationBytes = new Float32Array(Uint8Array.from(decodedQuantized.attributeBytes(i)).buffer);
+      break;
+    }
+  }
+  if (!quantizedRotationBytes || quantizedRotationBytes.every((value, i) => value === rotations[i])) {
+    throw new Error('rotation_bits did not quantize Float32 splat rotation');
+  }
 }
 const bundle = document.gltfBundle();
 if (bundle.resourceCount() !== 1 || bundle.resourceBytes(0).length === 0) {
