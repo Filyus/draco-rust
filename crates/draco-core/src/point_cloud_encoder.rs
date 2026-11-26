@@ -175,14 +175,28 @@ fn point_order(pc: &PointCloud, options: &EncoderOptions) -> Vec<PointIndex> {
     (0..pc.num_points()).map(|i| PointIndex(i as u32)).collect()
 }
 
-/// Picks sequential or KD-tree encoding, as C++ `ExpertEncoder::EncodeToBuffer`
-/// does for a point cloud.
+/// Maximum total components across all attributes for which auto-selection
+/// chooses the KD-tree coder.
 ///
-/// The default matters: with no explicit method and the default speed of 5, a
-/// point cloud whose attributes are all eligible is encoded with the **KD-tree**
-/// method, not the sequential one. Defaulting to sequential produces a different
-/// method byte and an entirely different payload from the reference encoder for
-/// the same input.
+/// The KD-tree coder pools every attribute component into one D-dimensional
+/// integer vector and encodes every axis at the maximum bit depth across all
+/// attributes. That works well for low-dimensional clouds (positions alone, or
+/// positions with normals and colors up to 12 components, preserving C++ parity
+/// on standard point clouds), but degrades sharply on high-dimensional point
+/// clouds such as Gaussian splats (14–59 components). Callers can still force
+/// KD-tree explicitly via [`EncoderOptions::set_encoding_method`].
+const MAX_AUTO_KD_TREE_COMPONENTS: usize = 12;
+
+/// Picks sequential or KD-tree encoding, as C++ `ExpertEncoder::EncodeToBuffer`
+/// does for a point cloud, with a component-count cap on automatic KD-tree
+/// selection.
+///
+/// With no explicit method and the default speed of 5, a point cloud whose
+/// attributes are all eligible and whose total component count is at most
+/// [`MAX_AUTO_KD_TREE_COMPONENTS`] is encoded with the **KD-tree** method,
+/// matching the reference encoder on standard clouds. Higher-dimensional clouds
+/// fall back to the sequential coder in automatic mode unless KD-tree is
+/// requested explicitly.
 ///
 /// Note the asymmetry upstream has and this keeps: the `speed == 10` shortcut is
 /// guarded on the method being unset, so an explicitly requested KD-tree encode
@@ -229,8 +243,10 @@ fn select_encoding_method(
     // Every attribute must be an integer type, or a float that something has
     // asked to quantize -- the KD-tree coder works on integers alone.
     let mut kd_tree_possible = true;
+    let mut total_components: usize = 0;
     for att_id in 0..point_cloud.num_attributes() {
         let attribute = point_cloud.attribute(att_id);
+        total_components = total_components.saturating_add(attribute.num_components() as usize);
         let data_type = attribute.data_type();
         if !matches!(
             data_type,
@@ -256,7 +272,10 @@ fn select_encoding_method(
     }
 
     if kd_tree_possible {
-        return Ok(KD_TREE);
+        if requested == Some(KD_TREE) || total_components <= MAX_AUTO_KD_TREE_COMPONENTS {
+            return Ok(KD_TREE);
+        }
+        return Ok(SEQUENTIAL);
     }
     if requested == Some(KD_TREE) {
         return Err(DracoError::general("Invalid encoding method.".to_string()));

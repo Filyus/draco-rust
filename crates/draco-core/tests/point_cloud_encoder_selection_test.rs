@@ -206,3 +206,67 @@ fn an_unquantized_normal_encodes_as_raw_floats() {
         );
     }
 }
+
+/// High-dimensional point clouds (more than 12 total components) degrade under
+/// the KD-tree coder because every axis is coded at the maximum bit depth.
+/// Auto-selection falls back to sequential, while an explicit KD-tree request
+/// still honors the caller.
+#[test]
+fn high_component_cloud_selects_sequential_in_auto_mode() {
+    let build_cloud = |extra_3comp_attrs: usize| {
+        let mut pc = cloud_with_positions();
+        let num_points = pc.num_points();
+        for _ in 0..extra_3comp_attrs {
+            let mut att = PointAttribute::new();
+            att.init(
+                GeometryAttributeType::Generic,
+                3,
+                DataType::Float32,
+                false,
+                num_points,
+            );
+            for i in 0..num_points * 3 {
+                att.buffer_mut()
+                    .write(i * 4, &(i as f32 * 0.1).to_le_bytes());
+            }
+            pc.add_attribute(att);
+        }
+        pc
+    };
+
+    // 12 total components (position + 3 generic vec3) still picks KD-tree.
+    let pc_12 = build_cloud(3);
+    let mut options_12 = EncoderOptions::new();
+    for att_id in 0..pc_12.num_attributes() {
+        options_12.set_attribute_int(att_id, "quantization_bits", 10);
+    }
+    let bytes_12 = encode(pc_12, &options_12).expect("encode 12 components");
+    assert_eq!(
+        method_byte(&bytes_12),
+        1,
+        "expected KD-tree at 12 components"
+    );
+
+    // 15 total components (position + 4 generic vec3) selects sequential in auto mode.
+    let pc_15 = build_cloud(4);
+    let mut options_15 = EncoderOptions::new();
+    for att_id in 0..pc_15.num_attributes() {
+        options_15.set_attribute_int(att_id, "quantization_bits", 10);
+    }
+    let bytes_15_auto = encode(pc_15, &options_15).expect("encode 15 components auto");
+    assert_eq!(
+        method_byte(&bytes_15_auto),
+        0,
+        "expected sequential above 12 components in auto mode"
+    );
+
+    // Explicitly requesting KD-tree still works on the same high-dimensional cloud.
+    let pc_15_forced = build_cloud(4);
+    options_15.set_encoding_method(1);
+    let bytes_15_forced = encode(pc_15_forced, &options_15).expect("encode 15 components kd-tree");
+    assert_eq!(
+        method_byte(&bytes_15_forced),
+        1,
+        "expected explicit KD-tree to be honored"
+    );
+}
