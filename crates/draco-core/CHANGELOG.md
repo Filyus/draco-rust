@@ -8,6 +8,18 @@ the crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.5.1](https://github.com/Filyus/draco-rust/compare/draco-core-v2.5.0...draco-core-v2.5.1) - 2026-11-26
+
+### Core codec
+
+- **Avoid KD-tree bloat on high-dimensional point clouds.** Automatic
+  point-cloud method selection in `PointCloudEncoder` now caps KD-tree
+  selection at 12 total components across all attributes, falling back to
+  sequential encoding for wider clouds such as Gaussian splats where KD-tree's
+  shared bit depth inflates stream size. Standard clouds up to 12 components
+  keep the existing C++ parity default, and explicit
+  `EncoderOptions::set_encoding_method(1)` still forces KD-tree.
+
 ## [2.5.0](https://github.com/Filyus/draco-rust/compare/draco-core-v2.4.0...draco-core-v2.5.0) - 2026-11-24
 
 ### Added
