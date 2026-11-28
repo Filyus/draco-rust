@@ -1,0 +1,16 @@
+[package]
+name = "meshopt-bench"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+brotli = "8.0"
+draco-core = { path = "../../crates/draco-core" }
+draco-gltf = { path = "../../crates/draco-gltf", features = ["draco-encode"] }
+draco-io = { path = "../../crates/draco-io" }
+flate2 = "1.1"
+serde_json = "1.0"

@@ -1,0 +1,22 @@
+[
+  {
+    "name": "train_7000",
+    "url": "https://huggingface.co/datasets/Voxel51/gaussian_splatting/resolve/main/FO_dataset/train/point_cloud/iteration_7000/point_cloud.ply",
+    "sha256": "9f5c643fa18cb5ed6a11441f073133ed1034e3b0656bce5b7b5db3db49161366"
+  },
+  {
+    "name": "train_30000",
+    "url": "https://huggingface.co/datasets/Voxel51/gaussian_splatting/resolve/main/FO_dataset/train/point_cloud/iteration_30000/point_cloud.ply",
+    "sha256": "a4c1906ce0256f5cb2255aa078d18b468dc01d8604f6eda1aaf22b235147a7a1"
+  },
+  {
+    "name": "playroom_30000",
+    "url": "https://huggingface.co/datasets/Voxel51/gaussian_splatting/resolve/main/FO_dataset/playroom/point_cloud/iteration_30000/point_cloud.ply",
+    "sha256": "c6fddedf6c7b412d078bbbaa1826e7a1b258f75f862c5190dc50a646243d7d9e"
+  },
+  {
+    "name": "drjohnson_30000",
+    "url": "https://huggingface.co/datasets/Voxel51/gaussian_splatting/resolve/main/FO_dataset/drjohnson/point_cloud/iteration_30000/point_cloud.ply",
+    "sha256": "92f4898839ec4ad7f197cf6c74b89918b35ea712b4e41435593ccb152d22b7f5"
+  }
+]

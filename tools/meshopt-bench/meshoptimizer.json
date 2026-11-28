@@ -1,0 +1,9 @@
+{
+  "release": {
+    "tag": "v1.3",
+    "commit": "9e1f07b159d3cb777f1c67ed31fc11fd117986f4"
+  },
+  "splat_experiment": {
+    "commit": "2111560a8f647c51d0707b5e677019753e6ea080"
+  }
+}
