@@ -52,8 +52,11 @@ export const GLTF_INTERPRETED_EXTENSIONS: ReadonlySet<string> = new Set([
  * storage type, which both consumers carry as-is. Nothing is lost, so neither
  * consumer should report them as ignored.
  */
+const SPLAT_DRACO_COMPRESSION = 'TEST_gaussian_splatting_compression_draco';
+
 export const GLTF_READER_RESOLVED_EXTENSIONS: ReadonlySet<string> = new Set([
   'KHR_draco_mesh_compression',
+  SPLAT_DRACO_COMPRESSION,
   'EXT_meshopt_compression',
   // The name gltfpack wrote before the extension was ratified as EXT_; the
   // reader decodes both spellings through one path.
@@ -231,6 +234,18 @@ export function gltfExtensionWarnings(
 /** Whether an extension needs no interpretation beyond what both readers do. */
 export function isInterpretedGltfExtension(extension: string): boolean {
   return GLTF_INTERPRETED_EXTENSIONS.has(extension) || GLTF_READER_RESOLVED_EXTENSIONS.has(extension);
+}
+
+/** The experimental Draco splat profile requires whole-asset loading. */
+export function assertRequiredExtensionsForDracoSplats(manifest: GltfJson): void {
+  const required: string[] = manifest.extensionsRequired || [];
+  if (!required.includes(SPLAT_DRACO_COMPRESSION)) return;
+  const unsupported = required.filter((name) =>
+    !isInterpretedGltfExtension(name) && !GLTF_TEXTURE_SOURCE_EXTENSIONS.some((source) => source === name)
+  );
+  if (unsupported.length > 0) {
+    throw new Error(`Unsupported required extension for Draco splat asset: ${unsupported.join(', ')}`);
+  }
 }
 
 function numbers(value: GltfJson, fallback: number[]): number[] {

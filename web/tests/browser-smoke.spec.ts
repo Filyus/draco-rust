@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1082,6 +1082,33 @@ test('a KHR_gaussian_splatting glTF reads as the same splats as the PLY it came 
   }
 });
 
+type SplatFile = string | { name: string; mimeType: string; buffer: Buffer };
+
+async function splatPixels(page: Page, file: SplatFile, azimuth: number, count = 64) {
+  const input = typeof file === 'string'
+    ? { name: `splat-${azimuth.toFixed(3)}.gltf`, mimeType: 'model/gltf+json', buffer: Buffer.from(file) }
+    : file;
+  await page.locator('#file-input').setInputFiles(input);
+  await expect.poll(async () => (await loadedSplatCloud(page))?.count ?? 0).toBe(count);
+  return page.evaluate((azimuth) => new Promise<number[]>((resolve) => {
+    requestAnimationFrame(async () => {
+      const { state } = await import('/app/state.js' as string);
+      const viewer = state.viewer;
+      viewer.showGrid = false;
+      viewer.autoRotate = false;
+      viewer.camera.target.set([0, 0, 0]);
+      viewer.camera.distance = 14;
+      viewer.camera.azimuth = azimuth;
+      viewer.camera.elevation = 0.3;
+      viewer._render();
+      const { gl } = viewer;
+      const pixels = new Uint8Array(gl.drawingBufferWidth * gl.drawingBufferHeight * 4);
+      gl.readPixels(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      resolve(Array.from(pixels));
+    });
+  }), azimuth);
+}
+
 test('a splat node rotated by a quarter turn draws what a camera turned by it sees', async ({ page }) => {
   await page.goto('/index.html');
   await waitForConverterReady(page);
@@ -1098,33 +1125,10 @@ test('a splat node rotated by a quarter turn draws what a camera turned by it se
   // moves a channel by up to 47 and ten thousand channels by more than 8.
   const s = Math.SQRT1_2;
   const quarterAboutY = [0, s, 0, s];
-  const shoot = async (gltf: string, azimuth: number) => {
-    await page.locator('#file-input').setInputFiles({
-      name: `splat-${azimuth.toFixed(3)}.gltf`, mimeType: 'model/gltf+json', buffer: Buffer.from(gltf),
-    });
-    await expect.poll(async () => (await loadedSplatCloud(page))?.count ?? 0).toBe(64);
-    return page.evaluate((azimuth) => new Promise<number[]>((resolve) => {
-      requestAnimationFrame(async () => {
-        const { state } = await import('/app/state.js' as string);
-        const viewer = state.viewer;
-        viewer.showGrid = false;
-        viewer.autoRotate = false;
-        viewer.camera.target.set([0, 0, 0]);
-        viewer.camera.distance = 14;
-        viewer.camera.azimuth = azimuth;
-        viewer.camera.elevation = 0.3;
-        viewer._render();
-        const { gl } = viewer;
-        const pixels = new Uint8Array(gl.drawingBufferWidth * gl.drawingBufferHeight * 4);
-        gl.readPixels(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
-        resolve(Array.from(pixels));
-      });
-    }), azimuth);
-  };
 
   const azimuth = 0.7;
-  const plain = await shoot(tinySplatGltf(64, [0, 0, 0, 1]), azimuth);
-  const turned = await shoot(tinySplatGltf(64, quarterAboutY), azimuth + Math.PI / 2);
+  const plain = await splatPixels(page, tinySplatGltf(64, [0, 0, 0, 1]), azimuth);
+  const turned = await splatPixels(page, tinySplatGltf(64, quarterAboutY), azimuth + Math.PI / 2);
 
   // A frame with nothing in it would match anything.
   const drawn = plain.filter((value, index) => index % 4 !== 3 && value > 16).length;
@@ -1139,6 +1143,191 @@ test('a splat node rotated by a quarter turn draws what a camera turned by it se
   // moves a channel by up to 6 where they overlap. The transposed frame moves
   // one by 47.
   expect(worst).toBeLessThanOrEqual(8);
+});
+
+test('splat instance lighting is independent of node enumeration', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  const scene = JSON.parse(tinySplatGltf(64, [0, 0, 1, 0]));
+  // The second instance lies outside the camera frustum. Swapping the two
+  // nodes leaves both world transforms and every visible splat unchanged.
+  scene.nodes.push({ mesh: 0, translation: [100, 0, 0] });
+  scene.scenes[0].nodes.push(1);
+  const first = await splatPixels(page, JSON.stringify(scene), 0.7, 128);
+  scene.nodes.reverse();
+  // A reload must complete even though both scenes have the same count.
+  await splatPixels(page, tinySplatGltf(64), 0.7);
+  const second = await splatPixels(page, JSON.stringify(scene), 0.7, 128);
+  const changed = first.filter((v, i) => i % 4 !== 3 && v !== second[i]).length;
+  // Control for culling, depth sorting and page reloads with the same frames.
+  scene.nodes[0].rotation = scene.nodes[1].rotation;
+  await splatPixels(page, tinySplatGltf(64), 0.7);
+  const controlA = await splatPixels(page, JSON.stringify(scene), 0.7, 128);
+  scene.nodes.reverse();
+  await splatPixels(page, tinySplatGltf(64), 0.7);
+  const controlB = await splatPixels(page, JSON.stringify(scene), 0.7, 128);
+  expect(controlA.every((v, i) => v === controlB[i])).toBe(true);
+  console.log('RGB channels changed by node enumeration:', changed);
+  test.fail(true, 'The viewer currently shares the first instance harmonic frame.');
+  expect(changed).toBe(0);
+});
+
+/** Assembled GLB bytes: JSON chunk padded to four, BIN chunk zero-padded. */
+function glbOf(json: object, bin: Buffer): Buffer {
+  const jsonChunk = Buffer.from(JSON.stringify(json));
+  const padded = Buffer.concat([jsonChunk, Buffer.alloc((4 - (jsonChunk.length % 4)) % 4, 0x20)]);
+  // The chunk header states the padded length; the buffer's own byteLength
+  // stays logical, so trailing pad bytes belong to no bufferView.
+  const binPadded = Buffer.concat([bin, Buffer.alloc((4 - (bin.length % 4)) % 4)]);
+  const header = Buffer.alloc(12);
+  header.write('glTF');
+  header.writeUInt32LE(2, 4);
+  header.writeUInt32LE(12 + 8 + padded.length + 8 + binPadded.length, 8);
+  const jsonHeader = Buffer.alloc(8);
+  jsonHeader.writeUInt32LE(padded.length, 0);
+  jsonHeader.write('JSON', 4);
+  const binHeader = Buffer.alloc(8);
+  binHeader.writeUInt32LE(binPadded.length, 0);
+  binHeader.write('BIN\0', 4);
+  return Buffer.concat([header, jsonHeader, padded, binHeader, binPadded]);
+}
+
+const mixedSplatPath = path.join(repoRoot, 'proposals/gaussian-splatting-draco/mixed.glb');
+
+/** The same mixed scene with ordinary interleaved accessors for splats. */
+function sourceMixedSplatFile(): SplatFile {
+  const file = readFileSync(mixedSplatPath);
+  const end = 20 + file.readUInt32LE(12);
+  const doc = JSON.parse(file.subarray(20, end).toString('utf8'));
+  const prim = doc.meshes[1].primitives[0];
+  const base = 'KHR_gaussian_splatting';
+  const child = 'TEST_gaussian_splatting_compression_draco';
+  const view = prim.extensions[base].extensions[child].bufferView;
+  const offset = doc.bufferViews[view].byteOffset;
+  const meshBytes = file.subarray(end + 8, end + 8 + offset);
+  const { doc: source, bin: splats } = sourceSplatDoc();
+  const bytes = Buffer.concat([meshBytes, splats]);
+  const sourceAttributes = source.meshes[0].primitives[0].attributes;
+  doc.bufferViews[view] = { ...source.bufferViews[0], byteOffset: offset };
+  for (const [semantic, index] of Object.entries<number>(prim.attributes)) {
+    doc.accessors[index] = { ...source.accessors[sourceAttributes[semantic]], bufferView: view };
+  }
+  doc.extensionsUsed = doc.extensionsUsed.filter((name: string) => name !== child);
+  doc.extensionsRequired = doc.extensionsRequired.filter((name: string) => name !== child);
+  delete prim.extensions[base].extensions;
+  doc.buffers[0].byteLength = bytes.length;
+  return { name: 'mixed-source.glb', mimeType: 'model/gltf-binary', buffer: glbOf(doc, bytes) };
+}
+
+/**
+ * `tiny-splat.gltf` as a GLB, preserving the source's interleaved layout.
+ */
+function sourceSplatDoc() {
+  const doc = JSON.parse(
+    readFileSync(path.join(repoRoot, 'testdata/GaussianSplats/tiny-splat.gltf'), 'utf8'),
+  );
+  const bin = readFileSync(path.join(repoRoot, 'testdata/GaussianSplats/tiny-splat.bin'));
+  doc.buffers = [{ byteLength: bin.length }];
+  return { doc, bin };
+}
+
+function sourceSplatsFile(): SplatFile & { buffer: Buffer } {
+  const { doc, bin } = sourceSplatDoc();
+  return { name: 'splat-source.glb', mimeType: 'model/gltf-binary', buffer: glbOf(doc, bin) };
+}
+
+/** The same source splats, instantiated twice through EXT_mesh_gpu_instancing. */
+function instancedSplatsFile(): SplatFile & { buffer: Buffer } {
+  const { doc, bin } = sourceSplatDoc();
+  const instances = Buffer.concat([
+    Buffer.from(new Float32Array([7, 0, 0, -7, 0, 0]).buffer),
+    Buffer.from(new Float32Array([0, 0, 0, 1, 0, 0, Math.SQRT1_2, Math.SQRT1_2]).buffer),
+  ]);
+  doc.bufferViews.push(
+    { buffer: 0, byteOffset: bin.length, byteLength: 24 },
+    { buffer: 0, byteOffset: bin.length + 24, byteLength: 32 },
+  );
+  doc.accessors.push(
+    {
+      bufferView: doc.bufferViews.length - 2, componentType: 5126, count: 2,
+      type: 'VEC3', min: [-7, 0, 0], max: [7, 0, 0],
+    },
+    { bufferView: doc.bufferViews.length - 1, componentType: 5126, count: 2, type: 'VEC4' },
+  );
+  doc.nodes[0].extensions = {
+    EXT_mesh_gpu_instancing: {
+      attributes: { TRANSLATION: doc.accessors.length - 2, ROTATION: doc.accessors.length - 1 },
+    },
+  };
+  doc.extensionsUsed = [...(doc.extensionsUsed ?? []), 'EXT_mesh_gpu_instancing'];
+  doc.extensionsRequired = [...(doc.extensionsRequired ?? []), 'EXT_mesh_gpu_instancing'];
+  doc.buffers = [{ byteLength: bin.length + instances.length }];
+  return {
+    name: 'splat-instanced.glb', mimeType: 'model/gltf-binary', buffer: glbOf(doc, Buffer.concat([bin, instances])),
+  };
+}
+
+test('a draco-compressed splat primitive renders exactly what the source splats render', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  const azimuth = 0.7;
+  // The rendered compressed path: the exporter's stream decoded by the reader
+  // and drawn, against the same float32 values carried as plain accessors.
+  // Lossless decode means the frames match byte for byte.
+  const compressed = await splatPixels(page, {
+    name: 'mixed.glb', mimeType: 'model/gltf-binary', buffer: readFileSync(mixedSplatPath),
+  }, azimuth, 128);
+  const drawn = compressed.filter((value, index) => index % 4 !== 3 && value > 16).length;
+  expect(drawn).toBeGreaterThan(compressed.length / 50);
+  // The cloud the decoded stream produced, captured before the second load
+  // replaces it.
+  const compressedCloud = await loadedSplatCloud(page);
+  // A different count makes the next poll wait for the reload; two 64-splat
+  // files back to back would race on the stale count.
+  await splatPixels(page, tinySplatGltf(16), azimuth, 16);
+  const plain = await splatPixels(page, sourceMixedSplatFile(), azimuth, 128);
+  // Clouds first, field by field: a compact diff says whether the reader
+  // path or the render path diverges. Pixel arrays are the last word, and
+  // their diff is far too large to be the first thing a failure prints.
+  const sourceCloud = await loadedSplatCloud(page);
+  for (const field of [
+    'count', 'shDegree', 'colorSpace', 'positions', 'scales', 'rotations', 'alphas', 'dc', 'sh', 'shFrame',
+  ] as const) {
+    expect(compressedCloud![field], field).toEqual(sourceCloud![field]);
+  }
+  expect(compressed).toEqual(plain);
+});
+
+test('a mixed splat asset with an unknown required extension is rejected', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  const mixed = readFileSync(mixedSplatPath);
+  const end = 20 + mixed.readUInt32LE(12);
+  const document = JSON.parse(mixed.subarray(20, end).toString('utf8'));
+  document.extensionsUsed.push('TEST_unknown_splat_extension');
+  document.extensionsRequired.push('TEST_unknown_splat_extension');
+  await page.locator('#file-input').setInputFiles({
+    name: 'mixed-unknown.glb',
+    mimeType: 'model/gltf-binary',
+    buffer: glbOf(document, mixed.subarray(end + 8)),
+  });
+  await expect(page.locator('#console')).toContainText('TEST_unknown_splat_extension');
+  expect((await loadedSplatCloud(page))?.count ?? 0).toBe(0);
+});
+
+test('a gpu-instanced splat node draws one copy with a warning until per-instance drawing lands', async ({ page }) => {
+  await page.goto('/index.html');
+  await waitForConverterReady(page);
+  const azimuth = 0.7;
+  // Two instances with distinct transforms. The draft's decoded-accessor rules
+  // put per-instance SH rotation on the renderer; the viewer warns and draws
+  // the primitive once at the node transform. Pinned here so implementing the
+  // rule turns this test loud instead of silently wrong.
+  const instanced = await splatPixels(page, instancedSplatsFile(), azimuth);
+  // Same guard against the stale-count race between two 64-splat files.
+  await splatPixels(page, tinySplatGltf(16), azimuth, 16);
+  const plain = await splatPixels(page, sourceSplatsFile(), azimuth);
+  expect(instanced).toEqual(plain);
 });
 
 test('converter resolves glTF companions and reports decoded geometry', async ({ page }) => {

@@ -3409,6 +3409,159 @@ fn a_splat_primitive_compresses_as_a_point_cloud_when_allowed() {
     }
 }
 
+#[cfg(feature = "draco-encode")]
+fn experimental_splat_scene() -> crate::Import {
+    use crate::{
+        ComponentType, GeometryWriteOptions, Import, JsonValue, PackedAttribute, PackedGeometry,
+        PrimitiveMode,
+    };
+
+    fn attribute<const N: usize>(semantic: &str, rows: [[f32; N]; 4]) -> PackedAttribute {
+        let bytes = rows
+            .into_iter()
+            .flatten()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        PackedAttribute::new(
+            semantic,
+            rows.len(),
+            N as u8,
+            ComponentType::F32,
+            false,
+            bytes,
+        )
+        .unwrap()
+    }
+
+    let geometry = PackedGeometry::new(
+        PrimitiveMode::Points,
+        vec![
+            attribute(
+                "POSITION",
+                [[0., 0., 0.], [1., 0., 0.], [0., 2., 0.], [0., 0., 3.]],
+            ),
+            attribute(
+                "KHR_gaussian_splatting:ROTATION",
+                [
+                    [0., 0., 0., 1.],
+                    [1., 0., 0., 0.],
+                    [0., 1., 0., 0.],
+                    [0., 0., 1., 0.],
+                ],
+            ),
+            attribute(
+                "KHR_gaussian_splatting:SCALE",
+                [[1., 2., 3.], [2., 3., 4.], [3., 4., 5.], [4., 5., 6.]],
+            ),
+            attribute(
+                "KHR_gaussian_splatting:OPACITY",
+                [[0.125], [0.25], [0.5], [1.]],
+            ),
+            attribute(
+                "KHR_gaussian_splatting:SH_DEGREE_0_COEF_0",
+                [[0., 0., 0.], [0.5, 0., 0.], [0., 0.5, 0.], [0., 0., 0.5]],
+            ),
+        ],
+        None,
+    )
+    .unwrap();
+    let mut scene = Import::from_geometry(
+        &geometry,
+        ValidationProfile::Gltf20,
+        GeometryWriteOptions::default(),
+    )
+    .unwrap();
+    let root = scene.document_mut().as_value_mut();
+    let base = crate::splat_draco::BASE;
+    root["extensionsUsed"] = JsonValue::Array(vec![JsonValue::from(base)]);
+    root["meshes"][0]["primitives"][0]["extensions"][base] = JsonValue::object([
+        ("kernel", JsonValue::from("ellipse")),
+        ("colorSpace", JsonValue::from("srgb_rec709_display")),
+    ]);
+    scene
+}
+
+#[cfg(feature = "draco-encode")]
+#[test]
+fn experimental_splat_writer_roundtrips_alongside_a_draco_mesh() {
+    use crate::{
+        ComponentType, CompressionMode, CompressionOptions, GeometryWriteOptions, MeshIndex,
+        OutputFormat, PrimitiveIndex,
+    };
+
+    let mut scene = experimental_splat_scene();
+    let mesh = MeshIndex(0);
+    let splat = PrimitiveIndex::new(mesh, 0);
+    let source = scene.read_primitive(splat).unwrap();
+    let triangle = packed_triangle(ComponentType::F32);
+    let triangle_location = scene
+        .push_primitive(mesh, &triangle, GeometryWriteOptions::default())
+        .unwrap();
+
+    let mut options = CompressionOptions {
+        compress_splats: true,
+        mode: CompressionMode::Fallback,
+        ..CompressionOptions::default()
+    };
+    let original = scene.to_bytes(OutputFormat::GlbV2).unwrap();
+    assert!(scene.compress_primitive(mesh, 0, options).is_err());
+    assert_eq!(scene.to_bytes(OutputFormat::GlbV2).unwrap(), original);
+
+    options.mode = CompressionMode::DracoOnly;
+    scene.compress_primitive(mesh, 0, options).unwrap();
+    let primitive = scene.document().primitive(mesh, 0).unwrap();
+    assert!(crate::extensions::splat_draco_extension(primitive.value()).is_some());
+    assert!(primitive
+        .extension(crate::KHR_DRACO_MESH_COMPRESSION)
+        .is_none());
+    scene
+        .compress_primitive(mesh, triangle_location.primitive, options)
+        .unwrap();
+
+    let bytes = scene.to_bytes(OutputFormat::GlbV2).unwrap();
+    let mut scene = parse(&bytes, ValidationProfile::Gltf20).unwrap();
+    let decoded = scene.read_primitives(&[splat, triangle_location]).unwrap();
+    let assert_splats = |actual: &crate::PackedGeometry| {
+        assert_eq!(actual.mode(), source.mode());
+        assert!(actual.indices().is_none());
+        assert_eq!(actual.attributes().len(), source.attributes().len());
+        for expected in source.attributes() {
+            assert!(
+                actual
+                    .attributes()
+                    .iter()
+                    .any(|attribute| attribute == expected),
+                "splat attribute {} differs",
+                expected.semantic()
+            );
+        }
+    };
+    assert_splats(&decoded[0]);
+    assert_eq!(
+        decoded[1].indices().unwrap().count(),
+        triangle.indices().unwrap().count()
+    );
+    assert!(scene
+        .document()
+        .primitive(mesh, triangle_location.primitive)
+        .unwrap()
+        .extension(crate::KHR_DRACO_MESH_COMPRESSION)
+        .is_some());
+
+    scene.decompress_in_place().unwrap();
+    assert_splats(&scene.read_primitive(splat).unwrap());
+    let root = scene.document().as_value();
+    for field in ["extensionsUsed", "extensionsRequired"] {
+        let names = root[field].as_array().unwrap();
+        assert!(names
+            .iter()
+            .any(|name| name.as_str() == Some("KHR_gaussian_splatting")));
+        assert!(names
+            .iter()
+            .all(|name| name.as_str() != Some(crate::extensions::SPLAT_DRACO)));
+    }
+}
+
 /// The same primitive, with a fallback kept: the ordinary accessors are
 /// rewritten from what the Draco buffer decodes to, per the spec, and the
 /// extension is used but not required.
@@ -3529,6 +3682,72 @@ fn an_indexed_points_primitive_compresses_without_keeping_its_indices() {
     assert_eq!(geometry.mode(), crate::PrimitiveMode::Points);
     assert!(geometry.indices().is_none());
     assert_eq!(geometry.vertex_count(), 3);
+}
+
+#[cfg(feature = "draco-encode")]
+#[test]
+fn experimental_splat_writer_expands_repeated_indices() {
+    use crate::{
+        ComponentType, CompressionOptions, GeometryWriteOptions, MeshIndex, OutputFormat,
+        PackedGeometry, PackedIndices, PrimitiveIndex, PrimitiveMode,
+    };
+    let mut scene = experimental_splat_scene();
+    let mesh = MeshIndex(0);
+    let primitive = PrimitiveIndex::new(mesh, 0);
+    let source = scene.read_primitive(primitive).unwrap();
+    let indices = [3u8, 0, 3, 1];
+    let indexed = PackedGeometry::new(
+        PrimitiveMode::Points,
+        source.attributes().to_vec(),
+        Some(PackedIndices::new(indices.len(), ComponentType::U8, indices.to_vec()).unwrap()),
+    )
+    .unwrap();
+    scene
+        .write_primitive(primitive, &indexed, GeometryWriteOptions::default())
+        .unwrap();
+    assert!(scene
+        .document()
+        .primitive(mesh, 0)
+        .unwrap()
+        .indices()
+        .is_some());
+
+    scene
+        .compress_primitive(
+            mesh,
+            0,
+            CompressionOptions {
+                compress_splats: true,
+                encoding_method: 1,
+                ..CompressionOptions::default()
+            },
+        )
+        .unwrap();
+
+    let bytes = scene.to_bytes(OutputFormat::GlbV2).unwrap();
+    let reopened = parse(&bytes, ValidationProfile::Gltf20).unwrap();
+    let reference = reopened.document().primitive(mesh, 0).unwrap();
+    assert!(reference.indices().is_none());
+    assert!(crate::extensions::splat_draco_extension(reference.value()).is_some());
+    let decoded = reopened.read_primitive(primitive).unwrap();
+    assert_eq!(decoded.vertex_count(), indices.len());
+    assert_eq!(decoded.attributes().len(), source.attributes().len());
+    for actual in decoded.attributes() {
+        let original = source
+            .attributes()
+            .iter()
+            .find(|attribute| attribute.semantic() == actual.semantic())
+            .unwrap();
+        let width = usize::from(original.components()) * original.component_type().byte_width();
+        let expected: Vec<_> = indices
+            .iter()
+            .flat_map(|&index| {
+                let offset = usize::from(index) * width;
+                original.bytes()[offset..offset + width].iter().copied()
+            })
+            .collect();
+        assert_eq!(actual.bytes(), expected, "{}", actual.semantic());
+    }
 }
 
 /// `POINTS` stays opt-in: without `allow_points` the primitive is refused

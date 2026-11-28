@@ -16,6 +16,7 @@ import type {
 } from './scene-document.ts';
 import {
   GLTF_TEXTURE_SOURCE_EXTENSIONS,
+  assertRequiredExtensionsForDracoSplats,
   gltfExtensionWarnings,
   isInterpretedGltfExtension,
   readGltfMaterial,
@@ -75,6 +76,7 @@ export function buildSceneDocumentWithGltfProvenance(
   try {
     assertConverterProfile(asset);
     const manifest: GltfJson = JSON.parse(new TextDecoder().decode(asset.json()));
+    assertRequiredExtensionsForDracoSplats(manifest);
     const document = createSceneDocument({ warnings: extensionWarnings(manifest) });
     const accessorBySource = new Map<string, number>();
     const imageResources = collectImageResources(asset, manifest.images || [], resources, document);

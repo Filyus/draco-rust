@@ -388,6 +388,7 @@ fn apply_compression_options(
     }
     for (name, option) in [
         ("allow_points", &mut options.allow_points),
+        ("compress_splats", &mut options.compress_splats),
         ("spatial_point_order", &mut options.spatial_point_order),
         ("point_order_search", &mut options.point_order_search),
         ("prediction_search", &mut options.prediction_search),

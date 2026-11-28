@@ -198,7 +198,7 @@ pub struct PackedAttribute {
     components: u8,
     component_type: ComponentType,
     normalized: bool,
-    bytes: Vec<u8>,
+    pub(crate) bytes: Vec<u8>,
     source_accessor: Option<usize>,
 }
 
@@ -378,7 +378,7 @@ impl PackedIndices {
 pub struct PackedGeometry {
     mode: PrimitiveMode,
     indices: Option<PackedIndices>,
-    attributes: Vec<PackedAttribute>,
+    pub(crate) attributes: Vec<PackedAttribute>,
 }
 
 impl PackedGeometry {

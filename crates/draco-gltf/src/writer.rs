@@ -12,7 +12,7 @@ pub enum GeometryEncoding {
     /// Store geometry in ordinary glTF accessors.
     #[default]
     Raw,
-    /// Encode geometry with `KHR_draco_mesh_compression`.
+    /// Encode geometry with the Draco extension selected by the options.
     #[cfg(feature = "draco-encode")]
     Draco(crate::CompressionOptions),
 }
@@ -570,31 +570,53 @@ fn remove_draco_extension(primitive: &mut Value) {
         return;
     };
     extensions.retain(|(name, _)| name != crate::KHR_DRACO_MESH_COMPRESSION);
+    if let Some((_, splat)) = extensions
+        .iter_mut()
+        .find(|(name, _)| name == "KHR_gaussian_splatting")
+    {
+        if let Some(children) = splat.get_mut("extensions") {
+            remove_key(children, crate::extensions::SPLAT_DRACO);
+            if children
+                .as_object()
+                .is_some_and(|children| children.is_empty())
+            {
+                remove_key(splat, "extensions");
+            }
+        }
+    }
     if extensions.is_empty() {
         remove_key(primitive, "extensions");
     }
 }
 
 fn remove_unused_draco_name(root: &mut Value) {
-    let still_used = root
+    let mut mesh_draco = false;
+    let mut splat_draco = false;
+    for primitive in root
         .get("meshes")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter_map(|mesh| mesh.get("primitives").and_then(Value::as_array))
         .flatten()
-        .any(|primitive| {
-            primitive
-                .get("extensions")
-                .and_then(|extensions| extensions.get(crate::KHR_DRACO_MESH_COMPRESSION))
-                .is_some()
-        });
-    if still_used {
-        return;
+    {
+        let extensions = primitive.get("extensions");
+        mesh_draco |= extensions
+            .and_then(|extensions| extensions.get(crate::KHR_DRACO_MESH_COMPRESSION))
+            .is_some();
+        splat_draco |= extensions
+            .and_then(|extensions| extensions.get("KHR_gaussian_splatting"))
+            .and_then(|splat| splat.get("extensions"))
+            .and_then(|children| children.get(crate::extensions::SPLAT_DRACO))
+            .is_some();
     }
     for name in ["extensionsUsed", "extensionsRequired"] {
         if let Some(values) = root.get_mut(name).and_then(Value::as_array_mut) {
-            values.retain(|value| value.as_str() != Some(crate::KHR_DRACO_MESH_COMPRESSION));
+            values.retain(|value| match value.as_str() {
+                Some(crate::KHR_DRACO_MESH_COMPRESSION) => mesh_draco,
+                Some(crate::extensions::SPLAT_DRACO) => splat_draco,
+                _ => true,
+            });
             if values.is_empty() {
                 remove_key(root, name);
             }

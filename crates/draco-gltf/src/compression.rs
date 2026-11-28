@@ -23,18 +23,15 @@ pub enum CompressionMode {
     DracoOnly,
 }
 
-fn add_extension_name(root: &mut crate::JsonValue, field: &str) -> Result<()> {
+fn add_extension_name(root: &mut crate::JsonValue, field: &str, name: &str) -> Result<()> {
     if root.get(field).is_none() {
         root[field] = crate::JsonValue::Array(Vec::new());
     }
     let list = root[field]
         .as_array_mut()
         .ok_or_else(|| Error::Validation(vec![format!("{field} is not an array")]))?;
-    if !list
-        .iter()
-        .any(|value| value.as_str() == Some(crate::KHR_DRACO_MESH_COMPRESSION))
-    {
-        list.push(crate::JsonValue::from(crate::KHR_DRACO_MESH_COMPRESSION));
+    if !list.iter().any(|value| value.as_str() == Some(name)) {
+        list.push(crate::JsonValue::from(name));
     }
     Ok(())
 }
@@ -1068,9 +1065,8 @@ pub struct CompressionOptions {
     /// scale, opacity and SH. By default, Float32 rotation and integer splat
     /// accessors retain their precision; Float32 rotation can be quantized
     /// explicitly via [`GaussianSplatQuantization::rotation_bits`]. These
-    /// options do not enable point-cloud compression: [`Self::allow_points`]
-    /// remains an explicit opt-in because `KHR_draco_mesh_compression`
-    /// specifies triangle primitives, not `POINTS`.
+    /// settings apply when [`Self::compress_splats`] or the legacy
+    /// [`Self::allow_points`] option enables point-cloud compression.
     pub gaussian_splat_quantization: GaussianSplatQuantization,
     /// Explicit three-dimensional POSITION grid to use with
     /// [`QuantizationBits::position`]. When position quantization is enabled,
@@ -1100,34 +1096,34 @@ pub struct CompressionOptions {
     /// rotation returns an error unless
     /// [`GaussianSplatQuantization::rotation_bits`] is set.
     pub encoding_method: i32,
-    /// Whether a `POINTS` (mode 0) primitive may be compressed.
+    /// Compress `POINTS` using the experimental Draco splat extension.
     ///
-    /// Off by default, and deliberately. The `KHR_draco_mesh_compression`
-    /// specification defines compression for triangle-shaped connectivity
-    /// only, and a stream written over a point cloud sits outside it: every
-    /// decoder that carries a Draco point-cloud decoder reads it -- this
-    /// crate's own reader among them, which follows what the stream says
-    /// rather than what the primitive declares -- but a reader that enforces
-    /// the spec's mode table on the extension refuses it. A caller who wants
-    /// a compressed splat or scan asks for it here, and the document records
-    /// what it did: `mode` stays `0`, and the payload lands in the same
-    /// buffer view the extension names.
+    /// Document compression writes `TEST_gaussian_splatting_compression_draco`
+    /// for `POINTS` declaring `KHR_gaussian_splatting`. Indexed input is
+    /// expanded into points, including repeated indices. This requires
+    /// [`CompressionMode::DracoOnly`] and works independently of
+    /// [`Self::allow_points`].
+    pub compress_splats: bool,
+    /// Enable legacy `POINTS` compression for existing callers.
     ///
-    /// With it off, a mode-0 primitive is refused exactly as before.
+    /// This mode writes a point cloud under `KHR_draco_mesh_compression`,
+    /// whose specification covers triangle primitives. Readers enforcing
+    /// that restriction reject these files. For Gaussian splat documents,
+    /// use [`Self::compress_splats`].
     pub allow_points: bool,
     /// Orders a point cloud's points along a Hilbert curve before they are
-    /// written. Read only when [`Self::allow_points`] compresses a `POINTS`
-    /// primitive; it reorders the decoded points, and it can make a file
+    /// written. Applies to compressed `POINTS` primitives. It reorders the
+    /// decoded points and can make a file
     /// larger, when an attribute varies along the order the points came in.
     pub spatial_point_order: bool,
     /// Runs the order search before the points are written and keeps it only
     /// when the coder's own plan prices it under the order they came in. Read
-    /// only when [`Self::allow_points`] compresses a `POINTS` primitive; it
+    /// only when compressing a `POINTS` primitive. It
     /// costs encode time, and it reorders the decoded points when it fires.
     pub point_order_search: bool,
     /// Lets the point-cloud coder choose each attribute's prediction scheme by
     /// the estimated cost of the candidates rather than by the fixed rule. Read
-    /// only when [`Self::allow_points`] compresses a `POINTS` primitive; it
+    /// only when compressing a `POINTS` primitive. It
     /// costs encode time and nothing else, and every stream it can produce is
     /// one an ordinary decoder reads.
     pub prediction_search: bool,
@@ -1144,6 +1140,7 @@ impl Default for CompressionOptions {
             position_quantization_grid: None,
             encoding_method: 0,
             allow_points: false,
+            compress_splats: false,
             spatial_point_order: false,
             point_order_search: false,
             prediction_search: false,
@@ -2149,15 +2146,37 @@ impl Import {
         }
         let source_mode = reference.mode();
         let points = source_mode == 0;
+        let splats = points
+            && options.compress_splats
+            && (reference.extension(crate::splat_draco::BASE).is_some()
+                || reference
+                    .attribute_indices()
+                    .any(|(name, _)| name.starts_with(KHR_GAUSSIAN_SPLATTING_PREFIX)));
+        if splats {
+            if reference
+                .extension(crate::splat_draco::BASE)
+                .and_then(crate::JsonRef::as_object)
+                .is_none()
+            {
+                return Err(Error::Extension(
+                    "experimental Draco splat compression requires KHR_gaussian_splatting".into(),
+                ));
+            }
+            if options.mode != CompressionMode::DracoOnly {
+                return Err(Error::Extension(
+                    "experimental Draco splat compression requires DracoOnly".into(),
+                ));
+            }
+        }
         if points {
             // A point cloud sits outside what the extension's own text
             // covers, so it is strictly opt-in; see `CompressionOptions::
             // allow_points`.
-            if !options.allow_points {
+            if !options.allow_points && !splats {
                 return Err(Error::Extension(format!(
                     "KHR_draco_mesh_compression encoding supports only TRIANGLES (4), \
                      TRIANGLE_STRIP (5) and TRIANGLE_FAN (6), not mode {source_mode}; \
-                     pass allow_points to compress a POINTS primitive"
+                     use compress_splats for KHR_gaussian_splatting or allow_points for legacy POINTS output"
                 )));
             }
             if reference.morph_targets().next().is_some() {
@@ -2203,7 +2222,7 @@ impl Import {
         } else {
             encode_primitive(geometry, mapping, &options)?
         };
-        let decoded = if has_targets || options.mode == CompressionMode::Fallback {
+        let mut decoded = if splats || has_targets || options.mode == CompressionMode::Fallback {
             Some(decode_encoded(
                 &encoded.bytes,
                 &encoded.mapping,
@@ -2268,11 +2287,21 @@ impl Import {
                     .map(|(name, id)| (name.clone(), crate::JsonValue::from(*id as u64)))
                     .collect(),
             );
-            root["meshes"][mesh.0]["primitives"][primitive]["extensions"]
-                [crate::KHR_DRACO_MESH_COMPRESSION] = crate::JsonValue::object([
+            let extension = crate::JsonValue::object([
                 ("bufferView", crate::JsonValue::from(view)),
                 ("attributes", attributes),
             ]);
+            let extensions = &mut root["meshes"][mesh.0]["primitives"][primitive]["extensions"];
+            let name = if splats {
+                extensions[crate::splat_draco::BASE]["extensions"]
+                    [crate::extensions::SPLAT_DRACO] = extension;
+                add_extension_name(root, "extensionsUsed", crate::splat_draco::BASE)?;
+                add_extension_name(root, "extensionsRequired", crate::splat_draco::BASE)?;
+                crate::extensions::SPLAT_DRACO
+            } else {
+                extensions[crate::KHR_DRACO_MESH_COMPRESSION] = extension;
+                crate::KHR_DRACO_MESH_COMPRESSION
+            };
             // A strip or fan was unwound into an ordinary triangle list before
             // Draco ever saw it -- its connectivity has no notion of either --
             // so the primitive now truthfully is TRIANGLES, whatever mode it
@@ -2284,9 +2313,9 @@ impl Import {
                 root["meshes"][mesh.0]["primitives"][primitive]["mode"] =
                     crate::JsonValue::from(4u64);
             }
-            add_extension_name(root, "extensionsUsed")?;
+            add_extension_name(root, "extensionsUsed", name)?;
             if options.mode == CompressionMode::DracoOnly {
-                add_extension_name(root, "extensionsRequired")?;
+                add_extension_name(root, "extensionsRequired", name)?;
             }
             if options.mode == CompressionMode::DracoOnly {
                 detach_draco_only_accessors(root, mesh.0, primitive, &mapping, &layout)?;
@@ -2300,6 +2329,17 @@ impl Import {
                 &self.extensions,
                 options.max_output_bytes,
             )?;
+        }
+        if splats {
+            let reference = self
+                .document()
+                .primitive(mesh, primitive)
+                .ok_or_else(|| Error::Extension("compressed splat primitive is missing".into()))?;
+            crate::splat_draco::contract(self.document(), reference)?;
+            let geometry = decoded
+                .as_mut()
+                .expect("experimental splats are decoded for validation");
+            crate::splat_draco::validate_decoded(self.document(), reference, geometry)?;
         }
         let output_bytes = self
             .resources

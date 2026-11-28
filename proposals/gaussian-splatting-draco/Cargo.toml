@@ -1,0 +1,9 @@
+[workspace]
+[package]
+name = "splat-contract-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+draco-gltf = { path = "../../crates/draco-gltf" }

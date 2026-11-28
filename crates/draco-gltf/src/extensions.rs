@@ -12,6 +12,17 @@ use crate::{Document, Error, Result};
 
 /// Extension name for the Khronos Draco mesh compression contract.
 pub const KHR_DRACO_MESH_COMPRESSION: &str = "KHR_draco_mesh_compression";
+#[cfg(feature = "geometry")]
+pub(crate) const SPLAT_DRACO: &str = "TEST_gaussian_splatting_compression_draco";
+
+#[cfg(feature = "geometry")]
+pub(crate) fn splat_draco_extension(primitive: JsonRef<'_>) -> Option<JsonRef<'_>> {
+    primitive
+        .get("extensions")?
+        .get("KHR_gaussian_splatting")?
+        .get("extensions")?
+        .get(SPLAT_DRACO)
+}
 
 /// Extension name for animation channels targeting JSON Pointer properties.
 pub const KHR_ANIMATION_POINTER: &str = "KHR_animation_pointer";
@@ -643,33 +654,11 @@ impl ExtensionHandler for DracoExtension {
         _accessors: &mut [bool],
         buffer_views: &mut [bool],
     ) -> Result<()> {
-        if buffer_views.is_empty() {
-            return Ok(());
-        }
-        for mesh in document.meshes() {
-            for primitive in mesh
-                .value()
-                .get("primitives")
-                .and_then(JsonRef::as_array)
-                .unwrap_or_default()
-            {
-                let Some(extension) = primitive
-                    .get("extensions")
-                    .and_then(|value| value.get(KHR_DRACO_MESH_COMPRESSION))
-                else {
-                    continue;
-                };
-                let index = extension
-                    .get("bufferView")
-                    .and_then(JsonRef::as_u64)
-                    .and_then(|value| usize::try_from(value).ok())
-                    .filter(|index| *index < buffer_views.len())
-                    .ok_or_else(|| Error::Extension("Draco bufferView is invalid".into()))?;
-                buffer_views[index] = true;
-            }
-        }
-        Ok(())
+        collect_draco_views(document, buffer_views, |primitive| {
+            primitive.get("extensions")?.get(KHR_DRACO_MESH_COMPRESSION)
+        })
     }
+
     #[cfg(feature = "write")]
     fn remap_binary_references(
         &self,
@@ -677,32 +666,11 @@ impl ExtensionHandler for DracoExtension {
         _accessors: &[Option<usize>],
         buffer_views: &[Option<usize>],
     ) -> Result<()> {
-        if buffer_views.is_empty() {
-            return Ok(());
-        }
-        let Some(meshes) = document
-            .as_value_mut()
-            .get_mut("meshes")
-            .and_then(Value::as_array_mut)
-        else {
-            return Ok(());
-        };
-        for mesh in meshes {
-            let Some(primitives) = mesh.get_mut("primitives").and_then(Value::as_array_mut) else {
-                continue;
-            };
-            for primitive in primitives {
-                let Some(value) = primitive
-                    .get_mut("extensions")
-                    .and_then(|value| value.get_mut(KHR_DRACO_MESH_COMPRESSION))
-                    .and_then(|value| value.get_mut("bufferView"))
-                else {
-                    continue;
-                };
-                remap_reference(value, buffer_views, "Draco bufferView")?;
-            }
-        }
-        Ok(())
+        remap_draco_views(document, buffer_views, |primitive| {
+            primitive
+                .get_mut("extensions")?
+                .get_mut(KHR_DRACO_MESH_COMPRESSION)
+        })
     }
     fn validate(
         &self,
@@ -773,6 +741,67 @@ impl ExtensionHandler for DracoExtension {
     }
 }
 
+#[cfg(feature = "write")]
+pub(crate) fn collect_draco_views(
+    document: &Document,
+    buffer_views: &mut [bool],
+    extension: impl for<'a> Fn(JsonRef<'a>) -> Option<JsonRef<'a>>,
+) -> Result<()> {
+    if buffer_views.is_empty() {
+        return Ok(());
+    }
+    for mesh in document.meshes() {
+        for primitive in mesh
+            .value()
+            .get("primitives")
+            .and_then(JsonRef::as_array)
+            .unwrap_or_default()
+        {
+            let Some(extension) = extension(primitive) else {
+                continue;
+            };
+            let index = extension
+                .get("bufferView")
+                .and_then(JsonRef::as_u64)
+                .and_then(|value| usize::try_from(value).ok())
+                .filter(|index| *index < buffer_views.len())
+                .ok_or_else(|| Error::Extension("Draco bufferView is invalid".into()))?;
+            buffer_views[index] = true;
+        }
+    }
+    Ok(())
+}
+#[cfg(feature = "write")]
+pub(crate) fn remap_draco_views(
+    document: &mut Document,
+    buffer_views: &[Option<usize>],
+    extension: impl Fn(&mut Value) -> Option<&mut Value>,
+) -> Result<()> {
+    if buffer_views.is_empty() {
+        return Ok(());
+    }
+    let Some(meshes) = document
+        .as_value_mut()
+        .get_mut("meshes")
+        .and_then(Value::as_array_mut)
+    else {
+        return Ok(());
+    };
+    for mesh in meshes {
+        let Some(primitives) = mesh.get_mut("primitives").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for primitive in primitives {
+            let Some(value) = extension(primitive).and_then(|value| value.get_mut("bufferView"))
+            else {
+                continue;
+            };
+            remap_reference(value, buffer_views, "Draco bufferView")?;
+        }
+    }
+    Ok(())
+}
+
 fn remap_reference(value: &mut Value, map: &[Option<usize>], kind: &str) -> Result<()> {
     let old = value
         .as_u64()
@@ -828,6 +857,10 @@ impl Default for ExtensionRegistry {
         };
         registry
             .register(DracoExtension)
+            .expect("built-in extension names are unique");
+        #[cfg(feature = "draco-point-cloud-decode")]
+        registry
+            .register(crate::splat_draco::SplatDracoExtension)
             .expect("built-in extension names are unique");
         // Everything below exists to answer one question — may a binary
         // transform touch this document — which a build that cannot write one

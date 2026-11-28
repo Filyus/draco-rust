@@ -18,6 +18,7 @@ import {
 } from './component-values.ts';
 import {
   GLTF_READER_RESOLVED_EXTENSIONS,
+  assertRequiredExtensionsForDracoSplats,
   gltfExtensionWarnings,
   isInterpretedGltfExtension,
   readGltfMaterial,
@@ -96,6 +97,7 @@ export async function buildSceneFromGltf(
   try {
     assertConverterProfile(asset);
     const document: GltfJson = JSON.parse(new TextDecoder().decode(asset.json()));
+    assertRequiredExtensionsForDracoSplats(document);
     const warnings: string[] = [];
     const nodes = buildNodes(document.nodes || []);
     const meshes = buildMeshes(asset, document.meshes || [], warnings);

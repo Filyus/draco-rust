@@ -65,6 +65,8 @@ pub use json::{JsonArray, JsonIndex, JsonItems, JsonMembers, JsonObject, JsonRef
 pub use writer::{GeometryEncoding, GeometryWriteOptions, GeometryWriteReport, PreserveReason};
 /// Extension contracts and resource storage used by document transforms.
 pub mod extensions;
+#[cfg(feature = "draco-point-cloud-decode")]
+mod splat_draco;
 pub use extensions::{
     AnimationPointerExtension, BinaryFreeExtension, DracoExtension, ExtensionHandler,
     ExtensionRegistry, ExtensionValidationContext, MeshGpuInstancingExtension, ResourceStore,

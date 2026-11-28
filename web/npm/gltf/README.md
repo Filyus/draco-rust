@@ -122,7 +122,7 @@ point clouds). The final options object
 is optional. It accepts `encoding_speed`, `decoding_speed`, `position_bits`,
 `normal_bits`, `texcoord_bits`, `color_bits`, `generic_bits`,
 `encoding_method`, `fallback`, `max_output_bytes`,
-`position_quantization_grid`, `allow_points`, `spatial_point_order`,
+`position_quantization_grid`, `compress_splats`, `allow_points`, `spatial_point_order`,
 `point_order_search`, `prediction_search`, and `gaussian_splat_quantization`.
 When an option also has a
 positional argument, the object value wins. `fallback: true` retains ordinary
@@ -132,18 +132,23 @@ geometry alongside Draco. `max_output_bytes` caps the final resolved buffers.
 accepts the other settings above; its positional `fallback` argument selects
 the storage mode, so do not pass `fallback` in that options object.
 `position_quantization_grid` takes a three-number
-`origin` and finite positive `range`, and requires position bits. Point-cloud
-compression is opt-in with `allow_points`; it writes `POINTS` under an
-extension whose specification does not define that mode.
+`origin` and finite positive `range`, and requires position bits.
+
+### Gaussian splat compression
+
+For a `POINTS` primitive already declaring `KHR_gaussian_splatting`,
+set `compress_splats: true` to write the nested
+`TEST_gaussian_splatting_compression_draco` extension. This mode requires
+`fallback: false`. Indexed input expands into one splat per index,
+including repeated indices.
 `spatial_point_order` and `point_order_search` can change the decoded point
 order. Point-cloud search options have no effect on triangle meshes.
 
-Both encoding entry points accept Gaussian splat settings in the options
-object:
+Pass the options object to `compressPrimitive` on the existing document:
 
 ```js
 const splatOptions = {
-  allow_points: true,
+  compress_splats: true,
   position_bits: 14,
   gaussian_splat_quantization: {
     rotation_bits: 10,
@@ -156,6 +161,10 @@ const splatOptions = {
   },
 };
 ```
+
+`allow_points` selects legacy point-cloud output for compatibility with
+existing callers. It writes `POINTS` under `KHR_draco_mesh_compression`,
+whose specification covers triangle primitives.
 
 An SH degree rule can be a bit count, `'preserve'`, `{ bits, max_abs }` for a
 grid that decodes zero exactly, or `{ bits, origin, range }` for an explicit

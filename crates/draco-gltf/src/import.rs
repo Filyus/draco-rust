@@ -507,6 +507,22 @@ impl Import {
         let mode = crate::PrimitiveMode::from_gltf(reference.mode()).ok_or_else(|| {
             Error::Geometry(crate::GeometryError::InvalidPrimitiveMode(reference.mode()))
         })?;
+        if crate::extensions::splat_draco_extension(reference.value()).is_some() {
+            #[cfg(feature = "draco-point-cloud-decode")]
+            {
+                let parsed = crate::splat_draco::contract(self.document(), reference)?;
+                let extension = crate::DracoPrimitiveExtension::from_contract(parsed);
+                let (decoded, contract) =
+                    self.decode_draco_mesh_with(reference, draco, validated)?;
+                let mut geometry = extension.pack(&decoded, &contract, Vec::new())?;
+                crate::splat_draco::validate_decoded(self.document(), reference, &mut geometry)?;
+                return Ok(geometry);
+            }
+            #[cfg(not(feature = "draco-point-cloud-decode"))]
+            return Err(Error::Extension(
+                "Draco splats require point-cloud decoding".into(),
+            ));
+        }
         if reference
             .extension(crate::KHR_DRACO_MESH_COMPRESSION)
             .is_some()
@@ -570,9 +586,10 @@ impl Import {
         &self,
         primitive: PrimitiveRef<'_>,
     ) -> Result<(draco_core::Mesh, Vec<(String, u32)>)> {
-        if primitive
-            .extension(crate::KHR_DRACO_MESH_COMPRESSION)
-            .is_some()
+        if crate::extensions::splat_draco_extension(primitive.value()).is_some()
+            || primitive
+                .extension(crate::KHR_DRACO_MESH_COMPRESSION)
+                .is_some()
         {
             return Err(Error::Extension("primitive uses Draco compression".into()));
         }
@@ -741,7 +758,7 @@ impl Import {
         ))
     }
 
-    /// Materializes all Draco primitives as ordinary indexed triangle geometry.
+    /// Materializes Draco primitives as ordinary mesh or point geometry.
     #[cfg(all(feature = "write", feature = "draco-decode"))]
     pub fn decompress_in_place(&mut self) -> Result<()> {
         let mut candidate = self.clone();
@@ -767,6 +784,7 @@ impl Import {
                 if primitive
                     .extension(crate::KHR_DRACO_MESH_COMPRESSION)
                     .is_none()
+                    && crate::extensions::splat_draco_extension(primitive.value()).is_none()
                 {
                     continue;
                 }

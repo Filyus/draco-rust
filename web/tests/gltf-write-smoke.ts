@@ -121,6 +121,36 @@ if (draco) {
     throw new Error('opt-in Draco point-cloud roundtrip failed');
   }
 
+  const fixture = resolve(here, '../../testdata/GaussianSplats');
+  const source = await readFile(resolve(fixture, 'tiny-splat.gltf'));
+  const payload = await readFile(resolve(fixture, 'tiny-splat.bin'));
+  const experimental = api.GltfAsset.withResources(source, { 'tiny-splat.bin': payload }, '2.0');
+  try {
+    experimental.compressPrimitive(0, 0, 5, 5, 0, 0, 0, 0, 0, 0, {
+      compress_splats: true,
+    });
+    const manifest = JSON.parse(new TextDecoder().decode(experimental.json()));
+    const extensions = manifest.meshes[0].primitives[0].extensions;
+    const child = 'TEST_gaussian_splatting_compression_draco';
+    if (!extensions.KHR_gaussian_splatting.extensions[child]
+      || extensions.KHR_draco_mesh_compression
+      || !manifest.extensionsRequired.includes(child)) {
+      throw new Error('experimental splats must use the nested Draco extension');
+    }
+    const reopened = new api.GltfAsset(experimental.glb(2), '2.0');
+    const packed = reopened.readPrimitive(0, 0);
+    try {
+      if (packed.mode() !== 0 || packed.attributeElementCount(0) !== 64) {
+        throw new Error('experimental splat GLB roundtrip failed');
+      }
+    } finally {
+      packed.free();
+      reopened.free();
+    }
+  } finally {
+    experimental.free();
+  }
+
   const splat = new api.PackedGeometry(0);
   const prefix = 'KHR_gaussian_splatting:';
   const rotation = `${prefix}ROTATION`;
